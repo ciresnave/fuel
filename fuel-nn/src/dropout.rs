@@ -10,7 +10,7 @@
 //! Lazy-graph semantics
 //! --------------------
 //!
-//! Unlike the eager [`fuel_nn::ops::dropout`] op (which calls
+//! Unlike the eager `fuel_nn::ops::dropout` op (which calls
 //! `Tensor::rand` at execution time on the storage backend), the
 //! lazy bridge has no graph-level random-number primitive yet. The
 //! v1 implementation therefore samples the Bernoulli mask
@@ -60,7 +60,7 @@ use std::sync::Arc;
 /// A dropout layer that randomly zeroes input elements during
 /// training and is the identity at inference.
 ///
-/// Mirrors the shape of [`fuel_nn::ops::Dropout`]. The drop
+/// Mirrors the shape of `fuel_nn::ops::Dropout`. The drop
 /// probability is captured at construction; `forward` takes the
 /// `train` flag (and an explicit seed if you want deterministic
 /// behavior across step boundaries).
@@ -74,7 +74,8 @@ use std::sync::Arc;
 ///     vec![1.0_f32, 2.0, 3.0, 4.0],
 ///     Shape::from_dims(&[4]),
 ///     &device,
-/// );
+/// )
+/// .unwrap();
 /// let drop = Dropout::new(0.5);
 /// // Eval mode: identity.
 /// let y_eval = drop.forward(&x, /* train = */ false).unwrap();
@@ -148,7 +149,7 @@ impl Dropout {
         let mask_shape = Shape::from_dims(shape.dims());
 
         let mask = build_bernoulli_mask(n, self.drop_p, seed);
-        let mask_t = x.const_f32_like(Arc::<[f32]>::from(mask), mask_shape);
+        let mask_t = x.const_f32_like(Arc::<[f32]>::from(mask), mask_shape)?;
         x.mul(&mask_t)
     }
 }
@@ -193,7 +194,7 @@ mod tests {
     fn forward_eval_is_identity() {
         let device = Device::cpu();
         let data: Vec<f32> = vec![1.0, -2.0, 3.0, -4.0, 5.0, -6.0];
-        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[6]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[6]), &device).unwrap();
         let drop = Dropout::new(0.5);
         let y = drop.forward(&x, /* train = */ false).unwrap();
         let out = y.realize_f32();
@@ -206,7 +207,7 @@ mod tests {
         // so every output element is either 0.0 or 2.0 * input.
         let device = Device::cpu();
         let data: Vec<f32> = (1..=128).map(|i| i as f32).collect();
-        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[128]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[128]), &device).unwrap();
         let drop = Dropout::new(0.5);
         let y = drop.forward_with_seed(&x, 0xDEADBEEF).unwrap();
         let out = y.realize_f32();
@@ -239,7 +240,7 @@ mod tests {
         let device = Device::cpu();
         let n = 4096;
         let data: Vec<f32> = vec![1.0; n];
-        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[n]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[n]), &device).unwrap();
         let drop = Dropout::new(0.3);
         let y = drop.forward_with_seed(&x, 0x5EED_5EED).unwrap();
         let out = y.realize_f32();
@@ -258,7 +259,7 @@ mod tests {
     fn same_seed_gives_same_mask() {
         let device = Device::cpu();
         let data: Vec<f32> = (0..64).map(|i| (i as f32) * 0.5).collect();
-        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[64]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[64]), &device).unwrap();
         let drop = Dropout::new(0.4);
         let a = drop.forward_with_seed(&x, 12345).unwrap().realize_f32();
         let b = drop.forward_with_seed(&x, 12345).unwrap().realize_f32();
@@ -269,7 +270,7 @@ mod tests {
     fn drop_p_zero_short_circuits() {
         let device = Device::cpu();
         let data: Vec<f32> = vec![7.0, -3.5, 0.25, 100.0];
-        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[4]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[4]), &device).unwrap();
         let drop = Dropout::new(0.0);
         let y = drop.forward_with_seed(&x, 1).unwrap();
         assert_eq!(y.realize_f32(), data);
@@ -278,7 +279,7 @@ mod tests {
     #[test]
     fn drop_p_out_of_range_errors() {
         let device = Device::cpu();
-        let x = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), &device);
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), &device).unwrap();
         assert!(Dropout::new(1.0).forward_with_seed(&x, 0).is_err());
         assert!(Dropout::new(-0.1).forward_with_seed(&x, 0).is_err());
     }

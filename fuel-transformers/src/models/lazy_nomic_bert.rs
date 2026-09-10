@@ -179,7 +179,14 @@ impl NomicBertModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
-        assert!(seq <= cfg.n_positions);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.n_positions {
+            return Err(fuel_core::Error::Msg(format!(
+                "NomicBertModel: seq {seq} > n_positions {}",
+                cfg.n_positions,
+            ))
+            .bt());
+        }
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
         // so a config whose n_embd is not divisible by n_head violates this -- a
         // CONFIG property to reject, not an invariant to assert.
@@ -192,8 +199,8 @@ impl NomicBertModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.n_embd]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let mut embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
@@ -202,7 +209,7 @@ impl NomicBertModel {
             let tte_t = word_emb_t.const_f32_like(
                 Arc::clone(tte),
                 Shape::from_dims(&[cfg.type_vocab_size, cfg.n_embd]),
-            );
+            )?;
             let tt_ids: Vec<u32> = match token_type_ids {
                 Some(ids) => {
                     assert_eq!(
@@ -214,7 +221,7 @@ impl NomicBertModel {
                 }
                 None => vec![0; seq],
             };
-            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]));
+            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]))?;
             let tt_emb = tte_t
                 .index_select(0_usize, &tt_id_t)?
                 .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
@@ -274,7 +281,14 @@ impl NomicBertModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
-        assert!(seq <= cfg.n_positions);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.n_positions {
+            return Err(fuel_core::Error::Msg(format!(
+                "NomicBertModel: seq {seq} > n_positions {}",
+                cfg.n_positions,
+            ))
+            .bt());
+        }
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
         // so a config whose n_embd is not divisible by n_head violates this -- a
         // CONFIG property to reject, not an invariant to assert.
@@ -295,8 +309,8 @@ impl NomicBertModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.n_embd]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let mut embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
@@ -304,7 +318,7 @@ impl NomicBertModel {
             let tte_t = word_emb_t.const_f32_like(
                 Arc::clone(tte),
                 Shape::from_dims(&[cfg.type_vocab_size, cfg.n_embd]),
-            );
+            )?;
             let tt_ids: Vec<u32> = match token_type_ids {
                 Some(ids) => {
                     assert_eq!(
@@ -316,7 +330,7 @@ impl NomicBertModel {
                 }
                 None => vec![0; seq],
             };
-            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]));
+            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]))?;
             let tt_emb = tte_t
                 .index_select(0_usize, &tt_id_t)?
                 .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
@@ -642,6 +656,39 @@ mod tests {
         assert!(
             msg.contains("head_dim") && msg.contains("n_embd"),
             "the decline must name the relation it rejected, got: {msg}"
+        );
+    }
+
+    /// GAP-308 born-red: a sequence longer than `n_positions` is REJECTED with a
+    /// typed error, not a panic. Asserts the error MESSAGE (the `n_positions`
+    /// fragment), not `is_err()`: the decline returns before any graph op, so
+    /// with it removed `forward` would return an `Ok` handle to an invalid
+    /// unrealized graph and an `is_err()`-only test would pass on it.
+    #[test]
+    fn forward_declines_seq_over_n_positions() {
+        let mut cfg = tiny_cfg();
+        cfg.n_positions = 4;
+        let model = NomicBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        // POSITIVE CONTROL: seq <= n_positions must run, else the Err below could be a broken fixture.
+        let short: Vec<u32> = (0..3).collect();
+        model
+            .forward(&short, None, None)
+            .expect("control: seq <= n_positions must run");
+        let long: Vec<u32> = (0..8).collect(); // seq = 8 > 4
+        let err = model.forward(&long, None, None).unwrap_err();
+        assert!(
+            format!("{err}").contains("n_positions"),
+            "forward must decline seq > n_positions; got: {err}"
+        );
+        let err2 = model
+            .forward_intermediate_layers(&long, &[0], None, None)
+            .unwrap_err();
+        assert!(
+            format!("{err2}").contains("n_positions"),
+            "forward_intermediate_layers must decline too; got: {err2}"
         );
     }
 

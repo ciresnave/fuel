@@ -118,73 +118,36 @@ pub mod kv_cache {
 
 // ── Native inference modules ──────────────────────────────────────────────
 
-/// Composable KV cache eviction policies (LRU, H2O, weighted voting).
 pub mod eviction;
 
-/// Hash-based prefix caching for KV state reuse across requests.
 pub mod prefix_cache;
 
-/// StreamingLLM: sink-token + recent-window KV cache management for
-/// stable generation beyond the training context window.
 pub mod streaming;
 
 /// Speculative decoding: draft-then-verify parallel token generation.
 pub mod speculative;
 
-/// Chunked prefill: split long prompts into bounded-size chunks to
-/// reduce time-to-first-token and allow decode interleaving.
 pub mod chunked_prefill;
 
-/// Segmented eviction: span-level KV cache management where logical
-/// segments (conversation turns, document chunks) are tracked and
-/// evicted as complete units.
 pub mod segmented_eviction;
 
-/// KV cache compression: KIVI quantization, R-KV importance pruning,
-/// and low-rank approximation.
 pub mod kv_compress;
 
 /// Memory-aware inference scheduler with priority queuing and
 /// eviction-pressure admission control.
 pub mod scheduler;
 
-/// K-way multi-session decode driver (moved from `fuel-core`, Q2 2026-07-29):
-/// runs K independent decode sessions concurrently over one model, serial
-/// (byte-exact oracle) or live-batched. Reaches the model through the
-/// model-agnostic [`multi_session::DecodeModel`] trait — consumer-side
-/// orchestration, not a Foundation primitive. Distinct from [`scheduler`]'s
-/// memory-admission `MemoryScheduler`.
-///
-/// The model surface is **tiered**: [`multi_session::DecodeModel`] is the core a
-/// model needs to be servable at all (KV geometry + one persistent-KV step), and
-/// [`multi_session::PagedDecodeModel`] adds the paged-storage surface that
-/// [`multi_session::PagedSessionScheduler`] requires. The tiering exists because
-/// only two of Fuel's twelve model families currently ship *any* incremental-
-/// decode surface; one fat trait meant a model had to arrive with paged AND
-/// batched decode before plain contiguous decode worked at all.
 pub mod multi_session;
 
-/// Mixture-of-Experts capacity-aware top-K token routing.
 pub mod moe_routing;
 
-/// Tiered KV cache storage: GPU (VRAM) → CPU (RAM) → Disk.
-/// Segments retain position IDs for correct RoPE re-injection on promotion.
 pub mod tiered_storage;
 
-/// Context compression: token-budget-aware turn selection and compression
-/// for conversations exceeding the model's context window.
 pub mod context_compress;
 
-/// Tool call infrastructure: structured parsing, validation, dispatch,
-/// and result injection for function-calling models.
 pub mod tool_call;
 
 /// Placeholder for future batching, streaming-decode, and session abstractions.
 pub mod pipelines {}
 
-/// Phase 6d Track 4: bridge from fuel-inference's runtime
-/// orchestration state into the lazy-graph planner. Provides
-/// `SchedulerRule` impls that consult inference-side state
-/// (memory pressure, MoE routing decisions, etc.) to bias the
-/// planner's placement decisions.
 pub mod scheduler_bridge;

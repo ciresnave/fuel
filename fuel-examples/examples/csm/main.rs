@@ -242,7 +242,7 @@ fn main() -> Result<()> {
 
     // ---- Run the v1 forward pass ---------------------------------------
     // Anchor Tensor: every constant table is materialized on its graph.
-    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
+    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu())?;
 
     let t_fwd = std::time::Instant::now();
     let (embed, c0_logits) = model

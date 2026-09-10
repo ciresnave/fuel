@@ -62,7 +62,7 @@ impl OpStats {
 
 /// Step E A4b-2: an already-submitted (but not-yet-waited) Vulkan batch.
 ///
-/// Produced by [`Recorder::submit_batch`], which ends recording and calls
+/// Produced by `Recorder::submit_batch`, which ends recording and calls
 /// `vkQueueSubmit` with a fresh fence WITHOUT waiting it. The struct OWNS every
 /// resource the in-flight command buffer still references on the GPU:
 ///
@@ -72,7 +72,7 @@ impl OpStats {
 /// - `transients`— per-dispatch params/uniform buffers the shaders read.
 /// - `descs`     — descriptor sets bound by the CB (point at the I/O buffers).
 /// - `retired_pool` — the command pool the `cmd` was allocated from, swapped out
-///   of the [`Recorder`] so a fresh pool serves the next batch while this one is
+///   of the `Recorder` so a fresh pool serves the next batch while this one is
 ///   still in flight (dropping the pool would free the CB's backing memory).
 /// - `retained_data` — Step E A2.1: DATA buffers the in-flight CB reads that the
 ///   executor has EVICTED from its per-NodeId cache while this batch is still in
@@ -170,7 +170,7 @@ impl SubmittedBatch {
 
 impl Drop for SubmittedBatch {
     /// UAF safety net: if this batch was dropped WITHOUT an explicit
-    /// [`wait`](Self::wait) (e.g. a `?` error unwound the realize loop while this
+    /// `wait` (e.g. a `?` error unwound the realize loop while this
     /// batch was still in flight in the executor's `inflight_vulkan` list), wait
     /// the fence here so the GPU has finished executing the command buffer BEFORE
     /// the CB / descriptor sets / transient buffers / retired pool / retained data

@@ -2,11 +2,11 @@
 //! Mimi streaming-capable 1-D convolution primitive (sub-port 1 of
 //! port-mimi-conv.md).
 //!
-//! Ports the [`StreamableConv1d`] half of
+//! Ports the `StreamableConv1d` half of
 //! `fuel_transformers::models::audio::mimi::conv` to the lazy-graph
 //! API. The remaining variants
-//! ([`StreamableConvTranspose1d`], [`ConvDownsample1d`],
-//! [`ConvTrUpsample1d`]) compose on top of this primitive and ship in
+//! (`StreamableConvTranspose1d`, `ConvDownsample1d`,
+//! `ConvTrUpsample1d`) compose on top of this primitive and ship in
 //! the following sub-ports.
 //!
 //! # Differences from the eager API
@@ -33,7 +33,7 @@
 //! - [`LazyPadMode::Constant`] zero-pad — the default for the SEANet
 //!   encoder convs.
 //! - [`LazyPadMode::Replicate`] edge-value pad — used by Mimi's
-//!   [`ConvDownsample1d`] / [`ConvTrUpsample1d`]. Implemented as
+//!   `ConvDownsample1d` / `ConvTrUpsample1d`. Implemented as
 //!   `narrow + repeat + concat` since `Op::Pad`'s Replicate mode
 //!   isn't yet wired through the executor; that's an internal
 //!   detail — callers see the same semantics.
@@ -284,21 +284,50 @@ impl StreamableConv1dWeights {
         ideal.saturating_sub(t_in)
     }
 
-    fn build_weight_tensor(&self, anchor: &Tensor) -> Tensor {
-        anchor.const_f32_like(
-            Arc::clone(&self.weight),
-            Shape::from_dims(&[
-                self.out_channels,
-                self.in_channels / self.groups,
-                self.kernel_size,
-            ]),
-        )
+    fn build_weight_tensor(&self, anchor: &Tensor) -> fuel_core::Result<Tensor> {
+        // ⚠️ GAP-003 CATEGORY 3 — the ruled case, and the only kind that takes
+        // `Result`. The DATA is `Arc::clone(&self.weight)`, loaded from a
+        // CHECKPOINT. The SHAPE comes from CONFIG fields. There is no local
+        // proof and there cannot be one: a mismatch means THE CHECKPOINT
+        // DISAGREES WITH ITS CONFIG, which is not a bug in any caller's code.
+        // It is invalid input arriving from outside the process, and a library
+        // hands that back rather than aborting.
+        //
+        // The message names the CONFIG-IMPLIED count and the DIMS it came from,
+        // because this text is the only thing a user debugging a bad checkpoint
+        // will ever see. Modelled on `lazy_metavoice`'s speaker-embed guard,
+        // which already does this correctly and was written without being asked.
+        anchor
+            .const_f32_like(
+                Arc::clone(&self.weight),
+                Shape::from_dims(&[
+                    self.out_channels,
+                    self.in_channels / self.groups,
+                    self.kernel_size,
+                ]),
+            )
+            .map_err(|e| {
+                fuel_core::Error::Msg(format!(
+                    "conv weight from the checkpoint does not match the config: {e} \n                     (config implies out_channels * (in_channels / groups) * kernel_size)"
+                ))
+            })
     }
 
-    fn build_bias_tensor(&self, anchor: &Tensor) -> Option<Tensor> {
+    fn build_bias_tensor(&self, anchor: &Tensor) -> fuel_core::Result<Option<Tensor>> {
+        // GAP-003 CATEGORY 3, same as the weight above: loaded bias data
+        // against a config-derived length.
         self.bias
             .as_ref()
-            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
+            .map(|b| {
+                anchor
+                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
+                    .map_err(|e| {
+                        fuel_core::Error::Msg(format!(
+                            "conv bias from the checkpoint does not match the config: {e} \n                             (config implies out_channels)"
+                        ))
+                    })
+            })
+            .transpose()
     }
 
     /// Run the streaming conv in one-shot mode. Matches eager
@@ -328,8 +357,8 @@ impl StreamableConv1dWeights {
             let left = pad_total - right;
             pad_last_1d(xs, left, right + extra, self.pad_mode)?
         };
-        let w = self.build_weight_tensor(xs);
-        let b = self.build_bias_tensor(xs);
+        let w = self.build_weight_tensor(xs)?;
+        let b = self.build_bias_tensor(xs)?;
         padded.conv1d(&w, b.as_ref(), self.stride, 0, self.groups)
     }
 }
@@ -410,8 +439,8 @@ impl StreamableConv1dWeights {
         let carry = combined.narrow(2_usize, offset, combined_len - offset)?;
         let in_l = (num_frames - 1) * stride + kernel;
         let xs_in = combined.narrow(2_usize, 0, in_l)?;
-        let w = self.build_weight_tensor(&xs_in);
-        let b = self.build_bias_tensor(&xs_in);
+        let w = self.build_weight_tensor(&xs_in)?;
+        let b = self.build_bias_tensor(&xs_in)?;
         let y = xs_in.conv1d(&w, b.as_ref(), stride, 0, self.groups)?;
         state.buf = Some(carry);
         Ok((state, Some(y)))
@@ -430,6 +459,7 @@ mod tests {
             Shape::from_dims(&[b, c, t]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

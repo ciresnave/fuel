@@ -187,10 +187,10 @@ impl MarianModel {
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
-        );
+        )?;
         let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_lt_shape = Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]);
-        let pos_full = embed.const_f32_like(Arc::from(pos_table), pos_lt_shape);
+        let pos_full = embed.const_f32_like(Arc::from(pos_table), pos_lt_shape)?;
 
         let enc_out = self.encode(&embed, &pos_full, src_tokens)?;
         let dec_out = self.decode(&embed, &pos_full, tgt_tokens, &enc_out)?;
@@ -201,7 +201,7 @@ impl MarianModel {
         let bias_t = dec_out.const_f32_like(
             Arc::clone(&self.weights.final_logits_bias),
             Shape::from_dims(&[target_vocab]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 
@@ -229,10 +229,10 @@ impl MarianModel {
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
-        );
+        )?;
         let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_lt_shape = Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]);
-        let pos_full = embed.const_f32_like(Arc::from(pos_table), pos_lt_shape);
+        let pos_full = embed.const_f32_like(Arc::from(pos_table), pos_lt_shape)?;
         self.encode(&embed, &pos_full, src_tokens)
     }
 
@@ -248,7 +248,7 @@ impl MarianModel {
         let pos_full = src_embeds.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
-        );
+        )?;
         self.encode_from_embeds(src_embeds, &pos_full)
     }
 
@@ -263,7 +263,7 @@ impl MarianModel {
         let pos_full = enc_out.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
-        );
+        )?;
         let dec_out = self.decode_from_embeds(tgt_embeds, &pos_full, enc_out)?;
 
         let lm_head = WeightStorage::F32(self.weights.shared_embedding.clone());
@@ -272,7 +272,7 @@ impl MarianModel {
         let bias_t = enc_out.const_f32_like(
             Arc::clone(&self.weights.final_logits_bias),
             Shape::from_dims(&[target_vocab]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 
@@ -289,7 +289,7 @@ impl MarianModel {
         let pos_full = enc_out.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
-        );
+        )?;
         self.decode_from_embeds(tgt_embeds, &pos_full, enc_out)
     }
 
@@ -333,12 +333,12 @@ impl MarianModel {
         let embed = enc_out.const_f32_like(
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
-        );
+        )?;
         let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_full = enc_out.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
-        );
+        )?;
 
         let dec_out = self.decode(&embed, &pos_full, tgt_tokens, enc_out)?;
 
@@ -348,7 +348,7 @@ impl MarianModel {
         let bias_t = enc_out.const_f32_like(
             Arc::clone(&self.weights.final_logits_bias),
             Shape::from_dims(&[target_vocab]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 
@@ -357,7 +357,7 @@ impl MarianModel {
         let src_len = src_tokens.len();
         let batch = 1;
 
-        let ids = embed.const_u32_like(src_tokens.to_vec(), Shape::from_dims(&[src_len]));
+        let ids = embed.const_u32_like(src_tokens.to_vec(), Shape::from_dims(&[src_len]))?;
         let src_embeds = embed
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[batch, src_len, cfg.d_model]))?;
@@ -408,7 +408,7 @@ impl MarianModel {
         let tgt_len = tgt_tokens.len();
         let batch = 1;
 
-        let ids = embed.const_u32_like(tgt_tokens.to_vec(), Shape::from_dims(&[tgt_len]));
+        let ids = embed.const_u32_like(tgt_tokens.to_vec(), Shape::from_dims(&[tgt_len]))?;
         let tgt_embeds = embed
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[batch, tgt_len, cfg.d_model]))?;
@@ -453,7 +453,8 @@ impl MarianModel {
                 mask_data[i * tgt_len + j] = f32::NEG_INFINITY;
             }
         }
-        let causal_mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, tgt_len, tgt_len]));
+        let causal_mask =
+            x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, tgt_len, tgt_len]))?;
 
         for layer in &self.weights.decoder_layers {
             x = self.apply_decoder_layer(&x, layer, enc_out, &causal_mask)?;
@@ -1088,7 +1089,8 @@ mod tests {
         };
         let src = [1_u32, 2, 3];
         let enc_ref = model.forward_encoder(&src).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let src_embeds = model.embed_tokens_anchored(&anchor, &src).unwrap();
         let enc_via_embeds = model
             .forward_encoder_embeds(&src_embeds)
@@ -1143,7 +1145,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.d_model + 1)],
             Shape::from_dims(&[1, 3, cfg.d_model + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_encoder_embeds(&bad).is_err());
     }
 

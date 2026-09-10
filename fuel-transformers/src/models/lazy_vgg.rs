@@ -220,14 +220,14 @@ impl VggModel {
             .const_like(x, Shape::from_dims(&[conv.c_out, conv.c_in, 3, 3]))?;
         let out = x.conv2d(&w, None, (1, 1), (1, 1), 1)?;
         let bias_t = x
-            .const_f32_like(Arc::clone(&conv.b), Shape::from_dims(&[conv.c_out]))
+            .const_f32_like(Arc::clone(&conv.b), Shape::from_dims(&[conv.c_out]))?
             .reshape(Shape::from_dims(&[1, conv.c_out, 1, 1]))?;
         out.broadcast_add(&bias_t)
     }
 
     fn apply_fc(&self, x: &Tensor, fc: &VggHeadFc) -> Result<Tensor> {
         let out = fc.w.apply_linear(x, fc.in_features, fc.out_features)?;
-        let bias_t = x.const_f32_like(Arc::clone(&fc.b), Shape::from_dims(&[fc.out_features]));
+        let bias_t = x.const_f32_like(Arc::clone(&fc.b), Shape::from_dims(&[fc.out_features]))?;
         out.broadcast_add(&bias_t)
     }
 }
@@ -402,7 +402,7 @@ mod tests {
     fn tiny_image(h: usize) -> Tensor {
         let mut nb = rng_seed(123);
         let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
-        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu()).unwrap()
     }
 
     #[test]

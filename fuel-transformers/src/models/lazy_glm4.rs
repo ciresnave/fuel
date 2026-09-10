@@ -1192,16 +1192,21 @@ mod tests {
             ),
             Shape::from_dims(&[1, 1, 1, head_dim]),
             &dev,
-        );
+        )
+        .unwrap();
         // Identity-ish RoPE tables: cos=1, sin=0 ⇒ rotation is identity.
-        let cos_id = qk.const_f32_like(
-            Arc::from(vec![1.0_f32; rope_dim]),
-            Shape::from_dims(&[1, rope_dim]),
-        );
-        let sin_id = qk.const_f32_like(
-            Arc::from(vec![0.0_f32; rope_dim]),
-            Shape::from_dims(&[1, rope_dim]),
-        );
+        let cos_id = qk
+            .const_f32_like(
+                Arc::from(vec![1.0_f32; rope_dim]),
+                Shape::from_dims(&[1, rope_dim]),
+            )
+            .unwrap();
+        let sin_id = qk
+            .const_f32_like(
+                Arc::from(vec![0.0_f32; rope_dim]),
+                Shape::from_dims(&[1, rope_dim]),
+            )
+            .unwrap();
         let id_out = apply_interleaved_partial_rope(&qk, &cos_id, &sin_id, head_dim, rope_dim)
             .unwrap()
             .realize_f32();
@@ -1215,14 +1220,18 @@ mod tests {
 
         // Non-trivial RoPE: cos=0, sin=1 ⇒ pair (x_0, x_1) becomes (-x_1, x_0).
         // For interleaved, this means: [x0, x1, x2, x3] → [-x1, x0, -x3, x2].
-        let cos_rot = qk.const_f32_like(
-            Arc::from(vec![0.0_f32; rope_dim]),
-            Shape::from_dims(&[1, rope_dim]),
-        );
-        let sin_rot = qk.const_f32_like(
-            Arc::from(vec![1.0_f32; rope_dim]),
-            Shape::from_dims(&[1, rope_dim]),
-        );
+        let cos_rot = qk
+            .const_f32_like(
+                Arc::from(vec![0.0_f32; rope_dim]),
+                Shape::from_dims(&[1, rope_dim]),
+            )
+            .unwrap();
+        let sin_rot = qk
+            .const_f32_like(
+                Arc::from(vec![1.0_f32; rope_dim]),
+                Shape::from_dims(&[1, rope_dim]),
+            )
+            .unwrap();
         let rot_out = apply_interleaved_partial_rope(&qk, &cos_rot, &sin_rot, head_dim, rope_dim)
             .unwrap()
             .realize_f32();
@@ -1265,7 +1274,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -1290,7 +1300,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
 
@@ -1303,7 +1314,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)

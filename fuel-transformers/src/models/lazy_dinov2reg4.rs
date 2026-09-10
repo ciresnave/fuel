@@ -180,9 +180,9 @@ impl Dinov2Reg4Model {
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
             Shape::from_dims(&[h, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
-        );
+        )?;
         let conv_b = pixel_values
-            .const_f32_like(Arc::clone(&weights.patch_proj_bias), Shape::from_dims(&[h]));
+            .const_f32_like(Arc::clone(&weights.patch_proj_bias), Shape::from_dims(&[h]))?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -195,8 +195,8 @@ impl Dinov2Reg4Model {
             .permute([0, 2, 1_usize])?;
 
         // ---- Add learned position embedding (patches only) -----------------
-        let pos =
-            pixel_values.const_f32_like(Arc::clone(&weights.pos_embed), Shape::from_dims(&[np, h]));
+        let pos = pixel_values
+            .const_f32_like(Arc::clone(&weights.pos_embed), Shape::from_dims(&[np, h]))?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np, h]))?
             .broadcast_to(Shape::from_dims(&[batch, np, h]))?;
@@ -204,12 +204,12 @@ impl Dinov2Reg4Model {
 
         // ---- Prepend CLS + register tokens ---------------------------------
         let cls = pixel_values
-            .const_f32_like(Arc::clone(&weights.cls_token), Shape::from_dims(&[1, 1, h]));
+            .const_f32_like(Arc::clone(&weights.cls_token), Shape::from_dims(&[1, 1, h]))?;
         let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, h]))?;
         let reg = pixel_values.const_f32_like(
             Arc::clone(&weights.reg_token),
             Shape::from_dims(&[1, n_reg, h]),
-        );
+        )?;
         let reg_bc = reg.broadcast_to(Shape::from_dims(&[batch, n_reg, h]))?;
         let cls_reg = cls_bc.concat(&reg_bc, 1_usize)?;
         let mut x = cls_reg.concat(&patches, 1_usize)?;
@@ -237,7 +237,7 @@ impl Dinov2Reg4Model {
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&weights.head_bias),
             Shape::from_dims(&[cfg.num_classes]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 
@@ -281,11 +281,14 @@ impl Dinov2Reg4Model {
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
         }
-        assert!(
-            *layer_ids.last().unwrap() < cfg.depth,
-            "layer_ids must all be in [0, depth = {})",
-            cfg.depth,
-        );
+        // GAP-308 (CONFIG_FIELD): a caller-supplied layer index outside the
+        // configured depth is input to reject, not an invariant to assert.
+        if *layer_ids.last().unwrap() >= cfg.depth {
+            return Err(fuel_core::Error::Msg(format!(
+                "layer_ids must all be in [0, depth = {})",
+                cfg.depth,
+            )));
+        }
 
         let h = cfg.embed_dim;
         let np = cfg.num_patches();
@@ -295,9 +298,9 @@ impl Dinov2Reg4Model {
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
             Shape::from_dims(&[h, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
-        );
+        )?;
         let conv_b = pixel_values
-            .const_f32_like(Arc::clone(&weights.patch_proj_bias), Shape::from_dims(&[h]));
+            .const_f32_like(Arc::clone(&weights.patch_proj_bias), Shape::from_dims(&[h]))?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -310,8 +313,8 @@ impl Dinov2Reg4Model {
             .permute([0, 2, 1_usize])?;
 
         // Pos embed on patches only.
-        let pos =
-            pixel_values.const_f32_like(Arc::clone(&weights.pos_embed), Shape::from_dims(&[np, h]));
+        let pos = pixel_values
+            .const_f32_like(Arc::clone(&weights.pos_embed), Shape::from_dims(&[np, h]))?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np, h]))?
             .broadcast_to(Shape::from_dims(&[batch, np, h]))?;
@@ -319,12 +322,12 @@ impl Dinov2Reg4Model {
 
         // Prepend CLS + register tokens.
         let cls = pixel_values
-            .const_f32_like(Arc::clone(&weights.cls_token), Shape::from_dims(&[1, 1, h]));
+            .const_f32_like(Arc::clone(&weights.cls_token), Shape::from_dims(&[1, 1, h]))?;
         let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, h]))?;
         let reg = pixel_values.const_f32_like(
             Arc::clone(&weights.reg_token),
             Shape::from_dims(&[1, n_reg, h]),
-        );
+        )?;
         let reg_bc = reg.broadcast_to(Shape::from_dims(&[batch, n_reg, h]))?;
         let cls_reg = cls_bc.concat(&reg_bc, 1_usize)?;
         let mut x = cls_reg.concat(&patches, 1_usize)?;
@@ -359,7 +362,8 @@ impl Dinov2Reg4Model {
             cfg.layer_norm_eps,
         )?;
         let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h)?;
-        let qkv_bias_t = x.const_f32_like(Arc::clone(&block.qkv_bias), Shape::from_dims(&[3 * h]));
+        let qkv_bias_t =
+            x.const_f32_like(Arc::clone(&block.qkv_bias), Shape::from_dims(&[3 * h]))?;
         let qkv = qkv_lin.broadcast_add(&qkv_bias_t)?;
         let q = qkv.slice(2_usize, 0, h)?;
         let k = qkv.slice(2_usize, h, h)?;
@@ -376,11 +380,11 @@ impl Dinov2Reg4Model {
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
         let proj = block.proj.apply_linear(&merged, h, h)?;
-        let proj_b_t = x.const_f32_like(Arc::clone(&block.proj_bias), Shape::from_dims(&[h]));
+        let proj_b_t = x.const_f32_like(Arc::clone(&block.proj_bias), Shape::from_dims(&[h]))?;
         let attn_out = proj.broadcast_add(&proj_b_t)?;
 
         // LayerScale 1: per-channel gamma multiplier BEFORE residual.
-        let ls1_t = x.const_f32_like(Arc::clone(&block.ls1_gamma), Shape::from_dims(&[h]));
+        let ls1_t = x.const_f32_like(Arc::clone(&block.ls1_gamma), Shape::from_dims(&[h]))?;
         let attn_scaled = attn_out.broadcast_mul(&ls1_t)?;
         let h1 = x.add(&attn_scaled)?;
 
@@ -393,14 +397,14 @@ impl Dinov2Reg4Model {
         let mlp_hidden = cfg.mlp_hidden();
         let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_hidden)?;
         let fc1_b_t =
-            x.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_hidden]));
+            x.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_hidden]))?;
         let fc1 = fc1.broadcast_add(&fc1_b_t)?.gelu_erf();
         let fc2 = block.fc2.apply_linear(&fc1, mlp_hidden, h)?;
-        let fc2_b_t = x.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]));
+        let fc2_b_t = x.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]))?;
         let mlp_out = fc2.broadcast_add(&fc2_b_t)?;
 
         // LayerScale 2.
-        let ls2_t = x.const_f32_like(Arc::clone(&block.ls2_gamma), Shape::from_dims(&[h]));
+        let ls2_t = x.const_f32_like(Arc::clone(&block.ls2_gamma), Shape::from_dims(&[h]))?;
         let mlp_scaled = mlp_out.broadcast_mul(&ls2_t)?;
         h1.add(&mlp_scaled)
     }
@@ -520,6 +524,35 @@ mod tests {
         }
     }
 
+    /// GAP-308 born-red: a `layer_ids` entry at or beyond the configured `depth`
+    /// is REJECTED with a typed error. Asserts the MESSAGE fragment ("depth"),
+    /// not is_err(): the decline returns before the patch-conv graph is built,
+    /// so with it removed the out-of-range gather would yield an invalid
+    /// unrealized graph and an is_err()-only test would pass on it.
+    #[test]
+    fn forward_intermediate_declines_layer_id_over_depth() {
+        let cfg = tiny_cfg();
+        let depth = cfg.depth;
+        let weights = tiny_weights(&cfg, 11);
+        let img = tiny_image(&cfg);
+        let model = Dinov2Reg4Model {
+            config: cfg,
+            weights,
+        };
+        // POSITIVE CONTROL: an in-range layer id must run.
+        model
+            .forward_intermediate_layers(&img, &[0])
+            .expect("control: layer_ids within [0, depth) must run");
+        // layer id == depth is the first out-of-range index.
+        let err = model
+            .forward_intermediate_layers(&img, &[depth])
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("depth"),
+            "must decline layer_ids >= depth; got: {err}"
+        );
+    }
+
     fn tiny_cfg() -> Dinov2Reg4Config {
         Dinov2Reg4Config {
             embed_dim: 16,
@@ -595,6 +628,7 @@ mod tests {
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

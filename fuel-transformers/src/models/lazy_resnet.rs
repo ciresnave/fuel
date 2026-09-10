@@ -193,7 +193,7 @@ impl ResNetModel {
                     .nclasses
                     .expect("config nclasses must be Some when fc is present");
                 let logits = w.apply_linear(&pooled, cfg.features(), n)?;
-                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
+                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]))?;
                 logits.broadcast_add(&bias_t)
             }
         }
@@ -743,7 +743,7 @@ mod tests {
     fn tiny_image(h: usize, w: usize) -> Tensor {
         let mut nb = rng_seed(42);
         let data: Arc<[f32]> = Arc::from((0..3 * h * w).map(|_| nb()).collect::<Vec<_>>());
-        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), &Device::cpu()).unwrap()
     }
 
     #[test]

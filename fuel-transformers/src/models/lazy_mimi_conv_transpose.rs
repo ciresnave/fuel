@@ -2,11 +2,11 @@
 //! Mimi streaming-capable 1-D transposed convolution primitive
 //! (sub-port 2 of port-mimi-conv.md).
 //!
-//! Ports the [`StreamableConvTranspose1d`] half of
+//! Ports the `StreamableConvTranspose1d` half of
 //! `fuel_transformers::models::audio::mimi::conv` to the lazy-graph
 //! API. Sub-port 1 ([`crate::models::lazy_mimi_conv`]) shipped the forward
-//! [`StreamableConv1d`]; this module is the upsampling counterpart
-//! used by the Mimi decoder / [`ConvTrUpsample1d`] (sub-port 3).
+//! `StreamableConv1d`; this module is the upsampling counterpart
+//! used by the Mimi decoder / `ConvTrUpsample1d` (sub-port 3).
 //!
 //! # State-as-value
 //!
@@ -183,27 +183,56 @@ impl StreamableConvTranspose1dWeights {
         self.kernel_size.saturating_sub(self.stride)
     }
 
-    fn build_weight_tensor(&self, anchor: &Tensor) -> Tensor {
-        anchor.const_f32_like(
-            Arc::clone(&self.weight),
-            Shape::from_dims(&[
-                self.in_channels,
-                self.out_channels / self.groups,
-                self.kernel_size,
-            ]),
-        )
+    fn build_weight_tensor(&self, anchor: &Tensor) -> fuel_core::Result<Tensor> {
+        // ⚠️ GAP-003 CATEGORY 3 — the ruled case, and the only kind that takes
+        // `Result`. The DATA is `Arc::clone(&self.weight)`, loaded from a
+        // CHECKPOINT. The SHAPE comes from CONFIG fields. There is no local
+        // proof and there cannot be one: a mismatch means THE CHECKPOINT
+        // DISAGREES WITH ITS CONFIG, which is not a bug in any caller's code.
+        // It is invalid input arriving from outside the process, and a library
+        // hands that back rather than aborting.
+        //
+        // The message names the CONFIG-IMPLIED count and the DIMS it came from,
+        // because this text is the only thing a user debugging a bad checkpoint
+        // will ever see. Modelled on `lazy_metavoice`'s speaker-embed guard,
+        // which already does this correctly and was written without being asked.
+        anchor
+            .const_f32_like(
+                Arc::clone(&self.weight),
+                Shape::from_dims(&[
+                    self.in_channels,
+                    self.out_channels / self.groups,
+                    self.kernel_size,
+                ]),
+            )
+            .map_err(|e| {
+                fuel_core::Error::Msg(format!(
+                    "conv weight from the checkpoint does not match the config: {e} \n                     (config implies in_channels * (out_channels / groups) * kernel_size)"
+                ))
+            })
     }
 
-    fn build_bias_tensor(&self, anchor: &Tensor) -> Option<Tensor> {
+    fn build_bias_tensor(&self, anchor: &Tensor) -> fuel_core::Result<Option<Tensor>> {
+        // GAP-003 CATEGORY 3, same as the weight above: loaded bias data
+        // against a config-derived length.
         self.bias
             .as_ref()
-            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
+            .map(|b| {
+                anchor
+                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
+                    .map_err(|e| {
+                        fuel_core::Error::Msg(format!(
+                            "conv bias from the checkpoint does not match the config: {e} \n                             (config implies out_channels)"
+                        ))
+                    })
+            })
+            .transpose()
     }
 
     /// Apply bias as a per-output-channel broadcast add along the
     /// time axis. `xs` must be rank-3 `(B, out_channels, T)`.
     fn apply_bias(&self, xs: Tensor) -> Result<Tensor> {
-        match self.build_bias_tensor(&xs) {
+        match self.build_bias_tensor(&xs)? {
             None => Ok(xs),
             Some(b) => {
                 let bias_1c1 = b.reshape(Shape::from_dims(&[1, self.out_channels, 1]))?;
@@ -217,7 +246,7 @@ impl StreamableConvTranspose1dWeights {
     /// inside both [`Self::forward`] (which then unpads) and
     /// [`Self::step`] (which then overlap-adds).
     fn raw_forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let w = self.build_weight_tensor(xs);
+        let w = self.build_weight_tensor(xs)?;
         let y = xs.conv_transpose1d(
             &w,
             self.stride,
@@ -340,7 +369,7 @@ impl StreamableConvTranspose1dWeights {
                     None => prev_ys,
                     Some(b) => {
                         let bias_1c1 = prev_ys
-                            .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
+                            .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))?
                             .reshape(Shape::from_dims(&[1, self.out_channels, 1]))?;
                         prev_ys.broadcast_sub(&bias_1c1)?
                     }
@@ -397,6 +426,7 @@ mod tests {
             Shape::from_dims(&[b, c, t]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

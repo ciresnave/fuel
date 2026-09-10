@@ -598,7 +598,7 @@ fn compute_row_major_strides(shape: &[usize]) -> Vec<usize> {
 /// Reflect padding (without repeating the edge). Per-axis mapping:
 /// for output axis `j` and input dim size `n`, let `i = j - before`.
 /// - `i < 0`: out = in[-i]
-/// - `0 <= i < n`: out = in[i]
+/// - `0 <= i < n`: out = `in[i]`
 /// - `i >= n`: out = in[2*(n-1) - i]
 ///
 /// Caller must validate `before <= n-1` and `after <= n-1` for every
@@ -624,8 +624,8 @@ pub fn pad_reflect_cpu(
 }
 
 /// Replicate (edge-repeat) padding. Per-axis mapping:
-/// - `i < 0`:    out = in[0]
-/// - `0..n`:     out = in[i]
+/// - `i < 0`:    out = `in[0]`
+/// - `0..n`:     out = `in[i]`
 /// - `i >= n`:   out = in[n-1]
 pub fn pad_replicate_cpu(
     input: &CpuStorageBytes,
@@ -8806,7 +8806,7 @@ paged_attn_half_kernel!(paged_attn_f16, half::f16);
 /// Shapes:
 ///   x:      [N, Cin,                Hin, Win]
 ///   weight: [Cout, Cin/groups,      Kh,  Kw ]
-///   bias:   optional [Cout]
+///   bias:   optional `[Cout]`
 ///   out:    [N, Cout,               Hout, Wout]
 ///
 /// Out-of-bounds reads (from padding) yield 0. Groups partition Cin
@@ -10341,7 +10341,7 @@ pub fn write_slice_rotating_cpu(
 
 /// In-place scatter write with a **device-resident-style** start on
 /// `axis` read from `offset_bytes` (the first `i64`, host-side here on
-/// CPU). Backs [`fuel_graph::Op::WriteSliceDoff`] — the CUDA-graph-
+/// CPU). Backs `fuel_graph::Op::WriteSliceDoff` — the CUDA-graph-
 /// capturable KV-cache append. No modulo wrap (unlike
 /// [`write_slice_rotating_cpu`]): the write lands at
 /// `[offset, offset + width)` on `axis`, where `width` is

@@ -250,7 +250,7 @@ impl Gemma2Model {
         let lm_head_w = h_norm.const_f32_like(
             Arc::clone(&self.weights.token_embedding),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-        );
+        )?;
         let logits = h_norm.matmul(&lm_head_w.transpose()?)?;
         Ok(logits.softcap_optional(cfg.final_logit_softcapping))
     }
@@ -349,6 +349,9 @@ impl Gemma2Model {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 
     fn apply_layer(
@@ -465,8 +468,8 @@ impl Gemma2Config {
     ///   `final_logit_softcapping` → `final_logit_softcapping`,
     ///   `sliding_window` → `sliding_window`.
     ///
-    /// [`Gemma2ConfigRaw`] is the wire shape and is pure `serde`;
-    /// [`Gemma2ConfigRaw::resolve`] applies the two defaults that read a
+    /// `Gemma2ConfigRaw` is the wire shape and is pure `serde`;
+    /// `Gemma2ConfigRaw::resolve` applies the two defaults that read a
     /// sibling field, which `#[serde(default)]` cannot express.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
         Gemma2ConfigRaw::from_json_str(json)?.resolve()
@@ -939,7 +942,7 @@ mod tests {
     fn gemma2_rms_norm_offset() {
         let h = 8;
         let data: Arc<[f32]> = Arc::from(vec![1.0_f32, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0]);
-        let x = Tensor::from_f32(data, Shape::from_dims(&[1, 1, h]), &Device::cpu());
+        let x = Tensor::from_f32(data, Shape::from_dims(&[1, 1, h]), &Device::cpu()).unwrap();
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; h]);
         let one_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; h]);
         let g2_out = x
@@ -982,7 +985,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();
@@ -1009,7 +1013,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad_embeds, 0).is_err());
     }
 
@@ -1022,7 +1027,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![2, 5];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let h_via_embeds = model

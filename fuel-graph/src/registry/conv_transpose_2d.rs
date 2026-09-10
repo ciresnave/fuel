@@ -29,10 +29,10 @@
 //!
 //! **Status (CV3, im2col-3):** [`decompose`] lowers **any `groups>=1`**
 //! (the builder's 2-input, no-bias form) to that recipe — the groups=1
-//! rank-3 [`recipe`] and the `groups>1` (incl. depthwise `groups=Cin`)
-//! rank-4 batched [`recipe_grouped`], which carries the group as an
-//! explicit matmul batch axis (`[N, groups]`). The shared [`scatter_flat_index`]
-//! (`Op::Iota`+arith+`Op::Cast(U32)`) and [`col2im_tail`] (zero base via
+//! rank-3 `recipe` and the `groups>1` (incl. depthwise `groups=Cin`)
+//! rank-4 batched `recipe_grouped`, which carries the group as an
+//! explicit matmul batch axis (`[N, groups]`). The shared `scatter_flat_index`
+//! (`Op::Iota`+arith+`Op::Cast(U32)`) and `col2im_tail` (zero base via
 //! `MulScalar(0)`, `Op::IndexAdd` overlap-add, `Op::Slice` crop) are identical
 //! across groupings. A wrong-params / non-2-input / malformed-shape /
 //! indivisible-grouping payload is a surfaced honest-miss that self-returns (the
@@ -530,7 +530,7 @@ fn recipe_grouped(
 }
 
 /// Total decomposition of ConvTranspose2D via the col2im scatter-add recipe
-/// (Increment C im2col-3, CV3) — a re-emit of [`recipe`] / [`recipe_grouped`]'s
+/// (Increment C im2col-3, CV3) — a re-emit of `recipe` / `recipe_grouped`'s
 /// portable data through the [`decompose_via_recipe`] bridge. ConvTranspose2D is
 /// **NOT** a primitive-basis gap (correcting the earlier "needs `Op::Col2Im`"
 /// claim; see the module note and the `10-decisions-log.md` 2026-07-24 addendum):
@@ -540,8 +540,8 @@ fn recipe_grouped(
 /// **Scope: any `groups>=1`** (with the builder's 2-input, no-bias arity). The
 /// stride/padding/output_padding/dilation/groups and the concrete
 /// `Cin/Hin/Win/Cout/Kh/Kw` extents are read here and baked into the per-call
-/// recipe; `groups==1` uses the rank-3 [`recipe`] and `groups>1` the rank-4
-/// batched [`recipe_grouped`].
+/// recipe; `groups==1` uses the rank-3 `recipe` and `groups>1` the rank-4
+/// batched `recipe_grouped`.
 ///
 /// Per G2 (2026-06-20) this is total + never-panic: a wrong-params payload, a
 /// non-2-input arity (the with-bias form is not yet in the recipe — a surfaced

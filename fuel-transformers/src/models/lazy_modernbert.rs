@@ -131,7 +131,14 @@ impl ModernBertModel {
         let batch = 1;
         let h = cfg.hidden_size;
         assert!(seq > 0);
-        assert!(seq <= cfg.max_position_embeddings);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "ModernBertModel: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            ))
+            .bt());
+        }
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
         // so a config whose hidden_size is not divisible by the head count violates
         // this -- a CONFIG property to reject, not an invariant to assert.
@@ -147,8 +154,8 @@ impl ModernBertModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -180,7 +187,7 @@ impl ModernBertModel {
             .const_f32_like(
                 Arc::<[f32]>::from(local_mask),
                 Shape::from_dims(&[seq, seq]),
-            )
+            )?
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
 
         // ---- Encoder blocks ------------------------------------------------
@@ -242,7 +249,14 @@ impl ModernBertModel {
         let batch = 1;
         let h = cfg.hidden_size;
         assert!(seq > 0);
-        assert!(seq <= cfg.max_position_embeddings);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "ModernBertModel: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            ))
+            .bt());
+        }
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
         // so a config whose hidden_size is not divisible by the head count violates
         // this -- a CONFIG property to reject, not an invariant to assert.
@@ -267,8 +281,8 @@ impl ModernBertModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -295,7 +309,7 @@ impl ModernBertModel {
             .const_f32_like(
                 Arc::<[f32]>::from(local_mask),
                 Shape::from_dims(&[seq, seq]),
-            )
+            )?
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
 
         let mut out = Vec::with_capacity(layer_ids.len());
@@ -515,6 +529,40 @@ mod tests {
         assert!(
             msg.contains("head_dim") && msg.contains("hidden_size"),
             "the decline must name the relation it rejected, got: {msg}"
+        );
+    }
+
+    /// GAP-308 born-red: a sequence longer than `max_position_embeddings` is
+    /// REJECTED with a typed error, not a panic. Asserts the error MESSAGE (the
+    /// `max_position_embeddings` fragment), not `is_err()`: the decline returns
+    /// before any graph op, so with it removed `forward` would return an `Ok`
+    /// handle to an invalid unrealized graph and an `is_err()`-only test would
+    /// pass on it.
+    #[test]
+    fn forward_declines_seq_over_max_position_embeddings() {
+        let mut cfg = tiny_cfg();
+        cfg.max_position_embeddings = 4;
+        let model = ModernBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        // POSITIVE CONTROL: seq <= max must run, else the Err below could be a broken fixture.
+        let short: Vec<u32> = (0..3).collect();
+        model
+            .forward(&short, None)
+            .expect("control: seq <= max_position_embeddings must run");
+        let long: Vec<u32> = (0..8).collect(); // seq = 8 > 4
+        let err = model.forward(&long, None).unwrap_err();
+        assert!(
+            format!("{err}").contains("max_position_embeddings"),
+            "forward must decline seq > max_position_embeddings; got: {err}"
+        );
+        let err2 = model
+            .forward_intermediate_layers(&long, &[0], None)
+            .unwrap_err();
+        assert!(
+            format!("{err2}").contains("max_position_embeddings"),
+            "forward_intermediate_layers must decline too; got: {err2}"
         );
     }
 

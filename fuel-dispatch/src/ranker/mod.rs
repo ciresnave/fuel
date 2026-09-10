@@ -15,7 +15,7 @@
 //! | 1.4       | Cost ranking — Layer-1 static composition                              |
 //! | 1.5       | `ExecutionPlan` carries `AlternativeSet`s; `compile_plan` integration  |
 //!
-//! See [`docs/session-prompts/phase-1-1-alternative-set-filter-chain.md`]
+//! See `docs/session-prompts/phase-1-1-alternative-set-filter-chain.md`
 //! for the TDP resolutions and the full Phase 1 plan.
 //!
 //! # The two pickers

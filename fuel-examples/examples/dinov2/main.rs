@@ -47,7 +47,7 @@ pub fn main() -> anyhow::Result<()> {
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
         &device,
-    );
+    )?;
 
     let model_file = match args.model {
         None => {

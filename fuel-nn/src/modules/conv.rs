@@ -221,7 +221,8 @@ impl Module for Conv1d {
         let bias_t = self
             .bias
             .as_ref()
-            .map(|b| xs.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])));
+            .map(|b| xs.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
+            .transpose()?;
         xs.conv1d(
             &w_t,
             bias_t.as_ref(),
@@ -471,7 +472,8 @@ impl Module for Conv2d {
         let bias_t = self
             .bias
             .as_ref()
-            .map(|b| xs.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])));
+            .map(|b| xs.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
+            .transpose()?;
         xs.conv2d(
             &w_t,
             bias_t.as_ref(),
@@ -518,7 +520,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * l, 0.03, -0.4);
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu()).unwrap();
         let y = layer.forward(&x).unwrap();
         let l_out = (l + 2 * cfg.padding - k) / cfg.stride + 1;
         assert_eq!(y.shape().dims(), &[n, cout, l_out]);
@@ -560,11 +562,14 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, l]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
-        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cout, cin, k]));
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu()).unwrap();
+        let w_t = x2
+            .const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cout, cin, k]))
+            .unwrap();
         let direct = x2
             .conv1d(&w_t, None, cfg.stride, cfg.padding, cfg.groups)
             .unwrap()
@@ -609,7 +614,8 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.01, -0.5);
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu()).unwrap();
         let y = layer.forward(&x).unwrap();
         let h_out = (h + 2 * cfg.padding.0 - kh) / cfg.stride.0 + 1;
         let w_out = (w_in + 2 * cfg.padding.1 - kw) / cfg.stride.1 + 1;
@@ -658,15 +664,21 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, h, w_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
-        let w_t = x2.const_f32_like(
-            Arc::clone(&weight_arc),
-            Shape::from_dims(&[cout, cin, kh, kw]),
-        );
-        let b_t = x2.const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]));
+        let x2 =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu()).unwrap();
+        let w_t = x2
+            .const_f32_like(
+                Arc::clone(&weight_arc),
+                Shape::from_dims(&[cout, cin, kh, kw]),
+            )
+            .unwrap();
+        let b_t = x2
+            .const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))
+            .unwrap();
         let direct = x2
             .conv2d(&w_t, Some(&b_t), cfg.stride, cfg.padding, cfg.groups)
             .unwrap()
@@ -737,7 +749,8 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, h, w_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y1 = bn
             .forward(&conv.forward(&x1).unwrap())
             .unwrap()
@@ -745,7 +758,8 @@ mod tests {
 
         // Path 2: absorb_bn → single conv.
         let fused = conv.absorb_bn(&bn).unwrap();
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x2 =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu()).unwrap();
         let y2 = fused.forward(&x2).unwrap().realize_f32();
 
         assert_eq!(y1.len(), y2.len());
@@ -845,12 +859,14 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, h, w_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y1 = bn
             .forward(&conv.forward(&x1).unwrap())
             .unwrap()
             .realize_f32();
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x2 =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu()).unwrap();
         let y2 = fused.forward(&x2).unwrap().realize_f32();
         assert_eq!(y1.len(), y2.len());
         for (i, (a, b)) in y1.iter().zip(y2.iter()).enumerate() {
@@ -926,7 +942,8 @@ mod tests {
         )
         .unwrap();
         let x_data: Vec<f32> = ramp_f32(n * c * h * w_in, 0.02, 0.3);
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_in]), &Device::cpu());
+        let x =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_in]), &Device::cpu()).unwrap();
         let y = layer.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[n, c, h, w_in]);
         let got = y.realize_f32();

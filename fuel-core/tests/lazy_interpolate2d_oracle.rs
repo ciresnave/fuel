@@ -55,7 +55,7 @@ fn interpolate2d_integer_uniform_matches_oracle() {
     let dev = fuel_core::Device::cpu();
     let (n, c, h, w) = (1, 2, 4, 4);
     let src: Vec<f32> = (0..n * c * h * w).map(|i| i as f32 * 0.1).collect();
-    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev);
+    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev).unwrap();
     // 2x uniform — should hit the fast path.
     let out = lt.interpolate2d(8, 8).unwrap();
     let shape = out.shape();
@@ -77,7 +77,7 @@ fn interpolate2d_non_integer_uniform_matches_oracle() {
     let src: Vec<f32> = (0..n * c * h * w)
         .map(|i| (i as f32 - 8.0) * 0.25)
         .collect();
-    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev);
+    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev).unwrap();
     // 4 → 7 is non-integer ratio; takes the composite path.
     let out = lt.interpolate2d(7, 7).unwrap();
     assert_eq!(out.shape().dims(), &[1, 2, 7, 7]);
@@ -97,7 +97,7 @@ fn interpolate2d_non_uniform_matches_oracle() {
     let dev = fuel_core::Device::cpu();
     let (n, c, h, w) = (1, 1, 3, 5);
     let src: Vec<f32> = (0..n * c * h * w).map(|i| (i as f32) * 0.3 + 0.1).collect();
-    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev);
+    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev).unwrap();
     // 3→8 in H, 5→6 in W — different ratios per axis.
     let out = lt.interpolate2d(8, 6).unwrap();
     assert_eq!(out.shape().dims(), &[1, 1, 8, 6]);
@@ -117,7 +117,7 @@ fn interpolate2d_downsample_matches_oracle() {
     let dev = fuel_core::Device::cpu();
     let (n, c, h, w) = (1, 1, 8, 8);
     let src: Vec<f32> = (0..n * c * h * w).map(|i| (i as f32) * 0.1).collect();
-    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev);
+    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev).unwrap();
     // Downsampling 8→3 is still nearest under the same convention.
     let out = lt.interpolate2d(3, 3).unwrap();
     assert_eq!(out.shape().dims(), &[1, 1, 3, 3]);
@@ -136,7 +136,7 @@ fn interpolate2d_identity_returns_clone() {
     let dev = fuel_core::Device::cpu();
     let (n, c, h, w) = (1, 1, 4, 4);
     let src: Vec<f32> = (0..n * c * h * w).map(|i| i as f32).collect();
-    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev);
+    let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev).unwrap();
     let out = lt.interpolate2d(h, w).unwrap();
     assert_eq!(out.shape().dims(), &[1, 1, 4, 4]);
     let got = out.realize_f32();

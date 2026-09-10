@@ -13,7 +13,7 @@
 //!   2. N SegformerLayer blocks:
 //!      Pre-LN1 → Efficient Self-Attention (Q from input, K/V
 //!      from input after optional Sequence Reduction conv with
-//!      stride = sr_ratio[i] + LN) → +residual
+//!      stride = `sr_ratio[i]` + LN) → +residual
 //!      → Pre-LN2 → Mix-FFN (Dense1 → 3×3 DWConv → activation
 //!      → Dense2) → +residual.
 //!   3. Stage-final LayerNorm.
@@ -190,7 +190,7 @@ pub struct SegformerEncoderWeights {
 /// Decode-head weights for semantic segmentation.
 #[derive(Debug, Clone)]
 pub struct SegformerDecodeHeadWeights {
-    /// Per-stage MLP: hidden_sizes[i] → decoder_hidden_size.
+    /// Per-stage MLP: `hidden_sizes[i]` → decoder_hidden_size.
     pub linear_c: Vec<(WeightStorage, Arc<[f32]>)>,
     /// 1×1 conv: 4·decoder_hidden_size → decoder_hidden_size.
     pub linear_fuse: Conv2dWeights,
@@ -252,7 +252,7 @@ impl ImageClassificationModel {
         let pooled = flat.mean_dim(1_usize)?;
         let n = self.classifier.b.len();
         let logits = self.classifier.w.apply_linear(&pooled, c, n)?;
-        let bias = image.const_f32_like(Arc::clone(&self.classifier.b), Shape::from_dims(&[n]));
+        let bias = image.const_f32_like(Arc::clone(&self.classifier.b), Shape::from_dims(&[n]))?;
         logits.broadcast_add(&bias)
     }
 }
@@ -536,10 +536,11 @@ fn apply_conv2d(x: &Tensor, c: &Conv2dWeights, anchor: &Tensor) -> Result<Tensor
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
-    );
+    )?;
     let bias =
         c.b.as_ref()
-            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])));
+            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])))
+            .transpose()?;
     x.conv2d(
         &w,
         bias.as_ref(),
@@ -1246,7 +1247,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, n_labels]);
         for &v in &logits.realize_f32() {
@@ -1272,7 +1274,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         let shape = logits.shape();
         let dims = shape.dims();
@@ -1302,14 +1305,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.7)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let la = model.forward(&a).unwrap().realize_f32();
         let lb = model.forward(&b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
@@ -1638,7 +1643,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, n_labels]);
         for &v in &logits.realize_f32() {
@@ -1708,7 +1714,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         let dims = logits.shape();
         let dims = dims.dims();

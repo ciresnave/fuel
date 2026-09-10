@@ -24,7 +24,7 @@
 //!
 //! Construction paths:
 //! - [`QuantizedGemma3Model::load_from_mmapped`] — convenience wrapper
-//!   over [`Gemma3Weights::load_from_mmapped`] + [`Self::from_f32_bake`].
+//!   over [`Gemma3Weights::load_from_mmapped`] + [`QuantizedGemma3Model::from_f32_bake`].
 //! - [`QuantizedGemma3Model::from_f32_bake`] — take f32 source weights
 //!   (same `[in_features, out_features]` layout as `Gemma3Weights`) and
 //!   quantize each Linear weight to Q4_0 on the fly. Used by tests and
@@ -784,7 +784,8 @@ mod tests {
         let model = QuantizedGemma3Model::from_f32_bake(cfg.clone(), src).unwrap();
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();

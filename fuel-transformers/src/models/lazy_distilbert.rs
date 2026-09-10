@@ -120,22 +120,28 @@ impl DistilBertModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
-        assert!(seq <= cfg.max_position_embeddings);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "DistilBertModel::forward: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            )));
+        }
 
         // Embeddings: word + position, sum, LayerNorm.
         let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
         let pos_full = word_emb_t.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.dim]),
-        );
+        )?;
         let pos_slice = pos_full
             .slice(0_usize, 0, seq)?
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
@@ -176,7 +182,13 @@ impl DistilBertModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
-        assert!(seq <= cfg.max_position_embeddings);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "DistilBertModel::forward_intermediate_layers: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            )));
+        }
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
@@ -192,15 +204,15 @@ impl DistilBertModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
         let pos_full = word_emb_t.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.dim]),
-        );
+        )?;
         let pos_slice = pos_full
             .slice(0_usize, 0, seq)?
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
@@ -517,6 +529,35 @@ mod tests {
         for &v in &out.realize_f32() {
             assert!(v.is_finite());
         }
+    }
+
+    /// GAP-308 born-red: a sequence longer than `max_position_embeddings` is
+    /// REJECTED with a typed error, not a panic. Asserts the error MESSAGE, not
+    /// merely `is_err()`: once the guard is a decline, `seq > max` would run on
+    /// to an index panic downstream, so an `is_err()`-only test would pass on a
+    /// panic it never saw.
+    #[test]
+    fn forward_declines_seq_over_max_position_embeddings() {
+        let cfg = tiny_cfg(); // max_position_embeddings = 8
+        let model = DistilBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        let tokens: Vec<u32> = (0..9).collect(); // seq = 9 > 8
+
+        let err = model.forward(&tokens, None).unwrap_err();
+        assert!(
+            format!("{err}").contains("max_position_embeddings"),
+            "forward must decline seq > max_position_embeddings; got: {err}"
+        );
+
+        let err2 = model
+            .forward_intermediate_layers(&tokens, &[0], None)
+            .unwrap_err();
+        assert!(
+            format!("{err2}").contains("max_position_embeddings"),
+            "forward_intermediate_layers must decline too; got: {err2}"
+        );
     }
 
     /// Bidirectional attention: changing any token affects ALL

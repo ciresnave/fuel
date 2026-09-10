@@ -172,17 +172,17 @@ fn main() -> Result<()> {
         // Build a fresh graph this frame: anchor on the audio chunk (f32),
         // then build sample_rate (i64 scalar) and state (f32) as siblings.
         let device = Device::cpu();
-        let chunk_only = Tensor::from_f32(chunk.clone(), (1, frame_size), &device);
+        let chunk_only = Tensor::from_f32(chunk.clone(), (1, frame_size), &device)?;
         let context_t = chunk_only.const_f32_like(
             Arc::<[f32]>::from(context_host.clone().into_boxed_slice()),
             (1, context_size),
-        );
+        )?;
         let input_full = context_t.concat(&chunk_only, 1)?;
-        let sr_t = chunk_only.const_i64_like(vec![sample_rate], ());
+        let sr_t = chunk_only.const_i64_like(vec![sample_rate], ())?;
         let state_t = chunk_only.const_f32_like(
             Arc::<[f32]>::from(state_host.clone().into_boxed_slice()),
             (2, 1, 128),
-        );
+        )?;
 
         let inputs = std::collections::HashMap::from_iter([
             ("input".to_string(), input_full),

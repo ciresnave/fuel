@@ -1,0 +1,63 @@
+# GAP-302 -- the adjudicated doc/code drift population.
+#
+# WHY THIS IS A .txt AND NOT A `&[&str]` IN THE TEST, WHICH IS THE WHOLE POINT
+# OF THE FILE:
+#
+# These names are ABSENT from `*.rs` by definition -- that is what makes them
+# members. Writing them as string literals in `doc_block_scope.rs` put all
+# twenty-six INTO a `*.rs` file, so any `*.rs`-wide scan resolved every one of
+# them and the population read as EMPTY.
+#
+# Measured: the GAP-302 census went 25 -> 0 the moment `doc_block_scope.rs`
+# landed on main (`f2bfcb04`), and all 25 resolved to that one file. The gate's
+# own `SELF_PATH` exclusion protected the GATE and did nothing for anyone
+# else's instrument.
+#
+# A gate that documents its own subject poisons its own corpus, and the better
+# the documentation the worse the poisoning. Excluding this file by name from
+# every other tool is MANAGING that coupling; moving the names out of `*.rs`
+# DISSOLVES it -- no exclusion to remember, no filename to rot, and it works
+# for tools that do not exist yet.
+#
+# ⚠️ AND IT BUYS BACK THE EXPLANATION. The list grew 4 -> 9 in its first hour
+# because explaining which names drift REQUIRES NAMING THEM. Here they can be
+# named freely: prose in this file is invisible to a `*.rs` scan.
+#
+# FORMAT: one name per line. `#` comments and blank lines ignored.
+# Adjudicate a new name in docs/gaps.md (GAP-302) BEFORE adding it here.
+#
+# ---------------------------------------------------------------------------
+# THE R5 IDENTIFIER RULE, recorded here because stating it requires naming
+# members. R5 = leading capital, no underscore, at least one lowercase-or-digit,
+# and DELIBERATELY NO "at least two capitals" clause. That constraint was in the
+# first draft and is exactly what R5 exists to remove: it drops Fmin, Forbidden,
+# Concurrency, Mild and Aggressive -- all real doc-only identifier claims,
+# including a documented Concurrency::Auto / Concurrency::Forbidden enum whose
+# variants do not exist. The rule was measured in Python and re-implemented in
+# Rust, and the constraint came back silently in the port; the population
+# ratchet caught it on its FIRST RUN, naming all five. A rule validated in one
+# instrument and re-implemented in another is not the same rule until something
+# checks.
+# ---------------------------------------------------------------------------
+AddInplace
+Aggressive
+ArrowDeviceArray
+Concurrency
+CostRegistry
+ErrorBound
+Fmin
+Forbidden
+FusionMissRecord
+GraphInvoker
+LoadAwareSelector
+MemGetInfo
+MemoryPressureSelector
+Mild
+NoBackendKernel
+NodeKind
+OpEntry
+ReferenceFactory
+RuntimeHook
+SequenceRecord
+SubInplace
+WholeGraph

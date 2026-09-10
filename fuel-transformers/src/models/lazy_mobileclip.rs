@@ -478,7 +478,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_feats = model.get_image_features(&image).unwrap();
         assert_eq!(img_feats.shape().dims(), &[1, 16]);
         for &v in &img_feats.realize_f32() {
@@ -492,7 +493,7 @@ mod tests {
         let ids = vec![1_u32, 2, 3, 4];
         // Anchor unused in text path; pass a stub.
         use fuel_core::Device;
-        let stub = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let stub = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let txt_feats = model.get_text_features(&ids, 3, &stub).unwrap();
         assert_eq!(txt_feats.shape().dims(), &[1, 16]);
         for &v in &txt_feats.realize_f32() {
@@ -507,7 +508,8 @@ mod tests {
             vec![3.0_f32, 4.0, 0.0, 0.0, 1.0, 2.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let n = l2_normalize_last(&x).unwrap();
         let n_data = n.realize_f32();
         let n0 = (n_data[0].powi(2) + n_data[1].powi(2) + n_data[2].powi(2)).sqrt();

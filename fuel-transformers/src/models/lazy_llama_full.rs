@@ -241,7 +241,7 @@ impl LlamaFullConfig {
     /// to LLaMA's documented defaults (`rope_theta=10000.0`,
     /// `rms_norm_eps=1e-5`, `tie_word_embeddings=false`, no scaling).
     ///
-    /// [`LlamaFullConfigRaw`] is the wire shape; [`LlamaFullConfigRaw::resolve`]
+    /// `LlamaFullConfigRaw` is the wire shape; `LlamaFullConfigRaw::resolve`
     /// applies the two cross-field defaults and the two TOLERANT sub-object
     /// parses that `serde` deliberately is not asked to perform.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {
@@ -477,8 +477,8 @@ impl Llama3Model {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &fuel_core::Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let h = embed
             .index_select(0, &token_ids)?
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
@@ -517,8 +517,8 @@ impl Llama3Model {
             cfg.head_dim,
         )?;
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = embeds.const_f32_like(Arc::from(cos_data), rope_shape.clone());
-        let rope_sin = embeds.const_f32_like(Arc::from(sin_data), rope_shape);
+        let rope_cos = embeds.const_f32_like(Arc::from(cos_data), rope_shape.clone())?;
+        let rope_sin = embeds.const_f32_like(Arc::from(sin_data), rope_shape)?;
 
         let mask = Tensor::additive_causal_mask_like(embeds, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;

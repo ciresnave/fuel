@@ -225,7 +225,13 @@ impl SiglipTextModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
-        assert!(seq <= cfg.max_position_embeddings);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "SiglipTextModel::forward: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            )));
+        }
 
         let token_embeds = Tensor::embed_tokens(
             weights.token_embedding.clone(),
@@ -237,7 +243,7 @@ impl SiglipTextModel {
         let pos_full = token_embeds.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
-        );
+        )?;
         let pos_slice = pos_full
             .slice(0_usize, 0, seq)?
             .reshape(Shape::from_dims(&[1, seq, cfg.hidden_size]))?;
@@ -274,7 +280,7 @@ impl SiglipTextModel {
         let bias_t = head_out.const_f32_like(
             Arc::clone(&weights.head_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         head_out.broadcast_add(&bias_t)
     }
 }
@@ -305,11 +311,11 @@ impl SiglipVisionModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -326,7 +332,7 @@ impl SiglipVisionModel {
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[np, cfg.hidden_size]),
-        );
+        )?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np, cfg.hidden_size]))?
             .broadcast_to(Shape::from_dims(&[batch, np, cfg.hidden_size]))?;
@@ -402,11 +408,11 @@ impl SiglipVisionModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -421,7 +427,7 @@ impl SiglipVisionModel {
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[np, cfg.hidden_size]),
-        );
+        )?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np, cfg.hidden_size]))?
             .broadcast_to(Shape::from_dims(&[batch, np, cfg.hidden_size]))?;
@@ -458,7 +464,7 @@ impl SiglipVisionModel {
         let head_dim = cfg.head_dim();
 
         // Probe broadcast across batch.
-        let probe = xs.const_f32_like(Arc::clone(&head.probe), Shape::from_dims(&[1, 1, h]));
+        let probe = xs.const_f32_like(Arc::clone(&head.probe), Shape::from_dims(&[1, 1, h]))?;
         let probe_bc = probe.broadcast_to(Shape::from_dims(&[batch, 1, h]))?;
 
         // Cross-attention: Q = probe, K = V = xs.
@@ -1037,6 +1043,7 @@ mod tests {
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]
@@ -1053,6 +1060,27 @@ mod tests {
         for &v in &out.realize_f32() {
             assert!(v.is_finite());
         }
+    }
+
+    /// GAP-308 born-red: a sequence longer than `max_position_embeddings` is
+    /// REJECTED with a typed error, not a panic. Asserts the error MESSAGE, not
+    /// merely `is_err()`: once the guard is a decline, `seq > max` would index
+    /// past the (size-`max`) position table downstream, so an `is_err()`-only
+    /// test would pass on a panic it never saw.
+    #[test]
+    fn text_forward_declines_seq_over_max_position_embeddings() {
+        let mut cfg = tiny_text_cfg();
+        cfg.max_position_embeddings = 4;
+        let model = SiglipTextModel {
+            config: cfg.clone(),
+            weights: tiny_text_weights(&cfg),
+        };
+        let tokens: Vec<u32> = (0..8).collect(); // seq = 8 > 4
+        let err = model.forward(&tokens).unwrap_err();
+        assert!(
+            format!("{err}").contains("max_position_embeddings"),
+            "text forward must decline seq > max_position_embeddings; got: {err}"
+        );
     }
 
     /// SigLIP text encoder is bidirectional — changing a token

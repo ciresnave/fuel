@@ -2,8 +2,11 @@
 //! Object-safe backend traits for dynamic dispatch.
 //!
 //! [`DynBackendStorage`] and [`DynBackendDevice`] are the object-safe
-//! counterparts of [`BackendStorage`](crate::backend::BackendStorage) and
-//! [`BackendDevice`](crate::backend::BackendDevice). They replace `Self`
+//! contract surface. `DynBackendStorage` mirrors
+//! [`BackendStorage`](crate::backend::BackendStorage); the generic
+//! `BackendDevice` trait `DynBackendDevice` once mirrored was DELETED in
+//! the 2026-04-30 backend-agnostic refactor (see the note on
+//! [`crate::backend`]), and backends implement it directly. They replace `Self`
 //! return types with `Box<dyn DynBackendStorage>`, eliminate generic type
 //! parameters, and drop the `Sized` bound so that `dyn DynBackendStorage`
 //! and `dyn DynBackendDevice` are legal trait objects.
@@ -284,7 +287,9 @@ pub trait DynBackendStorage: Send + Sync + std::fmt::Debug {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-/// Object-safe counterpart of [`BackendDevice`](crate::backend::BackendDevice).
+/// Object-safe device abstraction. The generic `BackendDevice` trait this
+/// once mirrored was DELETED in the 2026-04-30 backend-agnostic refactor;
+/// backends implement this trait directly.
 ///
 /// All factory methods return `Box<dyn DynBackendStorage>` instead of
 /// `Self::Storage`, and there is no `storage_from_slice` (use
