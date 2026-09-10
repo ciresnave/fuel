@@ -151,12 +151,12 @@ pub enum OpKind {
     /// the input with those dims dropped (or rank-0 when every dim
     /// is reduced).
     SumReduce,
-    /// Max-reduce — same shape contract as [`SumReduce`].
+    /// Max-reduce — same shape contract as [`OpKind::SumReduce`].
     MaxReduce,
-    /// Min-reduce — same shape contract as [`SumReduce`].
+    /// Min-reduce — same shape contract as [`OpKind::SumReduce`].
     MinReduce,
     /// Arithmetic-mean reduce — same shape contract as
-    /// [`SumReduce`]; divides the sum by the product of reduced
+    /// [`OpKind::SumReduce`]; divides the sum by the product of reduced
     /// dim sizes.
     MeanReduce,
 
@@ -198,20 +198,20 @@ pub enum OpKind {
     /// `[q, k, v, optional alibi_slopes]`. Geometry, softmax_scale,
     /// causal, window, softcap all flow through `OpParams::FlashAttn`.
     FlashAttn,
-    /// Backward of [`FlashAttn`]: produces dQ from `(q, k, v, do, [alibi])`.
+    /// Backward of [`OpKind::FlashAttn`]: produces dQ from `(q, k, v, do, [alibi])`.
     /// Reuses `OpParams::FlashAttn` (same shape/geometry/causal flags
     /// as the forward — the recompute pass needs every forward parameter).
     /// Output shape == q shape. The dK and dV gradients are emitted as
-    /// separate [`FlashAttnBackwardK`] / [`FlashAttnBackwardV`] nodes
+    /// separate [`OpKind::FlashAttnBackwardK`] / [`OpKind::FlashAttnBackwardV`] nodes
     /// against the same inputs; CPU backends recompute the softmax
     /// state independently per call. A 3-output fused variant would
     /// share the recompute but needs multi-output infrastructure that
     /// doesn't exist yet.
     FlashAttnBackwardQ,
-    /// Backward of [`FlashAttn`]: produces dK. See [`FlashAttnBackwardQ`].
+    /// Backward of [`OpKind::FlashAttn`]: produces dK. See [`OpKind::FlashAttnBackwardQ`].
     /// Output shape == k shape.
     FlashAttnBackwardK,
-    /// Backward of [`FlashAttn`]: produces dV. See [`FlashAttnBackwardQ`].
+    /// Backward of [`OpKind::FlashAttn`]: produces dV. See [`OpKind::FlashAttnBackwardQ`].
     /// Output shape == v shape.
     FlashAttnBackwardV,
     /// Paged-cache scaled-dot-product attention. Inputs `[q, k_cache,
@@ -226,7 +226,7 @@ pub enum OpKind {
     ClampElementwise,
     /// Element-wise integer power: `y = x.powi(exp)`.
     PowIElementwise,
-    /// Backward of [`PowIElementwise`]: `(x, upstream) → grad_x = exp ·
+    /// Backward of [`OpKind::PowIElementwise`]: `(x, upstream) → grad_x = exp ·
     /// x^(exp-1) · upstream`. Two inputs; carries the same `exp: i32`
     /// in `OpParams::PowI` as the forward. Single-launch alternative
     /// to the autograd primitive decomposition (PowI(exp-1) →
@@ -243,12 +243,12 @@ pub enum OpKind {
     /// it differs from the inputs.
     EqualElementwise,
     /// Element-wise inequality `a != b`. Same shape contract as
-    /// [`EqualElementwise`]; output `U8` mask (`1` where unequal,
+    /// [`OpKind::EqualElementwise`]; output `U8` mask (`1` where unequal,
     /// `0` otherwise). NaN follows IEEE-754: `NaN != NaN` is true,
     /// so `ne` returns `1` on NaN-vs-NaN positions.
     NotEqualElementwise,
     /// Element-wise strictly-less `a < b`. Same shape contract as
-    /// [`EqualElementwise`]; output `U8` mask. NaN-on-either-side is
+    /// [`OpKind::EqualElementwise`]; output `U8` mask. NaN-on-either-side is
     /// always false (IEEE-754 unordered comparison).
     LessElementwise,
     /// Element-wise less-or-equal `a <= b`. Same shape contract.
@@ -286,13 +286,13 @@ pub enum OpKind {
     ErfElementwise,
     /// Element-wise GELU activation, **exact erf formulation**:
     /// `0.5 * x * (1 + erf(x/√2))`. Distinct from
-    /// [`GeluElementwise`] (tanh approximation). Same dtype as input.
+    /// [`OpKind::GeluElementwise`] (tanh approximation). Same dtype as input.
     /// Backward decomposes into the standard-normal CDF + `x * φ(x)`
     /// (PDF) chain via existing primitives.
     GeluErfElementwise,
     /// Element-wise binary power: `out[i] = pow(a[i], b[i])`. Both
     /// inputs share dtype `T` and shape; output is `T` with the same
-    /// shape. Distinct from [`PowIElementwise`] (scalar `i32`
+    /// shape. Distinct from [`OpKind::PowIElementwise`] (scalar `i32`
     /// exponent). NaN follows IEEE-754 (e.g. `pow(-2, 0.5) = NaN`).
     PowElementwise,
     /// Element-wise reciprocal square root: `out[i] = 1 / sqrt(x[i])`.
@@ -328,12 +328,12 @@ pub enum OpKind {
     /// dtype-agnostic at the byte level (output is x or zero per
     /// position; just selects bytes from src or the zero-init buffer).
     Triu,
-    /// Lower-triangular mask along the last two dims (mirror of [`Triu`]).
+    /// Lower-triangular mask along the last two dims (mirror of [`OpKind::Triu`]).
     Tril,
     /// Numerically-stable log-softmax along the last dim. Per-dtype
     /// (uses log/exp). Output shape == input shape.
     LogSoftmaxLastDim,
-    /// Backward of [`LogSoftmaxLastDim`]: takes `(forward_output, upstream)`
+    /// Backward of [`OpKind::LogSoftmaxLastDim`]: takes `(forward_output, upstream)`
     /// and produces the input gradient. Per-dtype.
     LogSoftmaxLastDimBackward,
     /// MaskedFill: fill positions where mask is nonzero with a scalar.
@@ -351,13 +351,13 @@ pub enum OpKind {
     /// Softmax along the last dim, numerically stable
     /// (subtract per-row max, exp, divide by sum).
     SoftmaxLastDim,
-    /// Backward of [`SoftmaxLastDim`]: `(y, g) → y · (g - sum(y · g, last))`.
+    /// Backward of [`OpKind::SoftmaxLastDim`]: `(y, g) → y · (g - sum(y · g, last))`.
     /// Per-dtype; output shape == y shape.
     SoftmaxLastDimBackward,
     /// RMS normalization along the last dim, no affine params:
     /// `y = x / sqrt(mean(x², last) + eps)`.
     RmsNormLastDim,
-    /// Backward of [`RmsNormLastDim`]: `(x, g_y) → grad_x` per the
+    /// Backward of [`OpKind::RmsNormLastDim`]: `(x, g_y) → grad_x` per the
     /// closed-form formula in
     /// `fuel-reference-backend::ops::rms_norm_last_dim_backward`.
     /// Per-dtype + eps; output shape == x shape.
@@ -365,10 +365,10 @@ pub enum OpKind {
     /// Layer normalization along the last dim, no affine params:
     /// `y = (x - mean(x)) / sqrt(var(x) + eps)`.
     LayerNormLastDim,
-    /// Backward of [`LayerNormLastDim`]: `(x, g) → grad_x` per the
+    /// Backward of [`OpKind::LayerNormLastDim`]: `(x, g) → grad_x` per the
     /// canonical formula. Per-dtype + eps; output shape == x shape.
     LayerNormLastDimBackward,
-    /// Backward of [`ReduceMaxTo`]: `(x, upstream) → grad_x` of x's
+    /// Backward of [`OpKind::ReduceMaxTo`]: `(x, upstream) → grad_x` of x's
     /// shape. Routes upstream to argmax positions; ties split
     /// equally. Per-dtype; carries shape pair via
     /// `OpParams::ReduceMaxToBackward`.
@@ -399,7 +399,7 @@ pub enum OpKind {
     /// `dim` removed from the output shape.
     ArgMaxDim,
     /// Argmin along one dim — same shape contract as
-    /// [`ArgMaxDim`].
+    /// [`OpKind::ArgMaxDim`].
     ArgMinDim,
     /// Quantized matmul: `C = A @ dequant(W_Q)`. Activations are
     /// f32 (or eventually bf16); weights are a U32-typed byte
@@ -950,7 +950,7 @@ impl ProfileReport {
 
     /// Load a previously-persisted report, validated against the hardware of
     /// the loading machine. `current` is that machine's device equivalence
-    /// classes (via [`crate::probe::equivalence_classes`]); requiring it in the
+    /// classes (via `crate::probe::equivalence_classes`); requiring it in the
     /// signature makes it impossible to load without declaring what hardware
     /// you are on — the gate cannot be forgotten by a caller.
     ///

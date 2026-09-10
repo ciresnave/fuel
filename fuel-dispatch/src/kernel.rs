@@ -766,7 +766,7 @@ pub enum OpParams {
     /// the ascending flat indices of `x`'s nonzero elements into slot 0
     /// (first `count` entries) and the runtime `count` into slot 1.
     ///
-    /// `count_sym` is the [`SymId`] the executor binds to the realized
+    /// `count_sym` is the [`fuel_ir::symbol::SymId`] the executor binds to the realized
     /// `count` in the per-pass `SymEnv` *after* this op runs — the
     /// data-determined dynamic-shape seam. The kernel itself ignores it.
     NonZeroIndices {

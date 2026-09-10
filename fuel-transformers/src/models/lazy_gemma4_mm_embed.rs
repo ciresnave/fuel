@@ -10,7 +10,7 @@
 //!   2. **Linear projection** (no bias) from `multimodal_hidden_size`
 //!      to `text_hidden_size`.
 //!
-//! Used by [`Model`] in the eager `gemma4::Model` to project both
+//! Used by `Model` in the eager `gemma4::Model` to project both
 //! the vision tower and (optionally) the audio tower outputs into
 //! the Gemma4 text decoder's embedding space before concatenating
 //! them with text token embeddings.

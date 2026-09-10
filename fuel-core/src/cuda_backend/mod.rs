@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Thin re-export layer for CUDA backend types, plus the bridge that turns
-//! a [`fuel_cuda_backend::CudaDevice`] into a [`crate::Device`].
+//! a `fuel_cuda_backend::CudaDevice` into a [`crate::Device`].
 //!
 //! After step B1 of the backend extraction, all CUDA logic lives in
 //! `fuel-cuda-backend`; this module owns only the `From<CudaDevice> for Device`

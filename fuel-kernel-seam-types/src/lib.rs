@@ -168,7 +168,7 @@ pub enum OpTag {
     ScanPlaceholder,
 
     /// Fuel's bounded `lax.scan` recurrence primitive (`fuel_graph::Op::Scan`).
-    /// A **structural token** — like [`ScanPlaceholder`], NOT a KISS base op:
+    /// A **structural token** — like [`OpTag::ScanPlaceholder`], NOT a KISS base op:
     /// its params (`n_xs`/`bound`/`emit`/`early_exit`) ride the Fuel-internal
     /// [`OpAttrs`] `scan_*` fields and are NOT serialized to the §6.19
     /// cross-producer wire (the empty-body `_` arm in
@@ -194,7 +194,7 @@ pub enum OpTag {
     /// inner softmax (`flash_attn`/`paged_attn` emit an
     /// `Op::Fused(SOFTMAX_LAST_DIM, ..)` node; `flash_attn_backward` an
     /// `Op::Fused(SOFTMAX_LAST_DIM_BACKWARD, ..)`). A **structural token** — like
-    /// [`Scan`]/[`View`], NOT a KISS base op: it names which registry entry the
+    /// [`OpTag::Scan`]/[`OpTag::View`], NOT a KISS base op: it names which registry entry the
     /// node reconstructs to (via the [`OpAttrs::fused_op`] selector) and is
     /// **Fuel-internal, NOT serialized to the §6.19 cross-producer wire** (a
     /// `Fused` node hits the empty-body `_` arm of

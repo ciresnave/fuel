@@ -185,7 +185,7 @@ impl MimiWeights {
     ///
     /// `resampler_stride` is the integer `encoder_frame_rate /
     /// frame_rate` ratio used at build time by
-    /// [`MimiEncodecConfig::resampler_stride`]; the loader uses it
+    /// [`crate::models::lazy_mimi_encodec::MimiEncodecConfig::resampler_stride`]; the loader uses it
     /// to size the down/upsample kernels (`2 · stride`) but does
     /// not re-derive it.
     pub fn load_from_mmapped(

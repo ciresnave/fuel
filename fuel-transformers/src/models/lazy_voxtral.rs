@@ -841,9 +841,9 @@ impl VoxtralWeights {
     /// - `language_model.lm_head.weight` — `[V, hidden]` output.
     ///   Falls back to tied embeddings if absent.
     ///
-    /// Weight matrices go through [`load_transposed_matrix_preserve_dtype`]
+    /// Weight matrices go through [`fuel_core::lazy::load_transposed_matrix_preserve_dtype`]
     /// (so bf16 stays bf16); LayerNorm gains/biases, conv kernels, and
-    /// position-embedding tables go through [`load_tensor_as_f32`].
+    /// position-embedding tables go through [`fuel_core::lazy::load_tensor_as_f32`].
     pub fn load_from_mmapped(
         st: &fuel_core::safetensors::MmapedSafetensors,
         cfg: &VoxtralConfig,

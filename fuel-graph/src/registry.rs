@@ -2,7 +2,7 @@
 //! FusedOpRegistry — metadata side. Phase 7.6 step 1 (skeleton).
 //!
 //! Architecture v1.0 splits op identity into two layers:
-//! - the closed [`Op`] enum carries primitive variants exhaustively;
+//! - the closed [`crate::Op`] enum carries primitive variants exhaustively;
 //! - one arm — `Op::Fused(FusedOpId, FusedOpParams)` — delegates to an
 //!   open registry of fused-op entries populated at process startup.
 //!
@@ -754,7 +754,7 @@ pub struct PatternTree {
 /// `params` is the matcher's authority on the resulting fused-op's
 /// per-instance parameters. The matcher knows what variant of
 /// [`FusedOpParams`] it's recognizing; carrying that decision in the
-/// match result keeps [`crate::opt::FusionRule::rewrite`] generic
+/// match result keeps `crate::opt::FusionRule::rewrite` generic
 /// across all registered fused ops.
 #[derive(Debug, Clone)]
 pub struct PatternMatch {
@@ -1183,7 +1183,7 @@ impl FusedOps {
     pub const NF4_MATMUL: FusedOpId = FusedOpId(21);
 
     /// FlashAttnBackwardQ — produces dQ from `(q, k, v, do, [alibi])`.
-    /// See [`fuel_ir::OpKind::FlashAttnBackwardQ`]. Three
+    /// See [`fuel_ir::dispatch::OpKind::FlashAttnBackwardQ`]. Three
     /// separate FusedOp ids (Q/K/V) is the v1 design — a single
     /// multi-output op would share the recompute pass across all three
     /// gradients but needs multi-output infrastructure that doesn't

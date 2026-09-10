@@ -30,7 +30,7 @@
 //! # Scope (v1)
 //!
 //! - Forward-only, single batch, F32, single contiguous image stream.
-//! - Image partitioning inside the fixed-tile [`forward_with_image`]
+//! - Image partitioning inside the fixed-tile `forward_with_image`
 //!   path uses nearest-neighbor resize to keep the host helper
 //!   deterministic and dependency-free. The OCR-quality preprocessor
 //!   ([`bilinear_resize_to_grid`]) does CatmullRom bilinear-style

@@ -58,7 +58,7 @@ use std::path::{Path, PathBuf};
 /// **"(iv) `forward()` — NO. That is the architecture."**
 pub trait Model: Send + Sync {
     /// The architecture key this model was built for — the same string the
-    /// registry resolved. Used by [`crate::tests`]-style identity assertions
+    /// registry resolved. Used by `crate::tests`-style identity assertions
     /// and by diagnostics; it is the model's own account of what it is.
     fn architecture(&self) -> &str;
 }

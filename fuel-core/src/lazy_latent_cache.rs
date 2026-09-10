@@ -28,7 +28,7 @@
 //! # Shape contract
 //!
 //! Slot `s` of every layer is a buffer `[max_seq, …slot_trailing[s]]` with
-//! the sequence axis at dim 0 (matching [`LazyKvCache`]'s no-batch,
+//! the sequence axis at dim 0 (matching `LazyKvCache`'s no-batch,
 //! per-sequence convention; the caller broadcasts/concats across batches).
 //! An [`LatentCache::append`] writes a `[seqlen_new, …slot_trailing[s]]` slab into
 //! every slot at the cache's current position; all slots in one append
@@ -36,7 +36,7 @@
 //!
 //! # Lifecycle
 //!
-//! Per-forward-pass and graph-anchored, exactly like [`LazyKvCache`]:
+//! Per-forward-pass and graph-anchored, exactly like `LazyKvCache`:
 //! every buffer is a node on one [`fuel_graph::Graph`]; cross-step decode
 //! either re-creates the cache on the new step's graph (rebinding realized
 //! latents via `const_*_like`) or holds realized latents host-side between

@@ -8,7 +8,7 @@
 //! and a backend memory region (closed enum over CPU/CUDA/Vulkan/Metal).
 //! Backends provide *kernels* that operate on these types — backend
 //! storage types live in their own crates and implement the
-//! [`fuel_ir::backend::BackendStorage`] trait.
+//! `fuel_ir::backend::BackendStorage` trait.
 //!
 //! This crate now owns ONLY the closed-enum dispatch wrapper + the
 //! public `Storage` API. Dispatch infrastructure (KernelBindingTable,
@@ -21,7 +21,7 @@
 //!
 //! ## Where things live
 //!
-//! - [`fuel_ir::backend::BackendStorage`] — the abstract trait
+//! - `fuel_ir::backend::BackendStorage` — the abstract trait
 //!   (just `len_bytes()` today; alloc/copy_from land in A4).
 //! - [`fuel_cpu_backend::CpuStorageBytes`] — CPU storage (Phase A3.0).
 //!   Bytes-based, 64-byte aligned, `Arc`-clonable, CoW on mutation.
@@ -53,10 +53,6 @@ use fuel_ir::storage::OutputView;
 use fuel_ir::{DType, Result, SType};
 use std::sync::Arc;
 
-/// Borrowed, zero-copy DLPack + FDX-sidecar view over a `(Storage, Layout
-/// [, SymEnv])` triple at the kernel-call boundary. Behind the `dlpack`
-/// feature. See [`dlpack_view::view`] and
-/// `docs/session-prompts/dlpack-comm-layer-plan.md` §2.
 #[cfg(feature = "dlpack")]
 pub mod dlpack_view;
 

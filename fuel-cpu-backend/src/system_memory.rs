@@ -26,7 +26,7 @@
 //!
 //! Both queries are cached for `CACHE_TTL_NANOS` (~100ms) via an
 //! atomic-timestamp + mutex-guarded cell pattern. The cache is
-//! shared across all [`CpuBackendDevice`] instances (the device is
+//! shared across all [`crate::dyn_impl::CpuBackendDevice`] instances (the device is
 //! stateless; the singleton cache is correct). Selectors poll at
 //! sub-realize granularity; caching keeps the hot path cheap.
 

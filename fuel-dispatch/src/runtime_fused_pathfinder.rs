@@ -59,7 +59,7 @@ struct RegionMatch {
 /// runtime op, or none whose region structurally matches anywhere in it.
 ///
 /// For each registered runtime op, every node in `graph` is tried as the
-/// region's `root` (arm 0's exit / [`match_region`]'s sink). A match binds
+/// region's `root` (arm 0's exit / [`fuel_graph::jit::match_region`]'s sink). A match binds
 /// the region's external inputs; the candidate is only a genuine branch
 /// point when `root` has **exactly one** consumer (the sole reconverge —
 /// zero consumers is a dead end, ≥2 is ordinary fan-out neither arm can

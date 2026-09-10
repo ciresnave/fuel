@@ -79,7 +79,7 @@ pub struct SeamHello {
     pub profiles: [u16; SEAM_MAX_PROFILES],
     /// Alignment padding between `profiles` (ends at offset 42) and the
     /// 8-byte-aligned `capabilities` (offset 48) made **explicit** so it is a
-    /// managed field — zeroed by [`advertise`] and hard-rejected when nonzero
+    /// managed field — zeroed by [`crate::SeamHello::advertise`] and hard-rejected when nonzero
     /// by [`SeamHello::validate`] — rather than implicit `#[repr(C)]` padding
     /// Rust neither guarantees zeroed nor lets a reader inspect. == 0.
     pub reserved1: [u8; 6],

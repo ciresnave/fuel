@@ -1166,7 +1166,7 @@ fn collect_disjoint_mut<'a>(
 /// Paged multi-session decode driver — the paged-storage counterpart of
 /// [`SessionScheduler`]. Every session's KV physically lives in ONE shared
 /// [`DeviceKvPool`], with blocks allocated **incrementally** per token via the
-/// model's [`DecodeModel::forward_paged_step`] (`Op::PagedAttn`), not reserved up
+/// model's `DecodeModel::forward_paged_step` (`Op::PagedAttn`), not reserved up
 /// front against a fixed-capacity per-session cache. That incremental growth is
 /// the paging memory win: a session that stops early never held blocks it didn't
 /// use.

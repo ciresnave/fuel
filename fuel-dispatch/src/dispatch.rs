@@ -9,7 +9,7 @@
 //! questions:
 //!
 //! 1. **Which backend should handle `(op, dtype)`?** — query
-//!    [`CapabilityRegistry::find_backends`] / [`find_backend_for`]
+//!    [`CapabilityRegistry::find_backends`] / [`crate::dispatch::CapabilityRegistry::find_backend_for`]
 //!    to get the set of registered backends that support the pair.
 //! 2. **How does data move between two devices?** — query
 //!    [`TransferMatrix::path`] for the chosen path; falls back to

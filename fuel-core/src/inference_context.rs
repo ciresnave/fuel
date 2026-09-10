@@ -212,7 +212,7 @@ impl KvCache {
     ///
     /// Returns `Err` if any per-layer allocation fails (e.g. CUDA OOM)
     /// or the requested device hasn't been wired up in
-    /// [`pipelined_bridge`] (Vulkan / Metal — D2H/H2D for those still
+    /// [`crate::pipelined_bridge`] (Vulkan / Metal — D2H/H2D for those still
     /// goes through the legacy executor).
     pub fn with_capacity(
         n_layers: usize,
