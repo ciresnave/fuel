@@ -206,7 +206,7 @@ pub trait BackendRuntime {
 /// The in-flight count a selector needs is the **executor's own
 /// submitted-but-not-drained async-op count**, not a driver query
 /// (`cuStreamQuery` is a busy/idle bool, not a depth). Fuel tracks it
-/// in a process-wide per-[`DeviceLocation`] atomic counter
+/// in a process-wide per-[`fuel_ir::DeviceLocation`] atomic counter
 /// (`fuel-dispatch::dispatch::inflight_count`) incremented when the
 /// executor submits an async op and decremented when the completion
 /// handle retires. A `BackendStreams` impl reads that counter for its

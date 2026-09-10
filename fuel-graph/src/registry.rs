@@ -1183,7 +1183,7 @@ impl FusedOps {
     pub const NF4_MATMUL: FusedOpId = FusedOpId(21);
 
     /// FlashAttnBackwardQ — produces dQ from `(q, k, v, do, [alibi])`.
-    /// See [`fuel_ir::OpKind::FlashAttnBackwardQ`]. Three
+    /// See [`fuel_ir::dispatch::OpKind::FlashAttnBackwardQ`]. Three
     /// separate FusedOp ids (Q/K/V) is the v1 design — a single
     /// multi-output op would share the recompute pass across all three
     /// gradients but needs multi-output infrastructure that doesn't

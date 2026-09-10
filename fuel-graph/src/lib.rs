@@ -805,7 +805,7 @@ pub enum Op {
     /// a [`DynScalar::Sym`] / dynamic [`Extent`](fuel_ir::shape::Extent) —
     /// the same host-scalar-extent pattern the KV-cache `cached_len`
     /// uses. This is the **first op whose output length is determined by
-    /// its input data**, not by build-time shapes (the [`SymEnv`] bind is
+    /// its input data**, not by build-time shapes (the [`fuel_ir::symbol::SymEnv`] bind is
     /// the one net-new realize-time seam). Primitive (in the base map by
     /// construction — no `decompose`). Non-differentiable: discrete
     /// indices, backward drops gradient like `Op::Gather`'s index path.
@@ -2399,7 +2399,7 @@ impl Graph {
     /// (descendant `reconverge_at`, internally-disjoint arms,
     /// cast-to-uniform shape/dtype, arm-0 runnability) happens in
     /// [`BranchBuilder::finalize_branches`], which returns a typed
-    /// [`Error::InvalidBranch`] rather than panicking.
+    /// [`fuel_ir::error::Error::InvalidBranch`] rather than panicking.
     pub fn open_branch(&self, diverge: NodeId) -> BranchBuilder {
         BranchBuilder {
             diverge,
@@ -2871,7 +2871,7 @@ impl BranchBuilder {
 
     /// Validate and emit the [`Op::Branch`] node, returning its fresh
     /// `NodeId`. This is the single build-time gate; it **never panics**,
-    /// surfacing every rejection as [`Error::InvalidBranch`].
+    /// surfacing every rejection as [`fuel_ir::error::Error::InvalidBranch`].
     ///
     /// Returns:
     /// - `Ok(Some(branch_id))` — a multi-arm branch was emitted.

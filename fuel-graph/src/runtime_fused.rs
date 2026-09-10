@@ -775,7 +775,7 @@ fn same_as_frame_guard(
 ///
 /// Evaluation reuses `shape_expr::eval_dim`/`eval_shape`/`resolve_axis` — the
 /// single §6.20 evaluator, no second one. `Dim::Param` declines with a typed
-/// [`ShapeExprError::ParamOutOfRange`] until param threading lands (C-4);
+/// [`fuel_kernel_seam_types::shape_expr::ShapeExprError::ParamOutOfRange`] until param threading lands (C-4);
 /// symbolic bind extents decline as [`RelAttrError::SymbolicGap`]. Rel fields
 /// are CLEARED in the output (rel+abs both set in the RESULT would trip the
 /// mutual-exclusion check on a second resolve).

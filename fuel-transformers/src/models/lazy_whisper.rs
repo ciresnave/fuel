@@ -769,9 +769,9 @@ impl WhisperWeights {
     ///
     /// Weight matrices are physically transposed at load time from HF's
     /// `[out_features, in_features]` to fuel's `[in_features, out_features]`
-    /// matmul order via [`load_transposed_matrix`]; LayerNorm / bias /
+    /// matmul order via [`fuel_core::lazy::load_transposed_matrix`]; LayerNorm / bias /
     /// conv / embedding tensors stay 1:1 with HF and go through
-    /// [`load_tensor_as_f32`].
+    /// [`fuel_core::lazy::load_tensor_as_f32`].
     pub fn load_from_mmapped(
         st: &fuel_core::safetensors::MmapedSafetensors,
         cfg: &WhisperConfig,

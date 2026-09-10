@@ -1326,7 +1326,7 @@ impl Tensor {
 
     /// Realize as a `u32` (index) `Vec`.
     ///
-    /// Routes through the [`PipelinedExecutor`] like [`Self::realize_f32`]
+    /// Routes through the [`fuel_dispatch::pipelined::PipelinedExecutor`] like [`Self::realize_f32`]
     /// — the legacy fuel-reference-backend executor predates U8-output
     /// ops (comparison masks feeding argmin/argmax) and rejects them.
     pub fn realize_u32(&self) -> Vec<u32> {
@@ -1959,7 +1959,7 @@ impl Tensor {
 
     /// Realize as an `f64` `Vec`.
     ///
-    /// Routes through the [`PipelinedExecutor`] like
+    /// Routes through the [`fuel_dispatch::pipelined::PipelinedExecutor`] like
     /// [`Self::realize_f32`] — executor-unification Session 1
     /// (re-audit gap 8) retires the typed `fuel_graph_cpu` recursive
     /// evaluator from the public API. The root must already be
