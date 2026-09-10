@@ -29,8 +29,9 @@
 //! asserted a grant that does not exist"*. **That is a legal claim, not a
 //! formatting one.**
 //!
-//! So this gate does not merely SKIP that file. It asserts the file still says
-//! `Apache-2.0` and still does NOT say `MIT`, **so a future sweep that
+//! So this gate does not merely SKIP that file. It asserts that the file's SPDX
+//! IDENTIFIER LINE still says `Apache-2.0` and still does not say `MIT`, **so a
+//! future sweep that
 //! "corrects" it back to the dual licence reddens this test.** An exemption that
 //! only names its subject decays into a hole; one that asserts the property its
 //! subject was exempted FOR is a second gate.
@@ -50,7 +51,7 @@
 //! the check reads only the head of each file and asks whether the token is
 //! present, never how many times.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Bytes of each file inspected. Generous enough for a shebang-like preamble or
@@ -82,7 +83,7 @@ fn workspace_root() -> PathBuf {
 
 /// Tracked `.rs` files. Fails loudly if git cannot answer — an empty list must
 /// never be mistaken for a clean repository.
-fn tracked_rs_files(root: &PathBuf) -> Vec<String> {
+fn tracked_rs_files(root: &Path) -> Vec<String> {
     let out = Command::new("git")
         .arg("ls-files")
         .arg("*.rs")
@@ -108,7 +109,7 @@ fn tracked_rs_files(root: &PathBuf) -> Vec<String> {
     files
 }
 
-fn head_of(root: &PathBuf, rel: &str) -> String {
+fn head_of(root: &Path, rel: &str) -> String {
     let bytes = std::fs::read(root.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"));
     String::from_utf8_lossy(&bytes[..bytes.len().min(HEAD_BYTES)]).into_owned()
 }
@@ -137,8 +138,6 @@ fn every_tracked_rs_file_carries_an_spdx_identifier() {
     );
 }
 
-/// The exemption asserts the property it was exempted FOR, so a future sweep that
-/// "corrects" the vendored file back to the dual licence reddens here.
 /// ⚠️ THE ASSERTION READS THE IDENTIFIER LINE, NOT THE HEAD.
 ///
 /// The first version of this arm asserted `!head.contains("MIT")` and **failed
@@ -158,6 +157,8 @@ fn spdx_line_of(head: &str) -> String {
         .to_string()
 }
 
+/// The exemption asserts the property it was exempted FOR, so a future sweep that
+/// "corrects" the vendored file back to the dual licence reddens here.
 #[test]
 fn the_vendored_file_is_still_apache_only() {
     let root = workspace_root();
