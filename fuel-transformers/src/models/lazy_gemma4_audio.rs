@@ -40,7 +40,7 @@
 //! # Scope (v1)
 //!
 //! Forward-only, F32, no input mask. The eager
-//! [`fuel_transformers::models::llm::gemma4::audio`] additionally
+//! `fuel_transformers::models::llm::gemma4::audio` additionally
 //! takes an `audio_mel_mask` for padded-length batches; this lazy port
 //! assumes the caller has already padded mel input to a uniform length
 //! and that all frames are valid. Mask-aware audio batching is a

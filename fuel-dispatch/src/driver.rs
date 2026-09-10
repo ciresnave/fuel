@@ -2,7 +2,7 @@
 //! The `optimize_graph` lock-step pass driver — Phase B PR-B3 of the
 //! "plan IS the graph" rebuild
 //! ([`../../docs/session-prompts/plan-is-graph-rebuild.md`](
-//! ../../docs/session-prompts/plan-is-graph-rebuild.md) capability [5];
+//! ../../docs/session-prompts/plan-is-graph-rebuild.md) capability 5;
 //! [`../../docs/architecture/04-optimization.md`](
 //! ../../docs/architecture/04-optimization.md) §"The two-stage
 //! transformation", §"Relationship to PR 3").

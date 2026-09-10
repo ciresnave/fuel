@@ -397,7 +397,7 @@ fn recipe(seqlen: usize, delta_softplus: bool) -> PatternNode {
 
 /// Total decomposition of SelectiveScan to an [`crate::Op::Scan`] recipe —
 /// closing decisions-log G3 ("a higher-order `Scan` for SSMs"). Since Increment
-/// C B2 a re-emit of [`recipe`]'s portable data through the
+/// C B2 a re-emit of `recipe`'s portable data through the
 /// [`decompose_via_recipe`] bridge (structure-preserving: the emitted base map
 /// is node-for-node identical to the pre-B2 imperative body — see the parity
 /// test in `tests`). `seqlen` (the scan bound, a shape-dependent structural

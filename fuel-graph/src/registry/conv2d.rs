@@ -41,8 +41,8 @@
 //!
 //! **Status (CV2, im2col-2):** [`decompose`] lowers **any `groups>=1`**
 //! (with an optional bias tail) to that recipe — the groups=1 rank-3
-//! [`recipe`] and the `groups>1` (incl. depthwise `groups=Cin`) rank-4
-//! batched [`recipe_grouped`], which carries the group as an explicit
+//! `recipe` and the `groups>1` (incl. depthwise `groups=Cin`) rank-4
+//! batched `recipe_grouped`, which carries the group as an explicit
 //! matmul batch axis (`[N, groups]`) exactly like the CPU kernel's
 //! per-group im2col + GEMM. A malformed grouping (indivisible `Cin`/`Cout`,
 //! or a weight `Cin/g` mismatch) is a surfaced honest-miss that
@@ -503,7 +503,7 @@ fn recipe_grouped(
 }
 
 /// Total decomposition of Conv2D via the index-gather im2col recipe (Increment
-/// C im2col-1, CV1) — a re-emit of [`recipe`]'s portable data through the
+/// C im2col-1, CV1) — a re-emit of `recipe`'s portable data through the
 /// [`decompose_via_recipe`] bridge. Conv2D is **NOT** a primitive-basis gap
 /// (correcting the earlier "needs `Op::Im2Col`" claim; see the module note and
 /// the `10-decisions-log.md` 2026-07-24 addendum): im2col is an overlapping-
@@ -513,8 +513,8 @@ fn recipe_grouped(
 /// **Scope: any `groups>=1`** (CV1 groups=1 + CV2 `groups>1`, including
 /// depthwise `groups=Cin`), with or without bias. The stride/padding/groups and
 /// the concrete `Cin/Hin/Win/Cout/Kh/Kw` extents are read here and baked into the
-/// per-call recipe; `groups==1` uses the rank-3 [`recipe`] and `groups>1` the
-/// rank-4 batched [`recipe_grouped`] (a batch axis carries the group).
+/// per-call recipe; `groups==1` uses the rank-3 `recipe` and `groups>1` the
+/// rank-4 batched `recipe_grouped` (a batch axis carries the group).
 ///
 /// Per G2 (2026-06-20) this is total + never-panic: a wrong-params payload, a
 /// malformed input arity/shape, an indivisible grouping (`Cin`/`Cout` not a

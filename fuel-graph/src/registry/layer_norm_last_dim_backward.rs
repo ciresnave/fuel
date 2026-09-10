@@ -11,16 +11,16 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry`.
-//! - [`recipe`] — the op's closed-form backward as portable, shape-/rank-
+//! - `recipe` — the op's closed-form backward as portable, shape-/rank-
 //!   polymorphic `PatternNode` data (Increment C slice 2). The four keepdim
 //!   restores are the D3 shrink-via-swap (`MeanDim(axis_last)` + `Unsqueeze(
 //!   axis_last = append)`, replacing the baked `Reshape(keepdim)`) and each
 //!   broadcast targets `SameAs { operand: 0 }` (x's full shape, D2). One `eps`
 //!   `AddScalar` OPEN slot, filled from the params projection.
-//! - [`scalars`] — the per-entry projection `LayerNormLastDimBackward { eps } →
+//! - `scalars` — the per-entry projection `LayerNormLastDimBackward { eps } →
 //!   vec![eps; open-slot-count]` (one eps per open slot — see the RISK-A note
-//!   on [`recipe`]).
-//! - [`decompose`] — re-emits [`recipe`] through the
+//!   on `recipe`).
+//! - [`decompose`] — re-emits `recipe` through the
 //!   [`crate::registry::decompose_via_recipe`] bridge.
 //!
 //! See `softmax_last_dim_backward.rs` for the architectural rationale shared by
@@ -194,8 +194,8 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 
 /// Decompose to the affine-free LayerNorm backward
 /// `grad_x = istd · (g − mean(g) − xhat·mean(g·xhat))` — since S2-1 a re-emit of
-/// [`recipe`]'s data through the [`decompose_via_recipe`] bridge (the fused
-/// node's two inputs `[x, g]` are the binds; [`scalars`] fills the eps open
+/// `recipe`'s data through the [`decompose_via_recipe`] bridge (the fused
+/// node's two inputs `[x, g]` are the binds; `scalars` fills the eps open
 /// slots; the resolving emit derives every interior shape/dtype). Any failure —
 /// wrong params payload, a resolution decline at these shapes (symbolic extent,
 /// …) — returns `id` (fixpoint, surfaced gap, never a panic): exactly the G2

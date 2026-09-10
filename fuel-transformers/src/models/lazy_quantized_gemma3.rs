@@ -24,7 +24,7 @@
 //!
 //! Construction paths:
 //! - [`QuantizedGemma3Model::load_from_mmapped`] — convenience wrapper
-//!   over [`Gemma3Weights::load_from_mmapped`] + [`Self::from_f32_bake`].
+//!   over [`Gemma3Weights::load_from_mmapped`] + [`QuantizedGemma3Model::from_f32_bake`].
 //! - [`QuantizedGemma3Model::from_f32_bake`] — take f32 source weights
 //!   (same `[in_features, out_features]` layout as `Gemma3Weights`) and
 //!   quantize each Linear weight to Q4_0 on the fly. Used by tests and

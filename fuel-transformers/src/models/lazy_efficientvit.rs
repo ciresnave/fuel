@@ -188,7 +188,7 @@ pub struct EfficientVitStageWeights {
 pub struct EfficientVitWeights {
     pub stem: StemWeights,
     pub stages: [EfficientVitStageWeights; 3],
-    /// Classification head: BN over channels[2] + linear.
+    /// Classification head: BN over `channels[2]` + linear.
     /// None means no classifier (returns pooled features).
     pub head: Option<(BatchNormParams, WeightStorage, Arc<[f32]>)>,
 }

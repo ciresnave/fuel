@@ -57,7 +57,7 @@ pub mod softmax_last_dim_backward;
 pub mod ssd_chunk_scan;
 
 /// Stable identifier for a registered fused op. Indexes into
-/// [`FusedOpRegistry::entries`]. Newtype over `u16` (~65K capacity is
+/// `FusedOpRegistry::entries`. Newtype over `u16` (~65K capacity is
 /// plenty; today's catalog is 13-14 entries).
 ///
 /// Constants for the well-known ids are exposed via [`FusedOps`]
@@ -922,7 +922,7 @@ pub struct PatternHash(pub u64);
 /// fused node stays in place as a surfaced opaque-op gap (the lowering
 /// driver records no progress), NEVER a panic:
 /// * `scalars == None` — a wrong params payload for this entry;
-/// * a recipe that fails [`crate::runtime_fused::validate_recipe`] — a
+/// * a recipe that fails `crate::runtime_fused::validate_recipe` — a
 ///   semantics-absent op token with no primitive re-emission (the
 ///   flip-withdrawal posture: unknown/non-registry tokens are surfaced
 ///   honest-miss declines, never accepted), non-contiguous binds, a
@@ -1189,9 +1189,9 @@ impl FusedOps {
     /// gradients but needs multi-output infrastructure that doesn't
     /// exist yet. Reuses [`FusedOpParams::FlashAttnBackward`].
     pub const FLASH_ATTN_BACKWARD_Q: FusedOpId = FusedOpId(22);
-    /// FlashAttnBackwardK — produces dK. See [`FLASH_ATTN_BACKWARD_Q`].
+    /// FlashAttnBackwardK — produces dK. See [`Self::FLASH_ATTN_BACKWARD_Q`].
     pub const FLASH_ATTN_BACKWARD_K: FusedOpId = FusedOpId(23);
-    /// FlashAttnBackwardV — produces dV. See [`FLASH_ATTN_BACKWARD_Q`].
+    /// FlashAttnBackwardV — produces dV. See [`Self::FLASH_ATTN_BACKWARD_Q`].
     pub const FLASH_ATTN_BACKWARD_V: FusedOpId = FusedOpId(24);
 }
 

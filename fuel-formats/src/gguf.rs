@@ -4,7 +4,7 @@
 //!
 //! Spec: <https://github.com/ggml-org/ggml/blob/master/docs/gguf.md>
 //!
-//! This module owns the wire-format types ([`Magic`],
+//! This module owns the wire-format types (`Magic`,
 //! [`VersionedMagic`], [`ValueType`], [`Value`], [`TensorInfo`],
 //! [`Content`]) and the byte-level reader. The Tensor-construction
 //! layer (`tensor()`, `tensor_from_mmap()`, `write()` of QTensor

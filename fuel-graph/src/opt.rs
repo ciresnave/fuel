@@ -386,15 +386,15 @@ pub fn lower_to_base_map(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
 /// structurally identical hash equal. Reuses this module's existing
 /// canonicalization primitives rather than duplicating them:
 ///
-/// - [`op_key`] for op identity when available (covers every primitive +
+/// - `op_key` for op identity when available (covers every primitive +
 ///   `Op::Fused` variant CSE already relies on).
-/// - [`is_commutative`] to sort child hashes for `Add`/`Mul`, so `a + b` and
+/// - `is_commutative` to sort child hashes for `Add`/`Mul`, so `a + b` and
 ///   `b + a` hash equal (mirrors CSE's own commutative-operand
 ///   canonicalization). `Maximum`/`Minimum` are excluded -- see GAP-271.
 ///
 /// `op_key` deliberately excludes `Op::Const` (its payload lives in the
-/// graph's `storage_map` slot, not the `Op` enum — see the comment on
-/// [`OpKey`]) and returns `None` for a handful of other ops (in-place,
+/// graph's `storage_map` slot, not the `Op` enum) and returns `None`
+/// for a handful of other ops (in-place,
 /// indexing, and anything else not explicitly listed). For those, this
 /// function falls back to `(discriminant, shape, dtype)` — and, for
 /// `Op::Const` specifically, additionally folds the constant's real bytes
@@ -1909,8 +1909,8 @@ pub fn fuse_linear(graph: &SharedGraph, roots: &[NodeId]) -> usize {
 /// pinned-after destructive ops on the producer via the regular
 /// data-dependency edge (`inputs[0] == producer`), which falls out
 /// of the standard reader analysis below without needing the
-/// alias-set extension. See [`collect_alias_set`] for the full
-/// alias-extension rule — including `Op::Reshape` / `Op::Contiguize`
+/// alias-set extension. The full alias-extension rule covers
+/// `Op::Reshape` / `Op::Contiguize`
 /// (conditionally-zero-copy contiguize ops), added to close the MLA
 /// decode multi-round `WriteSlice` ordering defect: a destructive op
 /// on `X` only pins the readers of nodes actually IN the alias set,
@@ -3105,7 +3105,7 @@ where
 /// insert one `Op::Cast(target)` per distinct `(input, target)` — CSE-shared
 /// across consumers — and rewire each consumer's edge to it.
 ///
-/// Unlike [`Graph::rewrite_input`] (whose contract is a *same-dtype* redirect),
+/// Unlike `Graph::rewrite_input` (whose contract is a *same-dtype* redirect),
 /// this DELIBERATELY changes the consumer's input dtype — that is the point: it
 /// is the graph-side half of the optimizer's dtype-reconciliation pass
 /// (`fuel_dispatch::optimize::insert_dtype_fixups`), which decides WHICH edges to

@@ -7,10 +7,10 @@
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (decompose function,
 //!   pattern matcher, shape/dtype rules).
-//! - [`recipe`] — the op's primitive subgraph as portable, shape-/rank-
+//! - `recipe` — the op's primitive subgraph as portable, shape-/rank-
 //!   polymorphic data (9 nodes; the two leading-1 rank-pad `Reshape`s are
 //!   materialized by the emit resolver on a rank-raise, D4, not baked here).
-//! - [`decompose`] — re-emits [`recipe`] through the
+//! - [`decompose`] — re-emits `recipe` through the
 //!   [`crate::registry::decompose_via_recipe`] bridge (mirrors
 //!   [`crate::NodeHandle::rope_with_tables_decomposed`]).
 //! - [`canonical_pattern`] — placeholder returning `None`. The Rope
@@ -195,7 +195,7 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 }
 
 /// Lower a fused Rope node to its primitive subgraph and return the new root
-/// id — since T6 a re-emit of [`recipe`]'s data through the
+/// id — since T6 a re-emit of `recipe`'s data through the
 /// [`decompose_via_recipe`] bridge (the fused node's three inputs are the
 /// binds `[x, cos, sin]`; the resolving emit derives every interior
 /// shape/dtype and materializes the D4 rank-pad `Reshape`s). Any failure —

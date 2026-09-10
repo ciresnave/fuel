@@ -119,7 +119,7 @@ pub fn fused_layer1_cost(
 /// Never-panic (spec §2): a degenerate / fixpoint / unregistered decompose
 /// falls back to the sentinel-equivalent [`CostEstimate::default()`], never
 /// a crash. Nested fused ops in the decompose recurse (bounded by
-/// [`MAX_DECOMPOSE_DEPTH`]) — the base map is `decompose`'s fixpoint.
+/// `MAX_DECOMPOSE_DEPTH`) — the base map is `decompose`'s fixpoint.
 pub fn cost_from_decompose(
     id: FusedOpId,
     params: &FusedOpParams,
