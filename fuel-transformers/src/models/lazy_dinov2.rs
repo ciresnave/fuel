@@ -264,11 +264,14 @@ impl Dinov2Model {
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
         }
-        assert!(
-            *layer_ids.last().unwrap() < cfg.depth,
-            "layer_ids must all be in [0, depth = {})",
-            cfg.depth,
-        );
+        // GAP-308 (CONFIG_FIELD): a caller-supplied layer index outside the
+        // configured depth is input to reject, not an invariant to assert.
+        if *layer_ids.last().unwrap() >= cfg.depth {
+            return Err(fuel_core::Error::Msg(format!(
+                "layer_ids must all be in [0, depth = {})",
+                cfg.depth,
+            )));
+        }
 
         // Patch conv + cls + pos_embed (same path as forward()).
         let conv_w = pixel_values.const_f32_like(
@@ -548,6 +551,35 @@ mod tests {
             head,
             head_bias,
         }
+    }
+
+    /// GAP-308 born-red: a `layer_ids` entry at or beyond the configured `depth`
+    /// is REJECTED with a typed error. Asserts the MESSAGE fragment ("depth"),
+    /// not is_err(): the decline returns before the patch-conv graph is built,
+    /// so with it removed the out-of-range gather would yield an invalid
+    /// unrealized graph and an is_err()-only test would pass on it.
+    #[test]
+    fn forward_intermediate_declines_layer_id_over_depth() {
+        let cfg = tiny_config();
+        let depth = cfg.depth;
+        let weights = tiny_weights(&cfg);
+        let img = tiny_image(&cfg);
+        let model = Dinov2Model {
+            config: cfg,
+            weights,
+        };
+        // POSITIVE CONTROL: an in-range layer id must run.
+        model
+            .forward_intermediate_layers(&img, &[0])
+            .expect("control: layer_ids within [0, depth) must run");
+        // layer id == depth is the first out-of-range index.
+        let err = model
+            .forward_intermediate_layers(&img, &[depth])
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("depth"),
+            "must decline layer_ids >= depth; got: {err}"
+        );
     }
 
     fn tiny_config() -> Dinov2Config {
