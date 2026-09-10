@@ -468,8 +468,8 @@ impl Gemma2Config {
     ///   `final_logit_softcapping` → `final_logit_softcapping`,
     ///   `sliding_window` → `sliding_window`.
     ///
-    /// [`Gemma2ConfigRaw`] is the wire shape and is pure `serde`;
-    /// [`Gemma2ConfigRaw::resolve`] applies the two defaults that read a
+    /// `Gemma2ConfigRaw` is the wire shape and is pure `serde`;
+    /// `Gemma2ConfigRaw::resolve` applies the two defaults that read a
     /// sibling field, which `#[serde(default)]` cannot express.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
         Gemma2ConfigRaw::from_json_str(json)?.resolve()

@@ -7,13 +7,13 @@
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (decompose function,
 //!   pattern matcher, shape/dtype rules).
-//! - [`recipe`] — the op's primitive subgraph as portable, shape-/rank-
+//! - `recipe` — the op's primitive subgraph as portable, shape-/rank-
 //!   polymorphic data (7 nodes; the keepdim restore is the D3 shrink-via-swap
 //!   `Unsqueeze` append, and the `eps` `AddScalar` is an OPEN slot filled by
-//!   [`scalars`] from the params projection).
-//! - [`scalars`] — the per-entry projection `RmsNormLastDim { eps } →
+//!   `scalars` from the params projection).
+//! - `scalars` — the per-entry projection `RmsNormLastDim { eps } →
 //!   vec![eps]` filling the recipe's one open slot.
-//! - [`decompose`] — re-emits [`recipe`] through the
+//! - [`decompose`] — re-emits `recipe` through the
 //!   [`crate::registry::decompose_via_recipe`] bridge.
 //! - [`canonical_pattern`] — recognizes the decomposed subgraph in EITHER
 //!   spelling (legacy `Reshape`-keepdim OR the T7 recipe `Unsqueeze`-append
@@ -154,9 +154,9 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 }
 
 /// Lower a fused RmsNormLastDim node to its primitive subgraph and return the
-/// new root id — since T7 a re-emit of [`recipe`]'s data through the
+/// new root id — since T7 a re-emit of `recipe`'s data through the
 /// [`decompose_via_recipe`] bridge (the fused node's single input is the bind
-/// `[x]`; [`scalars`] fills the eps open slot; the resolving emit derives every
+/// `[x]`; `scalars` fills the eps open slot; the resolving emit derives every
 /// interior shape/dtype). Any failure — wrong params payload, a resolution
 /// decline at these shapes (symbolic extent, …) — returns `id` (fixpoint,
 /// surfaced gap, never a panic): exactly the G2 posture the imperative body
@@ -180,12 +180,12 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 /// * the LEGACY form (`Reshape` keepdim) — what user graphs and pre-T7
 ///   lowerings contain;
 /// * the RECIPE form (`Unsqueeze` append keepdim, the D3 shrink-via-swap) —
-///   what [`recipe`]'s emission contains, so lower → fuse round-trips on the
+///   what `recipe`'s emission contains, so lower → fuse round-trips on the
 ///   framework's OWN lowered subgraph.
 ///
 /// The two spellings differ ONLY in the keepdim node (`Reshape` vs
 /// `Unsqueeze`); every other node and every guard is identical, so the arms
-/// share [`match_common`] and differ only in the keepdim predicate.
+/// share `match_common` and differ only in the keepdim predicate.
 pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
     legacy_spelled_pattern(graph, div_id).or_else(|| recipe_spelled_pattern(graph, div_id))
 }

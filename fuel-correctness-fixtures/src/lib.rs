@@ -66,16 +66,6 @@ use fuel_ir::dispatch::{OpKind, SizeClass};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Capture-pipeline helpers used by the `fuel-capture-fixtures`
-/// binary: pairwise consensus clustering, deterministic input
-/// generation, consensus-median fixture selection, and on-disk
-/// emission. Public so external tooling can build alternative
-/// capture front-ends without forking the data-model crate.
-///
-/// Gated on the `capture` feature so single-backend consumers
-/// of the fixtures don't pay the `serde_json` / filesystem-helper
-/// cost. Validators only need [`validate_against_fixture`]
-/// + the data model.
 #[cfg(feature = "capture")]
 pub mod capture;
 

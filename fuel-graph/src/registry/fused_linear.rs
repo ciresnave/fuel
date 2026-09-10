@@ -7,11 +7,11 @@
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (decompose, pattern
 //!   matcher, shape/dtype rules).
-//! - [`recipe`] — the op's primitive subgraph as portable data:
+//! - `recipe` — the op's primitive subgraph as portable data:
 //!   `Add(MatMul(a, b), BroadcastTo(WithDim{op:0, axis:LAST, dim:Extent{op:1,
 //!   LAST}})(bias))`. The bias broadcast target is a's shape with its LAST axis
 //!   (K) replaced by b's LAST extent (N) = the matmul output `[..batch, M, N]`.
-//! - [`decompose`] — re-emits [`recipe`] through the
+//! - [`decompose`] — re-emits `recipe` through the
 //!   [`crate::registry::decompose_via_recipe`] bridge.
 //! - [`canonical_pattern`] — recognizes `Add(MatMul(a, b), bias_broadcast)` in
 //!   BOTH spellings: the legacy direct-rank-1-bias form AND the recipe form,
@@ -156,7 +156,7 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 }
 
 /// Lower a fused FusedLinear node to its primitive subgraph and return the new
-/// root id — since S2-2 a re-emit of [`recipe`]'s data through the
+/// root id — since S2-2 a re-emit of `recipe`'s data through the
 /// [`decompose_via_recipe`] bridge (the fused node's three inputs are the binds
 /// `[a, b, bias]`; the resolving emit derives the WithDim bias-broadcast target
 /// and materializes the D4 rank-pad `Reshape`). Backends without a true fused

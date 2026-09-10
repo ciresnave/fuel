@@ -2,11 +2,11 @@
 //! Mimi streaming-capable 1-D convolution primitive (sub-port 1 of
 //! port-mimi-conv.md).
 //!
-//! Ports the [`StreamableConv1d`] half of
+//! Ports the `StreamableConv1d` half of
 //! `fuel_transformers::models::audio::mimi::conv` to the lazy-graph
 //! API. The remaining variants
-//! ([`StreamableConvTranspose1d`], [`ConvDownsample1d`],
-//! [`ConvTrUpsample1d`]) compose on top of this primitive and ship in
+//! (`StreamableConvTranspose1d`, `ConvDownsample1d`,
+//! `ConvTrUpsample1d`) compose on top of this primitive and ship in
 //! the following sub-ports.
 //!
 //! # Differences from the eager API
@@ -33,7 +33,7 @@
 //! - [`LazyPadMode::Constant`] zero-pad — the default for the SEANet
 //!   encoder convs.
 //! - [`LazyPadMode::Replicate`] edge-value pad — used by Mimi's
-//!   [`ConvDownsample1d`] / [`ConvTrUpsample1d`]. Implemented as
+//!   `ConvDownsample1d` / `ConvTrUpsample1d`. Implemented as
 //!   `narrow + repeat + concat` since `Op::Pad`'s Replicate mode
 //!   isn't yet wired through the executor; that's an internal
 //!   detail — callers see the same semantics.

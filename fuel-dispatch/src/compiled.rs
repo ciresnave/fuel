@@ -172,7 +172,7 @@ pub fn execute_compiled(
 /// completion handle before the realize-end drain (today: the cross-device
 /// `Copy`/`Move` producer wait, `wait_producer_handle` in `pipelined.rs`).
 ///
-/// `will_be_waited == false` lets [`produce_pending`] skip the CUDA
+/// `will_be_waited == false` lets `produce_pending` skip the CUDA
 /// `Event`/in-flight-counter machinery entirely and return
 /// [`CompletionHandle::Ready`] immediately — the kernel is still launched on
 /// the device stream exactly as before; only the completion-observation

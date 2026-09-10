@@ -25,13 +25,13 @@
 //!     128`, `n_kv_heads = 1` (MQA): standard K/V is `2 * 32 * 128 = 8192`
 //!     elements/token; two-projection is `1 * 128 = 128` elements/token —
 //!     **1.5625%** of the standard cache (a ~98.4% reduction). See
-//!     [`Self::cache_elems_per_token`] / [`Self::standard_kv_elems_per_token`]
+//!     [`TwoProjAttention::cache_elems_per_token`] / [`TwoProjAttention::standard_kv_elems_per_token`]
 //!     and the `cache_size_ratio_matches_mqa_math` test below.
 //!
 //! # Scope
 //!
 //! This is a **capability block** — there is no shipped checkpoint consumer
-//! yet. It is composable: [`Self::forward`] / [`Self::forward_with_latent_cache`]
+//! yet. It is composable: [`TwoProjAttention::forward`] / [`TwoProjAttention::forward_with_latent_cache`]
 //! return the raw attention context (`[B, S, n_heads * head_dim]`); callers
 //! apply their own output projection (no `W_o` is baked in here), matching
 //! [`crate::modules::moe`]'s house style of shipping the primitive block

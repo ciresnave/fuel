@@ -148,7 +148,7 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 }
 
 /// Lower a fused SoftmaxLastDim node to its primitive subgraph and return
-/// the new root id — since T5 a re-emit of [`recipe`]'s data through the
+/// the new root id — since T5 a re-emit of `recipe`'s data through the
 /// [`decompose_via_recipe`] bridge (the fused node's input is the bind, the
 /// resolving emit derives every interior shape/dtype). Any failure — wrong
 /// params payload, a resolution decline at these shapes — returns `id`
@@ -169,7 +169,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 /// * the LEGACY user-spelled 7-node form (`ReduceMaxTo`/`ReduceSumTo`
 ///   keepdim) — what user graphs and pre-T5 lowerings contain;
 /// * the RECIPE 9-node form (`MaxDim`/`SumDim` + `Unsqueeze` append, shared
-///   `e`) — what [`recipe`]'s emission contains, so lower→fuse still
+///   `e`) — what `recipe`'s emission contains, so lower→fuse still
 ///   round-trips.
 ///
 /// This is the matcher referenced from [`SubgraphPattern::Callable`] in the

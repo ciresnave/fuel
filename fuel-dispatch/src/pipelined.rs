@@ -889,11 +889,11 @@ impl PipelinedExecutor {
         .map(|(s, l, _produced)| (s, l))
     }
 
-    /// Env-carrying sibling of [`realize`]: realize `target` with a
+    /// Env-carrying sibling of [`Self::realize`]: realize `target` with a
     /// per-pass [`SymEnv`] supplying the runtime bindings for any
     /// `DynScalar` op params (today: `Op::WriteSlice`'s dynamic start
     /// offset — Phase D symbolic extents). An **empty** env is
-    /// byte-identical to [`realize`]; the env is consulted only by ops
+    /// byte-identical to [`Self::realize`]; the env is consulted only by ops
     /// that carry a `DynScalar`, so a graph with none ignores it. Uses
     /// the default (`execution_plan`) dispatch order.
     ///
@@ -911,7 +911,7 @@ impl PipelinedExecutor {
             .map(|(s, l, _produced)| (s, l))
     }
 
-    /// Producing sibling of [`realize_with_env`]: realize `target` and
+    /// Producing sibling of [`Self::realize_with_env`]: realize `target` and
     /// ALSO return the [`SymEnv`] of symbols BOUND BY PRODUCERS during the
     /// pass — data-determined dynamic shapes (`Op::NonZeroIndices`'s
     /// runtime count, etc.). The returned env is disjoint from the input
@@ -936,7 +936,7 @@ impl PipelinedExecutor {
     /// route-picking — A3b-1 is branchless). The optimize-time
     /// `generation` drives the `TopologyChanged` chunk-boundary check.
     ///
-    /// Pre-conditions match [`realize`]: every reachable kernel-bearing
+    /// Pre-conditions match [`Self::realize`]: every reachable kernel-bearing
     /// node must have `target_backend` set (the bridge's
     /// `stamp_plan_backends` does this) and a registered binding.
     pub fn realize_with_optimized(
@@ -958,11 +958,11 @@ impl PipelinedExecutor {
         .map(|(s, l, _produced)| (s, l))
     }
 
-    /// Env-carrying sibling of [`realize_with_optimized`]: same
+    /// Env-carrying sibling of [`Self::realize_with_optimized`]: same
     /// optimized-graph dispatch, but with a per-pass [`SymEnv`] supplying
     /// the runtime bindings for `DynScalar` op params (Phase D symbolic
     /// extents). An empty env is byte-identical to
-    /// [`realize_with_optimized`]. The realize bridge threads its session
+    /// [`Self::realize_with_optimized`]. The realize bridge threads its session
     /// env through here for persistent decode.
     pub fn realize_with_optimized_env(
         graph: Arc<RwLock<Graph>>,
@@ -990,7 +990,7 @@ impl PipelinedExecutor {
     /// ([`fuel_graph::lower_picked_route`]) over `route` — the per-branch
     /// arm the picker (Picker 2) selected by live telemetry. A branch
     /// absent from `route` defaults to arm 0, so an **empty** route is
-    /// byte-identical to [`realize_with_optimized`] (the no-pressure /
+    /// byte-identical to [`Self::realize_with_optimized`] (the no-pressure /
     /// no-telemetry contract). A branchless graph has no branches ⇒ the
     /// route is empty ⇒ this is exactly the arm-0 path.
     pub fn realize_with_optimized_route(
@@ -1013,9 +1013,9 @@ impl PipelinedExecutor {
         .map(|(s, l, _produced)| (s, l))
     }
 
-    /// Env-carrying sibling of [`realize_with_optimized_route`] — the
+    /// Env-carrying sibling of [`Self::realize_with_optimized_route`] — the
     /// route-aware lowering with a per-pass [`SymEnv`]. An empty env is
-    /// byte-identical to [`realize_with_optimized_route`].
+    /// byte-identical to [`Self::realize_with_optimized_route`].
     pub fn realize_with_optimized_route_env(
         graph: Arc<RwLock<Graph>>,
         target: NodeId,
@@ -1050,7 +1050,7 @@ impl PipelinedExecutor {
     ///
     /// **Step E Phase C, PR C1 — STREAMING.** A branched graph WITH a
     /// selector no longer resolves the whole route up front: it routes to the
-    /// [`OrderSource::Streaming`] walk, where the compiler thread resolves
+    /// `OrderSource::Streaming` walk, where the compiler thread resolves
     /// each branch lazily as the frontier reaches it (via
     /// [`resolve_branch`]). C1 keeps the SAME VRAM-only selector chain — so
     /// the streamed route equals the one-shot `pick_route` route byte-for-byte
@@ -1716,7 +1716,7 @@ impl PipelinedExecutor {
     /// Pre-conditions: every reachable `Op::Const` must be in
     /// `inputs`; every reachable non-`Const` must have its
     /// `target_backend` set; the op + dtype must be registered in
-    /// `global_bindings()`. Same as single-target [`realize`].
+    /// `global_bindings()`. Same as single-target [`Self::realize`].
     pub fn realize_many(
         graph: Arc<RwLock<Graph>>,
         targets: &[NodeId],
@@ -1732,7 +1732,7 @@ impl PipelinedExecutor {
     }
 
     /// Multi-target PR-A3b-1 entry — the `realize_many` sibling of
-    /// [`realize_with_optimized`]. Drives the executor from the
+    /// [`Self::realize_with_optimized`]. Drives the executor from the
     /// `OptimizedGraph`'s run lowering via the binding-table-lookup
     /// path, with the optimize-time `generation` keying the
     /// `TopologyChanged` chunk-boundary check.
@@ -1754,7 +1754,7 @@ impl PipelinedExecutor {
         )
     }
 
-    /// Env-carrying sibling of [`realize_many_with_optimized`] (Phase D
+    /// Env-carrying sibling of [`Self::realize_many_with_optimized`] (Phase D
     /// symbolic extents). An empty env is byte-identical to it.
     pub fn realize_many_with_optimized_env(
         graph: Arc<RwLock<Graph>>,
@@ -1776,7 +1776,7 @@ impl PipelinedExecutor {
     }
 
     /// Multi-target PR-C1 entry — the `realize_many` sibling of
-    /// [`realize_with_optimized_route`]. Lowers each target's runs
+    /// [`Self::realize_with_optimized_route`]. Lowers each target's runs
     /// following the picker's chosen arms via
     /// [`fuel_graph::lower_picked_route`].
     pub fn realize_many_with_optimized_route(
@@ -1798,7 +1798,7 @@ impl PipelinedExecutor {
         )
     }
 
-    /// Env-carrying sibling of [`realize_many_with_optimized_route`]
+    /// Env-carrying sibling of [`Self::realize_many_with_optimized_route`]
     /// (Phase D symbolic extents). An empty env is byte-identical to it.
     pub fn realize_many_with_optimized_route_env(
         graph: Arc<RwLock<Graph>>,
@@ -1820,10 +1820,10 @@ impl PipelinedExecutor {
         )
     }
 
-    /// Multi-target sibling of [`realize_with_optimized_picking_env`] —
+    /// Multi-target sibling of [`Self::realize_with_optimized_picking_env`] —
     /// the executor resolves one arm per `Op::Branch` (cleanup Step C/D) over
     /// the effective targets. PR C1: a branched graph routes to the
-    /// [`OrderSource::Streaming`] walk (lazy per-branch resolution at the
+    /// `OrderSource::Streaming` walk (lazy per-branch resolution at the
     /// frontier); branchless / no-selector falls to the untouched arm-0 path.
     pub fn realize_many_with_optimized_picking_env(
         graph: Arc<RwLock<Graph>>,

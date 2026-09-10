@@ -215,7 +215,7 @@ impl SystemTopology {
     ///
     /// Prefers the substrate declared in the backend's
     /// [`BackendCapabilities`] when one is registered, otherwise
-    /// falls back to [`default_substrate_for`]. The `device` argument
+    /// falls back to `default_substrate_for`. The `device` argument
     /// is accepted for API symmetry with [`Self::shares_storage`]
     /// (today's substrate classification doesn't vary per-device but
     /// future NUMA-split CPU might).

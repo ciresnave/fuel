@@ -2,11 +2,11 @@
 //! Mimi streaming-capable 1-D transposed convolution primitive
 //! (sub-port 2 of port-mimi-conv.md).
 //!
-//! Ports the [`StreamableConvTranspose1d`] half of
+//! Ports the `StreamableConvTranspose1d` half of
 //! `fuel_transformers::models::audio::mimi::conv` to the lazy-graph
 //! API. Sub-port 1 ([`crate::models::lazy_mimi_conv`]) shipped the forward
-//! [`StreamableConv1d`]; this module is the upsampling counterpart
-//! used by the Mimi decoder / [`ConvTrUpsample1d`] (sub-port 3).
+//! `StreamableConv1d`; this module is the upsampling counterpart
+//! used by the Mimi decoder / `ConvTrUpsample1d` (sub-port 3).
 //!
 //! # State-as-value
 //!

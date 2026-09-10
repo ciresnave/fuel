@@ -469,7 +469,7 @@ impl PhiConfig {
     ///   supports false — set to true bails at load time).
     ///
     /// Two stages, because they answer different questions. `PhiConfigRaw`
-    /// is the wire shape and is pure `serde`; [`PhiConfigRaw::resolve`]
+    /// is the wire shape and is pure `serde`; `PhiConfigRaw::resolve`
     /// applies the defaults `serde` cannot express — those that read another
     /// field — and the one validation this port enforces.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {

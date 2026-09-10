@@ -186,7 +186,7 @@ impl DebertaV2Config {
     /// - `layer_norm_eps` (defaults to 1e-7)
     /// - `id2label` (string-keyed JSON object → `u32 → String`)
     ///
-    /// [`DebertaV2ConfigRaw`] is the wire shape; [`DebertaV2ConfigRaw::resolve`]
+    /// `DebertaV2ConfigRaw` is the wire shape; `DebertaV2ConfigRaw::resolve`
     /// applies the `-1` sentinel and the tolerant `id2label` parse.
     pub fn from_hf_json_str(s: &str) -> fuel_core::Result<Self> {
         DebertaV2ConfigRaw::from_json_str(s)?.resolve()

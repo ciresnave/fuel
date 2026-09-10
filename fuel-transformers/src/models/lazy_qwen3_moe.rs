@@ -596,7 +596,7 @@ impl DecodeBackbone for Qwen3MoeModel {
     }
 
     /// Attention comes from the shared Qwen3-family block; the FFN is where this
-    /// family actually differs, and it reuses [`Self::apply_ffn`] unchanged —
+    /// family actually differs, and it reuses `Self::apply_ffn` unchanged —
     /// the routing was already at the right granularity for a decode step
     /// (`batch = seq = 1`).
     fn decode_apply_layer(

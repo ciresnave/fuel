@@ -37,7 +37,7 @@ use fuel_core::Result;
 use fuel_core::lazy::Tensor;
 
 /// Single-input `forward` over the lazy-graph tensor. Analogous to
-/// the eager [`crate::Module`] trait, retargeted at `Tensor`.
+/// the eager `crate::Module` trait, retargeted at `Tensor`.
 pub trait Module {
     fn forward(&self, xs: &Tensor) -> Result<Tensor>;
 }

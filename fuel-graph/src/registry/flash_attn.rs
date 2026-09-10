@@ -413,7 +413,7 @@ fn recipe(
 
 /// Decompose FlashAttn to its primitive **materialized scaled-dot-product
 /// attention** subgraph and return the new root. Since Increment C C-T3 a
-/// re-emit of [`recipe`]'s portable data through the [`decompose_via_recipe`]
+/// re-emit of `recipe`'s portable data through the [`decompose_via_recipe`]
 /// bridge (structure-preserving: the emitted base map is node-for-node
 /// identical to the pre-C-T3 imperative body — see the parity test in
 /// `tests`). The general math:
@@ -455,7 +455,7 @@ fn recipe(
 ///   construction — and the *symbolic* decode oracle is emitted one layer up by
 ///   the optimizer's decode-flash arm (`fuel_dispatch::decode_flash`), which
 ///   *does* hold the `SymEnv` and builds the `matmul → mask → softmax → matmul`
-///   region over the capacity KV. See [`phase-d-symbolic-extents`]. Closing
+///   region over the capacity KV. See `phase-d-symbolic-extents`. Closing
 ///   this at the registry layer is a build-time basis extension (a
 ///   `DynScalar`-length `Slice`/mask op) — a future constitution decision, NOT
 ///   part of Increment C (a PERMANENT registry-layer gap this migration keeps).

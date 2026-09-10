@@ -6,9 +6,9 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry`.
-//! - [`recipe`] — the op's closed-form backward as portable, shape-/rank-
+//! - `recipe` — the op's closed-form backward as portable, shape-/rank-
 //!   polymorphic `PatternNode` data (Increment C slice 1, T8).
-//! - [`decompose`] — re-emits [`recipe`] through the
+//! - [`decompose`] — re-emits `recipe` through the
 //!   [`crate::registry::decompose_via_recipe`] bridge.
 //!
 //! The backward formula is `s * (g - sum(g * s, last_dim,
@@ -25,7 +25,7 @@
 //! `BroadcastTo` idiom the forward `softmax_last_dim` recipe uses),
 //! so per G2 it decomposes totally — never a basis-gap self-return.
 //! T8 (Increment C slice 1) migrated that subgraph from an imperative
-//! builder to the portable [`recipe`] datum, and in doing so exercised
+//! builder to the portable `recipe` datum, and in doing so exercised
 //! the registry's `BackwardKind::Fused(id)` edge end-to-end on a data
 //! recipe for the first time. Beyond the recipe, the registry entry
 //! also exists to:
@@ -175,7 +175,7 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 /// Decompose to the closed-form softmax backward
 /// `grad_x = s · (g − sum(g·s, last_dim, keepdim=true))`, where `s` (input 0)
 /// is the forward output and `g` (input 1) is the upstream gradient — since T8
-/// a re-emit of [`recipe`]'s data through the [`decompose_via_recipe`] bridge
+/// a re-emit of `recipe`'s data through the [`decompose_via_recipe`] bridge
 /// (the fused node's two inputs `[s, g]` are the binds; the resolving emit
 /// derives every interior shape/dtype). Any failure — wrong params payload, a
 /// resolution decline at these shapes (symbolic extent, …) — returns `id`

@@ -2,7 +2,7 @@
 //! Byte-pair tokenizer for RWKV models.
 //!
 //! Self-contained helper (no tensor math) ported from the retired eager
-//! [`fuel_transformers::_models_retired::llm::rwkv_v5::Tokenizer`] so the
+//! `fuel_transformers::_models_retired::llm::rwkv_v5::Tokenizer` so the
 //! lazy `rwkv` example binary can be revived without pulling the retired
 //! eager `Tensor` substrate in.
 //!

@@ -109,8 +109,8 @@ pub struct EvaWeights {
     /// `(1, num_patches + 1, embed_dim)`.
     pub pos_embed: Arc<[f32]>,
     /// `(num_patches, 2 * head_dim)`: first `head_dim` channels = sin,
-    /// last `head_dim` channels = cos. Each (sin[2k], sin[2k+1]) and
-    /// (cos[2k], cos[2k+1]) pair shares the same angle (interleaved
+    /// last `head_dim` channels = cos. Each (`sin[2k]`, `sin[2k+1]`) and
+    /// (`cos[2k]`, `cos[2k+1]`) pair shares the same angle (interleaved
     /// RoPE layout).
     pub rot_pos_embed: Arc<[f32]>,
     pub blocks: Vec<EvaBlockWeights>,

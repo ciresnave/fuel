@@ -4,7 +4,7 @@
 //!
 //! ## Design
 //!
-//! [`Var`] is the lazy equivalent of eager [`crate::Var`]: a
+//! [`Var`] is the lazy equivalent of eager `crate::Var`: a
 //! named, mutable F32 host-resident parameter. Each training step:
 //!
 //! 1. The user builds a forward graph that uses

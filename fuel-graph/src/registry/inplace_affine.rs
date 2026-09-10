@@ -99,8 +99,8 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 }
 
 /// Decompose to the functional affine value `mul·x + add` — a re-emit of
-/// [`recipe`] through the [`decompose_via_recipe`] bridge (the fused node's one
-/// input `[x]` is the bind; [`scalars`] fills the mul/add open slots).
+/// `recipe` through the [`decompose_via_recipe`] bridge (the fused node's one
+/// input `[x]` is the bind; `scalars` fills the mul/add open slots).
 ///
 /// **The corrected finding (supersedes the pre-migration "basis gap" note).**
 /// This is NOT a basis gap. The over-conservative earlier reasoning conflated
@@ -122,7 +122,7 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 /// lands. In-place-ness is a KISS-Contract §4.6/§5.4 + `destructive_input` facet,
 /// NOT an op-basis or decompose concern — no new primitive, no standard change.
 ///
-/// Totality (G2): a wrong params payload declines via [`scalars`] `= None`
+/// Totality (G2): a wrong params payload declines via `scalars` `= None`
 /// BEFORE any emission, and any later bridge failure returns `id` (fixpoint,
 /// surfaced gap, never a panic).
 pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {

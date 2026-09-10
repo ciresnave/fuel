@@ -299,7 +299,7 @@ fn recipe_q4_0(a_shape: &Shape, w_len_u32: usize, k: usize, n: usize) -> Option<
 /// Lower a fused QMatMul node to its `dequantize → matmul` primitive subgraph
 /// and return the new root id.
 ///
-/// Config-branches on `quant_type`: **Q4_0** lowers via [`recipe_q4_0`] (the
+/// Config-branches on `quant_type`: **Q4_0** lowers via `recipe_q4_0` (the
 /// only format the live loader produces); every other `QuantType` self-returns
 /// as a surfaced gap (a tracked ROADMAP item — never a crash). Per G2 this is
 /// total + never-panic: wrong params, a malformed node, or any recipe/bridge

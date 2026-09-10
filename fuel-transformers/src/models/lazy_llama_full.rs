@@ -241,7 +241,7 @@ impl LlamaFullConfig {
     /// to LLaMA's documented defaults (`rope_theta=10000.0`,
     /// `rms_norm_eps=1e-5`, `tie_word_embeddings=false`, no scaling).
     ///
-    /// [`LlamaFullConfigRaw`] is the wire shape; [`LlamaFullConfigRaw::resolve`]
+    /// `LlamaFullConfigRaw` is the wire shape; `LlamaFullConfigRaw::resolve`
     /// applies the two cross-field defaults and the two TOLERANT sub-object
     /// parses that `serde` deliberately is not asked to perform.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {

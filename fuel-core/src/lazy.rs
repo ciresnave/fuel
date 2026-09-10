@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6a bridge: a lazy-computation-graph tensor that wraps
 //! [`fuel_graph::NodeHandle`] and presents it through an API compatible
-//! with fuel-core's eager [`Tensor`](crate::tensor::Tensor).
+//! with fuel-core's eager `Tensor`.
 //!
 //! # Purpose
 //!
@@ -289,7 +289,7 @@ impl Tensor {
     /// Phase 7.5 G2: the realized Storage is allocated on the device
     /// derived from `self`'s graph (any existing slot's device — the
     /// graph always has at least one slot-bearing leaf by the time
-    /// const_*_like is called). Use [`from_f32`] with an explicit
+    /// const_*_like is called). Use [`Self::from_f32`] with an explicit
     /// `&Device` when you need a const on a different device than
     /// `self`.
     pub fn const_f32_like(
@@ -422,7 +422,7 @@ impl Tensor {
 
     /// Size of the tensor along dimension `dim`. Returns a typed error
     /// rather than panicking on out-of-range — matches eager's
-    /// [`crate::Tensor::dim`] signature.
+    /// `crate::Tensor::dim` signature.
     pub fn dim<D: Dim>(&self, dim: D) -> std::result::Result<usize, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "dim")?;
@@ -5231,7 +5231,8 @@ impl Tensor {
         Ok(Self { inner })
     }
 
-    /// Append a [`fuel_graph::Op::Conv2D`] node. See `fuel_graph`'s
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::Conv2D`]. See `fuel_graph`'s
     /// `Tensor::conv2d` for the full shape contract: `self` must be
     /// `[N, Cin, H, W]`; `weight` must be `[Cout, Cin/groups, Kh, Kw]`;
     /// `bias` is optional and must be `[Cout]` when provided. Returns
@@ -5321,7 +5322,8 @@ impl Tensor {
         })
     }
 
-    /// Append a [`fuel_graph::Op::FlashAttn`] node. `self` is `q`
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::FlashAttn`]. `self` is `q`
     /// of shape `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]`
     /// with `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional)
     /// is `[Hq]`. Returns the attention output, shape `[B, Hq, Sq, D]`.
@@ -5422,7 +5424,8 @@ impl Tensor {
         })
     }
 
-    /// Append a [`fuel_graph::Op::PagedAttn`] node. `self` is the Q
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::PagedAttn`]. `self` is the Q
     /// tensor `[B, Hq, Sq, D]`. `k_cache` / `v_cache` are paged caches
     /// `[num_blocks, block_size, Hkv, D]`. `block_table` is `[B,
     /// max_blocks]` u32; `context_lens` is `[B]` u32.
@@ -5571,7 +5574,8 @@ impl Tensor {
         })
     }
 
-    /// Append a [`fuel_graph::Op::ConvTranspose2D`] node. `self` must
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::ConvTranspose2D`]. `self` must
     /// be `[N, Cin, H, W]`; `weight` must be `[Cin, Cout/groups, Kh, Kw]`
     /// (note transposed channel order vs `conv2d`). Returns a rank-4
     /// lazy tensor `[N, Cout, Hout, Wout]`.
@@ -6108,7 +6112,7 @@ impl Tensor {
     }
 
     /// Two-argument transpose: swap dims `dim1` and `dim2`, leaving the
-    /// rest in place. Implemented via [`Self::try_permute`]; matches the
+    /// rest in place. Implemented via [`fuel_graph::NodeHandle::try_permute`]; matches the
     /// eager `transpose(d1, d2)` two-arg form. Accepts any [`Dim`]
     /// (`usize`, `D::Minus1`, etc.).
     pub fn transpose_dims<D1: Dim, D2: Dim>(
@@ -7159,7 +7163,7 @@ impl Tensor {
     }
 
     /// Sub-tensor at index `i` along dim 0. Equivalent to
-    /// `self.slice(0, i, 1).unwrap().squeeze(0)`. Matches eager's [`crate::Tensor::get`].
+    /// `self.slice(0, i, 1).unwrap().squeeze(0)`. Matches eager's `crate::Tensor::get`.
     pub fn get(&self, i: usize) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.is_empty() {
@@ -7170,7 +7174,7 @@ impl Tensor {
 
     /// Sub-tensor at index along an arbitrary dim. Equivalent to
     /// `self.slice(dim, index, 1).unwrap().squeeze(dim)`. Matches eager's
-    /// [`crate::Tensor::get_on_dim`]. Accepts any [`Dim`].
+    /// `crate::Tensor::get_on_dim`. Accepts any [`Dim`].
     pub fn get_on_dim<D: Dim>(
         &self,
         dim: D,
@@ -7624,8 +7628,8 @@ impl Tensor {
     /// Composite via reshape + concat + reshape: insert a unit dim
     /// after each spatial dim, concat `scale` copies of the tensor on
     /// each new dim, then collapse the inflated dims back. Same shape
-    /// as the `upsample_nearest_2x` helper in [`fuel_transformers::models::lazy_yolov8`]
-    /// and [`fuel_transformers::models::lazy_sd_unet`], generalized to arbitrary scale.
+    /// as the `upsample_nearest_2x` helper in `fuel_transformers::models::lazy_yolov8`
+    /// and `fuel_transformers::models::lazy_sd_unet`, generalized to arbitrary scale.
     pub fn upsample_nearest2d(&self, scale: usize) -> std::result::Result<Self, fuel_ir::Error> {
         if scale == 0 {
             return Err(
@@ -7814,7 +7818,7 @@ impl Tensor {
     }
 
     /// Coordinate grids from rank-1 inputs. Matches PyTorch's
-    /// `torch.meshgrid` and eager's [`crate::Tensor::meshgrid`]:
+    /// `torch.meshgrid` and eager's `crate::Tensor::meshgrid`:
     ///
     /// - `xy_indexing = true` (Cartesian, NumPy default): the first
     ///   two inputs are swapped before broadcasting and the resulting
@@ -7916,7 +7920,7 @@ impl Tensor {
     /// is assumed. The byte count must match `shape.elem_count() *
     /// dtype_bytes`.
     ///
-    /// This is the low-level loader. Prefer [`from_safetensors_view`]
+    /// This is the low-level loader. Prefer [`Self::from_safetensors_view`]
     /// if you already have a `safetensors::TensorView` in hand.
     ///
     /// Supported dtypes today: `F32`, `F64`, `BF16`, `F16`, `U32`.
@@ -8108,8 +8112,8 @@ impl LlamaConfig {
     /// - `head_dim` is taken directly when present, or computed as
     ///   `hidden_size / num_attention_heads` otherwise.
     ///
-    /// [`LlamaConfigRaw`] is the wire shape under HF's own field names;
-    /// [`LlamaConfigRaw::resolve`] applies the two cross-field defaults and
+    /// `LlamaConfigRaw` is the wire shape under HF's own field names;
+    /// `LlamaConfigRaw::resolve` applies the two cross-field defaults and
     /// renames into this crate's vocabulary.
     pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
         LlamaConfigRaw::from_json_str(json)?.resolve()
@@ -8630,7 +8634,7 @@ impl LlamaModel {
             .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
     }
 
-    /// Like [`forward_embeds`] but skips the LM-head projection
+    /// Like [`Self::forward_embeds`] but skips the LM-head projection
     /// and returns post-final-RmsNorm hidden states
     /// `(batch, seq, dim)`. Uses strict-causal masking. Use
     /// this from multimodal hosts (LLaVA, Pixtral, etc.) that
@@ -8677,7 +8681,7 @@ impl LlamaModel {
         ))
     }
 
-    /// Like [`forward_embeds`] but takes a caller-supplied
+    /// Like [`Self::forward_embeds`] but takes a caller-supplied
     /// additive attention mask `(1, 1, seq, seq)` and skips
     /// the LM-head projection. Returns the post-final-RmsNorm
     /// hidden states `[batch, seq, dim]`.
@@ -8713,7 +8717,7 @@ impl LlamaModel {
         ))
     }
 
-    /// Like [`forward`] but returns the hidden state AFTER the final
+    /// Like [`Self::forward`] but returns the hidden state AFTER the final
     /// RMSNorm, BEFORE the output projection. Shape: `[batch, seq, dim]`.
     ///
     /// The `anchor` tensor provides the graph to build on — use a
@@ -8773,9 +8777,9 @@ impl LlamaModel {
 
     /// Internal entry that runs the LLaMA backbone given pre-built RoPE
     /// cos/sin tables and an attention mask. The standard
-    /// [`forward_embeds`] path computes cos/sin from `cfg.rope_base`
+    /// [`Self::forward_embeds`] path computes cos/sin from `cfg.rope_base`
     /// via [`Tensor::rope_tables_const`] and uses a strict-causal
-    /// mask; [`fuel_transformers::models::lazy_llama_full::Llama3Model`] uses this hook to
+    /// mask; `fuel_transformers::models::lazy_llama_full::Llama3Model` uses this hook to
     /// inject Llama-3 long-context scaled RoPE tables without
     /// duplicating the forward path.
     ///
@@ -10188,7 +10192,7 @@ impl LlamaModel {
     ///   dropped after realize). Subsequent forward steps see the
     ///   accumulated K/V state via the same Arcs.
     /// - Logits return shape: rank-1 `[vocab_size]` — last-position
-    ///   only, same as [`Self::forward_with_cache_on`].
+    ///   only, same as [`Self::forward_with_kv_context`].
     /// - Backends: CPU, CUDA, and Vulkan all run this path via the
     ///   pipelined executor + binding-table dispatch.
     ///
@@ -10463,11 +10467,11 @@ impl LlamaModel {
     /// Mechanism (spec risk #2 (a), copy-in/copy-out into a per-call shared
     /// buffer; all-or-nothing commit, spec risk #7):
     /// 1. Allocate a shared `[K, n_kv_heads, max_seq_len, head_dim]` K/V buffer
-    ///    per layer ([`crate::inference_context::alloc_batched_kv`]; fail-on-OOM).
+    ///    per layer (`crate::inference_context::alloc_batched_kv`; fail-on-OOM).
     /// 2. **Copy-in:** `Op::WriteSlice` each session's `[1,…]` KV history into
     ///    its batch slot `i`.
     /// 3. **Decode:** build a batch=`K` analogue of
-    ///    [`Self::build_and_realize_first_decode_token`] over the shared buffer
+    ///    `Self::build_and_realize_first_decode_token` over the shared buffer
     ///    (the projection GEMMs batch for free through the leading batch axis;
     ///    the attention half reaches `flash_decoding`'s batch dim on CUDA) and
     ///    realize `[K, vocab]` logits (non-captured plan-once, spec #4).
@@ -12179,7 +12183,7 @@ impl LlamaTokenizer {
     }
 
     /// Load a tokenizer from a HuggingFace repo. Downloads
-    /// `tokenizer.json` and calls [`from_file`].
+    /// `tokenizer.json` and calls [`Self::from_file`].
     pub fn from_hub(repo_id: &str) -> crate::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
             .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
@@ -13029,7 +13033,7 @@ impl PhiConfigRaw {
 
 impl PhiConfig {
     ///
-    /// [`PhiConfigRaw`] is the wire shape; [`PhiConfigRaw::resolve`] applies
+    /// `PhiConfigRaw` is the wire shape; `PhiConfigRaw::resolve` applies
     /// the CHAINED derivation and the evenness check.
     pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
         PhiConfigRaw::from_json_str(json)?.resolve()
@@ -13474,7 +13478,7 @@ impl PhiModel {
     /// re-planning. See the LlamaModel sibling for the full control-flow
     /// contract; the Phi version differs only in the model body it
     /// builds (parallel attn+MLP, LayerNorm, partial RoPE, projection
-    /// biases, optional output bias — see [`Self::apply_layer_with_kv_writes`]).
+    /// biases, optional output bias).
     ///
     /// Byte-identical to the D1 cached path ([`Self::forward_with_kv_context`])
     /// on the same prefix (same plan → same kernels). Bumps

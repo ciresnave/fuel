@@ -7,13 +7,13 @@
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (decompose function,
 //!   pattern matcher, shape/dtype rules).
-//! - [`recipe`] — the op's primitive subgraph as portable, shape-/rank-
+//! - `recipe` — the op's primitive subgraph as portable, shape-/rank-
 //!   polymorphic data (11 nodes; the two keepdim restores are D3 shrink-via-
 //!   swap `Unsqueeze` appends, the `centered` subterm is identity-shared, and
 //!   the `eps` `AddScalar` is an OPEN slot filled from the params projection).
-//! - [`scalars`] — the per-entry projection `LayerNormLastDim { eps } →
+//! - `scalars` — the per-entry projection `LayerNormLastDim { eps } →
 //!   vec![eps]`.
-//! - [`decompose`] — re-emits [`recipe`] through the
+//! - [`decompose`] — re-emits `recipe` through the
 //!   [`crate::registry::decompose_via_recipe`] bridge.
 //! - [`canonical_pattern`] — recognizes the 11-node recipe subgraph (the T7
 //!   `Unsqueeze`-append spelling, with the shared `centered` subterm) and
@@ -181,9 +181,9 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 }
 
 /// Lower a fused LayerNormLastDim node to its primitive subgraph and return the
-/// new root id — since T7 a re-emit of [`recipe`]'s data through the
+/// new root id — since T7 a re-emit of `recipe`'s data through the
 /// [`decompose_via_recipe`] bridge (the fused node's single input is the bind
-/// `[x]`; [`scalars`] fills the eps open slot; the resolving emit derives every
+/// `[x]`; `scalars` fills the eps open slot; the resolving emit derives every
 /// interior shape/dtype and identity-shares `centered`). Any failure — wrong
 /// params payload, a resolution decline at these shapes — returns `id`
 /// (fixpoint, surfaced gap, never a panic): exactly the G2 posture the

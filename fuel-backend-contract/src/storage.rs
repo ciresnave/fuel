@@ -240,7 +240,7 @@ impl Storage {
         &*self.inner
     }
 
-    /// Mutable variant of [`as_dyn`].
+    /// Mutable variant of [`Self::as_dyn`].
     pub fn as_dyn_mut(&mut self) -> &mut dyn DynBackendStorage {
         &mut *self.inner
     }

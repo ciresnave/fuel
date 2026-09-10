@@ -138,7 +138,7 @@ pub fn lookup_runtime_kernel(
 ///   `flash_decoding` kernel registers ONLY into the binding table under
 ///   `(OpKind::FlashAttn, [f16|bf16;4], Cuda)` — never
 ///   [`default_kernel_registry`] (a frozen CPU-only `OnceLock`). The
-///   [`static_binding_table_bridge`] arm makes that reachable: for a static id
+///   `static_binding_table_bridge` arm makes that reachable: for a static id
 ///   with a known `OpKind` mapping, consult the binding table for ANY entry on
 ///   `backend` (dtype-blind — this predicate answers "is *a* kernel bound";
 ///   dtype admissibility is a separate gate, e.g.

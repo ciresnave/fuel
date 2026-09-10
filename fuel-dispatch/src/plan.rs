@@ -1133,7 +1133,7 @@ fn build_candidates(
 
 /// Does this op receive an `AlternativeSet` entry from
 /// [`compile_plan`]? The single source of truth for the plan-entry
-/// gate (used by [`build_node_draft`] and `PlanOptions::reuse_plan`
+/// gate (used by `build_node_draft` and `PlanOptions::reuse_plan`
 /// incremental extension): `true` exactly when `op_to_op_kind` maps
 /// the op AND it is not a residency-determined transfer (`Op::Copy` /
 /// `Op::Move`, whose kernel backend the executor resolves from the

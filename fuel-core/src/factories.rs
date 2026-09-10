@@ -31,7 +31,7 @@
 //!
 //! 1. Add a unit struct `MyBackendFactory` here, behind a cfg(feature).
 //! 2. Implement `BackendFactory` — `try_make_realizer` constructs the
-//!    backend's `crate::Device` handle and wraps it in [`BridgeRealizer`].
+//!    backend's `crate::Device` handle and wraps it in `BridgeRealizer`.
 //!    (Device enumeration is `fuel-hardware`'s `HardwareEnumerator`, not
 //!    this factory, as of B0.2.)
 //! 3. Add a cfg-gated entry in [`registry`].
@@ -68,7 +68,7 @@ pub trait Realizer {
     ///
     /// Defaulted to [`Self::realize_f32`] so test stubs (which only
     /// exercise F32) stay one-method; the production
-    /// [`BridgeRealizer`] overrides it with the per-dtype readback.
+    /// `BridgeRealizer` overrides it with the per-dtype readback.
     fn realize_capture_f32(&mut self, tensor: &Tensor) -> Result<Vec<f32>> {
         self.realize_f32(tensor)
     }

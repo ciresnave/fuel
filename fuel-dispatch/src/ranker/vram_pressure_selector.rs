@@ -63,7 +63,7 @@ use fuel_ir::probe::BackendId;
 use super::{AlternativeSet, Candidate, RuntimeSelector};
 
 /// Boxed backend-runtime handle. Returned by the
-/// [`VramPressureSelector::backend_runtime_lookup`] callback for
+/// selector's `backend_runtime_lookup` callback for
 /// each `(backend, device)` pair the selector needs to query.
 pub type BackendRuntimeHandle = Box<dyn BackendRuntime + Send + Sync>;
 

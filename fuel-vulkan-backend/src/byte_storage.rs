@@ -11,7 +11,7 @@
 //!   this type.
 //! - **`VulkanStorageBytes`** (this module): holds the same
 //!   `StorageBacking` + `tier` plus a single `len_bytes` field.
-//!   Dtype lives on the [`fuel_memory::Storage`] wrapper, not
+//!   Dtype lives on the `fuel_memory::Storage` wrapper, not
 //!   here. Implements [`fuel_backend_contract::backend::BackendStorage`].
 //!
 //! Per-op kernels migrate during Phase B/C. The eviction / fault-

@@ -11,7 +11,7 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry`.
-//! - [`recipe`] — the op's closed-form backward as portable, shape-/rank-
+//! - `recipe` — the op's closed-form backward as portable, shape-/rank-
 //!   polymorphic `PatternNode` data (Increment C carriers, A1). Sibling of the
 //!   layer-norm-backward recipe: every last-axis reduce is `MeanDim`/`SumDim(
 //!   axis_last)` with the keepdim restored by `Unsqueeze(axis_last = append)`
@@ -20,10 +20,10 @@
 //!   `AddScalar` is an OPEN slot; the reduced-count divisor `n = dims[last]` is
 //!   a `MulScalar(scalar_rel = Extent(0, LAST))` — filled from x's shape at emit
 //!   time, NOT from the params projection (the A1 carrier).
-//! - [`scalars`] — the per-entry projection `RmsNormLastDimBackward { eps } →
+//! - `scalars` — the per-entry projection `RmsNormLastDimBackward { eps } →
 //!   vec![eps; open-slot-count]` (one eps per open slot — see the RISK-A note
-//!   on [`recipe`]).
-//! - [`decompose`] — re-emits [`recipe`] through the
+//!   on `recipe`).
+//! - [`decompose`] — re-emits `recipe` through the
 //!   [`crate::registry::decompose_via_recipe`] bridge.
 //!
 //! See `softmax_last_dim_backward.rs` for the architectural rationale shared by
@@ -213,8 +213,8 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 
 /// Decompose to the closed-form RMSNorm backward
 /// `grad_x = r_rms · (g − x·s / (n·(mean_sq + eps)))` — since A1 a re-emit of
-/// [`recipe`]'s data through the [`decompose_via_recipe`] bridge (the fused
-/// node's two inputs `[x, up]` are the binds; [`scalars`] fills the eps open
+/// `recipe`'s data through the [`decompose_via_recipe`] bridge (the fused
+/// node's two inputs `[x, up]` are the binds; `scalars` fills the eps open
 /// slots; the `MulScalar(n)` divisor resolves from x's shape via the
 /// `scalar_rel` carrier; the resolving emit derives every interior shape/dtype).
 /// Any failure — wrong params payload, a resolution decline at these shapes

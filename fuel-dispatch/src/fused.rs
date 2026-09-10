@@ -1031,7 +1031,7 @@ pub const NORM_FAMILY_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
 /// because they touch the data the same way per row.
 ///
 /// Shapes: `[x]` (forward, 1 input) or `[x_or_y, g]` (backward,
-/// 2 inputs). Total element count comes from input[0] either way.
+/// 2 inputs). Total element count comes from `input[0]` either way.
 pub fn cost_norm_family_cpu(
     shapes: &[Shape],
     params: &FusedOpParams,

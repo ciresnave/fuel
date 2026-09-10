@@ -128,11 +128,11 @@ pub struct UpBlock3Weights {
 
 #[derive(Debug, Clone)]
 pub struct SdVae3DecoderWeights {
-    /// 3×3 conv (latent_ch → dim[0]). SD3 has no `post_quant_conv`,
+    /// 3×3 conv (latent_ch → `dim[0]`). SD3 has no `post_quant_conv`,
     /// so the raw (scaled+shifted) latent feeds straight in here.
     pub conv_in_w: Arc<[f32]>,
     pub conv_in_b: Arc<[f32]>,
-    /// Mid block: ResNet + Attention + ResNet, all at dim[0].
+    /// Mid block: ResNet + Attention + ResNet, all at `dim[0]`.
     pub mid_resnet_1: Resnet3Weights,
     pub mid_attn: Attn3Weights,
     pub mid_resnet_2: Resnet3Weights,

@@ -30,7 +30,7 @@
 //! Slot `s` of every layer is a buffer `[max_seq, …slot_trailing[s]]` with
 //! the sequence axis at dim 0 (matching [`LazyKvCache`]'s no-batch,
 //! per-sequence convention; the caller broadcasts/concats across batches).
-//! An [`Self::append`] writes a `[seqlen_new, …slot_trailing[s]]` slab into
+//! An [`LatentCache::append`] writes a `[seqlen_new, …slot_trailing[s]]` slab into
 //! every slot at the cache's current position; all slots in one append
 //! share the same `seqlen_new`.
 //!
@@ -118,7 +118,7 @@ impl LatentCache {
 
     /// Append fresh latents for `layer` at the cache's current position.
     /// **Consumes `self`** and returns the updated cache (option (b), the
-    /// same functional shape as [`LazyKvCache::append`]).
+    /// same functional shape as `LazyKvCache::append`).
     ///
     /// `new_slots` must have exactly `n_slots` entries, in slot order; entry
     /// `s` must be `[seqlen_new, …slot_trailing[s]]`, and all entries must
@@ -195,7 +195,7 @@ impl LatentCache {
 
     /// Advance `current_seq_len` by `n`. Call after the last layer's
     /// [`Self::append`] in each generation step (mirrors
-    /// [`LazyKvCache::advance_by`]).
+    /// `LazyKvCache::advance_by`).
     pub fn advance_by(mut self, n: usize) -> Self {
         self.current_seq_len = (self.current_seq_len + n).min(self.max_seq_len);
         self
@@ -210,7 +210,7 @@ impl LatentCache {
     }
 
     /// Full-capacity buffer for `layer`'s slot `s` (`[max_seq, …trailing]`)
-    /// — escape hatch mirroring [`LazyKvCache::k_buffer_full`].
+    /// — escape hatch mirroring `LazyKvCache::k_buffer_full`.
     pub fn slot_buffer_full(&self, layer: usize, slot: usize) -> Tensor {
         self.layers[layer][slot].clone()
     }

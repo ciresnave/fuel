@@ -371,7 +371,7 @@ fn recipe(seqlen: usize) -> PatternNode {
 
 /// Total decomposition of SsdChunkScan to an [`crate::Op::Scan`] recipe —
 /// closing decisions-log G3 ("a higher-order `Scan` for SSMs"), part 2 (the twin
-/// of `selective_scan`). Since Increment C B2 a re-emit of [`recipe`]'s portable
+/// of `selective_scan`). Since Increment C B2 a re-emit of `recipe`'s portable
 /// data through the [`decompose_via_recipe`] bridge (structure-preserving: the
 /// emitted base map is node-for-node identical to the pre-B2 imperative body).
 /// `seqlen` (the scan bound, a shape-dependent structural param) is read here

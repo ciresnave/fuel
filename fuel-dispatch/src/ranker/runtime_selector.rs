@@ -83,7 +83,7 @@ use crate::ranker::{AlternativeSet, Candidate};
 /// The [`Candidate`] already carries `backend`, `precision`,
 /// `static_cost`, and `op_params`; selectors that need op identity
 /// can derive it from these fields. If a future selector needs the
-/// graph-level NodeId or OpKind, we add a [`SelectorContext`]
+/// graph-level NodeId or OpKind, we add a `SelectorContext`
 /// param — but Phase 5.1 keeps the surface minimal so the trait
 /// stays usable by selectors that only care about set contents.
 pub trait RuntimeSelector: Send + Sync + std::fmt::Debug {

@@ -19,7 +19,7 @@
 //!
 //! ## PR-A4 — the first pathfinder (deliberate-fork seed)
 //!
-//! [`seed_placement_fork_branches`] is the first real pathfinder: where
+//! [`PlacementForkPathfinder`](crate::driver::PlacementForkPathfinder) is the first real pathfinder: where
 //! the placement DP admitted a kernel-bearing node with **≥2 distinct
 //! `(backend, device)` placements** that has a producer (the diverge)
 //! and exactly one consumer (the reconverge), it records ONE
@@ -45,7 +45,7 @@
 //! introduced in A3a:
 //!
 //! - There were **no pathfinders yet** — the first
-//!   ([`seed_placement_fork_branches`]) landed in PR-A4. A graph with no
+//!   ([`PlacementForkPathfinder`](crate::driver::PlacementForkPathfinder)) landed in PR-A4. A graph with no
 //!   competing routes is already its own single-route plan, so
 //!   [`optimize_graph`] introduces **zero [`Op::Branch`] nodes** for it.
 //! - It **reuses** the existing placement / cost / `target_backend`
@@ -133,7 +133,7 @@ impl OptimizedGraph {
     ///
     /// This is the resolved *effective* placement, not a hint. It is the same
     /// map the residency pass uses to decide where to stitch cross-device
-    /// copies, resolved by the priority in [`effective_placements`]:
+    /// copies, resolved by the priority in `effective_placements`:
     /// residency-declaring ops → explicit `Graph::placement` → input residency
     /// → **plan winner** → backend stamp → view pass-through.
     ///
@@ -223,7 +223,7 @@ impl OptimizedGraph {
 ///    agreement). Its [`crate::plan::ExecutionPlan`] is a transient
 ///    by-product here — the source of truth is the graph.
 /// 3. Runs the PR-A4 deliberate-fork pathfinder
-///    ([`seed_placement_fork_branches`]): records ONE `Op::Branch` per
+///    ([`PlacementForkPathfinder`](crate::driver::PlacementForkPathfinder)): records ONE `Op::Branch` per
 ///    genuine ≥2-placement fork (arm-0 = winner, arm-1 = runner-up). A
 ///    graph with no competing routes gets **zero** branches — it is
 ///    already its own single-route plan.

@@ -43,7 +43,7 @@
 //! * **Phase 3a** (zero-alloc): `KvCache::with_capacity` emits
 //!   `Op::Alloc → Op::ZeroFill` pairs and realizes via
 //!   `PipelinedExecutor::realize_many`. `alloc_zeroed_on` deleted.
-//! * **Phase 3b** (H2D Const upload): [`build_const_cache`] (for
+//! * **Phase 3b** (H2D Const upload): `build_const_cache` (for
 //!   non-CPU targets) builds a transient graph of `Op::Const →
 //!   Op::Copy { target: device }` pairs and realizes them
 //!   multi-target. The executor's `WorkItemKind::Copy` arm allocates
@@ -54,7 +54,7 @@
 //!
 //! Residual bridge code: [`device_seed_storage`] (~30 LOC, just the
 //! 0-byte device-handle anchor per backend) and
-//! [`host_buffer_to_bytes`] (per-dtype HostBuffer → bytes
+//! `host_buffer_to_bytes` (per-dtype HostBuffer → bytes
 //! conversion — orthogonal to the device-dispatch concern).
 //!
 //! ## Phase E.3 coverage (complete)
@@ -124,15 +124,15 @@ std::thread_local! {
 }
 
 /// Read the process-global `optimize_graph` invocation count (D2a
-/// telemetry — see [`OPTIMIZE_CALLS`]). Monotonically non-decreasing across
+/// telemetry). Monotonically non-decreasing across
 /// the process lifetime; process-wide, so it is polluted by concurrent test
 /// threads — use [`optimize_calls_thread_local`] for a per-thread delta.
 pub fn optimize_calls() -> usize {
     OPTIMIZE_CALLS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Read THIS thread's `optimize_graph` invocation count (see
-/// [`OPTIMIZE_CALLS_TL`]). Robust for a single-threaded realize sequence
+/// Read THIS thread's `optimize_graph` invocation count.
+/// Robust for a single-threaded realize sequence
 /// even while other threads optimize concurrently — the D2a optimize-skip
 /// assertion measures a delta on this reader.
 pub fn optimize_calls_thread_local() -> usize {
@@ -178,7 +178,7 @@ pub fn realize_one_as<T: bytemuck::Pod>(
 ///
 /// # Why this exists (the dual-device-seed gap)
 ///
-/// A realize pins ONE `device` (the primary). [`build_const_cache`] uploads
+/// A realize pins ONE `device` (the primary). `build_const_cache` uploads
 /// the reachable `Op::Const`s to that device, so a primary-device handle
 /// lands in the cache (carried by the uploaded const storages) and the
 /// executor's H2D `Op::Copy`/`Op::Alloc` device-handle search
@@ -1405,7 +1405,7 @@ pub(crate) fn build_const_cache(
 }
 
 /// Phase D · D2b — build a single device-resident `fuel_memory::Storage`
-/// Arc from a host buffer, the same upload path [`build_const_cache`]
+/// Arc from a host buffer, the same upload path `build_const_cache`
 /// uses per Const. The persistent-decode re-bind inserts the result into
 /// the [`crate::inference_context::InferenceContext`]'s persistent map
 /// under a STABLE data-Const NodeId each token (token-ids / RoPE / mask),
@@ -1417,7 +1417,7 @@ pub(crate) fn build_const_cache(
 ///
 /// **Non-CPU device**: builds a one-node transient `Op::Const → Op::Copy
 /// { target }` graph (+ device-handle anchor) and realizes the copy —
-/// the H2D upload. Mirrors [`build_const_cache`]'s non-CPU arm for a
+/// the H2D upload. Mirrors `build_const_cache`'s non-CPU arm for a
 /// single buffer.
 ///
 /// The `dtype` tag comes from the `HostBuffer` variant. Never panics.
@@ -1925,7 +1925,7 @@ fn seed_placed_device_handles(
 /// per-backend handle for `Op::Alloc` nodes.
 ///
 /// Phase 3a of bridge-retirement (post-9c). This is the *residual*
-/// of the deleted [`fuel-core::inference_context::alloc_zeroed_on`]:
+/// of the deleted `fuel-core::inference_context::alloc_zeroed_on`:
 /// it does only the per-backend "allocate-on-device" piece, not the
 /// zero-fill (that moves to the executor's Alloc arm). Callers
 /// (today: [`crate::inference_context::KvCache::with_capacity`])

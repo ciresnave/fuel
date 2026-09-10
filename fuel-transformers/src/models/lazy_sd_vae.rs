@@ -133,10 +133,10 @@ pub struct SdVaeDecoderWeights {
     /// 1×1 conv applied to the raw latent before the decoder.
     pub post_quant_conv_w: Arc<[f32]>,
     pub post_quant_conv_b: Arc<[f32]>,
-    /// 3×3 conv (latent_ch → dim[0]).
+    /// 3×3 conv (latent_ch → `dim[0]`).
     pub conv_in_w: Arc<[f32]>,
     pub conv_in_b: Arc<[f32]>,
-    /// Mid block: ResNet + Attention + ResNet, all at dim[0].
+    /// Mid block: ResNet + Attention + ResNet, all at `dim[0]`.
     pub mid_resnet_1: ResnetWeights,
     pub mid_attn: AttnWeights,
     pub mid_resnet_2: ResnetWeights,

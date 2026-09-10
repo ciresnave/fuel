@@ -19,9 +19,9 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry`.
-//! - [`recipe`] — the fair-share max subgradient as portable, shape-polymorphic
+//! - `recipe` — the fair-share max subgradient as portable, shape-polymorphic
 //!   `PatternNode` data (Increment C carriers, A2).
-//! - [`decompose`] — re-emits [`recipe`] through the
+//! - [`decompose`] — re-emits `recipe` through the
 //!   [`crate::registry::decompose_via_recipe`] bridge.
 //!
 //! See `softmax_last_dim_backward.rs` for the shared architectural
@@ -168,7 +168,7 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
     }
 }
 
-/// Decompose to the fair-share max subgradient — since A2 a re-emit of [`recipe`]'s
+/// Decompose to the fair-share max subgradient — since A2 a re-emit of `recipe`'s
 /// data through the [`decompose_via_recipe`] bridge (the fused node's two inputs
 /// `[x, up]` are the binds; the resolving emit derives every interior shape/dtype
 /// and re-resolves the `MaskedFill` fill Scalar to x's dtype). Any failure —

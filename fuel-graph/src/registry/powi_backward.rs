@@ -18,10 +18,10 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry`.
-//! - [`recipe`] — the op's closed-form backward as portable `PatternNode` data
+//! - `recipe` — the op's closed-form backward as portable `PatternNode` data
 //!   (Increment C carriers, A3). Unlike the shape-polymorphic slice-1/-2
 //!   recipes, this datum is a pure function of `exp` (see its doc for why).
-//! - [`decompose`] — re-emits [`recipe`] through the
+//! - [`decompose`] — re-emits `recipe` through the
 //!   [`crate::registry::decompose_via_recipe`] bridge.
 //!
 //! See `softmax_last_dim_backward.rs` for the shared architectural
@@ -134,7 +134,7 @@ fn recipe(exp: i32) -> PatternNode {
 
 /// Decompose to the closed-form gradient `grad_x = exp · x^(exp-1) · upstream`,
 /// where `x` (input 0) is the forward `PowI` input and `upstream` (input 1) is
-/// the upstream gradient — since A3 a re-emit of [`recipe`]'s param-derived data
+/// the upstream gradient — since A3 a re-emit of `recipe`'s param-derived data
 /// through the [`decompose_via_recipe`] bridge (the fused node's two inputs
 /// `[x, upstream]` are the binds; every scalar is baked, so the projection is
 /// the empty vec; the resolving emit derives every interior shape/dtype). A

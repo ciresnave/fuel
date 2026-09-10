@@ -5,7 +5,15 @@
 //! `fuel-capture-fixtures` binary: deterministic input generation,
 //! pairwise consensus clustering across multi-backend measurements,
 //! consensus-median fixture selection, and grouped JSON output via
-//! [`FixtureFile`].
+//! [`crate::FixtureFile`].
+//!
+//! Public so external tooling can build alternative capture front-ends
+//! without forking the data-model crate.
+//!
+//! Gated on the `capture` feature so single-backend consumers of the
+//! fixtures don't pay the `serde_json` / filesystem-helper cost.
+//! Validators only need [`crate::validate_against_fixture`] + the data
+//! model.
 //!
 //! ## Why a module (not the binary directly)
 //!

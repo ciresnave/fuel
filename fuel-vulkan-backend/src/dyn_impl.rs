@@ -11,7 +11,7 @@
 //! All `*_dyn` methods that return `Box<dyn DynBackendStorage>` are
 //! stubs that error out. Vulkan storage flows through the byte-shape
 //! [`crate::VulkanStorageBytes`] substrate (held inside
-//! [`fuel_memory::Storage`]), not the op-rich `DynBackendStorage`
+//! `fuel_memory::Storage`), not the op-rich `DynBackendStorage`
 //! trait. Callers use the byte-storage surface on `VulkanBackend`
 //! ([`VulkanBackend::alloc_bytes_handle`],
 //! [`VulkanBackend::upload_bytes_handle`],

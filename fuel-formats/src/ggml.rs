@@ -6,7 +6,7 @@
 //! ggml_dtype, dims..., name, [pad to 32], raw_bytes)`. Dimensions
 //! are stored in reverse order on disk and reversed back on read.
 //!
-//! This module owns the wire-format types ([`Magic`],
+//! This module owns the wire-format types (`Magic`,
 //! [`VersionedMagic`], [`HParams`], [`Vocab`], [`RawTensor`]) and the
 //! readers that produce them from any `impl Read + Seek`. It is now the
 //! whole of Fuel's GGML support: B6 deleted the downstream promotion

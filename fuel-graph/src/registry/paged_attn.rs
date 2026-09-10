@@ -35,7 +35,7 @@
 //! `IndexSelect` the physical blocks named by the block table → dense
 //! SDPA (`MatMul` / softmax / `MatMul`) → variable-length `MaskedFill`.
 //! Every node is in the closed primitive basis, so it is a genuine
-//! decomposition, not a basis-gap self-return. See [`recipe`].
+//! decomposition, not a basis-gap self-return.
 //!
 //! The old claim confused two different things, and the distinction is
 //! the whole design point of this op:
@@ -239,7 +239,7 @@ fn alibi_bias_recipe(alibi: PatternNode, b: usize, hq: usize, sq: usize, sk: usi
 /// node's input order.
 ///
 /// The MaskedFill fill value is authored dtype-polymorphically (no `cast_dtype`);
-/// emit resolves the `Scalar` to operand[0]'s dtype. For F32 attention this is
+/// emit resolves the `Scalar` to `operand[0]`'s dtype. For F32 attention this is
 /// `Scalar::F32(-inf)`, byte-identical to the imperative body; a non-F32 config
 /// resolves to that dtype's `-inf` (the A2 carrier's dtype-correct behavior — the
 /// legacy always baked F32, an under-protective quirk this migration supersedes),
@@ -367,7 +367,7 @@ fn fused_softmax_attr() -> OpAttrs {
 }
 
 /// Lower a fused PagedAttn node to its primitive gather-+-SDPA subgraph and
-/// return the new root id. Since Increment C C-T2 a re-emit of [`recipe`]'s
+/// return the new root id. Since Increment C C-T2 a re-emit of `recipe`'s
 /// portable data through the [`decompose_via_recipe`] bridge (structure-
 /// preserving: the emitted base map is node-for-node identical to the pre-C-T2
 /// imperative body — see the parity test in `tests`). The per-call recipe bakes

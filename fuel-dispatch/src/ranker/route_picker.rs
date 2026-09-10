@@ -5,7 +5,7 @@
 //! Phase C PR-C1 of the "plan IS the graph" rebuild
 //! ([`../../docs/session-prompts/plan-is-graph-rebuild.md`](
 //! ../../docs/session-prompts/plan-is-graph-rebuild.md) Phase C,
-//! capability [7]; [`../../docs/architecture/06-runtime.md`](
+//! capability 7; [`../../docs/architecture/06-runtime.md`](
 //! ../../docs/architecture/06-runtime.md) §"Route picker (the runtime
 //! selector / Picker 2)").
 //!

@@ -328,7 +328,7 @@ fn recipe(a_shape: &Shape, w_shape: &Shape, dtype: DType, block_size: usize) -> 
 
 /// Lower a fused Nf4Matmul node to its `dequantize(w_packed, absmax) → matmul`
 /// primitive subgraph and return the new root id. Since Increment C a re-emit of
-/// [`recipe`]'s portable data through the [`decompose_via_recipe`] bridge
+/// `recipe`'s portable data through the [`decompose_via_recipe`] bridge
 /// (structure-preserving: the emitted base map is node-for-node identical to the
 /// pre-migration imperative body — see the parity test in `tests`). The per-call
 /// recipe bakes the concrete shapes (incl. the product-collapsed `M'`) and

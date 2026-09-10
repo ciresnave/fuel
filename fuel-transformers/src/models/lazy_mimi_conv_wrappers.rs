@@ -2,7 +2,7 @@
 //! Mimi learnable down-/up-sampling wrappers (sub-port 3 of
 //! port-mimi-conv.md).
 //!
-//! Ports [`ConvDownsample1d`] / [`ConvTrUpsample1d`] from
+//! Ports `ConvDownsample1d` / `ConvTrUpsample1d` from
 //! `fuel_transformers::models::audio::mimi::conv` to the lazy-graph
 //! API. Both are thin specializations:
 //!

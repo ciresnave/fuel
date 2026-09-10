@@ -694,11 +694,11 @@ pub const MATMUL_COOP: &str = "matmul_coop";
 /// Cooperative-matrix tiled matmul, bf16 × bf16 → f32. Sibling of
 /// `MATMUL_COOP` (f32 × bf16). Both operands stored as bf16 (u16);
 /// the kernel downcasts bf16→f16 on shared-mem load and uses the
-/// coop[3] tile shape (A=f16, B=f16, C=f32, R=f32) for the matmul,
+/// `coop[3]` tile shape (A=f16, B=f16, C=f32, R=f32) for the matmul,
 /// keeping the f32 accumulator.
 pub const MATMUL_COOP_BF16_BF16: &str = "matmul_coop_bf16_bf16";
 /// Cooperative-matrix tiled matmul, f16 × f16 → f32. Native f16
-/// inputs (no downcast); same coop[3] tile + f32 accumulator as the
+/// inputs (no downcast); same `coop[3]` tile + f32 accumulator as the
 /// bf16 sibling.
 pub const MATMUL_COOP_F16_F16: &str = "matmul_coop_f16_f16";
 /// Cooperative-matrix tiled matmul, bf16 × bf16 → bf16 (downcast
@@ -743,7 +743,7 @@ pub const FLASH_ATTN_BACKWARD_Q_F32: &str = "flash_attn_backward_q_f32";
 pub const FLASH_ATTN_BACKWARD_K_F32: &str = "flash_attn_backward_k_f32";
 /// FlashAttention backward — dV, f32. One workgroup per
 /// (b, h_kv, k_j); same loop shape as dK but accumulates over
-/// P[k_j] · dO instead of dS · Q.
+/// `P[k_j] · dO` instead of `dS · Q`.
 pub const FLASH_ATTN_BACKWARD_V_F32: &str = "flash_attn_backward_v_f32";
 /// Cooperative-matrix tiled matmul, f16 × f16 → f16 (downcast
 /// store). Same staging pattern as the bf16→bf16 sibling but uses
@@ -797,7 +797,7 @@ pub const REDUCE: &str = "reduce";
 pub const REDUCE_F16: &str = "reduce_f16";
 /// Full-tensor reduction, bf16 storage (packed u32, lane-pair input)
 /// with f32 accumulator. Single output bf16 in low 16 bits of
-/// output[0]; n MUST be even.
+/// `output[0]`; n MUST be even.
 pub const REDUCE_BF16: &str = "reduce_bf16";
 /// Full-tensor reduction, native f64.
 pub const REDUCE_F64: &str = "reduce_f64";
