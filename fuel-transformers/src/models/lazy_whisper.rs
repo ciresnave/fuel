@@ -320,11 +320,13 @@ impl WhisperModel {
         let d = cfg.d_model;
         let seq = tokens.len();
         assert!(seq > 0, "forward_decoder: empty tokens");
-        assert!(
-            seq <= cfg.max_target_positions,
-            "forward_decoder: seq {seq} > max_target_positions {}",
-            cfg.max_target_positions,
-        );
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_target_positions {
+            return Err(fuel_core::Error::Msg(format!(
+                "forward_decoder: seq {seq} > max_target_positions {}",
+                cfg.max_target_positions,
+            )));
+        }
 
         // Bootstrap the graph from encoder_out (keeps everything on one graph).
         let input_ids = encoder_out.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
@@ -1134,6 +1136,35 @@ mod tests {
         // Phase 6a oracle gate.
         let flat_ref = enc.realize_f32();
         fuel_core::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
+    }
+
+    /// GAP-308 born-red: a decoder sequence longer than `max_target_positions`
+    /// is REJECTED with a typed error. Asserts the MESSAGE fragment, not
+    /// is_err(). The decline sits at the top of `forward_decoder`, before
+    /// `encoder_out` is used, so the real encoder is built only for the
+    /// positive control.
+    #[test]
+    fn forward_decoder_declines_seq_over_max_target_positions() {
+        let mut cfg = tiny_cfg();
+        cfg.max_target_positions = 4;
+        let weights = zero_weights(&cfg);
+        let model = WhisperModel {
+            config: cfg.clone(),
+            weights,
+        };
+        let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
+        let enc = model.forward_encoder(&mel, 32).unwrap();
+        // POSITIVE CONTROL: seq <= max_target_positions must run.
+        let short: Vec<u32> = (0..3).collect();
+        model
+            .forward_decoder(&short, &enc)
+            .expect("control: seq <= max_target_positions must run");
+        let long: Vec<u32> = (0..8).collect(); // seq = 8 > 4
+        let err = model.forward_decoder(&long, &enc).unwrap_err();
+        assert!(
+            format!("{err}").contains("max_target_positions"),
+            "forward_decoder must decline seq > max_target_positions; got: {err}"
+        );
     }
 
     #[test]
