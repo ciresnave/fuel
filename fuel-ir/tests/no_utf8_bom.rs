@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! No tracked file may begin with a UTF-8 BOM (`EF BB BF`).
 //!
 //! WHY THIS IS A GATE AND NOT A ONE-TIME SWEEP: 136 tracked files carried a BOM,

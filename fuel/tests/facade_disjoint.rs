@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Facade glob-disjointness gate (restructure Stage 2).
 //!
 //! The facade re-exports TWO globs — `pub use fuel_core::*` (Foundation) and

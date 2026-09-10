@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Feature-forwarding gate for the `fuel` facade.
 //!
 //! The facade re-exports two crates — `fuel-core` (Foundation: tensor API) and,

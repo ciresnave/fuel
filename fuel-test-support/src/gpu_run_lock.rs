@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! **The GPU mutex's absence is indistinguishable from its success (GAP-224).**
 //!
 //! Every GPU-touching run is supposed to go through `scripts/gpu-run.ps1`, a

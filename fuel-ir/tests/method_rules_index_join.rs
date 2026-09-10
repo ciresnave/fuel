@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! **`docs/method-rules.md` and `CLAUDE.md` must agree, in BOTH directions.**
 //!
 //! WHY THIS EXISTS. Eight method-rules sections once carried no `CLAUDE.md`
