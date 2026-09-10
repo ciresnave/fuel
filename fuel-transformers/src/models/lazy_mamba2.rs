@@ -159,12 +159,15 @@ impl Mamba2Model {
         let seq = tokens.len();
         let _batch = 1;
         assert!(seq > 0, "Mamba2Model::forward: tokens must be non-empty");
-        assert!(
-            seq.is_multiple_of(cfg.chunk_size),
-            "Mamba2Model::forward: seq ({seq}) must be a multiple of chunk_size ({}). \
-             Right-pad to the next multiple before calling.",
-            cfg.chunk_size,
-        );
+        // GAP-308 (CONFIG_FIELD): a caller-supplied sequence length not aligned to
+        // chunk_size is input to reject, not an invariant to assert.
+        if !seq.is_multiple_of(cfg.chunk_size) {
+            return Err(fuel_core::Error::Msg(format!(
+                "Mamba2Model::forward: seq ({seq}) must be a multiple of chunk_size ({}). \
+                 Right-pad to the next multiple before calling.",
+                cfg.chunk_size,
+            )));
+        }
         let vocab_padded = cfg.vocab_size();
 
         let mut h = Tensor::embed_tokens(
@@ -426,6 +429,40 @@ mod tests {
             final_norm_gain,
             output,
         }
+    }
+
+    /// GAP-308 born-red: a sequence length not a multiple of `chunk_size` is
+    /// REJECTED with a typed error. Asserts the MESSAGE fragment ("chunk_size"),
+    /// not is_err(): the decline returns before the backbone graph is built, so
+    /// a removed decline would return Ok on an invalid unrealized graph.
+    #[test]
+    fn forward_declines_seq_not_multiple_of_chunk_size() {
+        let cfg = Mamba2Config {
+            d_model: 16,
+            n_layer: 2,
+            vocab_size: 32,
+            d_state: 8,
+            expand: 2,
+            head_dim: 4,
+            ngroups: 1,
+            pad_vocab_size_multiple: 8,
+            chunk_size: 4,
+            rms_norm_eps: 1e-5,
+        };
+        let model = Mamba2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        // POSITIVE CONTROL: a chunk-aligned length must run.
+        model
+            .forward(&[1_u32, 2, 3, 4])
+            .expect("control: seq multiple of chunk_size must run");
+        // seq = 6 is NOT a multiple of chunk_size = 4.
+        let err = model.forward(&[1_u32, 2, 3, 4, 5, 6]).unwrap_err();
+        assert!(
+            format!("{err}").contains("chunk_size"),
+            "must decline seq not a multiple of chunk_size; got: {err}"
+        );
     }
 
     /// Smoke test on a chunk-aligned sequence. seq must be a multiple
