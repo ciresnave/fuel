@@ -39,7 +39,7 @@ pub struct VulkanStorageBytes {
     pub len_bytes: usize,
     /// Current residency tier.
     pub tier: Tier,
-    /// Handle back to the [`VulkanBackend`] that allocated this
+    /// Handle back to the [`crate::VulkanBackend`] that allocated this
     /// storage. `Some(_)` when constructed via the handle-aware
     /// path (`VulkanBackend::alloc_bytes_handle`,
     /// `upload_bytes_handle`); `None` for legacy GraphBackend-trait
@@ -89,7 +89,7 @@ impl VulkanStorageBytes {
 
     /// Build a `VulkanStorageBytes` from a device-resident buffer +
     /// byte count AND attach a back-reference to the
-    /// [`VulkanBackend`] Arc. The pipelined-executor binding-table
+    /// [`crate::VulkanBackend`] Arc. The pipelined-executor binding-table
     /// dispatch wrappers reach the backend through this field to
     /// allocate outputs + dispatch kernels.
     pub fn from_device_with_backend(

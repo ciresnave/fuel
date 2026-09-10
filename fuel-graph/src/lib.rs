@@ -2678,7 +2678,7 @@ impl Graph {
     /// Checks every node's `inputs`, the op-carried `Op::Branch`
     /// `reconverge_at`, every NodeId-keyed side-table, and the
     /// `side_effect_roots` vector. Returns the first offending reference as
-    /// a typed error (never panics); used by [`Graph::compact`]'s
+    /// a typed error (never panics); used by [`crate::compact`]'s
     /// `debug_assert` and by tests.
     pub fn verify_no_dangling(&self) -> std::result::Result<(), fuel_ir::Error> {
         let n = self.nodes.len();

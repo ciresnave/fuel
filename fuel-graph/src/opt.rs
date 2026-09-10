@@ -639,7 +639,7 @@ impl Rule for LoweringRule {
 ///
 /// Currently params are reconstructed by-id: SoftmaxLastDim's variant
 /// is parameterless, so the fusion rule emits
-/// `FusedOpParams::SoftmaxLastDim`. Step 4 extends [`PatternMatch`]
+/// `FusedOpParams::SoftmaxLastDim`. Step 4 extends [`crate::registry::PatternMatch`]
 /// (or adds a sibling `extract_params` field on `FusedOpEntry`) so
 /// param-bearing fused ops can recover their parameters from the
 /// matched subgraph.

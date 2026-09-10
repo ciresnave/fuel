@@ -26,7 +26,7 @@
 //! - **Rankers** — *MEASURE* each path on the `CostVector` (PR-B1/B2
 //!   `rank_by_cost`). Rankers are not a driver-visible trait in B3:
 //!   ranking is applied **per kernel-bearing node inside
-//!   [`compile_plan`]** as the per-node `AlternativeSet` is built, and
+//!   [`crate::plan::compile_plan`]** as the per-node `AlternativeSet` is built, and
 //!   the ranked result is carried into the driver via
 //!   [`OptimizationContext::plan`]. The driver re-runs no ranker; the
 //!   measure step is the plan it is handed. (B3 is a structural refactor
@@ -35,7 +35,7 @@
 //!   driver-visible `Ranker` trait.)
 //! - **[`Optimizer`]s** — *MERGE / DISCARD* paths. The PR-B2
 //!   per-ending-device Pareto frontier + crowding cap is applied
-//!   per-node inside [`compile_plan`]; the registered
+//!   per-node inside [`crate::plan::compile_plan`]; the registered
 //!   [`FrontierConvergenceOptimizer`] is the in-graph counterpart that
 //!   runs **after each pathfinder** to (a) collapse duplicate
 //!   (forward-identical) arms a pathfinder may have proposed

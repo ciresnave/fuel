@@ -10316,7 +10316,7 @@ impl LlamaModel {
     /// the first `seq == 1` token builds it; later tokens rebind and skip
     /// optimize. Output is byte-identical to `forward_with_kv_context` either
     /// way. The plan self-heals on a cache resize / dtype change
-    /// ([`DecodeSession::is_valid_for`]).
+    /// ([`crate::inference_context::DecodeSession::is_valid_for`]).
     ///
     /// **One `InferenceContext` per model** — already the invariant here
     /// (speculative decoding builds a separate context for draft and target).
@@ -11387,7 +11387,7 @@ pub enum SessionDisposition {
 ///
 /// Order of business, and why it is this order:
 ///
-/// 1. Ask [`DecodeSession::validity_for`] — ONE comparison list, so "is it
+/// 1. Ask [`crate::inference_context::DecodeSession::validity_for`] — ONE comparison list, so "is it
 ///    valid" and "is only the allocation different" cannot disagree.
 /// 2. On anything but `Valid`, retire readers FIRST via `on_invalidate`. A
 ///    `CapturedDecodeSession` replays a recorded CUDA graph over FIXED device

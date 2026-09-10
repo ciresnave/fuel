@@ -2,7 +2,7 @@
 //! FusedOpRegistry — metadata side. Phase 7.6 step 1 (skeleton).
 //!
 //! Architecture v1.0 splits op identity into two layers:
-//! - the closed [`Op`] enum carries primitive variants exhaustively;
+//! - the closed [`crate::Op`] enum carries primitive variants exhaustively;
 //! - one arm — `Op::Fused(FusedOpId, FusedOpParams)` — delegates to an
 //!   open registry of fused-op entries populated at process startup.
 //!
