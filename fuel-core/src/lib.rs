@@ -101,10 +101,6 @@ pub mod vulkan_backend;
 // cached output of the Judge. Callers now reach the cache via
 // `fuel_core::judge::cached()` / `populate_dispatch_table()` /
 // `invalidate()` (re-exported at the judge module's top level).
-/// The identity a held decode plan is baked against — what makes reusing a
-/// [`inference_context::DecodeSession`] safe across models. Read its module
-/// docs before adding anything to the key: over-keying is a silent performance
-/// regression, under-keying is a silent wrong answer.
 pub mod decode_shape;
 /// Per-layer decode-state description (GAP-029 / GAP-166) — the vocabulary that
 /// DESCRIBES what state a layer requires rather than ASSERTING that every layer
@@ -127,10 +123,6 @@ pub mod persistent_decode;
 pub mod judge;
 pub mod pipelined_bridge;
 pub mod planner;
-/// Baracuda dispatch-telemetry / miss-reporting production consumer — the
-/// process-wide opt-in switch, sink, hardware stamp, and explicit-flush API
-/// that installs the plan-time [`fuel_dispatch::telemetry`] hooks on the
-/// realize path. Behind the `telemetry` cargo feature; off by default.
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 /// Hardware discovery moved to the `fuel-hardware` crate (retirement B0.2);

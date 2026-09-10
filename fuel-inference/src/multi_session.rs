@@ -22,7 +22,7 @@
 //! - [`SessionScheduler`] (C2) — the K-way serial driver. Advances K sessions
 //!   through prefill → decode, samples each with its own RNG, retires the
 //!   finished ones. The serial arm is the byte-exact correctness oracle.
-//! - [`BatchedDecode`] (C3) — the live batched-decode arm: a Fuel-internal
+//! - `BatchedDecode` (C3) — the live batched-decode arm: a Fuel-internal
 //!   shared `[K, n_kv_heads, capacity, head_dim]` batch-slot KV buffer +
 //!   `flash_decoding` batch wiring, lockstep-only (a single shared `k_len`, so
 //!   sessions batch only at equal `cached_len`). It is a SEPARATE batch=K
@@ -32,6 +32,21 @@
 //!
 //! Llama-first but trait-shaped ([`ModelDims`]): `PhiModel`'s identical
 //! four-local quartet is a later drop-in.
+//!
+//! K-way multi-session decode driver (moved from `fuel-core`, Q2 2026-07-29):
+//! runs K independent decode sessions concurrently over one model, serial
+//! (byte-exact oracle) or live-batched. Reaches the model through the
+//! model-agnostic [`DecodeModel`] trait — consumer-side
+//! orchestration, not a Foundation primitive. Distinct from [`crate::scheduler`]'s
+//! memory-admission `MemoryScheduler`.
+//!
+//! The model surface is **tiered**: [`DecodeModel`] is the core a
+//! model needs to be servable at all (KV geometry + one persistent-KV step), and
+//! [`PagedDecodeModel`] adds the paged-storage surface that
+//! [`PagedSessionScheduler`] requires. The tiering exists because
+//! only two of Fuel's twelve model families currently ship *any* incremental-
+//! decode surface; one fat trait meant a model had to arrive with paged AND
+//! batched decode before plain contiguous decode worked at all.
 
 use std::collections::HashMap;
 
