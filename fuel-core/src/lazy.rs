@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6a bridge: a lazy-computation-graph tensor that wraps
 //! [`fuel_graph::NodeHandle`] and presents it through an API compatible
-//! with fuel-core's eager [`Tensor`](crate::tensor::Tensor).
+//! with fuel-core's eager `Tensor`.
 //!
 //! # Purpose
 //!
@@ -130,10 +130,10 @@ impl Tensor {
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f32(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f32(data, shape, device.as_dyn())?,
+        })
     }
 
     /// This tensor's graph identity — see [`fuel_graph::GraphId`]. Two tensors
@@ -166,10 +166,10 @@ impl Tensor {
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f32_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f32_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// `f64` sibling of [`from_f32_on`](Self::from_f32_on).
@@ -178,10 +178,10 @@ impl Tensor {
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f64_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f64_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// `bf16` sibling of [`from_f32_on`](Self::from_f32_on) — the mixed-precision
@@ -192,10 +192,10 @@ impl Tensor {
         data: impl Into<Arc<[half::bf16]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_bf16_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_bf16_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// `f16` sibling of [`from_f32_on`](Self::from_f32_on).
@@ -204,10 +204,10 @@ impl Tensor {
         data: impl Into<Arc<[half::f16]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f16_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f16_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// `u32` sibling of [`from_f32_on`](Self::from_f32_on) — index tensors built
@@ -217,10 +217,10 @@ impl Tensor {
         data: impl Into<Arc<[u32]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_u32_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_u32_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build an `f64` lazy tensor. `device` selects where the realized
@@ -233,10 +233,10 @@ impl Tensor {
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f64(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f64(data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build a `bf16` lazy tensor. `device` selects where the realized
@@ -251,10 +251,10 @@ impl Tensor {
         data: impl Into<Arc<[half::bf16]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_bf16(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_bf16(data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build an `f16` lazy tensor. `device` selects where the realized
@@ -263,10 +263,10 @@ impl Tensor {
         data: impl Into<Arc<[half::f16]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f16(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f16(data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build a `u32` (index) lazy tensor. Used for gather/scatter/
@@ -276,10 +276,10 @@ impl Tensor {
         data: impl Into<Arc<[u32]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_u32(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_u32(data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build a const tensor of the same dtype and graph as `self`.
@@ -289,13 +289,17 @@ impl Tensor {
     /// Phase 7.5 G2: the realized Storage is allocated on the device
     /// derived from `self`'s graph (any existing slot's device — the
     /// graph always has at least one slot-bearing leaf by the time
-    /// const_*_like is called). Use [`from_f32`] with an explicit
+    /// const_*_like is called). Use [`Self::from_f32`] with an explicit
     /// `&Device` when you need a const on a different device than
     /// `self`.
-    pub fn const_f32_like(&self, data: impl Into<Arc<[f32]>>, shape: impl Into<Shape>) -> Self {
-        Self {
-            inner: self.inner.const_f32_like(data, shape),
-        }
+    pub fn const_f32_like(
+        &self,
+        data: impl Into<Arc<[f32]>>,
+        shape: impl Into<Shape>,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        Ok(Self {
+            inner: self.inner.const_f32_like(data, shape)?,
+        })
     }
 
     /// Build a const f16 tensor on the same graph as `self`.
@@ -303,10 +307,10 @@ impl Tensor {
         &self,
         data: impl Into<Arc<[half::f16]>>,
         shape: impl Into<Shape>,
-    ) -> Self {
-        Self {
-            inner: self.inner.const_f16_like(data, shape),
-        }
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        Ok(Self {
+            inner: self.inner.const_f16_like(data, shape)?,
+        })
     }
 
     /// Build a const bf16 tensor on the same graph as `self`. Used for
@@ -316,10 +320,10 @@ impl Tensor {
         &self,
         data: impl Into<Arc<[half::bf16]>>,
         shape: impl Into<Shape>,
-    ) -> Self {
-        Self {
-            inner: self.inner.const_bf16_like(data, shape),
-        }
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        Ok(Self {
+            inner: self.inner.const_bf16_like(data, shape)?,
+        })
     }
 
     /// Build a const tensor on the same graph as `self`, holding
@@ -340,11 +344,11 @@ impl Tensor {
         dtype: fuel_ir::DType,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         match dtype {
-            fuel_ir::DType::F32 => Ok(self.const_f32_like(data.to_vec(), shape)),
+            fuel_ir::DType::F32 => self.const_f32_like(data.to_vec(), shape),
             fuel_ir::DType::BF16 => {
                 let converted: Vec<half::bf16> =
                     data.iter().map(|&v| half::bf16::from_f32(v)).collect();
-                Ok(self.const_bf16_like(converted, shape))
+                self.const_bf16_like(converted, shape)
             }
             other => Err(fuel_ir::Error::Msg(format!(
                 "const_like_dtype: unsupported activation dtype {other:?} \
@@ -418,7 +422,7 @@ impl Tensor {
 
     /// Size of the tensor along dimension `dim`. Returns a typed error
     /// rather than panicking on out-of-range — matches eager's
-    /// [`crate::Tensor::dim`] signature.
+    /// `crate::Tensor::dim` signature.
     pub fn dim<D: Dim>(&self, dim: D) -> std::result::Result<usize, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "dim")?;
@@ -1175,11 +1179,11 @@ impl Tensor {
         affine_shape[dims_v.len() - 1] = hidden;
         let bc_shape = Shape::from_dims(&dims_v);
         let g = normed
-            .const_f32_like(gain, Shape::from_dims(&[hidden]))
+            .const_f32_like(gain, Shape::from_dims(&[hidden]))?
             .reshape(Shape::from_dims(&affine_shape))?
             .broadcast_to(bc_shape.clone())?;
         let b = normed
-            .const_f32_like(bias, Shape::from_dims(&[hidden]))
+            .const_f32_like(bias, Shape::from_dims(&[hidden]))?
             .reshape(Shape::from_dims(&affine_shape))?
             .broadcast_to(bc_shape)?;
         normed.mul(&g)?.add(&b)
@@ -2212,7 +2216,8 @@ mod tests {
 
     #[test]
     fn constructors_wrap_graph_tensor_correctly() {
-        let t = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let t =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         assert_eq!(t.dtype(), DType::F32);
         assert_eq!(t.shape().dims(), &[3]);
         assert_eq!(t.rank(), 1);
@@ -2221,8 +2226,11 @@ mod tests {
 
     #[test]
     fn add_builds_add_node_in_underlying_graph() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
+        let a =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
+        let b = a
+            .const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]))
+            .unwrap();
         let c = a.add(&b).unwrap();
         assert_eq!(c.shape().dims(), &[3]);
         // All three tensors share one underlying graph (by Arc cloning
@@ -2243,11 +2251,14 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
-        );
-        let w = x.const_f32_like(
-            vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0],
-            Shape::from_dims(&[3, 3]),
-        );
+        )
+        .unwrap();
+        let w = x
+            .const_f32_like(
+                vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0],
+                Shape::from_dims(&[3, 3]),
+            )
+            .unwrap();
         let y = x
             .rms_norm_last_dim(1e-6)
             .unwrap()
@@ -2265,7 +2276,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
             Shape::from_dims(&[2, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = x.rope(10000.0, 0).unwrap();
         assert_eq!(y.shape().dims(), &[2, 4]);
         assert_eq!(y.dtype(), DType::F32);
@@ -2293,7 +2305,8 @@ mod tests {
                 data.to_vec(),
                 Shape::from_dims(&[bs, n_kv_heads, head_dim]),
                 &dev,
-            );
+            )
+            .unwrap();
             let k4 = k
                 .permute([1, 0, 2])
                 .unwrap()
@@ -2325,7 +2338,8 @@ mod tests {
 
     #[test]
     fn cast_switches_dtype_through_wrapper() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let x =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let y = x.to_dtype(DType::F64).unwrap();
         assert_eq!(y.dtype(), DType::F64);
         assert_eq!(y.shape().dims(), &[3]);
@@ -2333,8 +2347,11 @@ mod tests {
 
     #[test]
     fn indexing_builds_correct_output_shape() {
-        let data = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), &Device::cpu());
-        let idx = data.const_u32_like(vec![0, 2, 1], Shape::from_dims(&[3]));
+        let data =
+            Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), &Device::cpu()).unwrap();
+        let idx = data
+            .const_u32_like(vec![0, 2, 1], Shape::from_dims(&[3]))
+            .unwrap();
         let out = data.index_select(0, &idx).unwrap();
         assert_eq!(out.shape().dims(), &[3, 4]);
     }
@@ -2346,8 +2363,11 @@ mod tests {
         // The moment of truth: build a graph through Tensor and
         // then realize it end-to-end. (a + b) * a for a = [1, 2, 3],
         // b = [4, 5, 6] should yield [5, 14, 27].
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
+        let a =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
+        let b = a
+            .const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]))
+            .unwrap();
         let c = a.add(&b).unwrap().mul(&a).unwrap();
         let result = c.realize_f32();
         assert_eq!(result, vec![5.0, 14.0, 27.0]);
@@ -2364,7 +2384,8 @@ mod tests {
             vec![f32::NAN, -2.0, 3.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let relu_result = a.relu().realize_f32();
         assert!(
             relu_result[0].is_nan(),
@@ -2374,7 +2395,9 @@ mod tests {
         assert_eq!(relu_result[1], 0.0, "relu(-2) must clip to 0");
         assert_eq!(relu_result[2], 3.0, "relu(3) must pass through");
 
-        let b = a.const_f32_like(vec![1.0, f32::NAN, 2.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![1.0, f32::NAN, 2.0], Shape::from_dims(&[3]))
+            .unwrap();
         let max_result = a.maximum(&b).unwrap().realize_f32();
         assert!(
             max_result[0].is_nan(),
@@ -2403,8 +2426,11 @@ mod tests {
             vec![f32::NAN, 2.0, 5.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
-        );
-        let b = a.const_f32_like(vec![3.0, f32::NAN, 4.0], Shape::from_dims(&[3]));
+        )
+        .unwrap();
+        let b = a
+            .const_f32_like(vec![3.0, f32::NAN, 4.0], Shape::from_dims(&[3]))
+            .unwrap();
 
         let fmax = a.fmax_ieee(&b).unwrap().realize_f32();
         assert_eq!(fmax[0], 3.0, "fmax_ieee(NaN,3) suppresses NaN → 3");
@@ -2446,8 +2472,10 @@ mod tests {
         // swap or a collapse-to-constant flips one side; a return-`a`/return-`b`
         // collapse is caught by the sibling NaN test (fmax(NaN,3)=3 needs `b`,
         // fmax(2,NaN)=2 needs `a`). GAP-048.
-        let a = Tensor::from_f32(vec![-0.0, 0.0], Shape::from_dims(&[2]), &Device::cpu());
-        let b = a.const_f32_like(vec![0.0, -0.0], Shape::from_dims(&[2]));
+        let a = Tensor::from_f32(vec![-0.0, 0.0], Shape::from_dims(&[2]), &Device::cpu()).unwrap();
+        let b = a
+            .const_f32_like(vec![0.0, -0.0], Shape::from_dims(&[2]))
+            .unwrap();
 
         let fmax = a.fmax_ieee(&b).unwrap().realize_f32();
         assert_eq!(
@@ -2483,8 +2511,11 @@ mod tests {
             vec![-7.0, 7.0, -7.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
-        );
-        let b = a.const_f32_like(vec![3.0, -3.0, -3.0], Shape::from_dims(&[3]));
+        )
+        .unwrap();
+        let b = a
+            .const_f32_like(vec![3.0, -3.0, -3.0], Shape::from_dims(&[3]))
+            .unwrap();
 
         let rt = a.rem_trunc(&b).unwrap().realize_f32();
         assert_eq!(rt[0], -1.0, "-7 rem_trunc 3 = -1 (sign of dividend)");
@@ -2514,7 +2545,8 @@ mod tests {
             ],
             Shape::from_dims(&[7]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let t = q.trunc().realize_f32();
         assert_eq!(t[0], 2.0, "trunc(2.7) = 2 (toward zero)");
         assert_eq!(t[1], -2.0, "trunc(-2.7) = -2 (toward zero, NOT -3)");
@@ -2540,11 +2572,14 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
-        );
-        let b = a.const_f32_like(
-            vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
-            Shape::from_dims(&[3, 2]),
-        );
+        )
+        .unwrap();
+        let b = a
+            .const_f32_like(
+                vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+                Shape::from_dims(&[3, 2]),
+            )
+            .unwrap();
         let c = a.matmul(&b).unwrap();
         assert_eq!(c.shape().dims(), &[2, 2]);
         assert_eq!(c.realize_f32(), vec![58.0, 64.0, 139.0, 154.0]);
@@ -2561,8 +2596,8 @@ mod tests {
         let n = 32;
         let a_data: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.01).sin()).collect();
         let b_data: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.013).cos()).collect();
-        let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &Device::cpu());
-        let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
+        let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &Device::cpu()).unwrap();
+        let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n])).unwrap();
         let c = a.matmul(&b).unwrap();
         let fast = c.realize_f32();
         let reference = c.realize_f32();
@@ -2673,18 +2708,23 @@ mod tests {
         // swapping the exact constant would perturb these attention-scale parity tests.
         #[allow(clippy::approx_constant)]
         let scale = 0.7071f32;
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
-        let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, sk, d]));
-        let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, sk, d]));
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev).unwrap();
+        let k = q
+            .const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, sk, d]))
+            .unwrap();
+        let v = q
+            .const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, sk, d]))
+            .unwrap();
         // Distinct positive slope per head (powers of 1/2 — the alibi default).
         let alibi_slopes: Option<Vec<f32>> = if alibi {
             Some((0..hq).map(|h| 0.5f32.powi(h as i32 + 1)).collect())
         } else {
             None
         };
-        let alibi_t = alibi_slopes
-            .as_ref()
-            .map(|s| q.const_f32_like(s.clone(), Shape::from_dims(&[hq])));
+        let alibi_t = alibi_slopes.as_ref().map(|s| {
+            q.const_f32_like(s.clone(), Shape::from_dims(&[hq]))
+                .unwrap()
+        });
         let attn = q
             .flash_attn(&k, &v, alibi_t.as_ref(), scale, causal, None, None, softcap)
             .unwrap();
@@ -2835,13 +2875,15 @@ mod tests {
             .map(|i| (i as f32 * 0.13).cos())
             .collect();
         let v_data: Vec<f32> = (0..hkv * cap * d).map(|i| i as f32 * 0.07 + 1.0).collect();
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev).unwrap();
         let k = q
             .inner
-            .const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
+            .const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, cap, d]))
+            .unwrap();
         let v = q
             .inner
-            .const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
+            .const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, cap, d]))
+            .unwrap();
         // Concrete k_len — the fused node that formerly returned self.
         let attn = q.inner.flash_attn_dyn(
             &k,
@@ -2982,7 +3024,7 @@ mod tests {
             "test data must be accumulation-order-sensitive so the parity has teeth",
         );
 
-        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[rows, cols]), &dev);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[rows, cols]), &dev).unwrap();
         // Recipe spelling: rank-reducing SumDim(last) (chassis `reduce`).
         let sumdim = x.inner.sum_dim(1);
         let got_sumdim = crate::pipelined_bridge::realize_one_as::<f32>(
@@ -3067,6 +3109,7 @@ mod tests {
 
         // RECIPE path: lower the fused node to the recipe (SumDim spelling).
         let recipe = Tensor::from_f32(data.clone(), shape(), &dev)
+            .unwrap()
             .softmax_last_dim()
             .expect("softmax recipe build");
         let graph = recipe.inner.graph().clone();
@@ -3079,7 +3122,7 @@ mod tests {
 
         // LEGACY path: the pre-migration ReduceMaxTo/ReduceSumTo(keepdim)
         // spelling, hand-built with identical Sub/Exp/Div.
-        let x = Tensor::from_f32(data.clone(), shape(), &dev).inner;
+        let x = Tensor::from_f32(data.clone(), shape(), &dev).unwrap().inner;
         let m = x.reduce_max_to(keepdim());
         let mb = m.broadcast_to(shape());
         let s = x.sub(&mb);
@@ -3106,6 +3149,7 @@ mod tests {
         // at most 1 ULP — NOT from the migration but from its reciprocal-
         // multiply normalize (`e*(1/sum)`) vs the primitive true-`Div`.
         let fused_out = Tensor::from_f32(data.clone(), shape(), &dev)
+            .unwrap()
             .softmax_last_dim()
             .expect("softmax fused build")
             .realize_f32();
@@ -3132,6 +3176,7 @@ mod tests {
 
         // RECIPE path: lower the fused node (MeanDim + Unsqueeze spelling).
         let recipe = Tensor::from_f32(data.clone(), shape(), &dev)
+            .unwrap()
             .rms_norm_last_dim(eps)
             .expect("rms_norm recipe build");
         let graph = recipe.inner.graph().clone();
@@ -3144,7 +3189,7 @@ mod tests {
 
         // LEGACY path: MeanDim(last) + Reshape-keepdim spelling, same eps and
         // same true-`Div` normalize.
-        let x = Tensor::from_f32(data.clone(), shape(), &dev).inner;
+        let x = Tensor::from_f32(data.clone(), shape(), &dev).unwrap().inner;
         let sq = x.sqr();
         let mean = sq.mean_dim(1);
         let mean_kd = mean.reshape(keepdim());
@@ -3165,6 +3210,7 @@ mod tests {
         // SECONDARY (documentation): the fused kernel's reciprocal-multiply
         // (`x*rms_inv`) differs from the primitive true-`Div` by ≤1 ULP.
         let fused_out = Tensor::from_f32(data.clone(), shape(), &dev)
+            .unwrap()
             .rms_norm_last_dim(eps)
             .expect("rms_norm fused build")
             .realize_f32();
@@ -3191,11 +3237,19 @@ mod tests {
         use fuel_graph::Op;
         use fuel_graph::registry::FusedOps;
         let dev = Device::cpu();
-        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
-        let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
-        let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
-        let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
-        let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]));
+        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev).unwrap();
+        let delta = u
+            .const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let a = u
+            .const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]))
+            .unwrap();
+        let b = u
+            .const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let c = u
+            .const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
         let y = u.selective_scan(&delta, &a, &b, &c, /* delta_softplus */ false);
 
         // (a) NON-REGRESSION: the fused kernel still runs and produces 12.0.
@@ -3267,11 +3321,19 @@ mod tests {
         let dev = Device::cpu();
         // x [batch, seqlen, heads, head_dim] = [1,1,1,1]; dt [b,s,h]=[1,1,1];
         // a [heads]=[1]; b/c [b,s,h,state]=[1,1,1,1].
-        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
-        let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
-        let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
-        let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
-        let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1, 1]));
+        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev).unwrap();
+        let dt = x
+            .const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let a = x
+            .const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]))
+            .unwrap();
+        let b = x
+            .const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]))
+            .unwrap();
+        let c = x
+            .const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1, 1]))
+            .unwrap();
         let y = x.ssd_chunk_scan(&dt, &a, &b, &c, /* chunk_size */ 1);
 
         // (a) NON-REGRESSION: the fused kernel still runs and produces 12.0.
@@ -3348,12 +3410,15 @@ mod tests {
             fuel_graph::NodeHandle,
             fuel_graph::NodeHandle,
         ) {
-            let init = NodeHandle::from_f32(vec![init_v], Shape::from_dims(&[1]), dev.as_dyn());
+            let init =
+                NodeHandle::from_f32(vec![init_v], Shape::from_dims(&[1]), dev.as_dyn()).unwrap();
             let g = init.graph().clone();
             let a = NodeHandle::from_existing(g.clone(), init.id())
-                .const_f32_like(vec![a_v], Shape::from_dims(&[1]));
+                .const_f32_like(vec![a_v], Shape::from_dims(&[1]))
+                .unwrap();
             let b = NodeHandle::from_existing(g.clone(), init.id())
-                .const_f32_like(vec![b_v], Shape::from_dims(&[1]));
+                .const_f32_like(vec![b_v], Shape::from_dims(&[1]))
+                .unwrap();
             let nc = {
                 let mut gw = g.write().unwrap();
                 let s = Shape::from_dims(&[1]);
@@ -3449,19 +3514,35 @@ mod tests {
     fn selective_scan_is_differentiable_backward_matches_fd() {
         let dev = Device::cpu();
         let fwd = |u_v: f32| -> f32 {
-            let u = Tensor::from_f32(vec![u_v], Shape::from_dims(&[1, 1, 1]), &dev);
-            let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
-            let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
-            let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
-            let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]));
+            let u = Tensor::from_f32(vec![u_v], Shape::from_dims(&[1, 1, 1]), &dev).unwrap();
+            let delta = u
+                .const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]))
+                .unwrap();
+            let a = u
+                .const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]))
+                .unwrap();
+            let b = u
+                .const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]))
+                .unwrap();
+            let c = u
+                .const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]))
+                .unwrap();
             u.selective_scan(&delta, &a, &b, &c, false).realize_f32()[0]
         };
         // Autograd at u=2.0.
-        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
-        let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
-        let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
-        let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
-        let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]));
+        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev).unwrap();
+        let delta = u
+            .const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let a = u
+            .const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]))
+            .unwrap();
+        let b = u
+            .const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let c = u
+            .const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
         let y = u.selective_scan(&delta, &a, &b, &c, false);
         let grads = y.inner.backward();
         let g_u_id = grads.get(u.graph_tensor()).expect("grad u").id();
@@ -3482,19 +3563,35 @@ mod tests {
         // x [batch,seqlen,heads,head_dim]=[1,1,1,1]; dt [b,s,h]=[1,1,1]; a [heads]=[1];
         // b/c [b,s,h,state]=[1,1,1,1]. Single step: h = dt*b*x = 1.5x, y = c*h = 6x (linear).
         let fwd = |x_v: f32| -> f32 {
-            let x = Tensor::from_f32(vec![x_v], Shape::from_dims(&[1, 1, 1, 1]), &dev);
-            let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
-            let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
-            let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
-            let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1, 1]));
+            let x = Tensor::from_f32(vec![x_v], Shape::from_dims(&[1, 1, 1, 1]), &dev).unwrap();
+            let dt = x
+                .const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]))
+                .unwrap();
+            let a = x
+                .const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]))
+                .unwrap();
+            let b = x
+                .const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]))
+                .unwrap();
+            let c = x
+                .const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1, 1]))
+                .unwrap();
             x.ssd_chunk_scan(&dt, &a, &b, &c, 1).realize_f32()[0]
         };
         // Autograd at x=2.0.
-        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
-        let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
-        let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
-        let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
-        let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1, 1]));
+        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev).unwrap();
+        let dt = x
+            .const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let a = x
+            .const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]))
+            .unwrap();
+        let b = x
+            .const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]))
+            .unwrap();
+        let c = x
+            .const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1, 1]))
+            .unwrap();
         let y = x.ssd_chunk_scan(&dt, &a, &b, &c, 1);
         let grads = y.inner.backward();
         let g_x_id = grads.get(x.graph_tensor()).expect("grad x").id();
@@ -3521,22 +3618,38 @@ mod tests {
         // u/delta [batch,seqlen,dim]=[1,2,1]; a [dim,dstate]=[1,1] (< 0, stable gate);
         // b/c [batch,seqlen,dstate]=[1,2,1]. loss = sum(y) (ones-seed over [1,2,1]).
         let fwd = |u_vals: &[f32]| -> f32 {
-            let u = Tensor::from_f32(u_vals.to_vec(), Shape::from_dims(&[1, 2, 1]), &dev);
-            let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]));
-            let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]));
-            let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
-            let c = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
+            let u = Tensor::from_f32(u_vals.to_vec(), Shape::from_dims(&[1, 2, 1]), &dev).unwrap();
+            let delta = u
+                .const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]))
+                .unwrap();
+            let a = u
+                .const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]))
+                .unwrap();
+            let b = u
+                .const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]))
+                .unwrap();
+            let c = u
+                .const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]))
+                .unwrap();
             u.selective_scan(&delta, &a, &b, &c, false)
                 .realize_f32()
                 .iter()
                 .sum()
         };
         let u0 = vec![1.0f32, 2.0];
-        let u = Tensor::from_f32(u0.clone(), Shape::from_dims(&[1, 2, 1]), &dev);
-        let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]));
-        let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]));
-        let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
-        let c = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
+        let u = Tensor::from_f32(u0.clone(), Shape::from_dims(&[1, 2, 1]), &dev).unwrap();
+        let delta = u
+            .const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]))
+            .unwrap();
+        let a = u
+            .const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]))
+            .unwrap();
+        let b = u
+            .const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]))
+            .unwrap();
+        let c = u
+            .const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]))
+            .unwrap();
         let y = u.selective_scan(&delta, &a, &b, &c, false);
         let grads = y.inner.backward(); // ones-seed over [1,2,1] == grad of sum(y)
         let g_u_id = grads.get(u.graph_tensor()).expect("grad u").id();
@@ -3571,22 +3684,39 @@ mod tests {
         // carry passes exp(dt*a) across chunks. x [b,s,h,hd]=[1,4,1,1]; dt [b,s,h]=[1,4,1];
         // a [heads]=[1] (< 0); b/c [b,s,h,state]=[1,4,1,1].
         let fwd = |x_vals: &[f32]| -> f32 {
-            let x = Tensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
-            let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]));
-            let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
-            let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
-            let c = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
+            let x =
+                Tensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[1, 4, 1, 1]), &dev).unwrap();
+            let dt = x
+                .const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]))
+                .unwrap();
+            let a = x
+                .const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]))
+                .unwrap();
+            let b = x
+                .const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]))
+                .unwrap();
+            let c = x
+                .const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]))
+                .unwrap();
             x.ssd_chunk_scan(&dt, &a, &b, &c, 2)
                 .realize_f32()
                 .iter()
                 .sum()
         };
         let x0 = vec![1.0f32, 2.0, 3.0, 4.0];
-        let x = Tensor::from_f32(x0.clone(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
-        let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]));
-        let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
-        let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
-        let c = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
+        let x = Tensor::from_f32(x0.clone(), Shape::from_dims(&[1, 4, 1, 1]), &dev).unwrap();
+        let dt = x
+            .const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]))
+            .unwrap();
+        let a = x
+            .const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]))
+            .unwrap();
+        let b = x
+            .const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]))
+            .unwrap();
+        let c = x
+            .const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]))
+            .unwrap();
         let y = x.ssd_chunk_scan(&dt, &a, &b, &c, 2);
         let grads = y.inner.backward();
         let g_x_id = grads.get(x.graph_tensor()).expect("grad x").id();
@@ -3706,31 +3836,40 @@ mod tests {
             ],
             Shape::from_dims(&[batch, seqlen, dim]),
             &dev,
-        );
+        )
+        .unwrap();
         // [batch, seqlen, dim] — positive (delta is a rate); all distinct.
-        let delta = u.const_f32_like(
-            vec![
-                0.1, 0.2, 0.3, 0.15, 0.25, 0.4, 0.35, 0.05, 0.2, 0.3, 0.12, 0.28,
-            ],
-            Shape::from_dims(&[batch, seqlen, dim]),
-        );
+        let delta = u
+            .const_f32_like(
+                vec![
+                    0.1, 0.2, 0.3, 0.15, 0.25, 0.4, 0.35, 0.05, 0.2, 0.3, 0.12, 0.28,
+                ],
+                Shape::from_dims(&[batch, seqlen, dim]),
+            )
+            .unwrap();
         // [dim, dstate] — negative (Mamba a<0 → stable gate in (0,1)); distinct.
-        let a = u.const_f32_like(
-            vec![-0.7, -0.3, -0.5, -0.9],
-            Shape::from_dims(&[dim, dstate]),
-        );
+        let a = u
+            .const_f32_like(
+                vec![-0.7, -0.3, -0.5, -0.9],
+                Shape::from_dims(&[dim, dstate]),
+            )
+            .unwrap();
         // [batch, seqlen, dstate] — distinct.
-        let b = u.const_f32_like(
-            vec![
-                1.0, 0.5, 0.25, 0.75, 0.6, 0.2, 0.8, 0.4, 0.3, 0.9, 0.55, 0.15,
-            ],
-            Shape::from_dims(&[batch, seqlen, dstate]),
-        );
+        let b = u
+            .const_f32_like(
+                vec![
+                    1.0, 0.5, 0.25, 0.75, 0.6, 0.2, 0.8, 0.4, 0.3, 0.9, 0.55, 0.15,
+                ],
+                Shape::from_dims(&[batch, seqlen, dstate]),
+            )
+            .unwrap();
         // [batch, seqlen, dstate] — distinct.
-        let c = u.const_f32_like(
-            vec![2.0, 1.0, 0.5, 1.5, 0.8, 0.3, 1.2, 0.6, 0.9, 0.4, 0.7, 1.1],
-            Shape::from_dims(&[batch, seqlen, dstate]),
-        );
+        let c = u
+            .const_f32_like(
+                vec![2.0, 1.0, 0.5, 1.5, 0.8, 0.3, 1.2, 0.6, 0.9, 0.4, 0.7, 1.1],
+                Shape::from_dims(&[batch, seqlen, dstate]),
+            )
+            .unwrap();
         let y = u.selective_scan(&delta, &a, &b, &c, /* delta_softplus */ false);
 
         // (a) Fused kernel (executed production path) runs and is well-shaped.
@@ -3783,24 +3922,33 @@ mod tests {
             vec![0.5, -0.3, 1.0, 0.2, -0.5, 0.7],
             Shape::from_dims(&[batch, seqlen, dim]),
             &dev,
-        );
+        )
+        .unwrap();
         // Mixed signs → softplus exercises max(x,0) AND ln(1+exp(-|x|)).
-        let delta = u.const_f32_like(
-            vec![-0.5, 0.2, 0.8, -1.0, 0.3, -0.2],
-            Shape::from_dims(&[batch, seqlen, dim]),
-        );
-        let a = u.const_f32_like(
-            vec![-0.7, -0.3, -0.5, -0.9],
-            Shape::from_dims(&[dim, dstate]),
-        );
-        let b = u.const_f32_like(
-            vec![1.0, 0.5, 0.25, 0.75, 0.6, 0.2],
-            Shape::from_dims(&[batch, seqlen, dstate]),
-        );
-        let c = u.const_f32_like(
-            vec![2.0, 1.0, 0.5, 1.5, 0.8, 0.3],
-            Shape::from_dims(&[batch, seqlen, dstate]),
-        );
+        let delta = u
+            .const_f32_like(
+                vec![-0.5, 0.2, 0.8, -1.0, 0.3, -0.2],
+                Shape::from_dims(&[batch, seqlen, dim]),
+            )
+            .unwrap();
+        let a = u
+            .const_f32_like(
+                vec![-0.7, -0.3, -0.5, -0.9],
+                Shape::from_dims(&[dim, dstate]),
+            )
+            .unwrap();
+        let b = u
+            .const_f32_like(
+                vec![1.0, 0.5, 0.25, 0.75, 0.6, 0.2],
+                Shape::from_dims(&[batch, seqlen, dstate]),
+            )
+            .unwrap();
+        let c = u
+            .const_f32_like(
+                vec![2.0, 1.0, 0.5, 1.5, 0.8, 0.3],
+                Shape::from_dims(&[batch, seqlen, dstate]),
+            )
+            .unwrap();
         let y = u.selective_scan(&delta, &a, &b, &c, /* delta_softplus */ true);
 
         let fused = y.realize_f32();
@@ -3868,11 +4016,20 @@ mod tests {
             x_data,
             Shape::from_dims(&[batch, seqlen, heads, head_dim]),
             &dev,
-        );
-        let dt = x.const_f32_like(dt_data, Shape::from_dims(&[batch, seqlen, heads]));
-        let a = x.const_f32_like(vec![-0.6f32, -1.0], Shape::from_dims(&[heads]));
-        let b = x.const_f32_like(b_data, Shape::from_dims(&[batch, seqlen, heads, state_dim]));
-        let c = x.const_f32_like(c_data, Shape::from_dims(&[batch, seqlen, heads, state_dim]));
+        )
+        .unwrap();
+        let dt = x
+            .const_f32_like(dt_data, Shape::from_dims(&[batch, seqlen, heads]))
+            .unwrap();
+        let a = x
+            .const_f32_like(vec![-0.6f32, -1.0], Shape::from_dims(&[heads]))
+            .unwrap();
+        let b = x
+            .const_f32_like(b_data, Shape::from_dims(&[batch, seqlen, heads, state_dim]))
+            .unwrap();
+        let c = x
+            .const_f32_like(c_data, Shape::from_dims(&[batch, seqlen, heads, state_dim]))
+            .unwrap();
         let y = x.ssd_chunk_scan(&dt, &a, &b, &c, chunk);
 
         // (a) Fused kernel (executed production path) runs and is well-shaped.
@@ -3936,7 +4093,8 @@ mod tests {
             weight
                 .w_packed
                 .graph_tensor()
-                .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4])),
+                .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4]))
+                .unwrap(),
         );
         let y = weight.matmul(&act);
 
@@ -4011,8 +4169,8 @@ mod tests {
         let x_data = vec![1.5f32, -2.0, 0.5, 3.0];
         let up_data = vec![1.0f32, 0.5, 2.0, -1.0];
         let shape = Shape::from_dims(&[4]);
-        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
-        let up = x.const_f32_like(up_data.clone(), shape.clone());
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev).unwrap();
+        let up = x.const_f32_like(up_data.clone(), shape.clone()).unwrap();
         let got = lower_realize_fused(
             &x,
             fuel_graph::Op::Fused(FusedOps::POWI_BACKWARD, FusedOpParams::PowIBackward { exp }),
@@ -4048,7 +4206,7 @@ mod tests {
         let (mul, add) = (2.5f64, -1.0f64);
         let x_data = vec![1.5f32, -2.0, 0.5, 3.0];
         let shape = Shape::from_dims(&[4]);
-        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev).unwrap();
         let got = lower_realize_fused(
             &x,
             fuel_graph::Op::Fused(
@@ -4085,8 +4243,8 @@ mod tests {
         }
         let g_data = vec![1.0f32, -0.5, 0.3, 0.2, 1.5, -1.0];
         let shape = Shape::from_dims(&[rows, cols]);
-        let s = Tensor::from_f32(s_data.clone(), shape.clone(), &dev);
-        let g = s.const_f32_like(g_data.clone(), shape.clone());
+        let s = Tensor::from_f32(s_data.clone(), shape.clone(), &dev).unwrap();
+        let g = s.const_f32_like(g_data.clone(), shape.clone()).unwrap();
         let got = lower_realize_fused(
             &s,
             fuel_graph::Op::Fused(
@@ -4123,8 +4281,8 @@ mod tests {
         let x_data = vec![1.0f32, -2.0, 0.5, 3.0, 0.25, -1.5];
         let g_data = vec![0.5f32, 1.0, -0.3, 0.2, -1.0, 0.7];
         let shape = Shape::from_dims(&[rows, cols]);
-        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
-        let g = x.const_f32_like(g_data.clone(), shape.clone());
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev).unwrap();
+        let g = x.const_f32_like(g_data.clone(), shape.clone()).unwrap();
         let got = lower_realize_fused(
             &x,
             fuel_graph::Op::Fused(
@@ -4166,8 +4324,8 @@ mod tests {
         let x_data = vec![1.0f32, -2.0, 0.5, 3.0, 0.25, -1.5];
         let g_data = vec![0.5f32, 1.0, -0.3, 0.2, -1.0, 0.7];
         let shape = Shape::from_dims(&[rows, cols]);
-        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
-        let g = x.const_f32_like(g_data.clone(), shape.clone());
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev).unwrap();
+        let g = x.const_f32_like(g_data.clone(), shape.clone()).unwrap();
         let got = lower_realize_fused(
             &x,
             fuel_graph::Op::Fused(
@@ -4217,8 +4375,8 @@ mod tests {
         let up_data = vec![10.0f32, 5.0]; // [2,1] — one per reduced row.
         let x_shape = Shape::from_dims(&[2, 3]);
         let up_shape = Shape::from_dims(&[2, 1]);
-        let x = Tensor::from_f32(x_data.clone(), x_shape.clone(), &dev);
-        let up = x.const_f32_like(up_data.clone(), up_shape);
+        let x = Tensor::from_f32(x_data.clone(), x_shape.clone(), &dev).unwrap();
+        let up = x.const_f32_like(up_data.clone(), up_shape).unwrap();
         let got = lower_realize_fused(
             &x,
             fuel_graph::Op::Fused(
@@ -4247,9 +4405,13 @@ mod tests {
         let x_data = vec![0.0f32, 1.0, 2.0, 3.0, 1.0, 0.0, -1.0, -2.0];
         let w_data = vec![0.5f32, 1.0, -0.5, 1.0, 0.0, 2.0];
         let bias_data = vec![0.1f32, -0.2];
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[b, c, x_seq]), &dev);
-        let w = x.const_f32_like(w_data.clone(), Shape::from_dims(&[c, 1, k]));
-        let bias = x.const_f32_like(bias_data.clone(), Shape::from_dims(&[c]));
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[b, c, x_seq]), &dev).unwrap();
+        let w = x
+            .const_f32_like(w_data.clone(), Shape::from_dims(&[c, 1, k]))
+            .unwrap();
+        let bias = x
+            .const_f32_like(bias_data.clone(), Shape::from_dims(&[c]))
+            .unwrap();
         let got = lower_realize_fused(
             &x,
             fuel_graph::Op::Fused(
@@ -4303,10 +4465,10 @@ mod tests {
         let do_data = vec![0.5f32, -1.0, 0.2, 0.3]; // [Sq,D]
         let qshape = Shape::from_dims(&[1, 1, sq, d]);
         let kshape = Shape::from_dims(&[1, 1, sk, d]);
-        let q = Tensor::from_f32(q_data.clone(), qshape.clone(), &dev);
-        let k = q.const_f32_like(k_data.clone(), kshape.clone());
-        let v = q.const_f32_like(v_data.clone(), kshape.clone());
-        let dout = q.const_f32_like(do_data.clone(), qshape.clone());
+        let q = Tensor::from_f32(q_data.clone(), qshape.clone(), &dev).unwrap();
+        let k = q.const_f32_like(k_data.clone(), kshape.clone()).unwrap();
+        let v = q.const_f32_like(v_data.clone(), kshape.clone()).unwrap();
+        let dout = q.const_f32_like(do_data.clone(), qshape.clone()).unwrap();
         let params = FusedOpParams::FlashAttnBackward {
             softmax_scale: scale,
             causal: false,
@@ -4427,11 +4589,15 @@ mod tests {
         let bt = vec![0u32, 2u32]; // block_table [1,2]: sequence uses blocks 0 and 2
         let cl = vec![3u32]; // context_lens [1]: only the first 3 keys are valid
 
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, 1, 1, 2]), &dev);
-        let kcache = q.const_f32_like(kc.clone(), Shape::from_dims(&[3, 2, 1, 2]));
-        let vcache = q.const_f32_like(vc.clone(), Shape::from_dims(&[3, 2, 1, 2]));
-        let block_table = q.const_u32_like(bt, Shape::from_dims(&[1, 2]));
-        let context_lens = q.const_u32_like(cl, Shape::from_dims(&[1]));
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, 1, 1, 2]), &dev).unwrap();
+        let kcache = q
+            .const_f32_like(kc.clone(), Shape::from_dims(&[3, 2, 1, 2]))
+            .unwrap();
+        let vcache = q
+            .const_f32_like(vc.clone(), Shape::from_dims(&[3, 2, 1, 2]))
+            .unwrap();
+        let block_table = q.const_u32_like(bt, Shape::from_dims(&[1, 2])).unwrap();
+        let context_lens = q.const_u32_like(cl, Shape::from_dims(&[1])).unwrap();
         let params = FusedOpParams::PagedAttn {
             softmax_scale: scale,
             block_size,
@@ -4499,8 +4665,9 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_add_mul() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
+        let a =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
+        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]))?;
         let c = a.add(&b).unwrap().mul(&a).unwrap();
         let cpu_result = c.realize_f32();
         let executor = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4544,8 +4711,9 @@ mod tests {
             vec![f32::NAN, -2.0, 3.0, f32::NAN],
             Shape::from_dims(&[4]),
             &Device::cpu(),
-        );
-        let b = a.const_f32_like(vec![1.0, f32::NAN, 2.0, f32::NAN], Shape::from_dims(&[4]));
+        )
+        .unwrap();
+        let b = a.const_f32_like(vec![1.0, f32::NAN, 2.0, f32::NAN], Shape::from_dims(&[4]))?;
 
         let max_lazy = a.maximum(&b).unwrap();
         let cpu_max = max_lazy.realize_f32();
@@ -4621,7 +4789,8 @@ mod tests {
             vec![f32::NAN, -2.0, 3.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let relu_lazy = a.relu();
         let cpu_result = relu_lazy.realize_f32();
         let cuda_result = relu_lazy.realize_f32_cuda(&cuda);
@@ -4647,11 +4816,12 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             Shape::from_dims(&[3, 2]),
-        );
+        )?;
         let c = a.matmul(&b).unwrap();
         let cpu = c.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4671,11 +4841,12 @@ mod tests {
             (0..12).map(|i| i as f32 * 0.1).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(
             (0..8).map(|i| i as f32 * 0.2).collect::<Vec<_>>(),
             Shape::from_dims(&[4, 2]),
-        );
+        )?;
         let y = x.matmul(&w).unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4693,7 +4864,8 @@ mod tests {
             (0..24).map(|i| i as f32).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 2, 3, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = x.permute([0, 2, 1, 3_usize]).unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4708,7 +4880,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = x.softmax_last_dim().unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4743,7 +4916,7 @@ mod tests {
         let data: Vec<f32> = (0..n * last)
             .map(|i| ((i as f32) * 0.13).sin() * 2.0 - 0.7)
             .collect();
-        let x = Tensor::from_f32(data, Shape::from_dims(&[n, last]), &Device::cpu());
+        let x = Tensor::from_f32(data, Shape::from_dims(&[n, last]), &Device::cpu()).unwrap();
         let y = x.softmax_last_dim().unwrap();
 
         // CPU baseline: fused SoftmaxLastDim through the standard
@@ -4785,8 +4958,9 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             &Device::cpu(),
-        );
-        let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]));
+        )
+        .unwrap();
+        let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]))?;
         let cat = a.concat(&b, 1).unwrap(); // [2, 4]
         let sliced = cat.slice(1, 1, 2).unwrap(); // [2, 2]
         let cpu = sliced.realize_f32();
@@ -4802,7 +4976,8 @@ mod tests {
             (0..8).map(|i| i as f32 * 0.5 - 1.5).collect::<Vec<_>>(),
             Shape::from_dims(&[2, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = x.rms_norm_last_dim(1e-5).unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4815,7 +4990,8 @@ mod tests {
 
     #[test]
     fn realize_f64_through_bridge() {
-        let a = Tensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), &Device::cpu());
+        let a =
+            Tensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let b = a.mul(&a).unwrap();
         assert_eq!(b.realize_f64(), vec![2.25, 6.25, 12.25]);
     }
@@ -4837,27 +5013,36 @@ mod tests {
 
         // Fake input: [1, seq, d_model]
         let x_data: Vec<f32> = (0..seq * d_model).map(|i| i as f32 * 0.01).collect();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]), &Device::cpu());
+        let x =
+            Tensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]), &Device::cpu()).unwrap();
 
         // Fake weights (just identities for simplicity — makes the
         // test easy to verify output finiteness without needing to
         // hand-compute).
-        let w_q = x.const_f32_like(
-            identity_matrix(d_model),
-            Shape::from_dims(&[d_model, d_model]),
-        );
-        let w_k = x.const_f32_like(
-            identity_matrix(d_model),
-            Shape::from_dims(&[d_model, d_model]),
-        );
-        let w_v = x.const_f32_like(
-            identity_matrix(d_model),
-            Shape::from_dims(&[d_model, d_model]),
-        );
-        let w_o = x.const_f32_like(
-            identity_matrix(d_model),
-            Shape::from_dims(&[d_model, d_model]),
-        );
+        let w_q = x
+            .const_f32_like(
+                identity_matrix(d_model),
+                Shape::from_dims(&[d_model, d_model]),
+            )
+            .unwrap();
+        let w_k = x
+            .const_f32_like(
+                identity_matrix(d_model),
+                Shape::from_dims(&[d_model, d_model]),
+            )
+            .unwrap();
+        let w_v = x
+            .const_f32_like(
+                identity_matrix(d_model),
+                Shape::from_dims(&[d_model, d_model]),
+            )
+            .unwrap();
+        let w_o = x
+            .const_f32_like(
+                identity_matrix(d_model),
+                Shape::from_dims(&[d_model, d_model]),
+            )
+            .unwrap();
 
         // RmsNorm → Q/K/V projection (auto-broadcasting matmul).
         let x_norm = x.rms_norm_last_dim(1e-6).unwrap();
@@ -4927,10 +5112,14 @@ mod tests {
 // `impl` for readability.
 impl Tensor {
     /// Build a second const U32 (index) tensor on the same graph.
-    pub fn const_u32_like(&self, data: impl Into<Arc<[u32]>>, shape: impl Into<Shape>) -> Self {
-        Self {
-            inner: self.inner.const_u32_like(data, shape),
-        }
+    pub fn const_u32_like(
+        &self,
+        data: impl Into<Arc<[u32]>>,
+        shape: impl Into<Shape>,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        Ok(Self {
+            inner: self.inner.const_u32_like(data, shape)?,
+        })
     }
 
     /// Push a [`fuel_graph::Op::Const`] node on the same graph as
@@ -5042,7 +5231,8 @@ impl Tensor {
         Ok(Self { inner })
     }
 
-    /// Append a [`fuel_graph::Op::Conv2D`] node. See `fuel_graph`'s
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::Conv2D`]. See `fuel_graph`'s
     /// `Tensor::conv2d` for the full shape contract: `self` must be
     /// `[N, Cin, H, W]`; `weight` must be `[Cout, Cin/groups, Kh, Kw]`;
     /// `bias` is optional and must be `[Cout]` when provided. Returns
@@ -5132,7 +5322,8 @@ impl Tensor {
         })
     }
 
-    /// Append a [`fuel_graph::Op::FlashAttn`] node. `self` is `q`
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::FlashAttn`]. `self` is `q`
     /// of shape `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]`
     /// with `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional)
     /// is `[Hq]`. Returns the attention output, shape `[B, Hq, Sq, D]`.
@@ -5233,7 +5424,8 @@ impl Tensor {
         })
     }
 
-    /// Append a [`fuel_graph::Op::PagedAttn`] node. `self` is the Q
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::PagedAttn`]. `self` is the Q
     /// tensor `[B, Hq, Sq, D]`. `k_cache` / `v_cache` are paged caches
     /// `[num_blocks, block_size, Hkv, D]`. `block_table` is `[B,
     /// max_blocks]` u32; `context_lens` is `[B]` u32.
@@ -5382,7 +5574,8 @@ impl Tensor {
         })
     }
 
-    /// Append a [`fuel_graph::Op::ConvTranspose2D`] node. `self` must
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::ConvTranspose2D`]. `self` must
     /// be `[N, Cin, H, W]`; `weight` must be `[Cin, Cout/groups, Kh, Kw]`
     /// (note transposed channel order vs `conv2d`). Returns a rank-4
     /// lazy tensor `[N, Cout, Hout, Wout]`.
@@ -5826,19 +6019,27 @@ impl Tensor {
     // ---- additional const_*_like factories ----
 
     /// Build a sibling F64 `Const` on the same graph as `self`.
-    pub fn const_f64_like(&self, data: impl Into<Arc<[f64]>>, shape: impl Into<Shape>) -> Self {
-        Self {
-            inner: self.inner.const_f64_like(data, shape),
-        }
+    pub fn const_f64_like(
+        &self,
+        data: impl Into<Arc<[f64]>>,
+        shape: impl Into<Shape>,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        Ok(Self {
+            inner: self.inner.const_f64_like(data, shape)?,
+        })
     }
 
     /// Build a sibling I64 `Const` on the same graph. Used by integer-
     /// target ops (e.g. cross-entropy with PyTorch-convention class
     /// indices).
-    pub fn const_i64_like(&self, data: impl Into<Arc<[i64]>>, shape: impl Into<Shape>) -> Self {
-        Self {
-            inner: self.inner.const_i64_like(data, shape),
-        }
+    pub fn const_i64_like(
+        &self,
+        data: impl Into<Arc<[i64]>>,
+        shape: impl Into<Shape>,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        Ok(Self {
+            inner: self.inner.const_i64_like(data, shape)?,
+        })
     }
 
     // ---- device residency control ----
@@ -5911,7 +6112,7 @@ impl Tensor {
     }
 
     /// Two-argument transpose: swap dims `dim1` and `dim2`, leaving the
-    /// rest in place. Implemented via [`Self::try_permute`]; matches the
+    /// rest in place. Implemented via [`fuel_graph::NodeHandle::try_permute`]; matches the
     /// eager `transpose(d1, d2)` two-arg form. Accepts any [`Dim`]
     /// (`usize`, `D::Minus1`, etc.).
     pub fn transpose_dims<D1: Dim, D2: Dim>(
@@ -6106,7 +6307,12 @@ impl Tensor {
         // Negative-branch value: alpha * (exp(self) - 1) = alpha * exp(self) - alpha
         let neg_branch = self.exp().affine(alpha, -alpha);
         // Mask: self > 0. Build a zero on the same graph.
-        let zero = self.const_f32_like(vec![0.0; self.elem_count()], self.shape());
+        // GAP-003 carve-out. THE PROOF IS LOCAL AND ON THIS LINE: the buffer is
+        // `vec![0.0; self.elem_count()]` and the shape is `self.shape()`, whose
+        // elem_count IS that number. Both from `self`; no caller supplies either.
+        let zero = self
+            .const_f32_like(vec![0.0; self.elem_count()], self.shape())
+            .expect("elu: vec![_; self.elem_count()] against self.shape() -- same source");
         let mask = self.gt(&zero).unwrap();
         mask.where_cond(self, &neg_branch).unwrap()
     }
@@ -6176,12 +6382,12 @@ impl Tensor {
         let n = self.elem_count();
         let shape = self.shape();
         match self.dtype() {
-            DType::F32 => Ok(self.const_f32_like(vec![1.0_f32; n], shape)),
-            DType::F64 => Ok(self.const_f64_like(vec![1.0_f64; n], shape)),
-            DType::BF16 => Ok(self.const_bf16_like(vec![half::bf16::ONE; n], shape)),
-            DType::F16 => Ok(self.const_f16_like(vec![half::f16::ONE; n], shape)),
-            DType::U32 => Ok(self.const_u32_like(vec![1_u32; n], shape)),
-            DType::I64 => Ok(self.const_i64_like(vec![1_i64; n], shape)),
+            DType::F32 => self.const_f32_like(vec![1.0_f32; n], shape),
+            DType::F64 => self.const_f64_like(vec![1.0_f64; n], shape),
+            DType::BF16 => self.const_bf16_like(vec![half::bf16::ONE; n], shape),
+            DType::F16 => self.const_f16_like(vec![half::f16::ONE; n], shape),
+            DType::U32 => self.const_u32_like(vec![1_u32; n], shape),
+            DType::I64 => self.const_i64_like(vec![1_i64; n], shape),
             other => {
                 Err(fuel_ir::Error::Msg(format!("ones_like: unsupported dtype {other:?}",)).bt())
             }
@@ -6195,12 +6401,12 @@ impl Tensor {
         let n = self.elem_count();
         let shape = self.shape();
         match self.dtype() {
-            DType::F32 => Ok(self.const_f32_like(vec![0.0_f32; n], shape)),
-            DType::F64 => Ok(self.const_f64_like(vec![0.0_f64; n], shape)),
-            DType::BF16 => Ok(self.const_bf16_like(vec![half::bf16::ZERO; n], shape)),
-            DType::F16 => Ok(self.const_f16_like(vec![half::f16::ZERO; n], shape)),
-            DType::U32 => Ok(self.const_u32_like(vec![0_u32; n], shape)),
-            DType::I64 => Ok(self.const_i64_like(vec![0_i64; n], shape)),
+            DType::F32 => self.const_f32_like(vec![0.0_f32; n], shape),
+            DType::F64 => self.const_f64_like(vec![0.0_f64; n], shape),
+            DType::BF16 => self.const_bf16_like(vec![half::bf16::ZERO; n], shape),
+            DType::F16 => self.const_f16_like(vec![half::f16::ZERO; n], shape),
+            DType::U32 => self.const_u32_like(vec![0_u32; n], shape),
+            DType::I64 => self.const_i64_like(vec![0_i64; n], shape),
             other => {
                 Err(fuel_ir::Error::Msg(format!("zeros_like: unsupported dtype {other:?}",)).bt())
             }
@@ -6218,11 +6424,11 @@ impl Tensor {
         let shape = shape.into();
         let n = shape.elem_count();
         match dtype {
-            DType::F32 => Ok(Self::from_f32(vec![1.0_f32; n], shape, device)),
-            DType::F64 => Ok(Self::from_f64(vec![1.0_f64; n], shape, device)),
-            DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ONE; n], shape, device)),
-            DType::F16 => Ok(Self::from_f16(vec![half::f16::ONE; n], shape, device)),
-            DType::U32 => Ok(Self::from_u32(vec![1_u32; n], shape, device)),
+            DType::F32 => Self::from_f32(vec![1.0_f32; n], shape, device),
+            DType::F64 => Self::from_f64(vec![1.0_f64; n], shape, device),
+            DType::BF16 => Self::from_bf16(vec![half::bf16::ONE; n], shape, device),
+            DType::F16 => Self::from_f16(vec![half::f16::ONE; n], shape, device),
+            DType::U32 => Self::from_u32(vec![1_u32; n], shape, device),
             other => Err(fuel_ir::Error::Msg(format!("ones: unsupported dtype {other:?}",)).bt()),
         }
     }
@@ -6244,11 +6450,11 @@ impl Tensor {
         let shape = shape.into();
         let n = shape.elem_count();
         match dtype {
-            DType::F32 => Ok(Self::from_f32(vec![0.0_f32; n], shape, device)),
-            DType::F64 => Ok(Self::from_f64(vec![0.0_f64; n], shape, device)),
-            DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ZERO; n], shape, device)),
-            DType::F16 => Ok(Self::from_f16(vec![half::f16::ZERO; n], shape, device)),
-            DType::U32 => Ok(Self::from_u32(vec![0_u32; n], shape, device)),
+            DType::F32 => Self::from_f32(vec![0.0_f32; n], shape, device),
+            DType::F64 => Self::from_f64(vec![0.0_f64; n], shape, device),
+            DType::BF16 => Self::from_bf16(vec![half::bf16::ZERO; n], shape, device),
+            DType::F16 => Self::from_f16(vec![half::f16::ZERO; n], shape, device),
+            DType::U32 => Self::from_u32(vec![0_u32; n], shape, device),
             other => Err(fuel_ir::Error::Msg(format!("zeros: unsupported dtype {other:?}",)).bt()),
         }
     }
@@ -6269,11 +6475,11 @@ impl Tensor {
         let shape = shape.into();
         let n = shape.elem_count();
         match value {
-            fuel_ir::Scalar::F32(v) => Ok(Self::from_f32(vec![v; n], shape, device)),
-            fuel_ir::Scalar::F64(v) => Ok(Self::from_f64(vec![v; n], shape, device)),
-            fuel_ir::Scalar::BF16(v) => Ok(Self::from_bf16(vec![v; n], shape, device)),
-            fuel_ir::Scalar::F16(v) => Ok(Self::from_f16(vec![v; n], shape, device)),
-            fuel_ir::Scalar::U32(v) => Ok(Self::from_u32(vec![v; n], shape, device)),
+            fuel_ir::Scalar::F32(v) => Self::from_f32(vec![v; n], shape, device),
+            fuel_ir::Scalar::F64(v) => Self::from_f64(vec![v; n], shape, device),
+            fuel_ir::Scalar::BF16(v) => Self::from_bf16(vec![v; n], shape, device),
+            fuel_ir::Scalar::F16(v) => Self::from_f16(vec![v; n], shape, device),
+            fuel_ir::Scalar::U32(v) => Self::from_u32(vec![v; n], shape, device),
             other => Err(fuel_ir::Error::Msg(format!(
                 "full: unsupported scalar dtype {:?}",
                 other.dtype(),
@@ -6289,7 +6495,17 @@ impl Tensor {
         for i in 0..n {
             data[i * n + i] = 1.0;
         }
-        let base = Self::from_f32(data, vec![n, n], device);
+        // GAP-003 carve-out: `.expect` and NOT `?`, because this cannot fail and
+        // saying it CAN would be a false claim in the signature -- `eye` would
+        // return a `Result` that is never `Err`, and every caller would write a
+        // `?` for an error that does not exist.
+        //
+        // THE PROOF IS LOCAL, two lines up: `data` is `vec![_; n * n]`, and the
+        // shape `[n, n]` has `elem_count() == n * n`. Both are computed from `n`
+        // in this function; no caller supplies either, so they cannot disagree.
+        let base = Self::from_f32(data, vec![n, n], device).expect(
+            "eye: data is vec![_; n*n] and shape is [n, n] (elem_count n*n), \n             both computed from `n` in this function -- lengths cannot disagree",
+        );
         if dtype == DType::F32 {
             base
         } else {
@@ -6392,8 +6608,8 @@ impl Tensor {
         if seq == 0 {
             return Err(fuel_ir::Error::Msg("embed_tokens: tokens must be non-empty".into()).bt());
         }
-        let embed = Self::from_f32(embed_table, Shape::from_dims(&[vocab_size, hidden]), device);
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let embed = Self::from_f32(embed_table, Shape::from_dims(&[vocab_size, hidden]), device)?;
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         embed
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, seq, hidden]))
@@ -6420,8 +6636,8 @@ impl Tensor {
             )
             .bt());
         }
-        let embed = self.const_f32_like(embed_table, Shape::from_dims(&[vocab_size, hidden]));
-        let token_ids = self.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let embed = self.const_f32_like(embed_table, Shape::from_dims(&[vocab_size, hidden]))?;
+        let token_ids = self.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         embed
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, seq, hidden]))
@@ -6446,8 +6662,17 @@ impl Tensor {
     ) -> (Self, Self) {
         let (cos_data, sin_data) = fuel_graph::build_rope_tables(theta, start_pos, seq, head_dim);
         let rope_shape = Shape::from_dims(&[seq, head_dim]);
-        let rope_cos = self.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = self.const_f32_like(sin_data, rope_shape);
+        // ⚠️ GAP-003 category 2: the proof EXISTS but is NOT LOCAL --
+        // `build_rope_tables` owns the length and its `-> (Vec<f32>, Vec<f32>)`
+        // signature does not carry it. The message names WHERE the guarantee
+        // lives rather than claiming one. `-> (Self, Self)` has no error channel;
+        // giving it one is a signature change, a different obligation. See #157.
+        let rope_cos = self
+            .const_f32_like(cos_data, rope_shape.clone())
+            .expect("rope tables: build_rope_tables must return seq*head_dim elements");
+        let rope_sin = self
+            .const_f32_like(sin_data, rope_shape)
+            .expect("rope tables: build_rope_tables must return seq*head_dim elements");
         (rope_cos, rope_sin)
     }
 
@@ -6477,9 +6702,16 @@ impl Tensor {
             sin.extend_from_slice(&s1);
         }
         let shape = Shape::from_dims(&[rows, head_dim]);
+        // ⚠️ GAP-003, HALF LOCAL. LOCAL: the loop appends `c1` exactly `rows`
+        // times against a `[rows, head_dim]` shape. NOT LOCAL: that `c1` has
+        // `head_dim` elements comes from `build_rope_tables`. Stated as both.
         (
-            self.const_f32_like(cos, shape.clone()),
-            self.const_f32_like(sin, shape),
+            self.const_f32_like(cos, shape.clone()).expect(
+                "rope tables: rows appends of c1 (local); c1 has head_dim elements (not local)",
+            ),
+            self.const_f32_like(sin, shape).expect(
+                "rope tables: rows appends of s1 (local); s1 has head_dim elements (not local)",
+            ),
         )
     }
 
@@ -6507,7 +6739,19 @@ impl Tensor {
         head_dim: usize,
     ) -> Vec<f32> {
         let pool_shape = Shape::from_dims(&[block_size, n_kv_heads, head_dim]);
-        let k = Tensor::from_f32(k_block.to_vec(), pool_shape, dev);
+        // ⚠️ GAP-003: NOT a carve-out and NOT a propagation, and the reason is
+        // this function's SIGNATURE rather than anything about the operands.
+        // `k_block` and the pool dims are BOTH caller-supplied, so there is no
+        // local proof and the message below deliberately does not claim one.
+        // `-> Vec<f32>` has no error channel, and the two `.expect`s already on
+        // this same expression (permute, reshape) are the same pre-existing
+        // condition -- converting one of three would be less honest, not more.
+        //
+        // The fix is this function returning `Result`, which is a DIFFERENT
+        // obligation from the constructor-family ruling and is not in its scope.
+        let k = Tensor::from_f32(k_block.to_vec(), pool_shape, dev).expect(
+            "rope_delta_rotate_block_f32: k_block length must equal              block_size*n_kv_heads*head_dim -- both caller-supplied, so this              function cannot prove it; the -> Vec<f32> signature has no error              channel (see the sibling permute/reshape expects)",
+        );
         let k4 = k
             .permute([1, 0, 2])
             .expect("rope_delta_rotate_block_f32: permute [bs,Hkv,D]->[Hkv,bs,D]")
@@ -6550,8 +6794,18 @@ impl Tensor {
             sin_data.extend_from_slice(&s);
         }
         let shape = Shape::from_dims(&[b, 1, 1, head_dim]);
-        let rope_cos = self.const_f32_like(cos_data, shape.clone());
-        let rope_sin = self.const_f32_like(sin_data, shape);
+        // ⚠️ GAP-003, and the proof is HALF local -- worth stating as such rather
+        // than rounding to either category. LOCAL: `b` IS `positions.len()` (six
+        // lines up) and the loop appends once per position, so the buffer has
+        // `positions.len() * head_dim` elements against a `[b, 1, 1, head_dim]`
+        // shape. NOT LOCAL: that each `build_rope_tables(_, _, 1, head_dim)` call
+        // yields exactly `head_dim` elements lives in that function.
+        let rope_cos = self
+            .const_f32_like(cos_data, shape.clone())
+            .expect("batched rope tables: b IS positions.len() (local); build_rope_tables must yield head_dim per position (not local)");
+        let rope_sin = self
+            .const_f32_like(sin_data, shape)
+            .expect("batched rope tables: b IS positions.len() (local); build_rope_tables must yield head_dim per position (not local)");
         (rope_cos, rope_sin)
     }
 
@@ -6710,7 +6964,7 @@ impl Tensor {
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let hidden = gain.len();
         let normed = self.rms_norm_last_dim(eps)?;
-        let gain_t = self.const_f32_like(gain, Shape::from_dims(&[hidden]));
+        let gain_t = self.const_f32_like(gain, Shape::from_dims(&[hidden]))?;
         normed.broadcast_mul(&gain_t)
     }
 
@@ -6772,10 +7026,10 @@ impl Tensor {
             channels
         );
         let w_t = self
-            .const_f32_like(gain, Shape::from_dims(&[channels]))
+            .const_f32_like(gain, Shape::from_dims(&[channels]))?
             .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
         let b_t = self
-            .const_f32_like(bias, Shape::from_dims(&[channels]))
+            .const_f32_like(bias, Shape::from_dims(&[channels]))?
             .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
         self.broadcast_mul(&w_t)?.broadcast_add(&b_t)
     }
@@ -6795,10 +7049,17 @@ impl Tensor {
                 data[i * seq_len + j] = f32::NEG_INFINITY;
             }
         }
-        anchor.const_f32_like(
-            std::sync::Arc::from(data),
-            Shape::from_dims(&[seq_len, seq_len]),
-        )
+        // GAP-003 carve-out, PROOF LOCAL: `data` is `vec![_; seq_len * seq_len]`
+        // six lines up and the loop only writes IN PLACE -- it cannot change the
+        // length -- against a `[seq_len, seq_len]` shape. Both from `seq_len`.
+        anchor
+            .const_f32_like(
+                std::sync::Arc::from(data),
+                Shape::from_dims(&[seq_len, seq_len]),
+            )
+            .expect(
+                "additive_causal_mask_like: vec![_; seq_len*seq_len] against [seq_len, seq_len]",
+            )
     }
 
     /// Lower-triangular ones matrix `[n, n]`. `tril2(n).to_dtype(dtype)` is
@@ -6810,7 +7071,17 @@ impl Tensor {
                 data[i * n + j] = 1.0;
             }
         }
-        let base = Self::from_f32(data, vec![n, n], device);
+        // GAP-003 carve-out: `.expect` and NOT `?`, because this cannot fail and
+        // saying it CAN would be a false claim in the signature -- `tril2` would
+        // return a `Result` that is never `Err`, and every caller would write a
+        // `?` for an error that does not exist.
+        //
+        // THE PROOF IS LOCAL, two lines up: `data` is `vec![_; n * n]`, and the
+        // shape `[n, n]` has `elem_count() == n * n`. Both are computed from `n`
+        // in this function; no caller supplies either, so they cannot disagree.
+        let base = Self::from_f32(data, vec![n, n], device).expect(
+            "tril2: data is vec![_; n*n] and shape is [n, n] (elem_count n*n), \n             both computed from `n` in this function -- lengths cannot disagree",
+        );
         if dtype == DType::F32 {
             base
         } else {
@@ -6826,7 +7097,17 @@ impl Tensor {
                 data[i * n + j] = 1.0;
             }
         }
-        let base = Self::from_f32(data, vec![n, n], device);
+        // GAP-003 carve-out: `.expect` and NOT `?`, because this cannot fail and
+        // saying it CAN would be a false claim in the signature -- `triu2` would
+        // return a `Result` that is never `Err`, and every caller would write a
+        // `?` for an error that does not exist.
+        //
+        // THE PROOF IS LOCAL, two lines up: `data` is `vec![_; n * n]`, and the
+        // shape `[n, n]` has `elem_count() == n * n`. Both are computed from `n`
+        // in this function; no caller supplies either, so they cannot disagree.
+        let base = Self::from_f32(data, vec![n, n], device).expect(
+            "triu2: data is vec![_; n*n] and shape is [n, n] (elem_count n*n), \n             both computed from `n` in this function -- lengths cannot disagree",
+        );
         if dtype == DType::F32 {
             base
         } else {
@@ -6882,7 +7163,7 @@ impl Tensor {
     }
 
     /// Sub-tensor at index `i` along dim 0. Equivalent to
-    /// `self.slice(0, i, 1).unwrap().squeeze(0)`. Matches eager's [`crate::Tensor::get`].
+    /// `self.slice(0, i, 1).unwrap().squeeze(0)`. Matches eager's `crate::Tensor::get`.
     pub fn get(&self, i: usize) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.is_empty() {
@@ -6893,7 +7174,7 @@ impl Tensor {
 
     /// Sub-tensor at index along an arbitrary dim. Equivalent to
     /// `self.slice(dim, index, 1).unwrap().squeeze(dim)`. Matches eager's
-    /// [`crate::Tensor::get_on_dim`]. Accepts any [`Dim`].
+    /// `crate::Tensor::get_on_dim`. Accepts any [`Dim`].
     pub fn get_on_dim<D: Dim>(
         &self,
         dim: D,
@@ -6989,23 +7270,23 @@ impl Tensor {
         match dtype {
             DType::F32 => {
                 let data: Vec<f32> = (0..n).map(|_| rng.random_range(lo..up) as f32).collect();
-                Ok(Self::from_f32(data, shape, device))
+                Self::from_f32(data, shape, device)
             }
             DType::F64 => {
                 let data: Vec<f64> = (0..n).map(|_| rng.random_range(lo..up)).collect();
-                Ok(Self::from_f64(data, shape, device))
+                Self::from_f64(data, shape, device)
             }
             DType::BF16 => {
                 let data: Vec<half::bf16> = (0..n)
                     .map(|_| half::bf16::from_f64(rng.random_range(lo..up)))
                     .collect();
-                Ok(Self::from_bf16(data, shape, device))
+                Self::from_bf16(data, shape, device)
             }
             DType::F16 => {
                 let data: Vec<half::f16> = (0..n)
                     .map(|_| half::f16::from_f64(rng.random_range(lo..up)))
                     .collect();
-                Ok(Self::from_f16(data, shape, device))
+                Self::from_f16(data, shape, device)
             }
             other => {
                 Err(fuel_ir::Error::Msg(format!("Tensor::rand: unsupported dtype {other:?}",)).bt())
@@ -7033,23 +7314,23 @@ impl Tensor {
         match dtype {
             DType::F32 => {
                 let data: Vec<f32> = (0..n).map(|_| normal.sample(&mut rng) as f32).collect();
-                Ok(Self::from_f32(data, shape, device))
+                Self::from_f32(data, shape, device)
             }
             DType::F64 => {
                 let data: Vec<f64> = (0..n).map(|_| normal.sample(&mut rng)).collect();
-                Ok(Self::from_f64(data, shape, device))
+                Self::from_f64(data, shape, device)
             }
             DType::BF16 => {
                 let data: Vec<half::bf16> = (0..n)
                     .map(|_| half::bf16::from_f64(normal.sample(&mut rng)))
                     .collect();
-                Ok(Self::from_bf16(data, shape, device))
+                Self::from_bf16(data, shape, device)
             }
             DType::F16 => {
                 let data: Vec<half::f16> = (0..n)
                     .map(|_| half::f16::from_f64(normal.sample(&mut rng)))
                     .collect();
-                Ok(Self::from_f16(data, shape, device))
+                Self::from_f16(data, shape, device)
             }
             other => Err(fuel_ir::Error::Msg(format!(
                 "Tensor::randn: unsupported dtype {other:?}",
@@ -7084,7 +7365,15 @@ impl Tensor {
             }
         }
         let n = data.len();
-        Self::from_f32(data, vec![n], device)
+        // GAP-003 carve-out. `.expect`, NOT `?`: this cannot fail, and a `Result`
+        // here would be one that is never `Err` -- a false claim in the signature
+        // that every caller would then write a `?` for.
+        //
+        // THE PROOF IS LOCAL AND ONE LINE UP: `n` IS `data.len()`, and the shape
+        // is `[n]`. The shape is derived FROM the buffer, so they cannot disagree.
+        Self::from_f32(data, vec![n], device).expect(
+            "arange_step: shape is [n] where n IS data.len(), computed one line              above from that same buffer -- the lengths cannot disagree",
+        )
     }
 
     /// Linearly-spaced 1D tensor with `n` points from `start` to `end`
@@ -7092,11 +7381,17 @@ impl Tensor {
     pub fn linspace(start: f32, end: f32, n: usize, device: &Device) -> Self {
         assert!(n >= 1, "linspace: n must be >= 1");
         if n == 1 {
-            return Self::from_f32(vec![start], vec![1], device);
+            // GAP-003 carve-out: a one-element vec with shape [1], on one line.
+            return Self::from_f32(vec![start], vec![1], device)
+                .expect("linspace: vec![start] has exactly 1 element and the shape is [1]");
         }
         let step = (end - start) / ((n - 1) as f32);
         let data: Vec<f32> = (0..n).map(|i| start + step * (i as f32)).collect();
-        Self::from_f32(data, vec![n], device)
+        // GAP-003 carve-out: `data` is a `(0..n)` map -- exactly `n` elements --
+        // and the shape is `[n]`. Both from the same `n`, two lines apart.
+        Self::from_f32(data, vec![n], device).expect(
+            "linspace: data is (0..n).map(..).collect() so it has exactly n              elements, and the shape is [n] -- both from the same `n`",
+        )
     }
 
     /// Frobenius norm: `sqrt(sum(self * self))`. Returns a scalar tensor.
@@ -7202,7 +7497,8 @@ impl Tensor {
         // Depthwise kernel: one filter per input channel, each filter
         // is a constant 1/(kh·kw). Shape [C, 1, kh, kw] with groups=C
         // makes Conv2D compute one independent kernel per channel.
-        let weight = self.const_f32_like(vec![inv; c * kh * kw], Shape::from_dims(&[c, 1, kh, kw]));
+        let weight =
+            self.const_f32_like(vec![inv; c * kh * kw], Shape::from_dims(&[c, 1, kh, kw]))?;
         self.conv2d(&weight, None, stride, padding, c)
     }
 
@@ -7332,8 +7628,8 @@ impl Tensor {
     /// Composite via reshape + concat + reshape: insert a unit dim
     /// after each spatial dim, concat `scale` copies of the tensor on
     /// each new dim, then collapse the inflated dims back. Same shape
-    /// as the `upsample_nearest_2x` helper in [`fuel_transformers::models::lazy_yolov8`]
-    /// and [`fuel_transformers::models::lazy_sd_unet`], generalized to arbitrary scale.
+    /// as the `upsample_nearest_2x` helper in `fuel_transformers::models::lazy_yolov8`
+    /// and `fuel_transformers::models::lazy_sd_unet`, generalized to arbitrary scale.
     pub fn upsample_nearest2d(&self, scale: usize) -> std::result::Result<Self, fuel_ir::Error> {
         if scale == 0 {
             return Err(
@@ -7454,8 +7750,8 @@ impl Tensor {
         let w_idx: Vec<u32> = (0..target_w)
             .map(|oj| ((oj * w) / target_w).min(w - 1) as u32)
             .collect();
-        let h_idx_tensor = self.const_u32_like(h_idx, fuel_ir::Shape::from_dims(&[target_h]));
-        let w_idx_tensor = self.const_u32_like(w_idx, fuel_ir::Shape::from_dims(&[target_w]));
+        let h_idx_tensor = self.const_u32_like(h_idx, fuel_ir::Shape::from_dims(&[target_h]))?;
+        let w_idx_tensor = self.const_u32_like(w_idx, fuel_ir::Shape::from_dims(&[target_w]))?;
         let after_h = self.index_select(2_usize, &h_idx_tensor)?;
         after_h.index_select(3_usize, &w_idx_tensor)
     }
@@ -7522,7 +7818,7 @@ impl Tensor {
     }
 
     /// Coordinate grids from rank-1 inputs. Matches PyTorch's
-    /// `torch.meshgrid` and eager's [`crate::Tensor::meshgrid`]:
+    /// `torch.meshgrid` and eager's `crate::Tensor::meshgrid`:
     ///
     /// - `xy_indexing = true` (Cartesian, NumPy default): the first
     ///   two inputs are swapped before broadcasting and the resulting
@@ -7624,7 +7920,7 @@ impl Tensor {
     /// is assumed. The byte count must match `shape.elem_count() *
     /// dtype_bytes`.
     ///
-    /// This is the low-level loader. Prefer [`from_safetensors_view`]
+    /// This is the low-level loader. Prefer [`Self::from_safetensors_view`]
     /// if you already have a `safetensors::TensorView` in hand.
     ///
     /// Supported dtypes today: `F32`, `F64`, `BF16`, `F16`, `U32`.
@@ -7658,7 +7954,7 @@ impl Tensor {
                 for chunk in bytes.as_chunks::<4>().0.iter() {
                     data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
-                Ok(Self::from_f32(data, shape_obj, device))
+                Self::from_f32(data, shape_obj, device)
             }
             Dtype::F64 => {
                 check_len(elem_count * 8)?;
@@ -7667,7 +7963,7 @@ impl Tensor {
                     let arr: [u8; 8] = *chunk;
                     data.push(f64::from_le_bytes(arr));
                 }
-                Ok(Self::from_f64(data, shape_obj, device))
+                Self::from_f64(data, shape_obj, device)
             }
             Dtype::BF16 => {
                 check_len(elem_count * 2)?;
@@ -7676,7 +7972,7 @@ impl Tensor {
                     let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                     data.push(half::bf16::from_bits(raw));
                 }
-                Ok(Self::from_bf16(data, shape_obj, device))
+                Self::from_bf16(data, shape_obj, device)
             }
             Dtype::F16 => {
                 check_len(elem_count * 2)?;
@@ -7685,7 +7981,7 @@ impl Tensor {
                     let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                     data.push(half::f16::from_bits(raw));
                 }
-                Ok(Self::from_f16(data, shape_obj, device))
+                Self::from_f16(data, shape_obj, device)
             }
             Dtype::U32 => {
                 check_len(elem_count * 4)?;
@@ -7693,7 +7989,7 @@ impl Tensor {
                 for chunk in bytes.as_chunks::<4>().0.iter() {
                     data.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
-                Ok(Self::from_u32(data, shape_obj, device))
+                Self::from_u32(data, shape_obj, device)
             }
             other => crate::bail!(
                 "from_safetensors_bytes: unsupported dtype {other:?} — extend Tensor's \
@@ -7816,8 +8112,8 @@ impl LlamaConfig {
     /// - `head_dim` is taken directly when present, or computed as
     ///   `hidden_size / num_attention_heads` otherwise.
     ///
-    /// [`LlamaConfigRaw`] is the wire shape under HF's own field names;
-    /// [`LlamaConfigRaw::resolve`] applies the two cross-field defaults and
+    /// `LlamaConfigRaw` is the wire shape under HF's own field names;
+    /// `LlamaConfigRaw::resolve` applies the two cross-field defaults and
     /// renames into this crate's vocabulary.
     pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
         LlamaConfigRaw::from_json_str(json)?.resolve()
@@ -7948,12 +8244,12 @@ impl WeightStorage {
         shape: Shape,
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
         match self {
-            Self::F32(a) => Ok(anchor.const_f32_like(a.clone(), shape)),
-            Self::BF16(a) => Ok(anchor.const_bf16_like(a.clone(), shape)),
+            Self::F32(a) => anchor.const_f32_like(a.clone(), shape),
+            Self::BF16(a) => anchor.const_bf16_like(a.clone(), shape),
             Self::Q4_0 { words, .. } => {
                 let _ = shape; // shape arg unused — Q4_0 const is 1-D U32
                 // Arc-clone the precomputed u32 view; no byte copy.
-                Ok(anchor.const_u32_like(Arc::clone(words), Shape::from_dims(&[words.len()])))
+                anchor.const_u32_like(Arc::clone(words), Shape::from_dims(&[words.len()]))
             }
             Self::WithLoRA { .. } => Err(fuel_ir::Error::Msg(
                 "WeightStorage::WithLoRA::const_like is not supported \
@@ -7992,7 +8288,7 @@ impl WeightStorage {
             .bt());
         }
         let projected = self.apply_linear(x, in_features, out_features)?;
-        let bias_t = projected.const_f32_like(bias, Shape::from_dims(&[out_features]));
+        let bias_t = projected.const_f32_like(bias, Shape::from_dims(&[out_features]))?;
         projected.broadcast_add(&bias_t)
     }
 
@@ -8082,9 +8378,9 @@ impl WeightStorage {
                 let base_out = base.apply_linear(x, in_features, out_features)?;
                 // Low-rank update: y += (alpha/rank) · x @ A @ B.
                 let a_t =
-                    x.const_f32_like(Arc::clone(lora_a), Shape::from_dims(&[in_features, *rank]));
+                    x.const_f32_like(Arc::clone(lora_a), Shape::from_dims(&[in_features, *rank]))?;
                 let b_t =
-                    x.const_f32_like(Arc::clone(lora_b), Shape::from_dims(&[*rank, out_features]));
+                    x.const_f32_like(Arc::clone(lora_b), Shape::from_dims(&[*rank, out_features]))?;
                 let scale = *alpha as f64 / *rank as f64;
                 // x: [*, in] → @A [*, rank] → @B [*, out] → scale → add base.
                 let lora_path = Tensor {
@@ -8311,8 +8607,8 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         // index_select(0, token_ids) produces [seq, dim]. Reshape to
         // [1, seq, dim] for the downstream attention code.
         let h = embed
@@ -8338,7 +8634,7 @@ impl LlamaModel {
             .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
     }
 
-    /// Like [`forward_embeds`] but skips the LM-head projection
+    /// Like [`Self::forward_embeds`] but skips the LM-head projection
     /// and returns post-final-RmsNorm hidden states
     /// `(batch, seq, dim)`. Uses strict-causal masking. Use
     /// this from multimodal hosts (LLaVA, Pixtral, etc.) that
@@ -8385,7 +8681,7 @@ impl LlamaModel {
         ))
     }
 
-    /// Like [`forward_embeds`] but takes a caller-supplied
+    /// Like [`Self::forward_embeds`] but takes a caller-supplied
     /// additive attention mask `(1, 1, seq, seq)` and skips
     /// the LM-head projection. Returns the post-final-RmsNorm
     /// hidden states `[batch, seq, dim]`.
@@ -8421,7 +8717,7 @@ impl LlamaModel {
         ))
     }
 
-    /// Like [`forward`] but returns the hidden state AFTER the final
+    /// Like [`Self::forward`] but returns the hidden state AFTER the final
     /// RMSNorm, BEFORE the output projection. Shape: `[batch, seq, dim]`.
     ///
     /// The `anchor` tensor provides the graph to build on — use a
@@ -8452,8 +8748,8 @@ impl LlamaModel {
         let embed = anchor.const_f32_like(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-        );
-        let token_ids = anchor.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = anchor.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let mut h = embed
             .index_select(0, &token_ids)
             .unwrap()
@@ -8481,9 +8777,9 @@ impl LlamaModel {
 
     /// Internal entry that runs the LLaMA backbone given pre-built RoPE
     /// cos/sin tables and an attention mask. The standard
-    /// [`forward_embeds`] path computes cos/sin from `cfg.rope_base`
+    /// [`Self::forward_embeds`] path computes cos/sin from `cfg.rope_base`
     /// via [`Tensor::rope_tables_const`] and uses a strict-causal
-    /// mask; [`fuel_transformers::models::lazy_llama_full::Llama3Model`] uses this hook to
+    /// mask; `fuel_transformers::models::lazy_llama_full::Llama3Model` uses this hook to
     /// inject Llama-3 long-context scaled RoPE tables without
     /// duplicating the forward path.
     ///
@@ -8914,8 +9210,8 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &dev,
-        );
-        let token_ids = embed.const_u32_like(vec![token], Shape::from_dims(&[1]));
+        )?;
+        let token_ids = embed.const_u32_like(vec![token], Shape::from_dims(&[1]))?;
         let mut h = embed
             .index_select(0, &token_ids)
             .unwrap()
@@ -8928,8 +9224,8 @@ impl LlamaModel {
         let scale = (1.0f64 / (cfg.head_dim as f64).sqrt()) as f32;
 
         // block_table / context_lens for this session (single-row batch).
-        let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
-        let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+        let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape())?;
+        let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())?;
 
         // Per layer: bind this layer's pool K/V buffers to placeholders and build
         // the paged attend + FFN. All layers bind into ONE realize cache — the
@@ -9209,7 +9505,7 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &dev,
-        );
+        )?;
         let token_ids = embed.const_placeholder_like(Shape::from_dims(&[1]), DType::U32);
         let token_ids_node = token_ids.inner.id();
         let mut h = embed
@@ -9497,8 +9793,8 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &dev,
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[k]));
+        )?;
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[k]))?;
         let mut h = embed
             .index_select(0, &token_ids)
             .unwrap()
@@ -9511,8 +9807,8 @@ impl LlamaModel {
         let (rope_cos, rope_sin) =
             h.rope_tables_const_batched(cfg.rope_base, &positions, cfg.head_dim);
         let scale = (1.0f64 / (cfg.head_dim as f64).sqrt()) as f32;
-        let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
-        let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+        let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape())?;
+        let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())?;
 
         let mut cache = fuel_dispatch::pipelined::StorageCache::new();
         for (li, layer) in weights.layers.iter().enumerate() {
@@ -9896,7 +10192,7 @@ impl LlamaModel {
     ///   dropped after realize). Subsequent forward steps see the
     ///   accumulated K/V state via the same Arcs.
     /// - Logits return shape: rank-1 `[vocab_size]` — last-position
-    ///   only, same as [`Self::forward_with_cache_on`].
+    ///   only, same as [`Self::forward_with_kv_context`].
     /// - Backends: CPU, CUDA, and Vulkan all run this path via the
     ///   pipelined executor + binding-table dispatch.
     ///
@@ -10171,11 +10467,11 @@ impl LlamaModel {
     /// Mechanism (spec risk #2 (a), copy-in/copy-out into a per-call shared
     /// buffer; all-or-nothing commit, spec risk #7):
     /// 1. Allocate a shared `[K, n_kv_heads, max_seq_len, head_dim]` K/V buffer
-    ///    per layer ([`crate::inference_context::alloc_batched_kv`]; fail-on-OOM).
+    ///    per layer (`crate::inference_context::alloc_batched_kv`; fail-on-OOM).
     /// 2. **Copy-in:** `Op::WriteSlice` each session's `[1,…]` KV history into
     ///    its batch slot `i`.
     /// 3. **Decode:** build a batch=`K` analogue of
-    ///    [`Self::build_and_realize_first_decode_token`] over the shared buffer
+    ///    `Self::build_and_realize_first_decode_token` over the shared buffer
     ///    (the projection GEMMs batch for free through the leading batch axis;
     ///    the attention half reaches `flash_decoding`'s batch dim on CUDA) and
     ///    realize `[K, vocab]` logits (non-captured plan-once, spec #4).
@@ -10284,7 +10580,7 @@ impl LlamaModel {
                 Arc::from(vec![0.0f32]),
                 Shape::from_dims(&[1]),
                 &Device::cpu(),
-            );
+            )?;
             let mut ctx_in = InferenceContext::new(device.clone());
             let mut targets: Vec<fuel_graph::NodeId> = Vec::with_capacity(2 * cfg.n_layers);
             for l in 0..cfg.n_layers {
@@ -10329,8 +10625,8 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(last_tokens.to_vec(), Shape::from_dims(&[k]));
+        )?;
+        let token_ids = embed.const_u32_like(last_tokens.to_vec(), Shape::from_dims(&[k]))?;
         let mut h = embed
             .index_select(0, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
@@ -10430,7 +10726,7 @@ impl LlamaModel {
                 Arc::from(vec![0.0f32]),
                 Shape::from_dims(&[1]),
                 &Device::cpu(),
-            );
+            )?;
             let mut ctx_out = InferenceContext::new(device.clone());
             let mut targets: Vec<fuel_graph::NodeId> = Vec::with_capacity(2 * cfg.n_layers * k);
             for l in 0..cfg.n_layers {
@@ -11887,7 +12183,7 @@ impl LlamaTokenizer {
     }
 
     /// Load a tokenizer from a HuggingFace repo. Downloads
-    /// `tokenizer.json` and calls [`from_file`].
+    /// `tokenizer.json` and calls [`Self::from_file`].
     pub fn from_hub(repo_id: &str) -> crate::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
             .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
@@ -12737,7 +13033,7 @@ impl PhiConfigRaw {
 
 impl PhiConfig {
     ///
-    /// [`PhiConfigRaw`] is the wire shape; [`PhiConfigRaw::resolve`] applies
+    /// `PhiConfigRaw` is the wire shape; `PhiConfigRaw::resolve` applies
     /// the CHAINED derivation and the evenness check.
     pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
         PhiConfigRaw::from_json_str(json)?.resolve()
@@ -13055,8 +13351,8 @@ impl PhiModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let mut h = embed
             .index_select(0, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
@@ -13078,7 +13374,7 @@ impl PhiModel {
         // (was one Const per layer) — byte-identical across layers (it
         // depends only on `cached_len` / `seq` / `max_seq_len`).
         let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
-        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, max_seq_len]));
+        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, max_seq_len]))?;
 
         // Per-layer: bind the cache K + V Arcs to fresh Const NodeIds,
         // dispatch through the WriteSlice variant, clean up the
@@ -13131,7 +13427,8 @@ impl PhiModel {
             .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         let logits = match &weights.output_bias {
             Some(b) => {
-                let b_t = h_norm.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]));
+                let b_t =
+                    h_norm.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]))?;
                 logits_no_bias.broadcast_add(&b_t)?
             }
             None => logits_no_bias,
@@ -13181,7 +13478,7 @@ impl PhiModel {
     /// re-planning. See the LlamaModel sibling for the full control-flow
     /// contract; the Phi version differs only in the model body it
     /// builds (parallel attn+MLP, LayerNorm, partial RoPE, projection
-    /// biases, optional output bias — see [`Self::apply_layer_with_kv_writes`]).
+    /// biases, optional output bias).
     ///
     /// Byte-identical to the D1 cached path ([`Self::forward_with_kv_context`])
     /// on the same prefix (same plan → same kernels). Bumps
@@ -13293,7 +13590,7 @@ impl PhiModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
+        )?;
         let token_ids = embed.const_placeholder_like(Shape::from_dims(&[seq]), DType::U32);
         let token_ids_node = token_ids.inner.id();
         let mut h = embed
@@ -13365,7 +13662,8 @@ impl PhiModel {
             .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         let logits = match &weights.output_bias {
             Some(b) => {
-                let b_t = h_norm.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]));
+                let b_t =
+                    h_norm.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]))?;
                 logits_no_bias.broadcast_add(&b_t)?
             }
             None => logits_no_bias,
@@ -17285,8 +17583,11 @@ mod generate_tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(vec![next_token], Shape::from_dims(&[seq]));
+        )
+        .unwrap();
+        let token_ids = embed
+            .const_u32_like(vec![next_token], Shape::from_dims(&[seq]))
+            .unwrap();
         let mut h = embed
             .index_select(0, &token_ids)
             .unwrap()
@@ -23698,7 +23999,8 @@ mod lora_tests {
         let rank = 2;
         let alpha = 8.0_f32;
 
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         // Base weight [in, out].
         let base_vec: Vec<f32> = (0..in_f * out_f).map(|i| (i as f32) * 0.1).collect();
         let lora_a_vec: Vec<f32> = (0..in_f * rank).map(|i| (i as f32) * 0.05).collect();
@@ -23716,7 +24018,9 @@ mod lora_tests {
         // Activations x [2, in_f].
         let batch = 2;
         let x_data: Vec<f32> = (0..batch * in_f).map(|i| (i as f32) * 0.1 + 0.5).collect();
-        let x = anchor.const_f32_like(x_data.clone(), Shape::from_dims(&[batch, in_f]));
+        let x = anchor
+            .const_f32_like(x_data.clone(), Shape::from_dims(&[batch, in_f]))
+            .unwrap();
         let y = ws.apply_linear(&x, in_f, out_f).unwrap();
         let got = y.realize_f32().to_vec();
 
@@ -23778,7 +24082,8 @@ mod lora_tests {
             vec![0.0_f32; 10],
             Shape::from_dims(&[2, 5]), // trailing dim 5 != in_features 4
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let err = ws
             .apply_linear(&x, 4, 3)
             .expect_err("must not panic, must Err");
@@ -23799,7 +24104,8 @@ mod lora_tests {
             in_features: 4,
             out_features: 4,
         };
-        let x = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
+        let x =
+            Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu()).unwrap();
         // Trailing dim matches in_features, so this reaches the stored-shape
         // check rather than the contract check above.
         let err = ws
@@ -23815,7 +24121,8 @@ mod lora_tests {
     #[test]
     fn apply_linear_with_bias_errors_on_wrong_bias_length() {
         let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12])); // 4 x 3
-        let x = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
+        let x =
+            Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu()).unwrap();
         let bias: Arc<[f32]> = Arc::from(vec![0.0_f32; 2]); // wrong: out_features is 3
         let err = ws
             .apply_linear_with_bias(&x, 4, 3, bias)
@@ -24043,18 +24350,23 @@ mod llama_tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &crate::Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
+        )
+        .unwrap();
+        let token_ids = embed
+            .const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))
+            .unwrap();
         let embeds = embed
             .index_select(0_usize, &token_ids)
             .unwrap()
             .reshape(Shape::from_dims(&[1, tokens.len(), cfg.dim]))
             .unwrap();
         let zero_mask: Arc<[f32]> = Arc::from(vec![0.0_f32; tokens.len() * tokens.len()]);
-        let mask = embeds.const_f32_like(
-            zero_mask,
-            Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
-        );
+        let mask = embeds
+            .const_f32_like(
+                zero_mask,
+                Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
+            )
+            .unwrap();
         let bidir = model
             .forward_hidden_embeds_with_mask(&embeds, &mask, 0)
             .unwrap()
@@ -24106,8 +24418,11 @@ mod llama_tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &crate::Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
+        )
+        .unwrap();
+        let token_ids = embed
+            .const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))
+            .unwrap();
         let embeds = embed
             .index_select(0_usize, &token_ids)
             .unwrap()
@@ -24203,7 +24518,7 @@ mod phase_a1_wrapper_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -24436,8 +24751,10 @@ mod phase_a1_wrapper_tests {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
         // Comparison ops produce Bool masks directly (GAP-168(c)) — masked_fill
         // now accepts Bool, no F32→mask cast needed.
-        let probe = t.const_f32_like(vec![0.0, 1.0, 1.0, 0.0], vec![2, 2]);
-        let threshold = t.const_f32_like(vec![0.5; 4], vec![2, 2]);
+        let probe = t
+            .const_f32_like(vec![0.0, 1.0, 1.0, 0.0], vec![2, 2])
+            .unwrap();
+        let threshold = t.const_f32_like(vec![0.5; 4], vec![2, 2]).unwrap();
         let mask = probe.gt(&threshold).unwrap(); // [0, 1, 1, 0] as Bool
         let out = t.masked_fill(&mask, fuel_ir::Scalar::F32(-9.0)).unwrap();
         assert_eq!(out.realize_f32(), vec![1.0, -9.0, -9.0, 4.0]);
@@ -24455,7 +24772,7 @@ mod phase_a1_wrapper_tests {
         // dtype tag is Bool, the CPU kernel dispatches on [F32,F32,Bool] (its FKC
         // contract declares fixed(BOOL)), and Copy[Bool] materializes it to host.
         let t = cpu_f32(vec![0.0, 5.0, 3.0, 0.0], &[4]);
-        let thr = t.const_f32_like(vec![0.5; 4], vec![4]);
+        let thr = t.const_f32_like(vec![0.5; 4], vec![4]).unwrap();
         let mask = t.gt(&thr).unwrap();
         assert_eq!(mask.dtype(), DType::Bool, "gt yields Bool, not U8");
         assert_eq!(mask.realize_u8(), vec![0, 1, 1, 0], "mask bytes are 0/1");
@@ -24468,6 +24785,7 @@ mod phase_a1_wrapper_tests {
         // against 0/1 and could not tell a conversion from a reinterpret.
         let u8_vals = t
             .const_f32_like(vec![0.0, 5.0, 3.0, 0.0], vec![4])
+            .unwrap()
             .to_dtype(DType::U8)
             .unwrap();
         assert_eq!(u8_vals.dtype(), DType::U8);
@@ -24554,8 +24872,10 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn index_add_smoke() {
         let base = cpu_f32(vec![1.0, 1.0, 1.0, 1.0], &[2, 2]);
-        let src = base.const_f32_like(vec![10.0, 20.0, 30.0, 40.0], vec![2, 2]);
-        let indices = base.const_u32_like(vec![0_u32, 0_u32], vec![2]);
+        let src = base
+            .const_f32_like(vec![10.0, 20.0, 30.0, 40.0], vec![2, 2])
+            .unwrap();
+        let indices = base.const_u32_like(vec![0_u32, 0_u32], vec![2]).unwrap();
         let out = base.index_add(0, &indices, &src).unwrap();
         assert_eq!(out.shape().dims(), &[2, 2]);
         // both src rows added to row 0; row 1 unchanged
@@ -24569,8 +24889,12 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn scatter_add_smoke() {
         let base = cpu_f32(vec![0.0, 0.0, 0.0, 0.0], &[2, 2]);
-        let src = base.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
-        let indices = base.const_u32_like(vec![0_u32, 1_u32, 1_u32, 0_u32], vec![2, 2]);
+        let src = base
+            .const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2])
+            .unwrap();
+        let indices = base
+            .const_u32_like(vec![0_u32, 1_u32, 1_u32, 0_u32], vec![2, 2])
+            .unwrap();
         let out = base.scatter_add(0, &indices, &src).unwrap();
         assert_eq!(out.shape().dims(), &[2, 2]);
     }
@@ -24593,7 +24917,7 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn const_f64_like_round_trips() {
         let anchor = cpu_f32(vec![0.0], &[1]);
-        let t = anchor.const_f64_like(vec![1.5, 2.5, 3.5], vec![3]);
+        let t = anchor.const_f64_like(vec![1.5, 2.5, 3.5], vec![3]).unwrap();
         assert_eq!(t.shape().dims(), &[3]);
         assert_eq!(t.dtype(), DType::F64);
         assert_eq!(t.realize_f64(), vec![1.5, 2.5, 3.5]);
@@ -24602,7 +24926,7 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn const_i64_like_round_trips() {
         let anchor = cpu_f32(vec![0.0], &[1]);
-        let t = anchor.const_i64_like(vec![-1_i64, 2, -3], vec![3]);
+        let t = anchor.const_i64_like(vec![-1_i64, 2, -3], vec![3]).unwrap();
         assert_eq!(t.shape().dims(), &[3]);
         assert_eq!(t.dtype(), DType::I64);
     }
@@ -24630,7 +24954,7 @@ mod phase_a2_composite_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -24855,8 +25179,9 @@ mod phase_a2_composite_tests {
         assert_eq!(embedded.shape().dims(), &[1, 2, hidden]);
 
         // Anchored: composes with the anchor.
-        let one_scaled =
-            anchor.const_f32_like(std::sync::Arc::from(vec![1.0_f32]), Shape::from_dims(&[1]));
+        let one_scaled = anchor
+            .const_f32_like(std::sync::Arc::from(vec![1.0_f32]), Shape::from_dims(&[1]))
+            .unwrap();
         let _ = embedded
             .add(
                 &one_scaled
@@ -25164,7 +25489,7 @@ mod phase_a2_composite_tests {
     #[test]
     fn stack_adds_leading_dim() {
         let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]);
+        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]).unwrap();
         let out = Tensor::stack(&[&a, &b], 0).unwrap();
         assert_eq!(out.shape().dims(), &[2, 3]);
         assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -25173,7 +25498,7 @@ mod phase_a2_composite_tests {
     #[test]
     fn stack_adds_trailing_dim() {
         let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]);
+        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]).unwrap();
         let out = Tensor::stack(&[&a, &b], 1).unwrap();
         assert_eq!(out.shape().dims(), &[3, 2]);
         assert_eq!(out.realize_f32(), vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
@@ -25182,7 +25507,7 @@ mod phase_a2_composite_tests {
     #[test]
     fn stack_rejects_mismatched_shapes() {
         let a = cpu_f32(vec![1.0, 2.0], &[2]);
-        let b = a.const_f32_like(vec![3.0, 4.0, 5.0], vec![3]);
+        let b = a.const_f32_like(vec![3.0, 4.0, 5.0], vec![3]).unwrap();
         assert!(Tensor::stack(&[&a, &b], 0).is_err());
     }
 
@@ -25224,7 +25549,7 @@ mod phase_a3_keepdim_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -25293,7 +25618,7 @@ mod phase_a4_composite_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -25328,7 +25653,7 @@ mod phase_a4_composite_tests {
     #[test]
     fn dot_of_rank_one_vectors() {
         let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]);
+        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]).unwrap();
         let out = a.dot(&b).unwrap();
         assert_eq!(out.shape().elem_count(), 1);
         let v = out.realize_f32();
@@ -25338,21 +25663,23 @@ mod phase_a4_composite_tests {
     #[test]
     fn dot_rejects_non_rank_one() {
         let a = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        let b = a.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
+        let b = a
+            .const_f32_like(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2])
+            .unwrap();
         assert!(a.dot(&b).is_err());
     }
 
     #[test]
     fn dot_rejects_length_mismatch() {
         let a = cpu_f32(vec![1.0, 2.0], &[2]);
-        let b = a.const_f32_like(vec![1.0, 2.0, 3.0], vec![3]);
+        let b = a.const_f32_like(vec![1.0, 2.0, 3.0], vec![3]).unwrap();
         assert!(a.dot(&b).is_err());
     }
 
     #[test]
     fn mv_matrix_times_vector() {
         let m = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
-        let v = m.const_f32_like(vec![1.0, 1.0, 1.0], vec![3]);
+        let v = m.const_f32_like(vec![1.0, 1.0, 1.0], vec![3]).unwrap();
         let out = m.mv(&v).unwrap();
         assert_eq!(out.shape().dims(), &[2]);
         assert_eq!(out.realize_f32(), vec![6.0, 15.0]);
@@ -25361,7 +25688,7 @@ mod phase_a4_composite_tests {
     #[test]
     fn matvec_is_mv_alias() {
         let m = cpu_f32(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
-        let v = m.const_f32_like(vec![3.0, 4.0], vec![2]);
+        let v = m.const_f32_like(vec![3.0, 4.0], vec![2]).unwrap();
         let a = m.mv(&v).unwrap().realize_f32();
         let b = m.matvec(&v).unwrap().realize_f32();
         assert_eq!(a, b);
@@ -25370,14 +25697,16 @@ mod phase_a4_composite_tests {
     #[test]
     fn mv_rejects_shape_mismatch() {
         let m = cpu_f32(vec![1.0; 6], &[2, 3]);
-        let v = m.const_f32_like(vec![1.0, 1.0], vec![2]);
+        let v = m.const_f32_like(vec![1.0, 1.0], vec![2]).unwrap();
         assert!(m.mv(&v).is_err());
     }
 
     #[test]
     fn broadcast_matmul_passes_through_to_matmul() {
         let a = cpu_f32(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
-        let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
+        let b = a
+            .const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2])
+            .unwrap();
         let out = a.broadcast_matmul(&b).unwrap();
         assert_eq!(out.realize_f32(), vec![5.0, 6.0, 7.0, 8.0]);
     }
@@ -25391,7 +25720,7 @@ mod phase_a5_factory_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -25460,8 +25789,8 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn meshgrid_ij_indexing_two_inputs() {
-        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
-        let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]);
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu()).unwrap();
+        let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]).unwrap();
         let grids = Tensor::meshgrid(&[&x, &y], false).unwrap();
         assert_eq!(grids.len(), 2);
         // ij: shapes are [len(x), len(y)] = [3, 2].
@@ -25475,8 +25804,8 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn meshgrid_xy_indexing_swaps_first_two() {
-        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
-        let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]);
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu()).unwrap();
+        let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]).unwrap();
         let grids = Tensor::meshgrid(&[&x, &y], true).unwrap();
         // xy: shapes flip to [len(y), len(x)] = [2, 3].
         assert_eq!(grids[0].shape().dims(), &[2, 3]);
@@ -25489,14 +25818,14 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn meshgrid_rejects_single_input() {
-        let x = Tensor::from_f32(vec![1.0_f32, 2.0], vec![2], &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0], vec![2], &Device::cpu()).unwrap();
         assert!(Tensor::meshgrid(&[&x], false).is_err());
     }
 
     #[test]
     fn meshgrid_rejects_non_rank_one() {
-        let x = Tensor::from_f32(vec![1.0; 4], vec![2, 2], &Device::cpu());
-        let y = x.const_f32_like(vec![1.0, 2.0], vec![2]);
+        let x = Tensor::from_f32(vec![1.0; 4], vec![2, 2], &Device::cpu()).unwrap();
+        let y = x.const_f32_like(vec![1.0, 2.0], vec![2]).unwrap();
         assert!(Tensor::meshgrid(&[&x, &y], false).is_err());
     }
 
@@ -25669,7 +25998,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn norm_is_sqrt_sum_sq() {
-        let t = Tensor::from_f32(vec![3.0_f32, 4.0], vec![2], &Device::cpu());
+        let t = Tensor::from_f32(vec![3.0_f32, 4.0], vec![2], &Device::cpu()).unwrap();
         let n = t.norm();
         assert!((n.realize_f32()[0] - 5.0).abs() < 1e-6);
     }
@@ -25806,7 +26135,7 @@ mod phase_a5_factory_tests {
     fn conv1d_identity_kernel_passes_input_through() {
         // Single-batch, single-channel, kernel-1 identity → output equals input.
         let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0], &[1, 1, 5]);
-        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]).unwrap();
         let out = x.conv1d(&w, None, 1, 0, 1).unwrap();
         assert_eq!(out.shape().dims(), &[1, 1, 5]);
         assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
@@ -25816,7 +26145,7 @@ mod phase_a5_factory_tests {
     fn conv1d_sum_kernel_two_wide() {
         // Sum kernel of size 2: out[t] = x[t] + x[t+1].
         let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 4]);
-        let w = x.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]);
+        let w = x.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]).unwrap();
         let out = x.conv1d(&w, None, 1, 0, 1).unwrap();
         assert_eq!(out.shape().dims(), &[1, 1, 3]);
         assert_eq!(out.realize_f32(), vec![3.0, 5.0, 7.0]);
@@ -25825,8 +26154,8 @@ mod phase_a5_factory_tests {
     #[test]
     fn conv1d_with_bias_applies_correctly() {
         let x = cpu_f32(vec![1.0, 1.0, 1.0], &[1, 1, 3]);
-        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]);
-        let bias = x.const_f32_like(vec![10.0], vec![1]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]).unwrap();
+        let bias = x.const_f32_like(vec![10.0], vec![1]).unwrap();
         let out = x.conv1d(&w, Some(&bias), 1, 0, 1).unwrap();
         assert_eq!(out.realize_f32(), vec![11.0, 11.0, 11.0]);
     }
@@ -25835,7 +26164,7 @@ mod phase_a5_factory_tests {
     fn conv1d_stride_two_halves_output() {
         // Input length 6, kernel 2, stride 2 → output length (6-2)/2+1 = 3.
         let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[1, 1, 6]);
-        let w = x.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]);
+        let w = x.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]).unwrap();
         let out = x.conv1d(&w, None, 2, 0, 1).unwrap();
         assert_eq!(out.shape().dims(), &[1, 1, 3]);
         assert_eq!(out.realize_f32(), vec![3.0, 7.0, 11.0]);
@@ -25845,7 +26174,9 @@ mod phase_a5_factory_tests {
     fn conv1d_padding_one_preserves_length() {
         // Input length 4, kernel 3, padding 1, stride 1 → output length 4.
         let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 4]);
-        let w = x.const_f32_like(vec![1.0, 1.0, 1.0], vec![1, 1, 3]);
+        let w = x
+            .const_f32_like(vec![1.0, 1.0, 1.0], vec![1, 1, 3])
+            .unwrap();
         let out = x.conv1d(&w, None, 1, 1, 1).unwrap();
         assert_eq!(out.shape().dims(), &[1, 1, 4]);
         // out[0] = 0+x[0]+x[1] = 3; out[1] = x[0]+x[1]+x[2] = 6;
@@ -25858,7 +26189,7 @@ mod phase_a5_factory_tests {
         // 1 batch, 1 in-channel, 3 timesteps; 2 out-channels with kernel 1.
         let x = cpu_f32(vec![1.0, 2.0, 3.0], &[1, 1, 3]);
         // Weight [Cout=2, Cin=1, K=1]: filter 0 = 2.0, filter 1 = -1.0.
-        let w = x.const_f32_like(vec![2.0, -1.0], vec![2, 1, 1]);
+        let w = x.const_f32_like(vec![2.0, -1.0], vec![2, 1, 1]).unwrap();
         let out = x.conv1d(&w, None, 1, 0, 1).unwrap();
         assert_eq!(out.shape().dims(), &[1, 2, 3]);
         // Channel 0: 2.0 × input. Channel 1: -1.0 × input.
@@ -25868,21 +26199,21 @@ mod phase_a5_factory_tests {
     #[test]
     fn conv1d_rejects_rank_two_input() {
         let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]).unwrap();
         assert!(x.conv1d(&w, None, 1, 0, 1).is_err());
     }
 
     #[test]
     fn conv1d_rejects_rank_two_weight() {
         let x = cpu_f32(vec![1.0; 4], &[1, 1, 4]);
-        let w = x.const_f32_like(vec![1.0], vec![1, 1]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1]).unwrap();
         assert!(x.conv1d(&w, None, 1, 0, 1).is_err());
     }
 
     #[test]
     fn conv1d_rejects_zero_groups_or_stride() {
         let x = cpu_f32(vec![1.0; 4], &[1, 1, 4]);
-        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]);
+        let w = x.const_f32_like(vec![1.0], vec![1, 1, 1]).unwrap();
         assert!(x.conv1d(&w, None, 0, 0, 1).is_err());
         assert!(x.conv1d(&w, None, 1, 0, 0).is_err());
     }
@@ -25890,7 +26221,7 @@ mod phase_a5_factory_tests {
     #[test]
     fn conv1d_with_algo_ignores_algo_param() {
         let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[1, 1, 4]);
-        let w = x.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]);
+        let w = x.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]).unwrap();
         // Pass a dummy algo (the parameter is ignored on the lazy path).
         let a = x.conv1d_with_algo(&w, None, 1, 0, 1, "unused").unwrap();
         let b = x.conv1d(&w, None, 1, 0, 1).unwrap();

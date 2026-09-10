@@ -236,7 +236,7 @@ fn recipe(
 
 /// Decompose the depthwise causal conv into an `O(kernel)` shift-multiply-
 /// accumulate tap sum (NOT `O(kernel·seq)` — the old module note confused
-/// element count with node count). Since Increment C a re-emit of [`recipe`]'s
+/// element count with node count). Since Increment C a re-emit of `recipe`'s
 /// portable data through the [`decompose_via_recipe`] bridge (structure-
 /// preserving: the emitted base map is node-for-node identical to the
 /// pre-Increment-C imperative body — see the parity test in `tests`). The

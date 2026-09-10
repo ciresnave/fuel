@@ -171,8 +171,8 @@ impl Conv3dTemporal2Weights {
             self.kernel_h,
             self.kernel_w,
         ]);
-        let w1 = input.const_f32_like(Arc::clone(&self.w1), w_shape.clone());
-        let w2 = input.const_f32_like(Arc::clone(&self.w2), w_shape);
+        let w1 = input.const_f32_like(Arc::clone(&self.w1), w_shape.clone())?;
+        let w2 = input.const_f32_like(Arc::clone(&self.w2), w_shape)?;
 
         let stride = (self.cfg.stride, self.cfg.stride);
         let padding = (self.cfg.padding, self.cfg.padding);
@@ -274,7 +274,8 @@ mod tests {
             Arc::from(x_data),
             Shape::from_dims(&[1, 2, 2, 1, 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = w.apply(&input).unwrap();
         assert_eq!(y.shape().dims(), &[1, 1, 1, 1, 1]);
         // Expected:
@@ -312,7 +313,8 @@ mod tests {
             Arc::from(vec![1.0_f32; 2]),
             Shape::from_dims(&[1, 2, 1, 1, 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(w.apply(&input).is_err());
     }
 
@@ -334,7 +336,8 @@ mod tests {
             Arc::from(x_data),
             Shape::from_dims(&[1, 3, 2, 4, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
 
         let y = w.apply(&input).unwrap();
         assert_eq!(y.shape().dims(), &[1, 4, 1, 2, 2]);

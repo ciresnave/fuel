@@ -539,7 +539,7 @@ fn main() -> anyhow::Result<()> {
 
     // Anchor Tensor — gives `const_*_like` helpers a graph to hang
     // their nodes off of.
-    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
+    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu())?;
 
     // Prompt embeddings: look up each prompt token in the
     // `embed_prompts` table to get a `(1, P, hidden_size)` tensor.
@@ -548,9 +548,9 @@ fn main() -> anyhow::Result<()> {
     let embed_table = anchor.const_f32_like(
         Arc::clone(&embed_prompts),
         Shape::from_dims(&[cfg.prompt_vocab_size, h_dim]),
-    );
+    )?;
     let prompt_ids_lt =
-        anchor.const_u32_like(prompt_token_ids.clone(), Shape::from_dims(&[prompt_len]));
+        anchor.const_u32_like(prompt_token_ids.clone(), Shape::from_dims(&[prompt_len]))?;
     let prompt_hidden_states = embed_table
         .index_select(0_usize, &prompt_ids_lt)
         .map_err(|e| E::msg(format!("prompt embedding lookup: {e}")))?
@@ -567,7 +567,7 @@ fn main() -> anyhow::Result<()> {
         let input_ids_lt = anchor.const_u32_like(
             audio_tokens.clone(),
             Shape::from_dims(&[1, num_codebooks, 1]),
-        );
+        )?;
         let (prompt_embeds_arg, start_pos) = if step == 0 {
             (Some(&prompt_hidden_states), 0_usize)
         } else {
@@ -627,7 +627,7 @@ fn main() -> anyhow::Result<()> {
         .flat_map(|cb| all_audio_tokens[cb].iter().copied())
         .collect();
     let codes_lt =
-        anchor.const_u32_like(codes_flat, Shape::from_dims(&[1, num_codebooks, min_len]));
+        anchor.const_u32_like(codes_flat, Shape::from_dims(&[1, num_codebooks, min_len]))?;
 
     let pcm = audio_encoder
         .decode_codes(&codes_lt)

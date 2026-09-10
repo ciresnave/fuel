@@ -3,7 +3,7 @@
 //! logical, and shape-manipulation ops.
 //!
 //! Hooks into [`crate::lazy_eval::OnnxEval`]'s dispatch chain the same way
-//! [`crate::lazy_eval_conv`] and [`crate::lazy_eval_norm`] do: [`try_dispatch`]
+//! [`crate::lazy_eval_conv`] and [`crate::lazy_eval_norm`] do: `try_dispatch`
 //! returns `Ok(true)` when it handled the node, `Ok(false)` to fall through.
 //!
 //! These ops were previously reachable only through the EAGER evaluator
@@ -264,7 +264,7 @@ pub(crate) fn try_dispatch(
             set_output(
                 node,
                 0,
-                a.const_i64_like(slice, Shape::from_dims(&[n])),
+                a.const_i64_like(slice, Shape::from_dims(&[n]))?,
                 values,
             )?
         }
@@ -275,7 +275,7 @@ pub(crate) fn try_dispatch(
             set_output(
                 node,
                 0,
-                a.const_i64_like(vec![n], Shape::from_dims(&[] as &[usize])),
+                a.const_i64_like(vec![n], Shape::from_dims(&[] as &[usize]))?,
                 values,
             )?
         }
@@ -576,7 +576,7 @@ pub(crate) fn try_dispatch(
             let a = ensure_anchor(anchor, device);
             let seq: Vec<f32> = (0..n).map(|i| (start + delta * i as f64) as f32).collect();
             let y = a
-                .const_f32_like(seq, Shape::from_dims(&[n]))
+                .const_f32_like(seq, Shape::from_dims(&[n]))?
                 .to_dtype(dtype)?;
             set_output(node, 0, y, values)?
         }
@@ -644,7 +644,7 @@ pub(crate) fn try_dispatch(
             let mut ramp_dims = vec![1usize; rank1];
             ramp_dims[axis] = depth as usize;
             let ramp_data: Vec<f32> = (0..depth).map(|d| d as f32).collect();
-            let ramp = idx_f.const_f32_like(ramp_data, Shape::from_dims(&ramp_dims));
+            let ramp = idx_f.const_f32_like(ramp_data, Shape::from_dims(&ramp_dims))?;
             let (a, b) = broadcast_pair(&idx_f, &ramp, "OneHot")?;
             let mask = a.eq(&b)?.to_dtype(DType::F32)?;
             // mask*(on-off) + off

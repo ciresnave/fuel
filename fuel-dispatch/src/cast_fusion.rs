@@ -45,7 +45,7 @@ use crate::dispatch::global_bindings;
 /// outside this set always return `false` from the predicate; the
 /// cast survives and dispatch falls back to the existing
 /// `Cast → Op` chain. Extending coverage is mechanical — add a
-/// match arm to [`op_kind`].
+/// match arm to `op_kind`.
 pub fn cast_fusion_predicate() -> CapabilityPredicate {
     Arc::new(|op: &Op, dtypes: &[DType]| -> bool {
         let Some(kind) = op_kind(op) else {
@@ -215,7 +215,7 @@ mod tests {
         // also wires the standard CPU registrations).
         let _bindings = global_bindings();
 
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let xc = x.cast(DType::BF16);
         let y = xc.neg();
         let graph = y.graph().clone();

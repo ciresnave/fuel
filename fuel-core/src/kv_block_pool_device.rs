@@ -475,7 +475,7 @@ impl DeviceKvPool {
         // Bind the pool buffer to a placeholder, slice the one block out, realize
         // as u8 — a byte reinterpret, so the read is correct for ANY dtype. The
         // f32 anchor only mints the graph (mirrors the historical read_block).
-        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &self.device);
+        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &self.device)?;
         let dest = anchor.const_placeholder_like(self.pool_shape.clone(), self.dtype);
         let block = dest
             .slice(0, phys as usize, 1)?
@@ -515,13 +515,18 @@ impl DeviceKvPool {
             DType::F32 => {
                 let v: &[f32] = bytemuck::try_cast_slice(bytes)
                     .map_err(|e| msg_err(format!("const_from_bytes: f32 cast: {e:?}")))?;
-                Ok(Tensor::from_f32(v.to_vec(), shape, dev))
+                Ok(Tensor::from_f32(v.to_vec(), shape, dev)?)
             }
             DType::BF16 => {
                 let v: &[half::bf16] = bytemuck::try_cast_slice(bytes)
                     .map_err(|e| msg_err(format!("const_from_bytes: bf16 cast: {e:?}")))?;
-                let anchor = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), dev);
-                Ok(Tensor::from_bf16_on(anchor.graph(), v.to_vec(), shape, dev))
+                let anchor = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), dev)?;
+                Ok(Tensor::from_bf16_on(
+                    anchor.graph(),
+                    v.to_vec(),
+                    shape,
+                    dev,
+                )?)
             }
             other => Err(msg_err(format!(
                 "DeviceKvPool::const_from_bytes: unsupported dtype {other:?} (F32/BF16)",
@@ -679,7 +684,7 @@ impl DeviceKvPool {
         )
     }
 
-    /// Batched (`B = K`) sibling of [`build_decode_attn`] — one decode step over
+    /// Batched (`B = K`) sibling of [`Self::build_decode_attn`] — one decode step over
     /// K sessions sharing this layer's pool buffers (paged-storage PS4a). Each
     /// session `i` contributes one new token: its `[Hkv, D]` K/V (row `i` of
     /// `k_new`/`v_new`, shaped `[K, Hkv, 1, D]`) is written into its own physical
@@ -1490,11 +1495,16 @@ mod tests {
         );
 
         let run = |pt: &PageTableHost| -> Vec<f32> {
-            let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+            let q =
+                Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev).unwrap();
             let kc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
-            let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
-            let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+            let bt = q
+                .const_u32_like(pt.block_table.clone(), pt.block_table_shape())
+                .unwrap();
+            let cl = q
+                .const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())
+                .unwrap();
             let out = q
                 .paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None)
                 .unwrap();
@@ -1578,15 +1588,23 @@ mod tests {
         assert_eq!(slot, 2, "new token lands at slot 2");
         let linear = phys as usize * block_size + slot; // 10
         let attn_ref = {
-            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev).unwrap();
             // k_new/v_new must be siblings of q (build_decode_attn's same-graph
             // contract) — Tensor::from_f32 would mint separate graphs.
-            let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
-            let v_new = q.const_f32_like(v_new_data.clone(), kv_new_shape.clone());
+            let k_new = q
+                .const_f32_like(k_new_data.clone(), kv_new_shape.clone())
+                .unwrap();
+            let v_new = q
+                .const_f32_like(v_new_data.clone(), kv_new_shape.clone())
+                .unwrap();
             let k_ph = q.const_placeholder_like(pool_ref.pool_shape().clone(), DType::F32);
             let v_ph = q.const_placeholder_like(pool_ref.pool_shape().clone(), DType::F32);
-            let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
-            let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+            let bt = q
+                .const_u32_like(pt.block_table.clone(), pt.block_table_shape())
+                .unwrap();
+            let cl = q
+                .const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())
+                .unwrap();
             let out = pool_ref
                 .build_decode_attn(
                     &k_ph, &v_ph, &q, &k_new, &v_new, &bt, &cl, phys, slot, scale,
@@ -1610,15 +1628,23 @@ mod tests {
         let sym = fuel_ir::SymId(0);
         let (pool_dyn, _p, _s, pt_dyn) = setup();
         let attn_dyn = {
-            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev).unwrap();
             // k_new/v_new must be siblings of q (build_decode_attn's same-graph
             // contract) — Tensor::from_f32 would mint separate graphs.
-            let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
-            let v_new = q.const_f32_like(v_new_data.clone(), kv_new_shape.clone());
+            let k_new = q
+                .const_f32_like(k_new_data.clone(), kv_new_shape.clone())
+                .unwrap();
+            let v_new = q
+                .const_f32_like(v_new_data.clone(), kv_new_shape.clone())
+                .unwrap();
             let k_ph = q.const_placeholder_like(pool_dyn.pool_shape_flat(), DType::F32);
             let v_ph = q.const_placeholder_like(pool_dyn.pool_shape_flat(), DType::F32);
-            let bt = q.const_u32_like(pt_dyn.block_table.clone(), pt_dyn.block_table_shape());
-            let cl = q.const_u32_like(pt_dyn.context_lens.clone(), pt_dyn.context_lens_shape());
+            let bt = q
+                .const_u32_like(pt_dyn.block_table.clone(), pt_dyn.block_table_shape())
+                .unwrap();
+            let cl = q
+                .const_u32_like(pt_dyn.context_lens.clone(), pt_dyn.context_lens_shape())
+                .unwrap();
             let out = pool_dyn
                 .build_decode_attn_off(&k_ph, &v_ph, &q, &k_new, &v_new, &bt, &cl, None, sym, scale)
                 .unwrap();
@@ -1654,16 +1680,26 @@ mod tests {
         // ---- doff arm: device rank-0 I64 offset (write_slice_doff) ----
         let (pool_doff, _p, _s, pt_doff) = setup();
         let attn_doff = {
-            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev).unwrap();
             // k_new/v_new must be siblings of q (build_decode_attn's same-graph
             // contract) — Tensor::from_f32 would mint separate graphs.
-            let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
-            let v_new = q.const_f32_like(v_new_data.clone(), kv_new_shape.clone());
+            let k_new = q
+                .const_f32_like(k_new_data.clone(), kv_new_shape.clone())
+                .unwrap();
+            let v_new = q
+                .const_f32_like(v_new_data.clone(), kv_new_shape.clone())
+                .unwrap();
             let k_ph = q.const_placeholder_like(pool_doff.pool_shape_flat(), DType::F32);
             let v_ph = q.const_placeholder_like(pool_doff.pool_shape_flat(), DType::F32);
-            let bt = q.const_u32_like(pt_doff.block_table.clone(), pt_doff.block_table_shape());
-            let cl = q.const_u32_like(pt_doff.context_lens.clone(), pt_doff.context_lens_shape());
-            let off = q.const_i64_like(vec![linear as i64], Shape::from_dims(&[]));
+            let bt = q
+                .const_u32_like(pt_doff.block_table.clone(), pt_doff.block_table_shape())
+                .unwrap();
+            let cl = q
+                .const_u32_like(pt_doff.context_lens.clone(), pt_doff.context_lens_shape())
+                .unwrap();
+            let off = q
+                .const_i64_like(vec![linear as i64], Shape::from_dims(&[]))
+                .unwrap();
             let out = pool_doff
                 .build_decode_attn_off(
                     &k_ph,
@@ -1759,11 +1795,15 @@ mod tests {
         assert_eq!(pt.context_lens, vec![sk as u32]);
 
         // Build the paged_attn graph, binding the REAL pool buffers as k/v cache.
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev).unwrap();
         let kc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
-        let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
-        let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+        let bt = q
+            .const_u32_like(pt.block_table.clone(), pt.block_table_shape())
+            .unwrap();
+        let cl = q
+            .const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())
+            .unwrap();
         let out = q
             .paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None)
             .unwrap();
@@ -1971,13 +2011,22 @@ mod tests {
             );
 
             // Build the paged decode-step graph on q's graph, bind the pool.
-            let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+            let q =
+                Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev).unwrap();
             let kph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let vph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
-            let knew = q.const_f32_like(k_data, Shape::from_dims(&[1, hkv, 1, d]));
-            let vnew = q.const_f32_like(v_data, Shape::from_dims(&[1, hkv, 1, d]));
-            let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
-            let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+            let knew = q
+                .const_f32_like(k_data, Shape::from_dims(&[1, hkv, 1, d]))
+                .unwrap();
+            let vnew = q
+                .const_f32_like(v_data, Shape::from_dims(&[1, hkv, 1, d]))
+                .unwrap();
+            let bt = q
+                .const_u32_like(pt.block_table.clone(), pt.block_table_shape())
+                .unwrap();
+            let cl = q
+                .const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())
+                .unwrap();
             let attn = pool
                 .build_decode_attn(&kph, &vph, &q, &knew, &vnew, &bt, &cl, phys, slot, scale)
                 .unwrap();
@@ -2103,11 +2152,15 @@ mod tests {
             "spliced prefix length carried to B"
         );
         let q_data = rand_f32(hq * d, 1);
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev).unwrap();
         let kph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let vph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
-        let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
-        let cl = q.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
+        let bt = q
+            .const_u32_like(pt.block_table.clone(), pt.block_table_shape())
+            .unwrap();
+        let cl = q
+            .const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())
+            .unwrap();
         let out = q
             .paged_attn(&kph, &vph, &bt, &cl, None, scale, block_size, None)
             .unwrap();

@@ -256,20 +256,20 @@ impl CsmModel {
                 offset_codes.push(c as u32);
             }
         }
-        let audio_ids = anchor.const_u32_like(offset_codes, Shape::from_dims(&[seq * cb]));
+        let audio_ids = anchor.const_u32_like(offset_codes, Shape::from_dims(&[seq * cb]))?;
         let audio_table = anchor.const_f32_like(
             Arc::clone(&self.weights.audio_embedding),
             Shape::from_dims(&[cb * cfg.audio_vocab_size, bd]),
-        );
+        )?;
         let audio_emb = audio_table
             .index_select(0_usize, &audio_ids)?
             .reshape(Shape::from_dims(&[1, seq, cb, bd]))?;
 
-        let text_ids = anchor.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[seq]));
+        let text_ids = anchor.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let text_table = anchor.const_f32_like(
             Arc::clone(&self.weights.text_embedding),
             Shape::from_dims(&[cfg.text_vocab_size, bd]),
-        );
+        )?;
         let text_emb = text_table
             .index_select(0_usize, &text_ids)?
             .reshape(Shape::from_dims(&[1, seq, 1, bd]))?;
@@ -279,7 +279,7 @@ impl CsmModel {
 
         // Apply mask (broadcast over backbone_dim) and sum across codebook+1 axis.
         let mask_f32: Vec<f32> = tokens_mask.iter().map(|&b| b as f32).collect();
-        let mask = anchor.const_f32_like(mask_f32, Shape::from_dims(&[1, seq, cb + 1, 1]));
+        let mask = anchor.const_f32_like(mask_f32, Shape::from_dims(&[1, seq, cb + 1, 1]))?;
         let mask_b = mask.broadcast_to(Shape::from_dims(&[1, seq, cb + 1, bd]))?;
         let gated = combined.mul(&mask_b)?;
         gated.sum_dim(2_usize)
@@ -313,11 +313,14 @@ impl CsmModel {
     /// `(1, S, audio_vocab_size)`.
     pub fn audio_head_logits(&self, decoder_h: &Tensor, codebook_idx: usize) -> Result<Tensor> {
         let cfg = &self.config;
-        assert!(
-            codebook_idx >= 1 && codebook_idx < cfg.audio_num_codebooks,
-            "codebook_idx {codebook_idx} must be in 1..{}",
-            cfg.audio_num_codebooks
-        );
+        // GAP-308 (CONFIG_FIELD): a caller-supplied codebook index outside the
+        // configured range is input to reject, not an invariant to assert.
+        if codebook_idx == 0 || codebook_idx >= cfg.audio_num_codebooks {
+            return Err(fuel_core::Error::Msg(format!(
+                "codebook_idx {codebook_idx} must be in 1..{}",
+                cfg.audio_num_codebooks
+            )));
+        }
         let slab = cfg.decoder_dim * cfg.audio_vocab_size;
         let start = (codebook_idx - 1) * slab;
         let end = start + slab;
@@ -328,7 +331,7 @@ impl CsmModel {
         let head = decoder_h.const_f32_like(
             head_slice,
             Shape::from_dims(&[cfg.decoder_dim, cfg.audio_vocab_size]),
-        );
+        )?;
         decoder_h.matmul(&head)
     }
 
@@ -377,8 +380,8 @@ impl CsmModel {
         let table = anchor.const_f32_like(
             Arc::clone(&self.weights.audio_embedding),
             Shape::from_dims(&[cfg.audio_num_codebooks * cfg.audio_vocab_size, bd]),
-        );
-        let id = anchor.const_u32_like(vec![code + offset], Shape::from_dims(&[1]));
+        )?;
+        let id = anchor.const_u32_like(vec![code + offset], Shape::from_dims(&[1]))?;
         let emb = table
             .index_select(0_usize, &id)?
             .reshape(Shape::from_dims(&[1, 1, bd]))?;
@@ -405,6 +408,30 @@ mod tests {
     }
     fn ws(n: usize, nb: &mut dyn FnMut() -> f32) -> WeightStorage {
         WeightStorage::F32(vec_of(n, nb))
+    }
+
+    /// GAP-308 born-red: a `codebook_idx` outside `1..audio_num_codebooks` is
+    /// REJECTED with a typed error. Asserts the MESSAGE fragment ("codebook_idx"),
+    /// not is_err(): the range check returns before `decoder_h` is used, so the
+    /// positive control builds a real decoder_h and the decline case needs only a
+    /// shape-valid one.
+    #[test]
+    fn audio_head_declines_codebook_idx_out_of_range() {
+        let model = tiny_model();
+        let d = model.config.decoder_dim;
+        let n = model.config.audio_num_codebooks;
+        let decoder_h =
+            Tensor::from_f32(vec![0.0_f32; d], Shape::from_dims(&[1, d]), &Device::cpu()).unwrap();
+        // POSITIVE CONTROL: codebook_idx = 1 is in range and must run.
+        model
+            .audio_head_logits(&decoder_h, 1)
+            .expect("control: codebook_idx in 1..audio_num_codebooks must run");
+        // codebook_idx == audio_num_codebooks is the first out-of-range upper index.
+        let err = model.audio_head_logits(&decoder_h, n).unwrap_err();
+        assert!(
+            format!("{err}").contains("codebook_idx"),
+            "must decline codebook_idx out of range; got: {err}"
+        );
     }
 
     fn tiny_cfg() -> CsmConfig {
@@ -440,7 +467,7 @@ mod tests {
     }
 
     fn anchor() -> Tensor {
-        Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())
+        Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -498,7 +525,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 2, cfg.backbone_dim]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.codebook0_logits(&h).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 2, cfg.audio_vocab_size]);
     }
@@ -514,7 +542,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.backbone_dim]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let proj = model.project_to_decoder(&curr_h).unwrap();
         assert_eq!(proj.shape().dims(), &[1, 3, cfg.decoder_dim]);
         // Run audio_head_logits for codebook 1 (proj subs in for decoder hidden).

@@ -216,8 +216,8 @@ impl MambaModel {
         let conv_w = x.const_f32_like(
             layer.conv1d_weight.clone(),
             Shape::from_dims(&[d_inner, 1, D_CONV]),
-        );
-        let conv_b = x.const_f32_like(layer.conv1d_bias.clone(), Shape::from_dims(&[d_inner]));
+        )?;
+        let conv_b = x.const_f32_like(layer.conv1d_bias.clone(), Shape::from_dims(&[d_inner]))?;
         // Fused SiLU activation.
         let x_conv = x_for_conv.causal_conv1d(&conv_w, &conv_b, /* use_silu */ true);
         // x_conv shape: [batch, d_inner, seq]. Transpose to [batch, seq, d_inner].
@@ -234,16 +234,17 @@ impl MambaModel {
         // dt_proj: [batch, seq, dt_rank] → [batch, seq, d_inner].
         // dt_proj has a bias.
         let delta = layer.dt_proj.apply_linear(&delta_low, dt_rank, d_inner)?;
-        let dt_bias_t = x.const_f32_like(layer.dt_proj_bias.clone(), Shape::from_dims(&[d_inner]));
+        let dt_bias_t =
+            x.const_f32_like(layer.dt_proj_bias.clone(), Shape::from_dims(&[d_inner]))?;
         let delta = delta.broadcast_add(&dt_bias_t)?;
 
         // a = -exp(a_log). a_log is `[d_inner, D_STATE]`.
-        let a_log = x.const_f32_like(layer.a_log.clone(), Shape::from_dims(&[d_inner, D_STATE]));
+        let a_log = x.const_f32_like(layer.a_log.clone(), Shape::from_dims(&[d_inner, D_STATE]))?;
         let a = a_log.exp().neg();
 
         // d is `[d_inner]` — broadcast across batch + seq for the
         // skip-path addition.
-        let d_t = x.const_f32_like(layer.d.clone(), Shape::from_dims(&[d_inner]));
+        let d_t = x.const_f32_like(layer.d.clone(), Shape::from_dims(&[d_inner]))?;
 
         // Selective scan: u = x_conv, returns y `[batch, seq, d_inner]`.
         // The `delta_softplus = true` flag tells the kernel to apply

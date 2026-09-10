@@ -1102,7 +1102,7 @@ pub fn decompose_region(graph: &mut Graph, node_id: NodeId) -> NodeId {
 /// already in the graph). `scalars` fill the region's open scalar slots in
 /// pre-order (the canonical order `match_region_extract` recorded them in);
 /// pass `&[]` for a parameterless region. Thin wrapper over the private
-/// [`emit`]; the same re-emittability caveat applies (a non-re-emittable
+/// `emit`; the same re-emittability caveat applies (a non-re-emittable
 /// `OpTag` panics inside `emit` — validated decomposes never carry one).
 /// Second panic risk: `emit`'s scalar-cursor fill (`scalars.split_at(arity)`)
 /// panics if `scalars` is shorter than the region's total open-slot count.
@@ -5478,7 +5478,8 @@ mod tests {
                 vec![0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6],
                 Shape::from_dims(&[2, 3]),
                 &dev,
-            );
+            )
+            .unwrap();
             let y = x.softmax_last_dim();
             let y_id = y.id();
             let grads = y.backward();

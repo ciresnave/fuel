@@ -159,12 +159,15 @@ impl Mamba2Model {
         let seq = tokens.len();
         let _batch = 1;
         assert!(seq > 0, "Mamba2Model::forward: tokens must be non-empty");
-        assert!(
-            seq.is_multiple_of(cfg.chunk_size),
-            "Mamba2Model::forward: seq ({seq}) must be a multiple of chunk_size ({}). \
-             Right-pad to the next multiple before calling.",
-            cfg.chunk_size,
-        );
+        // GAP-308 (CONFIG_FIELD): a caller-supplied sequence length not aligned to
+        // chunk_size is input to reject, not an invariant to assert.
+        if !seq.is_multiple_of(cfg.chunk_size) {
+            return Err(fuel_core::Error::Msg(format!(
+                "Mamba2Model::forward: seq ({seq}) must be a multiple of chunk_size ({}). \
+                 Right-pad to the next multiple before calling.",
+                cfg.chunk_size,
+            )));
+        }
         let vocab_padded = cfg.vocab_size();
 
         let mut h = Tensor::embed_tokens(
@@ -219,8 +222,8 @@ impl Mamba2Model {
         let conv_w = x.const_f32_like(
             layer.conv1d_weight.clone(),
             Shape::from_dims(&[d_xbc, 1, D_CONV]),
-        );
-        let conv_b = x.const_f32_like(layer.conv1d_bias.clone(), Shape::from_dims(&[d_xbc]));
+        )?;
+        let conv_b = x.const_f32_like(layer.conv1d_bias.clone(), Shape::from_dims(&[d_xbc]))?;
         let xbc_conv = xbc_t.causal_conv1d(&conv_w, &conv_b, /* use_silu */ true);
         // Back to [batch, seq, d_xbc].
         let xbc_conv = xbc_conv.permute([0, 2, 1_usize])?;
@@ -271,13 +274,13 @@ impl Mamba2Model {
         // dt: add learned bias + softplus. The ssd_chunk_scan op takes
         // dt as `[batch, seq, n_heads]`; the eager code applies softplus
         // BEFORE passing into the scan. We replicate that here.
-        let dt_bias_t = x.const_f32_like(layer.dt_bias.clone(), Shape::from_dims(&[n_heads]));
+        let dt_bias_t = x.const_f32_like(layer.dt_bias.clone(), Shape::from_dims(&[n_heads]))?;
         let dt_biased = dt.broadcast_add(&dt_bias_t)?;
         // softplus(x) = ln(1 + exp(x)). Use the existing primitive chain.
         let dt_soft = dt_biased.exp().add_scalar(1.0).log();
 
         // a = -exp(a_log). a_log is `[n_heads]`.
-        let a_log = x.const_f32_like(layer.a_log.clone(), Shape::from_dims(&[n_heads]));
+        let a_log = x.const_f32_like(layer.a_log.clone(), Shape::from_dims(&[n_heads]))?;
         let a = a_log.exp().neg();
 
         // SSD scan: y = ssd_chunk_scan(x_heads, dt, a, b, c, chunk_size).
@@ -285,7 +288,7 @@ impl Mamba2Model {
         let y = x_heads.ssd_chunk_scan(&dt_soft, &a, &b_heads, &c_heads, cfg.chunk_size);
 
         // Skip path: y + x_heads * d (per-head).
-        let d_t = x.const_f32_like(layer.d.clone(), Shape::from_dims(&[n_heads]));
+        let d_t = x.const_f32_like(layer.d.clone(), Shape::from_dims(&[n_heads]))?;
         // Broadcast d from [n_heads] across [batch, seq, n_heads, head_dim]
         // (last-axis broadcast multiplication via reshape).
         let d_per_head = d_t.reshape(Shape::from_dims(&[1, 1, n_heads, 1]))?;
@@ -426,6 +429,40 @@ mod tests {
             final_norm_gain,
             output,
         }
+    }
+
+    /// GAP-308 born-red: a sequence length not a multiple of `chunk_size` is
+    /// REJECTED with a typed error. Asserts the MESSAGE fragment ("chunk_size"),
+    /// not is_err(): the decline returns before the backbone graph is built, so
+    /// a removed decline would return Ok on an invalid unrealized graph.
+    #[test]
+    fn forward_declines_seq_not_multiple_of_chunk_size() {
+        let cfg = Mamba2Config {
+            d_model: 16,
+            n_layer: 2,
+            vocab_size: 32,
+            d_state: 8,
+            expand: 2,
+            head_dim: 4,
+            ngroups: 1,
+            pad_vocab_size_multiple: 8,
+            chunk_size: 4,
+            rms_norm_eps: 1e-5,
+        };
+        let model = Mamba2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        // POSITIVE CONTROL: a chunk-aligned length must run.
+        model
+            .forward(&[1_u32, 2, 3, 4])
+            .expect("control: seq multiple of chunk_size must run");
+        // seq = 6 is NOT a multiple of chunk_size = 4.
+        let err = model.forward(&[1_u32, 2, 3, 4, 5, 6]).unwrap_err();
+        assert!(
+            format!("{err}").contains("chunk_size"),
+            "must decline seq not a multiple of chunk_size; got: {err}"
+        );
     }
 
     /// Smoke test on a chunk-aligned sequence. seq must be a multiple

@@ -320,7 +320,7 @@ fn dispatch_node(
                 1 => {
                     let a = ensure_anchor(anchor, device);
                     let idx =
-                        a.const_u32_like(normalized, Shape::from_dims(&[indices.elem_count()]));
+                        a.const_u32_like(normalized, Shape::from_dims(&[indices.elem_count()]))?;
                     let y = x.index_select(axis, &idx)?;
                     set_output(node, 0, y, values)?;
                 }
@@ -390,7 +390,7 @@ fn dispatch_node(
                 None => {
                     let a = ensure_anchor(anchor, device);
                     let n: usize = shape_dims.iter().product();
-                    a.const_f32_like(vec![0.0_f32; n], Shape::from_dims(&shape_dims))
+                    a.const_f32_like(vec![0.0_f32; n], Shape::from_dims(&shape_dims))?
                 }
                 Some(a) => {
                     let t = a.t.as_ref().ok_or_else(|| {
@@ -632,31 +632,31 @@ fn load_initializer(
         DataType::Float => {
             let data = float_data(t)?;
             match anchor.as_ref() {
-                None => Tensor::from_f32(data, shape, device),
-                Some(a) => a.const_f32_like(data, shape),
+                None => Tensor::from_f32(data, shape, device)?,
+                Some(a) => a.const_f32_like(data, shape)?,
             }
         }
         DataType::Double => {
             let data = double_data(t)?;
             match anchor.as_ref() {
-                None => Tensor::from_f64(data, shape, device),
-                Some(a) => a.const_f64_like(data, shape),
+                None => Tensor::from_f64(data, shape, device)?,
+                Some(a) => a.const_f64_like(data, shape)?,
             }
         }
         DataType::Int64 => {
             let data = int64_data(t)?;
             let a = ensure_anchor(anchor, device);
-            a.const_i64_like(data, shape)
+            a.const_i64_like(data, shape)?
         }
         DataType::Uint8 | DataType::Bool => {
             let data = u32_from_uint8_bool(t)?;
             let a = ensure_anchor(anchor, device);
-            a.const_u32_like(data, shape)
+            a.const_u32_like(data, shape)?
         }
         DataType::Uint32 => {
             let data = u32_data(t)?;
             let a = ensure_anchor(anchor, device);
-            a.const_u32_like(data, shape)
+            a.const_u32_like(data, shape)?
         }
         other => {
             return Err(Error::Msg(format!(
@@ -674,11 +674,14 @@ fn load_initializer(
 
 pub(crate) fn ensure_anchor(anchor: &mut Option<Tensor>, device: &Device) -> Tensor {
     if anchor.is_none() {
-        *anchor = Some(Tensor::from_f32(
-            Arc::<[f32]>::from(vec![0.0f32]),
-            Shape::from_dims(&[1]),
-            device,
-        ));
+        *anchor = Some(
+            Tensor::from_f32(
+                Arc::<[f32]>::from(vec![0.0f32]),
+                Shape::from_dims(&[1]),
+                device,
+            )
+            .unwrap(),
+        );
     }
     anchor.clone().unwrap()
 }
@@ -791,7 +794,7 @@ fn fill_from_value_proto(
                 vec![0.0f32; n]
             };
             let a = ensure_anchor(anchor, device);
-            Ok(a.const_f32_like(v, Shape::from_dims(shape_dims)))
+            a.const_f32_like(v, Shape::from_dims(shape_dims))
         }
         DType::F64 => {
             let v: Vec<f64> = if !t.double_data.is_empty() {
@@ -812,7 +815,7 @@ fn fill_from_value_proto(
                 vec![0.0f64; n]
             };
             let a = ensure_anchor(anchor, device);
-            Ok(a.const_f64_like(v, Shape::from_dims(shape_dims)))
+            a.const_f64_like(v, Shape::from_dims(shape_dims))
         }
         DType::I64 => {
             let v: Vec<i64> = if !t.int64_data.is_empty() {
@@ -833,7 +836,7 @@ fn fill_from_value_proto(
                 vec![0i64; n]
             };
             let a = ensure_anchor(anchor, device);
-            Ok(a.const_i64_like(v, Shape::from_dims(shape_dims)))
+            a.const_i64_like(v, Shape::from_dims(shape_dims))
         }
         other => Err(Error::Msg(format!(
             "ConstantOfShape: dtype {other:?} not supported in sub-port 1"
@@ -1090,7 +1093,7 @@ mod tests {
         let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[2, 3]), &device);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[2, 3]), &device).unwrap();
 
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
@@ -1135,7 +1138,8 @@ mod tests {
         let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = Tensor::from_f32(vec![1.0f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), &device);
+        let x =
+            Tensor::from_f32(vec![1.0f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = evaluator.run(&inputs).unwrap();
@@ -1171,7 +1175,7 @@ mod tests {
         let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = Tensor::from_f32(vec![1.0f32; 4], Shape::from_dims(&[1, 4]), &device);
+        let x = Tensor::from_f32(vec![1.0f32; 4], Shape::from_dims(&[1, 4]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
 

@@ -143,7 +143,7 @@ impl TransferMatrix {
         self.entries.get(&(src, dst)).copied()
     }
 
-    /// Same as [`path`] but always returns a path: falls back to
+    /// Same as [`Self::path`] but always returns a path: falls back to
     /// `TransferPath::HostStaging` (the universal fallback) when no
     /// direct advertised path exists. CPU is reachable from every
     /// backend through host-staging, so this never returns an error
@@ -7977,7 +7977,7 @@ fn substrate_for_backend(backend: BackendId) -> SubstrateClass {
 ///
 /// Derive a [`BackendCapabilities`] for `backend` (at `device_location`)
 /// from the kernel binding `table`. This is the general (any-backend)
-/// analogue of [`default_cpu_caps`]: instead of a hand-maintained list,
+/// analogue of `default_cpu_caps`: instead of a hand-maintained list,
 /// it reads the backend's REGISTERED KERNELS out of the binding table
 /// and advertises exactly the `(OpKind, DType)` pairs those kernels
 /// cover.
@@ -8226,7 +8226,7 @@ fn register_optional_backends(table: &mut KernelBindingTable) {
 ///
 /// Copy-on-write (GAP-015): clones the current table, runs `register` on
 /// the clone, then swaps the published `Arc`. Writers are serialized by
-/// [`BINDINGS_WRITER`] rather than by the `RwLock`, which is what keeps
+/// `BINDINGS_WRITER` rather than by the `RwLock`, which is what keeps
 /// `adopt_runtime_fused`'s check-then-bind atomic while still leaving
 /// readers unblocked — see that static's docs for why both properties are
 /// required. Readers in flight keep the pre-swap snapshot; they see this

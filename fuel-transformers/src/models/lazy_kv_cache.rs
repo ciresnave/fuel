@@ -366,10 +366,10 @@ fn zero_const_on(
     elems: usize,
 ) -> std::result::Result<Tensor, fuel_ir::Error> {
     match dtype {
-        DType::F32 => Ok(anchor.const_f32_like(vec![0.0_f32; elems], shape)),
-        DType::F64 => Ok(anchor.const_f64_like(vec![0.0_f64; elems], shape)),
-        DType::BF16 => Ok(anchor.const_bf16_like(vec![half::bf16::ZERO; elems], shape)),
-        DType::F16 => Ok(anchor.const_f16_like(vec![half::f16::ZERO; elems], shape)),
+        DType::F32 => anchor.const_f32_like(vec![0.0_f32; elems], shape),
+        DType::F64 => anchor.const_f64_like(vec![0.0_f64; elems], shape),
+        DType::BF16 => anchor.const_bf16_like(vec![half::bf16::ZERO; elems], shape),
+        DType::F16 => anchor.const_f16_like(vec![half::f16::ZERO; elems], shape),
         other => {
             Err(fuel_ir::Error::Msg(format!("LazyKvCache: unsupported dtype {other:?}",)).bt())
         }
@@ -386,7 +386,7 @@ mod tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -404,8 +404,12 @@ mod tests {
     fn append_advances_position() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LazyKvCache::new(&anchor, 1, 4, 2, 3, DType::F32).unwrap();
-        let k_new = anchor.const_f32_like(vec![1.0; 2 * 3], vec![1, 2, 3]);
-        let v_new = anchor.const_f32_like(vec![2.0; 2 * 3], vec![1, 2, 3]);
+        let k_new = anchor
+            .const_f32_like(vec![1.0; 2 * 3], vec![1, 2, 3])
+            .unwrap();
+        let v_new = anchor
+            .const_f32_like(vec![2.0; 2 * 3], vec![1, 2, 3])
+            .unwrap();
         let cache = cache.append(0, &k_new, &v_new).unwrap();
         let cache = cache.advance_by(1);
         assert_eq!(cache.current_seq_len(), 1);
@@ -421,13 +425,21 @@ mod tests {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LazyKvCache::new(&anchor, 1, 4, 1, 2, DType::F32).unwrap();
         // Step 1: append 2 tokens.
-        let k1 = anchor.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], vec![2, 1, 2]);
-        let v1 = anchor.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 1, 2]);
+        let k1 = anchor
+            .const_f32_like(vec![1.0, 2.0, 3.0, 4.0], vec![2, 1, 2])
+            .unwrap();
+        let v1 = anchor
+            .const_f32_like(vec![5.0, 6.0, 7.0, 8.0], vec![2, 1, 2])
+            .unwrap();
         let cache = cache.append(0, &k1, &v1).unwrap().advance_by(2);
         assert_eq!(cache.current_seq_len(), 2);
         // Step 2: append 1 token.
-        let k2 = anchor.const_f32_like(vec![9.0, 10.0], vec![1, 1, 2]);
-        let v2 = anchor.const_f32_like(vec![11.0, 12.0], vec![1, 1, 2]);
+        let k2 = anchor
+            .const_f32_like(vec![9.0, 10.0], vec![1, 1, 2])
+            .unwrap();
+        let v2 = anchor
+            .const_f32_like(vec![11.0, 12.0], vec![1, 1, 2])
+            .unwrap();
         let cache = cache.append(0, &k2, &v2).unwrap().advance_by(1);
         assert_eq!(cache.current_seq_len(), 3);
         // K slice should be the 3 appended tokens, end to end.
@@ -441,11 +453,19 @@ mod tests {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LazyKvCache::new(&anchor, 2, 4, 1, 2, DType::F32).unwrap();
         // Both layers appended within one step → same position 0 → advance once.
-        let k0 = anchor.const_f32_like(vec![1.0, 1.0], vec![1, 1, 2]);
-        let v0 = anchor.const_f32_like(vec![2.0, 2.0], vec![1, 1, 2]);
+        let k0 = anchor
+            .const_f32_like(vec![1.0, 1.0], vec![1, 1, 2])
+            .unwrap();
+        let v0 = anchor
+            .const_f32_like(vec![2.0, 2.0], vec![1, 1, 2])
+            .unwrap();
         let cache = cache.append(0, &k0, &v0).unwrap();
-        let k1 = anchor.const_f32_like(vec![3.0, 3.0], vec![1, 1, 2]);
-        let v1 = anchor.const_f32_like(vec![4.0, 4.0], vec![1, 1, 2]);
+        let k1 = anchor
+            .const_f32_like(vec![3.0, 3.0], vec![1, 1, 2])
+            .unwrap();
+        let v1 = anchor
+            .const_f32_like(vec![4.0, 4.0], vec![1, 1, 2])
+            .unwrap();
         let cache = cache.append(1, &k1, &v1).unwrap().advance_by(1);
         assert_eq!(cache.current_seq_len(), 1);
         assert_eq!(cache.k(0).realize_f32(), vec![1.0, 1.0]);
@@ -458,8 +478,8 @@ mod tests {
     fn append_rejects_oob_layer() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LazyKvCache::new(&anchor, 1, 4, 1, 2, DType::F32).unwrap();
-        let k = anchor.const_f32_like(vec![0.0; 2], vec![1, 1, 2]);
-        let v = anchor.const_f32_like(vec![0.0; 2], vec![1, 1, 2]);
+        let k = anchor.const_f32_like(vec![0.0; 2], vec![1, 1, 2]).unwrap();
+        let v = anchor.const_f32_like(vec![0.0; 2], vec![1, 1, 2]).unwrap();
         assert!(cache.append(5, &k, &v).is_err());
     }
 
@@ -467,8 +487,8 @@ mod tests {
     fn append_rejects_shape_mismatch() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LazyKvCache::new(&anchor, 1, 4, 2, 3, DType::F32).unwrap();
-        let k = anchor.const_f32_like(vec![0.0; 5], vec![1, 5, 1]); // wrong heads, wrong head_dim
-        let v = anchor.const_f32_like(vec![0.0; 5], vec![1, 5, 1]);
+        let k = anchor.const_f32_like(vec![0.0; 5], vec![1, 5, 1]).unwrap(); // wrong heads, wrong head_dim
+        let v = anchor.const_f32_like(vec![0.0; 5], vec![1, 5, 1]).unwrap();
         assert!(cache.append(0, &k, &v).is_err());
     }
 
@@ -476,8 +496,8 @@ mod tests {
     fn append_rejects_capacity_overflow() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LazyKvCache::new(&anchor, 1, 2, 1, 1, DType::F32).unwrap();
-        let k = anchor.const_f32_like(vec![0.0; 3], vec![3, 1, 1]);
-        let v = anchor.const_f32_like(vec![0.0; 3], vec![3, 1, 1]);
+        let k = anchor.const_f32_like(vec![0.0; 3], vec![3, 1, 1]).unwrap();
+        let v = anchor.const_f32_like(vec![0.0; 3], vec![3, 1, 1]).unwrap();
         assert!(cache.append(0, &k, &v).is_err()); // 3 tokens > max_seq_len 2
     }
 
@@ -505,9 +525,15 @@ mod tests {
             (vec![4.0_f32, 4.1], vec![40.0_f32, 40.1]),
         ];
         for (step, (k_token, v_token)) in tokens.iter().enumerate() {
-            let k_new = anchor.const_f32_like(k_token.clone(), vec![1, 1, 2]);
-            let v_new = anchor.const_f32_like(v_token.clone(), vec![1, 1, 2]);
-            let position = anchor.const_u32_like(vec![step as u32], Shape::from_dims(&[]));
+            let k_new = anchor
+                .const_f32_like(k_token.clone(), vec![1, 1, 2])
+                .unwrap();
+            let v_new = anchor
+                .const_f32_like(v_token.clone(), vec![1, 1, 2])
+                .unwrap();
+            let position = anchor
+                .const_u32_like(vec![step as u32], Shape::from_dims(&[]))
+                .unwrap();
             cache = cache.append_rotating(0, &k_new, &v_new, &position).unwrap();
         }
         let k = cache.k_buffer_full(0).realize_f32();
@@ -527,9 +553,15 @@ mod tests {
     fn append_rotating_position_zero_within_window() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LazyKvCache::new(&anchor, 1, 4, 1, 2, DType::F32).unwrap();
-        let k = anchor.const_f32_like(vec![7.0_f32, 8.0], vec![1, 1, 2]);
-        let v = anchor.const_f32_like(vec![70.0_f32, 80.0], vec![1, 1, 2]);
-        let position = anchor.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
+        let k = anchor
+            .const_f32_like(vec![7.0_f32, 8.0], vec![1, 1, 2])
+            .unwrap();
+        let v = anchor
+            .const_f32_like(vec![70.0_f32, 80.0], vec![1, 1, 2])
+            .unwrap();
+        let position = anchor
+            .const_u32_like(vec![0_u32], Shape::from_dims(&[]))
+            .unwrap();
         let cache = cache.append_rotating(0, &k, &v, &position).unwrap();
         let buf = cache.k_buffer_full(0).realize_f32();
         assert_eq!(buf, vec![7.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
@@ -540,9 +572,15 @@ mod tests {
     fn append_rotating_rejects_oob_layer() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LazyKvCache::new(&anchor, 2, 4, 1, 2, DType::F32).unwrap();
-        let k = anchor.const_f32_like(vec![1.0_f32, 2.0], vec![1, 1, 2]);
-        let v = anchor.const_f32_like(vec![3.0_f32, 4.0], vec![1, 1, 2]);
-        let position = anchor.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
+        let k = anchor
+            .const_f32_like(vec![1.0_f32, 2.0], vec![1, 1, 2])
+            .unwrap();
+        let v = anchor
+            .const_f32_like(vec![3.0_f32, 4.0], vec![1, 1, 2])
+            .unwrap();
+        let position = anchor
+            .const_u32_like(vec![0_u32], Shape::from_dims(&[]))
+            .unwrap();
         assert!(cache.append_rotating(99, &k, &v, &position).is_err());
     }
 
@@ -552,9 +590,15 @@ mod tests {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LazyKvCache::new(&anchor, 1, 3, 1, 2, DType::F32).unwrap();
         // Append 4 tokens at once but window is 3 — must error.
-        let k = anchor.const_f32_like(vec![1.0_f32; 8], vec![4, 1, 2]);
-        let v = anchor.const_f32_like(vec![2.0_f32; 8], vec![4, 1, 2]);
-        let position = anchor.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
+        let k = anchor
+            .const_f32_like(vec![1.0_f32; 8], vec![4, 1, 2])
+            .unwrap();
+        let v = anchor
+            .const_f32_like(vec![2.0_f32; 8], vec![4, 1, 2])
+            .unwrap();
+        let position = anchor
+            .const_u32_like(vec![0_u32], Shape::from_dims(&[]))
+            .unwrap();
         assert!(cache.append_rotating(0, &k, &v, &position).is_err());
     }
 }

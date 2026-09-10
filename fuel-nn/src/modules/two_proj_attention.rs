@@ -25,13 +25,13 @@
 //!     128`, `n_kv_heads = 1` (MQA): standard K/V is `2 * 32 * 128 = 8192`
 //!     elements/token; two-projection is `1 * 128 = 128` elements/token —
 //!     **1.5625%** of the standard cache (a ~98.4% reduction). See
-//!     [`Self::cache_elems_per_token`] / [`Self::standard_kv_elems_per_token`]
+//!     [`TwoProjAttention::cache_elems_per_token`] / [`TwoProjAttention::standard_kv_elems_per_token`]
 //!     and the `cache_size_ratio_matches_mqa_math` test below.
 //!
 //! # Scope
 //!
 //! This is a **capability block** — there is no shipped checkpoint consumer
-//! yet. It is composable: [`Self::forward`] / [`Self::forward_with_latent_cache`]
+//! yet. It is composable: [`TwoProjAttention::forward`] / [`TwoProjAttention::forward_with_latent_cache`]
 //! return the raw attention context (`[B, S, n_heads * head_dim]`); callers
 //! apply their own output projection (no `W_o` is baked in here), matching
 //! [`crate::modules::moe`]'s house style of shipping the primitive block
@@ -275,7 +275,7 @@ impl TwoProjAttention {
         let kv_all = kv_all.repeat_interleave(1_usize, n_rep)?; // (1, H, total, d)
 
         let mask_data = fuel_core::lazy::build_decode_causal_mask(cached_len, s, total);
-        let mask = xs_step.const_f32_like(mask_data, Shape::from_dims(&[1, 1, s, total]));
+        let mask = xs_step.const_f32_like(mask_data, Shape::from_dims(&[1, 1, s, total]))?;
 
         let scale = 1.0_f64 / (self.head_dim as f64).sqrt();
         let k_t = kv_all.transpose()?; // (1, H, d, total)
@@ -396,7 +396,8 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[batch, seq, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = attn.forward(&xs).unwrap();
         assert_eq!(out.shape().dims(), &[batch, seq, h * d]);
         let got = out.realize_f32();
@@ -442,7 +443,8 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[batch, seq, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let dense = attn.forward(&xs_dense).unwrap().realize_f32();
 
         // ---- Cached: prefill 2, decode 1, decode 1 ----
@@ -450,7 +452,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[batch, seq, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let cache = LatentCache::new(&xs_full, 1, seq, vec![vec![hkv * d]], DType::F32).unwrap();
 
         let step1 = xs_full.slice(1_usize, 0, 2).unwrap();
@@ -525,14 +528,16 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[batch, seq, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let dense = attn.forward(&xs_dense).unwrap().realize_f32();
 
         let xs_full = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[batch, seq, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let cache = LatentCache::new(&xs_full, 1, seq, vec![vec![hkv * d]], DType::F32).unwrap();
 
         let step1 = xs_full.slice(1_usize, 0, 2).unwrap();
@@ -604,7 +609,8 @@ mod tests {
             vec![0.0_f32; hidden],
             Shape::from_dims(&[1, 1, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let step = anchor.clone();
 
         // Wrong slot count (2 slots instead of 1).
@@ -648,7 +654,8 @@ mod tests {
             vec![0.0_f32; 2 * hidden],
             Shape::from_dims(&[2, 1, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(
             attn.forward_with_latent_cache(&bad_batch_step, cache_ok, 0)
                 .is_err()

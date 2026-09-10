@@ -24,7 +24,7 @@
 //! Ships the types, the runner skeleton, and per-family probe
 //! coverage spanning the inference op surface in F32:
 //!
-//! - **Ops**: see [`PROFILED_OPS`] for the canonical list. Currently:
+//! - **Ops** — the canonical list, currently:
 //!   - dense linear algebra: [`OpKind::MatMul`]
 //!   - elementwise binary: Add / Sub / Mul / Div / Maximum / Minimum
 //!   - elementwise unary: Neg / Sqr / Sqrt / Exp / Log / Sin / Cos /
@@ -35,7 +35,7 @@
 //!   - parametric one-input: Affine / Clamp / PowI
 //!   - 28 OpKind variants total, 84 (op, size) cells per backend
 //!     class.
-//! - **Dtypes**: `{f32, f16, bf16}` (see [`PROFILED_DTYPES`]). The
+//! - **Dtypes**: `{f32, f16, bf16}`. The
 //!   dispatch key always carried a `dtype` axis
 //!   ([`ProfileEntry::dtype`]); the 2026-07-04 dtype slice made the
 //!   *runner* iterate it rather than hard-coding f32. Each profiled
@@ -72,13 +72,13 @@
 //! - convolutions: Conv2D / ConvTranspose2D.
 //! - quantized: QMatMul.
 //!
-//! Each of those is a separable add: extend [`PROFILED_OPS`], add a
+//! Each of those is a separable add: extend `PROFILED_OPS`, add a
 //! `size_plan` arm with a representative size ladder, add a
 //! `build_input_graph` arm that constructs the input graph.
 //!
 //! # Decode-shaped ladders (Layer-2 coverage arc, slice 2)
 //!
-//! Alongside the square/general ladder, [`Judge::size_plan`] appends
+//! Alongside the square/general ladder, `Judge::size_plan` appends
 //! **decode-representative** cells on the decode-attention path so the
 //! Judge measures the ops at the SKINNY shapes autoregressive decode
 //! (seq_q=1) actually runs:
@@ -1755,22 +1755,41 @@ impl OpSize {
 fn make_leaf(dtype: DType, data: Vec<f32>, shape: Shape) -> crate::lazy::Tensor {
     use crate::lazy::Tensor;
     let dev = crate::Device::cpu();
+    // ⚠️ GAP-003, and this is NEITHER of the two usual dispositions.
+    //
+    // `make_leaf` cannot prove its operands agree -- `data` and `shape` are BOTH
+    // parameters, so there is no local proof and an `.expect` claiming one would
+    // be false. But `Result` is wrong here too, and for a reason that is a
+    // property of the CALLER, not of this function: the sole caller wraps
+    // `build_input_graph` in `std::panic::catch_unwind` (see `Judge::run`), so
+    // this path ALREADY has a working error channel and a panic here is
+    // CAUGHT and reported as a profile failure, not an abort.
+    //
+    // Adding `Result` would give the judge two error channels for one failure
+    // and force every caller to handle both. So the message states the DESIGN
+    // BOUNDARY rather than a proof it cannot make -- which is the honest third
+    // form when a proof exists neither locally nor at all.
+    let leaf = |t: std::result::Result<Tensor, fuel_ir::Error>| {
+        t.expect(
+            "make_leaf: data length must match shape element count. Both are              caller-supplied, so this function cannot prove it -- the panic is              the judge's error channel and is caught by the catch_unwind in              Judge::run",
+        )
+    };
     match dtype {
-        DType::F32 => Tensor::from_f32(data, shape, &dev),
-        DType::F16 => Tensor::from_f16(
+        DType::F32 => leaf(Tensor::from_f32(data, shape, &dev)),
+        DType::F16 => leaf(Tensor::from_f16(
             data.iter()
                 .map(|&x| half::f16::from_f32(x))
                 .collect::<Vec<_>>(),
             shape,
             &dev,
-        ),
-        DType::BF16 => Tensor::from_bf16(
+        )),
+        DType::BF16 => leaf(Tensor::from_bf16(
             data.iter()
                 .map(|&x| half::bf16::from_f32(x))
                 .collect::<Vec<_>>(),
             shape,
             &dev,
-        ),
+        )),
         other => panic!("build_input_graph: unsupported profiled dtype {other:?}"),
     }
 }
@@ -1784,20 +1803,29 @@ fn make_const_like(
     data: Vec<f32>,
     shape: Shape,
 ) -> crate::lazy::Tensor {
+    // GAP-003, same DESIGN-BOUNDARY form as `make_leaf` directly above: `data`
+    // and `shape` are BOTH parameters, so there is no local proof -- but the sole
+    // caller wraps `build_input_graph` in `std::panic::catch_unwind`, so this
+    // path already HAS an error channel and a `Result` would be a second one.
+    let cl = |t: std::result::Result<crate::lazy::Tensor, fuel_ir::Error>| {
+        t.expect(
+            "make_const_like: data length must match shape element count. Both are              caller-supplied, so this function cannot prove it -- the panic is the              judge's error channel and is caught by the catch_unwind in Judge::run",
+        )
+    };
     match dtype {
-        DType::F32 => a.const_f32_like(data, shape),
-        DType::F16 => a.const_f16_like(
+        DType::F32 => cl(a.const_f32_like(data, shape)),
+        DType::F16 => cl(a.const_f16_like(
             data.iter()
                 .map(|&x| half::f16::from_f32(x))
                 .collect::<Vec<_>>(),
             shape,
-        ),
-        DType::BF16 => a.const_bf16_like(
+        )),
+        DType::BF16 => cl(a.const_bf16_like(
             data.iter()
                 .map(|&x| half::bf16::from_f32(x))
                 .collect::<Vec<_>>(),
             shape,
-        ),
+        )),
         other => panic!("build_input_graph: unsupported profiled dtype {other:?}"),
     }
 }

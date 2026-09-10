@@ -6,7 +6,7 @@
 //!   files tests/kat_vectors  (3 canonical) + tests/old_kat_vectors  (52 systematic)
 //!
 //! Field order is taken from upstream's own parser (`tests/kat_main.h`), which
-//! sscanf's: name, nrounds, CTR[4], KEY[2], EXPECTED[4].
+//! sscanf's: name, nrounds, `CTR[4]`, `KEY[2]`, `EXPECTED[4]`.
 //!
 //! Regenerate with:
 //!   curl -sS https://raw.githubusercontent.com/DEShawResearch/random123/main/tests/kat_vectors

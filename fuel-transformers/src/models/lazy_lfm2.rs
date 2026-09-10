@@ -500,6 +500,9 @@ impl LFM2Model {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_causal_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 
     fn apply_layer(
@@ -648,13 +651,13 @@ impl LFM2Model {
         let conv_w = x.const_f32_like(
             Arc::clone(&c.conv_weight),
             Shape::from_dims(&[hidden, 1, k]),
-        );
+        )?;
         // The eager loader stores no conv bias for LIV layers, but the
         // fused op requires a bias tensor — pass a zero vector.
         let conv_b = x.const_f32_like(
             Arc::from(vec![0.0_f32; hidden]),
             Shape::from_dims(&[hidden]),
-        );
+        )?;
         // Plain depthwise causal conv, no fused SiLU — LFM2 keeps the
         // SwiGLU activation in the MLP only.
         let conv_out = bx_padded.causal_conv1d(&conv_w, &conv_b, false); // (B, hidden, seq)
@@ -1020,7 +1023,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref

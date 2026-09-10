@@ -4,7 +4,7 @@
 //!
 //! ## Design
 //!
-//! [`Var`] is the lazy equivalent of eager [`crate::Var`]: a
+//! [`Var`] is the lazy equivalent of eager `crate::Var`: a
 //! named, mutable F32 host-resident parameter. Each training step:
 //!
 //! 1. The user builds a forward graph that uses
@@ -107,7 +107,19 @@ impl Var {
     /// [`Optimizer::backward_step`] can recover the gradient.
     pub fn tensor(&self, anchor: &Tensor) -> Tensor {
         let snapshot = self.data.read().unwrap().clone();
-        let lt = anchor.const_f32_like(snapshot, self.shape.clone());
+        // ⚠️ GAP-003 — PROOF BY TYPE INVARIANT, which is STRONGER than a local
+        // proof: `data.len() == shape.elem_count()` holds for EVERY state this
+        // value can be in, not merely at this call.
+        //
+        // `Var.data` is PRIVATE and has exactly two write paths, both of which
+        // enforce it and both of which return `Result`:
+        //   Var::new  -> "Var::new: data len {} != shape elem_count {}"
+        //   Var::set  -> "Var::set: values len {} != shape elem_count {}"
+        // `shape` is never mutated after construction. So no reachable state
+        // violates the equality, and a `Result` here could never be `Err`.
+        let lt = anchor
+            .const_f32_like(snapshot, self.shape.clone())
+            .expect("Var::tensor: data.len() == shape.elem_count() is a Var invariant, enforced by Var::new and Var::set");
         *self.last_node.write().unwrap() = Some(lt.graph_tensor().id());
         lt
     }
@@ -312,7 +324,7 @@ impl Optimizer for Sgd {
 
             let update = if momentum != 0.0 {
                 let v_prev = self.velocity[var.name()].clone();
-                let v_prev_t = grad.const_f32_like(v_prev, var.shape().clone());
+                let v_prev_t = grad.const_f32_like(v_prev, var.shape().clone())?;
                 v_prev_t.mul_scalar(momentum).add(&g_eff)?
             } else {
                 g_eff
@@ -357,7 +369,7 @@ impl Optimizer for Sgd {
                     grad.clone()
                 };
                 let v_prev = self.velocity[var.name()].clone();
-                let v_prev_t = grad.const_f32_like(v_prev, var.shape().clone());
+                let v_prev_t = grad.const_f32_like(v_prev, var.shape().clone())?;
                 let new_v = v_prev_t.mul_scalar(momentum).add(&g_eff)?;
                 updates.push(new_v);
             }
@@ -542,8 +554,8 @@ impl Optimizer for AdamW {
             let param_t = var.tensor(grad);
             let m_prev = self.first_moment[var.name()].clone();
             let v_prev = self.second_moment[var.name()].clone();
-            let m_prev_t = grad.const_f32_like(m_prev, var.shape().clone());
-            let v_prev_t = grad.const_f32_like(v_prev, var.shape().clone());
+            let m_prev_t = grad.const_f32_like(m_prev, var.shape().clone())?;
+            let v_prev_t = grad.const_f32_like(v_prev, var.shape().clone())?;
 
             // m = β1·m + (1-β1)·g
             let m_decayed = m_prev_t.mul_scalar(beta1);
@@ -611,13 +623,16 @@ mod tests {
             first_data.clone(),
             first_var.shape().clone(),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let mut map: HashMap<String, Tensor> = HashMap::new();
         for (i, (var, data)) in vars.iter().enumerate() {
             let t = if i == 0 {
                 anchor.clone()
             } else {
-                anchor.const_f32_like(data.clone(), var.shape().clone())
+                anchor
+                    .const_f32_like(data.clone(), var.shape().clone())
+                    .unwrap()
             };
             map.insert(var.name().to_string(), t);
         }
@@ -627,7 +642,8 @@ mod tests {
     #[test]
     fn lazy_var_round_trip() {
         let v = Var::new("w", Shape::from_dims(&[3]), vec![1.0, 2.0, 3.0]).unwrap();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 3], Shape::from_dims(&[3]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 3], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let t = v.tensor(&anchor);
         let host = t.realize_f32();
         assert_eq!(host, vec![1.0, 2.0, 3.0]);
@@ -762,8 +778,11 @@ mod tests {
         let cfg = SgdConfig::new(0.1);
         let mut opt = Sgd::new(vec![w.clone()], cfg).unwrap();
 
-        let anchor = Tensor::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[2]), &Device::cpu());
-        let target = anchor.const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]));
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[2]), &Device::cpu()).unwrap();
+        let target = anchor
+            .const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]))
+            .unwrap();
         let w_t = w.tensor(&anchor);
         let diff = w_t.sub(&target).unwrap();
         let loss = diff.sqr().sum_all();

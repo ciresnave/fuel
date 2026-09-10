@@ -296,7 +296,8 @@ impl FastVitModel {
                 let c = dims[1];
                 let n = head.linear_b.len();
                 let logits = head.linear_w.apply_linear(&pooled, c, n)?;
-                let bias = image.const_f32_like(Arc::clone(&head.linear_b), Shape::from_dims(&[n]));
+                let bias =
+                    image.const_f32_like(Arc::clone(&head.linear_b), Shape::from_dims(&[n]))?;
                 logits.broadcast_add(&bias)
             }
         }
@@ -340,8 +341,8 @@ fn apply_conv2d_bias(x: &Tensor, c: &Conv2dBiasWeights, anchor: &Tensor) -> Resu
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
-    );
-    let bias = anchor.const_f32_like(Arc::clone(&c.b), Shape::from_dims(&[c.c_out]));
+    )?;
+    let bias = anchor.const_f32_like(Arc::clone(&c.b), Shape::from_dims(&[c.c_out]))?;
     x.conv2d(
         &w,
         Some(&bias),
@@ -396,7 +397,7 @@ fn apply_repmixer(x: &Tensor, r: &RepMixerWeights, anchor: &Tensor) -> Result<Te
     let norm = apply_reparam_mobileone(x, &r.norm, anchor)?;
     let diff = mixer.sub(&norm)?;
     let gamma = anchor
-        .const_f32_like(Arc::clone(&r.gamma), Shape::from_dims(&[r.gamma.len()]))
+        .const_f32_like(Arc::clone(&r.gamma), Shape::from_dims(&[r.gamma.len()]))?
         .reshape(Shape::from_dims(&[1, r.gamma.len(), 1, 1]))?;
     let scaled = diff.broadcast_mul(&gamma)?;
     x.add(&scaled)
@@ -409,7 +410,7 @@ fn apply_repmixer_block(x: &Tensor, b: &RepMixerBlockWeights, anchor: &Tensor) -
         .const_f32_like(
             Arc::clone(&b.gamma_mlp),
             Shape::from_dims(&[b.gamma_mlp.len()]),
-        )
+        )?
         .reshape(Shape::from_dims(&[1, b.gamma_mlp.len(), 1, 1]))?;
     let scaled = mlp_out.broadcast_mul(&gamma)?;
     y.add(&scaled)
@@ -449,7 +450,7 @@ fn apply_fastvit_attention(
     let ctx = probs.matmul(&v)?.merge_heads()?;
     let _ = n;
     let projected = w.proj.apply_linear(&ctx, c, c)?;
-    let bias_t = anchor.const_f32_like(Arc::clone(&w.proj_bias), Shape::from_dims(&[c]));
+    let bias_t = anchor.const_f32_like(Arc::clone(&w.proj_bias), Shape::from_dims(&[c]))?;
     let out = projected.broadcast_add(&bias_t)?;
     // Back to (B, C, H, W).
     out.permute([0, 2, 1_usize])?
@@ -465,7 +466,7 @@ fn apply_attention_block(x: &Tensor, b: &AttentionBlockWeights, anchor: &Tensor)
     let normed = apply_bn_fused(x, &b.norm_bn, c)?;
     let attn = apply_fastvit_attention(&normed, &b.token_mixer, head_dim, anchor)?;
     let gamma1 = anchor
-        .const_f32_like(Arc::clone(&b.gamma1), Shape::from_dims(&[b.gamma1.len()]))
+        .const_f32_like(Arc::clone(&b.gamma1), Shape::from_dims(&[b.gamma1.len()]))?
         .reshape(Shape::from_dims(&[1, b.gamma1.len(), 1, 1]))?;
     let attn_scaled = attn.broadcast_mul(&gamma1)?;
     let x = x.add(&attn_scaled)?;
@@ -473,7 +474,7 @@ fn apply_attention_block(x: &Tensor, b: &AttentionBlockWeights, anchor: &Tensor)
     // mlp + γ2 + residual.
     let mlp_out = apply_conv_mlp(&x, &b.mlp, anchor)?;
     let gamma2 = anchor
-        .const_f32_like(Arc::clone(&b.gamma2), Shape::from_dims(&[b.gamma2.len()]))
+        .const_f32_like(Arc::clone(&b.gamma2), Shape::from_dims(&[b.gamma2.len()]))?
         .reshape(Shape::from_dims(&[1, b.gamma2.len(), 1, 1]))?;
     let mlp_scaled = mlp_out.broadcast_mul(&gamma2)?;
     x.add(&mlp_scaled)
@@ -770,7 +771,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
         for &v in &logits.realize_f32() {
@@ -792,7 +794,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
         let dims = shape.dims();
@@ -818,14 +821,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

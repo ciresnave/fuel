@@ -397,7 +397,7 @@ pub fn lower_runs_arm0(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
 /// ([`extract_runs_multi`]) and the same single-contiguous-region
 /// property of a run (extract never spans a branch boundary, so a run is
 /// either wholly inside a non-chosen arm or wholly outside). The skip set
-/// is [`non_chosen_arm_nodes`] — `non_arm0_arm_nodes` generalized to "any
+/// is `non_chosen_arm_nodes` — `non_arm0_arm_nodes` generalized to "any
 /// arm but the chosen one."
 ///
 /// Value-preserving contract: every arm is a valid kernel for the same
@@ -715,7 +715,7 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
 /// `resolve` is the same per-branch decision the eager picker makes (the
 /// production VRAM-pressure chain reads only free-memory state, not walk
 /// progress), the route this walk accumulates equals
-/// [`fuel_graph::PickedRoute`] the eager `pick_route` produces, and the
+/// `fuel_graph::PickedRoute` the eager `pick_route` produces, and the
 /// emitted order therefore equals `lower_picked_route(graph, roots,
 /// pick_route(..))` on every input. C1 changes *when* a branch resolves,
 /// never *which* arm — and a branchless graph never enters this walk at

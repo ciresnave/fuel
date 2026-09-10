@@ -2,8 +2,8 @@
 //! Lazy `ConvTranspose1d` / `ConvTranspose2d` Module wrappers over
 //! [`Tensor`].
 //!
-//! Mirrors the eager [`fuel_nn::ConvTranspose1d`] /
-//! [`fuel_nn::ConvTranspose2d`] surface: each layer holds a
+//! Mirrors the eager `fuel_nn::ConvTranspose1d` /
+//! `fuel_nn::ConvTranspose2d` surface: each layer holds a
 //! [`WeightStorage`] weight plus an optional bias and a config struct
 //! controlling `padding` / `output_padding` / `stride` / `dilation` /
 //! `groups`. `forward` materializes the weight (and bias) as graph
@@ -15,7 +15,8 @@
 //!
 //! No computation happens inside `forward` — the weight is wrapped as
 //! a `Const` node on the activation's graph, the transposed conv is
-//! appended as a single [`fuel_graph::Op::ConvTranspose2D`] node (the
+//! appended as a single [`fuel_graph::Op::Fused`] node carrying
+//! [`fuel_graph::registry::FusedOpParams::ConvTranspose2D`] (the
 //! 1-D variant lifts to rank-4 transparently), and the bias add is
 //! appended as a broadcast add. Validation (rank, channel divisibility,
 //! stride / dilation > 0) surfaces as a typed [`fuel_core::Error`] at
@@ -56,7 +57,7 @@ use std::sync::Arc;
 /// Configuration for [`ConvTranspose1d`].
 ///
 /// Default: `padding=0`, `output_padding=0`, `stride=1`, `dilation=1`,
-/// `groups=1` — matches the eager [`fuel_nn::ConvTranspose1dConfig`].
+/// `groups=1` — matches the eager `fuel_nn::ConvTranspose1dConfig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConvTranspose1dConfig {
     /// Zero-padding implicitly removed from both sides of the output.
@@ -258,7 +259,7 @@ impl ConvTranspose1d {
             None => Ok(y),
             Some(b) => {
                 let bias_t = y
-                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
+                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))?
                     .reshape(Shape::from_dims(&[1, self.out_channels, 1]))?;
                 Ok(y.broadcast_add(&bias_t)?)
             }
@@ -305,7 +306,7 @@ impl ConvTranspose1d {
 ///
 /// Default: `padding=0`, `output_padding=0`, `stride=1`,
 /// `dilation=1`, `groups=1`. Mirrors the eager
-/// [`fuel_nn::ConvTranspose2dConfig`] surface, plus a `groups` field
+/// `fuel_nn::ConvTranspose2dConfig` surface, plus a `groups` field
 /// (the eager side has a `TODO: support groups.` and the underlying
 /// [`Tensor::conv_transpose2d`] already takes it).
 ///
@@ -506,7 +507,7 @@ impl ConvTranspose2d {
             None => Ok(y),
             Some(b) => {
                 let bias_t = y
-                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
+                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))?
                     .reshape(Shape::from_dims(&[1, self.out_channels, 1, 1]))?;
                 Ok(y.broadcast_add(&bias_t)?)
             }
@@ -585,7 +586,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * l, 0.03, -0.4);
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu()).unwrap();
         let y = layer.forward(&x).unwrap();
         let l_out = l + k - 1;
         assert_eq!(y.shape().dims(), &[n, cout, l_out]);
@@ -633,11 +634,14 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, l]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
-        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]));
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu()).unwrap();
+        let w_t = x2
+            .const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]))
+            .unwrap();
         let direct_raw = x2
             .conv_transpose1d(
                 &w_t,
@@ -650,6 +654,7 @@ mod tests {
             .unwrap();
         let b_t = direct_raw
             .const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))
+            .unwrap()
             .reshape(Shape::from_dims(&[1, cout, 1]))
             .unwrap();
         let direct = direct_raw.broadcast_add(&b_t).unwrap().realize_f32();
@@ -716,7 +721,8 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.01, -0.5);
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu()).unwrap();
         let y = layer.forward(&x).unwrap();
         let h_out = h + kh - 1;
         let w_out = w_in + kw - 1;
@@ -768,14 +774,18 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, h, w_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
-        let w_t = x2.const_f32_like(
-            Arc::clone(&weight_arc),
-            Shape::from_dims(&[cin, cout, kh, kw]),
-        );
+        let x2 =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu()).unwrap();
+        let w_t = x2
+            .const_f32_like(
+                Arc::clone(&weight_arc),
+                Shape::from_dims(&[cin, cout, kh, kw]),
+            )
+            .unwrap();
         let direct_raw = x2
             .conv_transpose2d(
                 &w_t,
@@ -788,6 +798,7 @@ mod tests {
             .unwrap();
         let b_t = direct_raw
             .const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))
+            .unwrap()
             .reshape(Shape::from_dims(&[1, cout, 1, 1]))
             .unwrap();
         let direct = direct_raw.broadcast_add(&b_t).unwrap().realize_f32();
@@ -844,11 +855,14 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, l]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
-        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]));
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu()).unwrap();
+        let w_t = x2
+            .const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]))
+            .unwrap();
         let direct = x2
             .conv_transpose1d(
                 &w_t,
