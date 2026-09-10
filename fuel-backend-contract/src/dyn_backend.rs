@@ -60,7 +60,7 @@ pub trait DynBackendStorage: Send + Sync + std::fmt::Debug {
     /// Copy the entire storage to a [`HostBuffer`](fuel_ir::HostBuffer).
     fn to_host_buffer_dyn(&self) -> Result<HostBuffer>;
 
-    /// Deprecated alias for [`to_host_buffer_dyn`].
+    /// Deprecated alias for `to_host_buffer_dyn`.
     fn to_cpu_storage_dyn(&self) -> Result<HostBuffer> {
         self.to_host_buffer_dyn()
     }
@@ -332,12 +332,12 @@ pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
         buf: HostBuffer,
     ) -> Result<Box<dyn DynBackendStorage>>;
 
-    /// Deprecated alias for [`storage_from_host_buffer_dyn`].
+    /// Deprecated alias for `storage_from_host_buffer_dyn`.
     fn storage_from_cpu_storage_dyn(&self, cpu: &HostBuffer) -> Result<Box<dyn DynBackendStorage>> {
         self.storage_from_host_buffer_dyn(cpu)
     }
 
-    /// Deprecated alias for [`storage_from_host_buffer_owned_dyn`].
+    /// Deprecated alias for `storage_from_host_buffer_owned_dyn`.
     fn storage_from_cpu_storage_owned_dyn(
         &self,
         cpu: HostBuffer,

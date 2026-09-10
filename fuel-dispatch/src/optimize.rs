@@ -76,7 +76,7 @@
 //! single-residency graph the run extractor produces exactly one run
 //! whose members are that same topo order. The gate asserts that
 //! equality exactly (same `NodeId`s, same order) — see
-//! [`tests::equivalence_gate_branchless_order_matches_compile_plan`].
+//! `tests::equivalence_gate_branchless_order_matches_compile_plan`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -178,7 +178,7 @@ impl OptimizedGraph {
     /// `NodeId` sequence today's executor walks via
     /// [`crate::plan::compile_plan`]`(...).order` — the equivalence gate
     /// proves it (no arm to skip ⇒ identical to concatenating
-    /// [`lower_run`] over the runs). For a branched graph it is the
+    /// [`fuel_graph::run::lower_run`] over the runs). For a branched graph it is the
     /// single-route lowering on **arm 0 = the DP winner** (the route
     /// realize used before the branch was recorded), so a branched graph
     /// realizes to the same result. The Phase-C runtime picker is what

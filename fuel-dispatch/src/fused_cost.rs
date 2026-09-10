@@ -24,7 +24,7 @@
 //! (this module)** › (never) zero. [`fused_layer1_cost`] is the accessor
 //! that enforces it: since Task 2.4, a contract-declared `cost_expr` is
 //! checked FIRST and outranks even a real (non-sentinel) `cost:` fn; only
-//! when there's no usable `cost_expr` does the [`fused_unknown_cost`]
+//! when there's no usable `cost_expr` does the `fused_unknown_cost`
 //! sentinel derive its cost from the recipe (composed), falling back to
 //! the plain `cost:` fn otherwise.
 

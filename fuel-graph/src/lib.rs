@@ -608,7 +608,7 @@ pub enum Op {
     ///
     /// First-class IR concern so the optimizer (Phase 2.2) can insert
     /// layout-fixups before kernels that don't advertise
-    /// [`crate::KernelCaps::strided_input`] without overloading
+    /// `crate::KernelCaps::strided_input` without overloading
     /// [`Op::Reshape`]'s "change shape" semantics. The executor
     /// compiles this to the same `WorkItemKind::ContiguizeOf` arm
     /// `Op::Reshape` uses; the only difference is that
@@ -805,7 +805,7 @@ pub enum Op {
     /// a [`DynScalar::Sym`] / dynamic [`Extent`](fuel_ir::shape::Extent) —
     /// the same host-scalar-extent pattern the KV-cache `cached_len`
     /// uses. This is the **first op whose output length is determined by
-    /// its input data**, not by build-time shapes (the [`SymEnv`] bind is
+    /// its input data**, not by build-time shapes (the [`fuel_ir::symbol::SymEnv`] bind is
     /// the one net-new realize-time seam). Primitive (in the base map by
     /// construction — no `decompose`). Non-differentiable: discrete
     /// indices, backward drops gradient like `Op::Gather`'s index path.
@@ -854,7 +854,7 @@ pub enum Op {
     /// `inputs[0]` is a multi-output producer (its Storage carries a
     /// [`fuel_ir::storage::OutputView`] bundle), the bundle
     /// is the single eviction unit — the Release evicts the whole
-    /// bundle, not a single slot. [`opt::collect_alias_set`] treats
+    /// bundle, not a single slot. `opt::collect_alias_set` treats
     /// every `Op::View` of the producer as part of the producer's
     /// alias set, so `derive_ordering` pins Release after every
     /// reader of every View; the bundle drops only when the LAST
@@ -2399,7 +2399,7 @@ impl Graph {
     /// (descendant `reconverge_at`, internally-disjoint arms,
     /// cast-to-uniform shape/dtype, arm-0 runnability) happens in
     /// [`BranchBuilder::finalize_branches`], which returns a typed
-    /// [`Error::InvalidBranch`] rather than panicking.
+    /// [`fuel_ir::error::Error::InvalidBranch`] rather than panicking.
     pub fn open_branch(&self, diverge: NodeId) -> BranchBuilder {
         BranchBuilder {
             diverge,
@@ -2678,7 +2678,7 @@ impl Graph {
     /// Checks every node's `inputs`, the op-carried `Op::Branch`
     /// `reconverge_at`, every NodeId-keyed side-table, and the
     /// `side_effect_roots` vector. Returns the first offending reference as
-    /// a typed error (never panics); used by [`Graph::compact`]'s
+    /// a typed error (never panics); used by [`crate::compact`]'s
     /// `debug_assert` and by tests.
     pub fn verify_no_dangling(&self) -> std::result::Result<(), fuel_ir::Error> {
         let n = self.nodes.len();
@@ -2871,7 +2871,7 @@ impl BranchBuilder {
 
     /// Validate and emit the [`Op::Branch`] node, returning its fresh
     /// `NodeId`. This is the single build-time gate; it **never panics**,
-    /// surfacing every rejection as [`Error::InvalidBranch`].
+    /// surfacing every rejection as [`fuel_ir::error::Error::InvalidBranch`].
     ///
     /// Returns:
     /// - `Ok(Some(branch_id))` — a multi-arm branch was emitted.
@@ -6770,7 +6770,7 @@ impl NodeHandle {
     ///
     /// First-class IR node so the optimizer (Phase 2.2) can insert
     /// layout-fixups before kernels that don't advertise
-    /// [`crate::KernelCaps::strided_input`] without overloading
+    /// `crate::KernelCaps::strided_input` without overloading
     /// [`Self::reshape`]'s "change shape" semantics.
     pub fn contiguize(&self) -> NodeHandle {
         let shape = self.shape().clone();

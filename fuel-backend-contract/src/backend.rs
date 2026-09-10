@@ -167,7 +167,7 @@ pub trait BackendRuntime {
     /// Tier-2 upcast seam: a runtime handle that also exposes a
     /// deferred-execution queue model returns `Some(self)` so a
     /// selector holding only a `&dyn BackendRuntime` (the type the
-    /// route picker's [`BackendRuntimeLookup`] hands out) can reach
+    /// route picker's `BackendRuntimeLookup` hands out) can reach
     /// the [`BackendStreams`] live-load surface without naming the
     /// concrete handle type.
     ///
@@ -206,7 +206,7 @@ pub trait BackendRuntime {
 /// The in-flight count a selector needs is the **executor's own
 /// submitted-but-not-drained async-op count**, not a driver query
 /// (`cuStreamQuery` is a busy/idle bool, not a depth). Fuel tracks it
-/// in a process-wide per-[`DeviceLocation`] atomic counter
+/// in a process-wide per-[`fuel_ir::DeviceLocation`] atomic counter
 /// (`fuel-dispatch::dispatch::inflight_count`) incremented when the
 /// executor submits an async op and decremented when the completion
 /// handle retires. A `BackendStreams` impl reads that counter for its
