@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! **A panic that is a public contract must be documented where a consumer can read it (GAP-221).**
 //!
 //! `fuel-graph`'s builders that take operands from a second `Graph` panic, by

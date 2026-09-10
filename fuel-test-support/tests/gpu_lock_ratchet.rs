@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! **A ratchet on live-GPU tests that acquire a device without the lock (GAP-224).**
 //!
 //! [`fuel_test_support::require_gpu_run_lock`] makes a missing GPU mutex loud,

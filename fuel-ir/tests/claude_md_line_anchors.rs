@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! **A citation in `CLAUDE.md` may not use a bare line number as its anchor.**
 //!
 //! WHY THIS EXISTS, MEASURED RATHER THAN ASSUMED (2026-08-25, doc-currency

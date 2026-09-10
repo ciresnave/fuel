@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! **GAP-236 PRECONDITION TRIPWIRE — a candidate provider may not flow kernels
 //! into Fuel until the divergence-reaching admission probe is wired.**
 //!
