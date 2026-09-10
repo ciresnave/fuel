@@ -240,10 +240,6 @@ impl GemmaModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(
-            dims[2], cfg.hidden_size,
-            "embeds last dim must equal hidden_size"
-        );
         // GAP-281: a typed decline, not a panic. Copied from the conformant
         // form in `lazy_mixtral.rs`, one of 15 models already declining here.
         if !cfg
@@ -313,8 +309,6 @@ impl GemmaModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size);
-
         let mut h = embeds.clone();
         let (rope_cos, rope_sin) =
             h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);

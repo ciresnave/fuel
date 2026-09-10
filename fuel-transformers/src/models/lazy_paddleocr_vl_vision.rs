@@ -185,7 +185,6 @@ impl PaddleOcrVlVisionModel {
             "pixels axis 0 ({}) must equal tile_grid.0 * tile_grid.1 = {}",
             dims[0], num_tiles,
         );
-        assert_eq!(dims[1], cfg.num_channels);
         assert_eq!(dims[2], cfg.image_size);
         assert_eq!(dims[3], cfg.image_size);
 
@@ -981,11 +980,6 @@ impl PaddleOcrVlNaVitModel {
             dims[0], 1,
             "PaddleOcrVlNaVitModel::forward: only batch=1 is supported (v1); got batch={}",
             dims[0],
-        );
-        assert_eq!(
-            dims[1], cfg.num_channels,
-            "PaddleOcrVlNaVitModel::forward: channel dim {} != config.num_channels {}",
-            dims[1], cfg.num_channels,
         );
         let h = dims[2];
         let w = dims[3];

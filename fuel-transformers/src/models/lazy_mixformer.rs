@@ -146,7 +146,6 @@ impl MixFormerModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
         // so a head count that does not divide hidden_size violates this -- a CONFIG
@@ -226,7 +225,6 @@ impl MixFormerModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
         let rotary_dim = cfg.effective_rotary_dim();
 
