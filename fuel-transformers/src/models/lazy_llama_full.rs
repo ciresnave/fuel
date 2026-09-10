@@ -507,8 +507,6 @@ impl Llama3Model {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.dim);
-
         let (cos_data, sin_data) = build_llama3_rope_tables(
             cfg.rope_base,
             self.rope_scaling.as_ref(),

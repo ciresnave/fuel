@@ -213,7 +213,6 @@ impl MoondreamModel {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[1], cfg.num_channels);
         assert_eq!(dims[2], cfg.image_size);
         assert_eq!(dims[3], cfg.image_size);
         let np_side = cfg.image_size / cfg.patch_size;

@@ -235,7 +235,6 @@ impl MistralModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size);
         // GAP-281: a typed decline, not a panic. The relation is a CONFIG
         // property a real checkpoint can violate, so it is an error to return,
         // not an invariant to assert. Matches the conformant form used by the
@@ -309,14 +308,11 @@ impl MistralModel {
     /// Used by multimodal+embedding compositions that mix
     /// pre-computed embeddings with a custom pooling head.
     pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
-        let cfg = &self.config;
         let _weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size);
-
         let mask = self.build_sliding_window_mask(embeds, seq);
         self.forward_hidden_embeds_with_mask_impl(embeds, &mask, start_pos)
     }
@@ -351,8 +347,6 @@ impl MistralModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size);
-
         let mut h = embeds.clone();
         let (rope_cos, rope_sin) =
             h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);

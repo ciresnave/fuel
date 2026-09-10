@@ -562,10 +562,6 @@ impl VoxtralTextModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "VoxtralTextModel: embeds must be rank-3");
-        assert_eq!(
-            dims[2], cfg.hidden_size,
-            "VoxtralTextModel: embeds last dim must equal hidden_size"
-        );
         let seq = dims[1];
 
         let (rope_cos, rope_sin) =

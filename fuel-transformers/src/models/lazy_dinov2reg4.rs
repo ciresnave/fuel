@@ -162,7 +162,6 @@ impl Dinov2Reg4Model {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[1], cfg.num_channels);
         assert_eq!(
             dims[2], cfg.image_size,
             "input H must equal cfg.image_size (variable input deferred)"
@@ -268,7 +267,6 @@ impl Dinov2Reg4Model {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[1], cfg.num_channels);
         assert_eq!(
             dims[2], cfg.image_size,
             "input H must equal cfg.image_size (variable input deferred)"

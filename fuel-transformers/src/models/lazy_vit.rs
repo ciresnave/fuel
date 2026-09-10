@@ -167,7 +167,6 @@ impl VitModel {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[1], cfg.num_channels);
         assert_eq!(dims[2], cfg.image_size);
         assert_eq!(dims[3], cfg.image_size);
 
@@ -269,7 +268,6 @@ impl VitModel {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[1], cfg.num_channels);
         assert_eq!(dims[2], cfg.image_size);
         assert_eq!(dims[3], cfg.image_size);
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
@@ -685,6 +683,42 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap()
+    }
+
+    /// GAP-314 retained guard for the channel-count DELETE. The
+    /// `assert_eq!(dims[1], cfg.num_channels)` panic was removed from `forward`
+    /// because `conv2d` already rejects a channel mismatch at BUILD per-dim (the
+    /// input channels vs the patch-projection weight's in-channels). This test
+    /// keeps that downstream rejection load-bearing: it must stay a build-time
+    /// error, not become a silent-wrong. Asserts the message fragment (not
+    /// `is_err`) and pairs a positive control so a vacuous pass is visible.
+    #[test]
+    fn wrong_channel_count_rejected_at_build_by_conv2d() {
+        let cfg = tiny_config();
+        let model = VitModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, None),
+        };
+        // Positive control: the correct channel count builds.
+        model
+            .forward(&tiny_image(&cfg))
+            .expect("valid channel count must build");
+        // dims[1] = 5 != num_channels = 3.
+        let n = 1 * 5 * cfg.image_size * cfg.image_size;
+        let bad = Tensor::from_f32(
+            Arc::from((0..n).map(|i| i as f32 / n as f32).collect::<Vec<_>>()),
+            Shape::from_dims(&[1, 5, cfg.image_size, cfg.image_size]),
+            &Device::cpu(),
+        )
+        .unwrap();
+        let err = model
+            .forward(&bad)
+            .expect_err("wrong channel count must be rejected at build");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("conv2d") && msg.contains("channel"),
+            "expected a conv2d channel-mismatch build error, got: {msg}"
+        );
     }
 
     #[test]
