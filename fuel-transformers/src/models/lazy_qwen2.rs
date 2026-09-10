@@ -241,7 +241,6 @@ impl Qwen2Model {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer
         // division, so a config whose hidden_size is not divisible by the head
@@ -318,7 +317,6 @@ impl Qwen2Model {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer
         // division, so a config whose hidden_size is not divisible by the head
@@ -1106,6 +1104,62 @@ mod tests {
             final_norm_gain,
             output,
         }
+    }
+
+    /// GAP-314 retained guard for the trailing-dim DELETE. The
+    /// `assert_eq!(dims[2], cfg.hidden_size)` panic was removed from
+    /// `forward_hidden_embeds_with_mask` because the first `rms_norm`
+    /// (broadcast_mul against the gain) already rejects a trailing-dim mismatch
+    /// at BUILD, per-dim. The bad input is COUNT-PRESERVING, so the rejection is
+    /// on the trailing FACTOR, not the element product. Keeps that downstream
+    /// rejection load-bearing; asserts the message fragment + positive control.
+    #[test]
+    fn wrong_embed_trailing_dim_rejected_at_build() {
+        let cfg = Qwen2Config {
+            vocab_size: 16,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            num_key_value_heads: 1,
+            max_position_embeddings: 32,
+            sliding_window: 32,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            tie_word_embeddings: false,
+        };
+        let model = Qwen2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        let mk = |dims: &[usize], seq: usize| -> (Tensor, Tensor) {
+            let n: usize = dims.iter().product();
+            let data: Vec<f32> = (0..n).map(|i| i as f32 / n as f32).collect();
+            let embeds =
+                Tensor::from_f32(Arc::from(data), Shape::from_dims(dims), &Device::cpu()).unwrap();
+            let zero: Arc<[f32]> = Arc::from(vec![0.0_f32; seq * seq]);
+            let mask = embeds
+                .const_f32_like(zero, Shape::from_dims(&[1, 1, seq, seq]))
+                .unwrap();
+            (embeds, mask)
+        };
+        // Positive control: valid [1,3,8] (trailing == hidden_size) builds.
+        let (e, m) = mk(&[1, 3, 8], 3);
+        model
+            .forward_hidden_embeds_with_mask(&e, &m, 0)
+            .expect("valid embeds must build");
+        // Count-preserving: [1,4,6], total 24 == 1*3*8, trailing 6 != 8.
+        let (e, m) = mk(&[1, 4, 6], 4);
+        let err = model
+            .forward_hidden_embeds_with_mask(&e, &m, 0)
+            .expect_err("wrong trailing dim must be rejected at build");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("broadcast") || msg.contains("shape"),
+            "expected a build-time shape rejection, got: {msg}"
+        );
     }
 
     #[test]

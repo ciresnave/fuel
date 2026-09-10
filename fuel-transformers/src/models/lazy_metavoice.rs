@@ -149,7 +149,6 @@ impl MetaVoiceModel {
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let batch = dims[0];
         let seq = dims[1];
-        assert_eq!(dims[2], cfg.hidden_size);
         // GAP-281: a typed decline, not a panic. The relation is a CONFIG
         // property a real checkpoint can violate, so it is an error to return,
         // not an invariant to assert.
