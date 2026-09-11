@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """
 Phase 7.5 G2 step 2 sweep: append a device argument to every call site
 of fuel-graph's slot-populating constructors.

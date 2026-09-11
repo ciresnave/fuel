@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """FDX wire-struct fields MINUS the fields `validate()` reads.
 
 GAP-286. A field that appears on the wire and is read by no validator arm is a

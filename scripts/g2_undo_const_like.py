@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """
 Undo the const_*_like device-arg insertion the main g2_sweep added.
 We later decided that const_*_like derives device from self's graph

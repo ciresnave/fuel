@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 import re
 
 path = "c:/Users/cires/OneDrive/Documents/projects/fuel/fuel-cpu-backend/src/dyn_impl.rs"

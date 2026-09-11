@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # Fuel pre-commit gates.
 #
 # ⚠️ INSTALL THIS, or it does nothing:

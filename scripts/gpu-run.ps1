@@ -1,4 +1,6 @@
 ﻿#Requires -Version 5.1
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 <#
 .SYNOPSIS
   gpu-run — machine-wide serialization of GPU-touching runs (one at a time).

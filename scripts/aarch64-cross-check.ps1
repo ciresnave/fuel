@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 <#
 .SYNOPSIS
     Type-checks Fuel's aarch64 code paths from any host, without a Mac and

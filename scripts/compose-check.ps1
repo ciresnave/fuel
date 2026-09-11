@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 <#
 .SYNOPSIS
   Does YOUR branch still pass its gates once the PRs ahead of you land?
