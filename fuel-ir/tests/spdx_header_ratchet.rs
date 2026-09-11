@@ -134,7 +134,7 @@
 //! scans without declaring itself**, or it reports its own vocabulary as a
 //! finding.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -571,6 +571,49 @@ fn tracked_entries(root: &PathBuf) -> Vec<Entry> {
     entries
 }
 
+/// Read ONE `git cat-file --batch` record: `<oid> SP <type> SP <size> LF`,
+/// then `<size>` bytes, then a terminating LF.
+///
+/// Extracted from [`blobs`] purely for size. ⚠️ **The stdin-writing thread was
+/// deliberately NOT extracted with it:** that thread is the deadlock avoidance,
+/// not a tidiness choice, and it is coupled to the spawn and the read loop it
+/// feeds. Record parsing carries no such coupling, which is why this is the
+/// seam that is safe to cut.
+///
+/// Every failure here PANICS rather than yielding empty content: a gate that
+/// cannot read a file it was told exists must never report clean.
+fn read_batch_record<R: BufRead>(reader: &mut R, e: &Entry) -> Vec<u8> {
+    let mut header = String::new();
+    let n = reader
+        .read_line(&mut header)
+        .unwrap_or_else(|err| panic!("cat-file header for {}: {err}", e.path));
+    assert!(n > 0, "cat-file ended early at {}", e.path);
+    assert!(
+        !header.contains(" missing"),
+        "object {} for {} is missing from the store; the index and the object database \
+         disagree, which is a repository problem rather than a licence one",
+        e.oid,
+        e.path
+    );
+
+    let size: usize = header
+        .trim_end()
+        .rsplit(' ')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("unparsable cat-file header for {}: {header:?}", e.path));
+
+    let mut buf = vec![0u8; size];
+    reader
+        .read_exact(&mut buf)
+        .unwrap_or_else(|err| panic!("cat-file body for {}: {err}", e.path));
+    let mut lf = [0u8; 1];
+    reader
+        .read_exact(&mut lf)
+        .unwrap_or_else(|err| panic!("cat-file terminator for {}: {err}", e.path));
+    buf
+}
+
 /// Contents of the given entries, read from the object store in ONE
 /// `git cat-file --batch` pass.
 ///
@@ -604,35 +647,7 @@ fn blobs(root: &PathBuf, entries: &[Entry]) -> Vec<(String, Vec<u8>)> {
     let mut reader = BufReader::new(child.stdout.take().expect("cat-file stdout"));
     let mut out = Vec::with_capacity(entries.len());
     for e in entries {
-        let mut header = String::new();
-        let n = reader
-            .read_line(&mut header)
-            .unwrap_or_else(|err| panic!("cat-file header for {}: {err}", e.path));
-        assert!(n > 0, "cat-file ended early at {}", e.path);
-        assert!(
-            !header.contains(" missing"),
-            "object {} for {} is missing from the store; the index and the object database \
-             disagree, which is a repository problem rather than a licence one",
-            e.oid,
-            e.path
-        );
-        let size: usize = header
-            .trim_end()
-            .rsplit(' ')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| panic!("unparsable cat-file header for {}: {header:?}", e.path));
-
-        let mut buf = vec![0u8; size];
-        reader
-            .read_exact(&mut buf)
-            .unwrap_or_else(|err| panic!("cat-file body for {}: {err}", e.path));
-        let mut lf = [0u8; 1];
-        reader
-            .read_exact(&mut lf)
-            .unwrap_or_else(|err| panic!("cat-file terminator for {}: {err}", e.path));
-
-        out.push((e.path.clone(), buf));
+        out.push((e.path.clone(), read_batch_record(&mut reader, e)));
     }
     let _ = writer.join();
     let _ = child.wait();
