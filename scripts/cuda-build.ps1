@@ -1,4 +1,6 @@
 ﻿#Requires -Version 5.1
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
 <#
 .SYNOPSIS
   cuda-build — machine-wide COUNTED ADMISSION for CUDA-compiling builds (N at a time).

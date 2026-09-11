@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Doc-name census: backticked CamelCase names in docs/architecture/ vs *.rs.
 
 WHY THIS EXISTS

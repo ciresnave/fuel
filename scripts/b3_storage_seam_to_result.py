@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Phase 7.5 B3 step 1 migration helper.
 
 Adds `?` propagation to call sites of the storage seam after they

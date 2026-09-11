@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # Install Fuel's version-controlled git hooks.
 #
 #     sh scripts/install-hooks.sh

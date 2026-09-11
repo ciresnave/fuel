@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Production-panic census: assert/panic-family macros in fuel-transformers/src/models/.
 
 WHY THIS EXISTS

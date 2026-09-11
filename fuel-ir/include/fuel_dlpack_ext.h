@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
 /*
  * fuel_dlpack_ext.h — the co-maintained C header for FDX (the Fuel DLPack
  * eXtension): a versioned, optional sidecar over standard DLPack for tensor

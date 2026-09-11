@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Split `use fuel_storage::{ ... };` blocks across fuel_storage and fuel_dispatch.
 
 After the dispatch move, items like baracuda_dispatch::, dispatch::,
