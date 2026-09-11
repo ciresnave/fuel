@@ -112,6 +112,18 @@ where
     }
 }
 
+/// Which arm this build is. Extracted so the probe body below is PURE CASE
+/// ENUMERATION — every remaining branch in it is a probe case, and nothing is
+/// formatting. That is the property that matters in a file whose whole job is to
+/// be read and re-run later.
+fn arm_label(guard_present: bool) -> &'static str {
+    if guard_present {
+        "ARM A - guard PRESENT (positive control: the probe must reach it)"
+    } else {
+        "ARM B - guard ABSENT (this is what the shipped artifact does)"
+    }
+}
+
 #[test]
 #[ignore = "instrument, not a gate: asserts nothing; see the module doc"]
 fn gap315_split_heads_probe() {
@@ -119,11 +131,7 @@ fn gap315_split_heads_probe() {
     println!(
         "\n=== GAP-315 probe: Tensor::split_heads (pub fn, caller SHAPE, lazy) ===\n\
          debug_assertions = {guard_present}  ({})",
-        if guard_present {
-            "ARM A - guard PRESENT (positive control: the probe must reach it)"
-        } else {
-            "ARM B - guard ABSENT (this is what the shipped artifact does)"
-        }
+        arm_label(guard_present)
     );
 
     // CONTROL: a VALID call. Must behave identically in both arms; if this
