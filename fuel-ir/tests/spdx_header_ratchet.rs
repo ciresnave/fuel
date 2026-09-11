@@ -134,8 +134,9 @@
 //! scans without declaring itself**, or it reports its own vocabulary as a
 //! finding.
 
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Bytes of each file inspected by Part 2. Generous enough for a shebang-like
 /// preamble or a short block comment above the identifier, small enough that the
@@ -497,11 +498,40 @@ fn workspace_root() -> PathBuf {
     }
 }
 
-/// Every tracked file. Fails loudly if git cannot answer — an empty list must
-/// never be mistaken for a clean repository.
-fn tracked_files(root: &Path) -> Vec<String> {
+/// One tracked file: its path and the object id of its INDEX content.
+struct Entry {
+    path: String,
+    oid: String,
+}
+
+/// Every tracked file, enumerated from the INDEX.
+///
+/// ⚠️ **ENUMERATION AND CONTENT MUST COME FROM THE SAME SOURCE, AND THE FIRST
+/// VERSION OF THIS GATE GOT THAT WRONG IN A WAY THAT WAS INVISIBLE LOCALLY.**
+/// It enumerated with `git ls-files` (the index) and then read each file from
+/// the DISK. Those agree in a normal working tree and disagree the moment
+/// anything removes a tracked file without removing it from the index — which
+/// `rust-ci.yml` does deliberately: `rm -f .cargo/config.toml`, guarded
+/// `if: runner.os == 'macOS'`, because that file carries `-C target-cpu=native`
+/// and is wrong for a runner. The survey died on `No such file or directory`
+/// for a file git had just told it was tracked.
+///
+/// ⚠️ Note the manifestation was macOS-only and the DEFECT is not: any step on
+/// any platform that removes a tracked file without removing it from the index
+/// lands here. Reading blobs out of the object store removes the disagreement
+/// instead of naming one platform's instance of it — a file CI deleted from the
+/// working tree is still surveyed, because its content is in the index either
+/// way.
+///
+/// ⚠️ **AND THE FIX IS DELIBERATELY NOT A SKIP.** Skipping files absent from
+/// the working tree would let a REAL deletion hide inside the same branch, and
+/// noticing what is inside files is this gate's whole job.
+///
+/// Fails loudly if git cannot answer — an empty list must never be mistaken for
+/// a clean repository.
+fn tracked_entries(root: &PathBuf) -> Vec<Entry> {
     let out = Command::new("git")
-        .arg("ls-files")
+        .args(["ls-files", "-s", "-z"])
         .current_dir(root)
         .output()
         .expect("git ls-files could not be run; this gate cannot enumerate and must not pass");
@@ -510,26 +540,134 @@ fn tracked_files(root: &Path) -> Vec<String> {
         "git ls-files failed ({}); a gate that cannot enumerate must never report clean",
         out.status
     );
-    let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
+
+    let entries: Vec<Entry> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|r| !r.is_empty())
+        .map(|rec| {
+            let s = String::from_utf8_lossy(rec).into_owned();
+            let (meta, path) = s
+                .split_once('\t')
+                .unwrap_or_else(|| panic!("unparsable `git ls-files -s` record: {s:?}"));
+            let oid = meta
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_else(|| panic!("no object id in record: {s:?}"))
+                .to_string();
+            Entry {
+                path: path.to_string(),
+                oid,
+            }
+        })
         .collect();
+
     assert!(
-        files.len() > 1000,
+        entries.len() > 1000,
         "git ls-files returned only {} tracked files, which is far below this workspace's \
          known size — the enumeration is broken, not the repository",
-        files.len()
+        entries.len()
     );
-    files
+    entries
 }
 
-fn read_bytes(root: &Path, rel: &str) -> Vec<u8> {
-    std::fs::read(root.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+/// Contents of the given entries, read from the object store in ONE
+/// `git cat-file --batch` pass.
+///
+/// Input is written from a separate thread: `cat-file` blocks once its output
+/// pipe fills, so a single thread that writes every id before reading any
+/// content deadlocks on a repository this size.
+fn blobs(root: &PathBuf, entries: &[Entry]) -> Vec<(String, Vec<u8>)> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let mut child = Command::new("git")
+        .args(["cat-file", "--batch"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("git cat-file could not be run; this gate cannot read content and must not pass");
+
+    let mut stdin = child.stdin.take().expect("cat-file stdin");
+    let ids: Vec<String> = entries.iter().map(|e| e.oid.clone()).collect();
+    let writer = std::thread::spawn(move || {
+        for id in &ids {
+            if writeln!(stdin, "{id}").is_err() {
+                break;
+            }
+        }
+        // Dropping stdin closes the pipe, which is what ends the batch.
+    });
+
+    let mut reader = BufReader::new(child.stdout.take().expect("cat-file stdout"));
+    let mut out = Vec::with_capacity(entries.len());
+    for e in entries {
+        let mut header = String::new();
+        let n = reader
+            .read_line(&mut header)
+            .unwrap_or_else(|err| panic!("cat-file header for {}: {err}", e.path));
+        assert!(n > 0, "cat-file ended early at {}", e.path);
+        assert!(
+            !header.contains(" missing"),
+            "object {} for {} is missing from the store; the index and the object database \
+             disagree, which is a repository problem rather than a licence one",
+            e.oid,
+            e.path
+        );
+        let size: usize = header
+            .trim_end()
+            .rsplit(' ')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| panic!("unparsable cat-file header for {}: {header:?}", e.path));
+
+        let mut buf = vec![0u8; size];
+        reader
+            .read_exact(&mut buf)
+            .unwrap_or_else(|err| panic!("cat-file body for {}: {err}", e.path));
+        let mut lf = [0u8; 1];
+        reader
+            .read_exact(&mut lf)
+            .unwrap_or_else(|err| panic!("cat-file terminator for {}: {err}", e.path));
+
+        out.push((e.path.clone(), buf));
+    }
+    let _ = writer.join();
+    let _ = child.wait();
+
+    assert_eq!(
+        out.len(),
+        entries.len(),
+        "read {} blobs for {} tracked entries; a partial read must never be surveyed as a whole",
+        out.len(),
+        entries.len()
+    );
+    out
 }
 
-fn head_of(root: &Path, rel: &str) -> String {
-    let bytes = read_bytes(root, rel);
+/// Blob contents for a named subset, in the order requested.
+fn blobs_for(root: &PathBuf, entries: &[Entry], want: &[&str]) -> Vec<(String, Vec<u8>)> {
+    let picked: Vec<Entry> = want
+        .iter()
+        .map(|w| {
+            entries
+                .iter()
+                .find(|e| e.path == *w)
+                .map(|e| Entry {
+                    path: e.path.clone(),
+                    oid: e.oid.clone(),
+                })
+                .unwrap_or_else(|| {
+                    panic!("{w} is named in this gate's tables but is not tracked by git")
+                })
+        })
+        .collect();
+    blobs(root, &picked)
+}
+
+fn head_of_bytes(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..bytes.len().min(HEAD_BYTES)]).into_owned()
 }
 
@@ -540,7 +678,7 @@ fn head_of(root: &Path, rel: &str) -> String {
 #[test]
 fn every_tracked_source_file_carries_an_spdx_identifier() {
     let root = workspace_root();
-    let files = tracked_files(&root);
+    let entries = tracked_entries(&root);
 
     let exempt: Vec<&str> = INHERITED_WITHOUT_NOTICE
         .iter()
@@ -548,9 +686,13 @@ fn every_tracked_source_file_carries_an_spdx_identifier() {
         .chain(INHERITED_WITH_NOTICE.iter().map(|(p, _, _)| *p))
         .collect();
 
-    let source: Vec<&String> = files
+    let source: Vec<Entry> = entries
         .iter()
-        .filter(|f| is_source(f, SOURCE_EXTENSIONS, SOURCE_PATHS_WITHOUT_EXTENSION))
+        .filter(|e| is_source(&e.path, SOURCE_EXTENSIONS, SOURCE_PATHS_WITHOUT_EXTENSION))
+        .map(|e| Entry {
+            path: e.path.clone(),
+            oid: e.oid.clone(),
+        })
         .collect();
     assert!(
         source.len() > 1000,
@@ -559,10 +701,11 @@ fn every_tracked_source_file_carries_an_spdx_identifier() {
         source.len()
     );
 
-    let missing: Vec<&&String> = source
-        .iter()
-        .filter(|f| !exempt.contains(&f.as_str()))
-        .filter(|f| !head_of(&root, f).contains(TOKEN))
+    let missing: Vec<String> = blobs(&root, &source)
+        .into_iter()
+        .filter(|(path, _)| !exempt.contains(&path.as_str()))
+        .filter(|(_, bytes)| !head_of_bytes(bytes).contains(TOKEN))
+        .map(|(path, _)| path)
         .collect();
 
     assert!(
@@ -590,9 +733,11 @@ fn every_tracked_source_file_carries_an_spdx_identifier() {
 #[test]
 fn inherited_files_still_carry_no_identifier_and_no_notice() {
     let root = workspace_root();
-    let items: Vec<(&str, Vec<u8>)> = INHERITED_WITHOUT_NOTICE
+    let entries = tracked_entries(&root);
+    let fetched = blobs_for(&root, &entries, INHERITED_WITHOUT_NOTICE);
+    let items: Vec<(&str, Vec<u8>)> = fetched
         .iter()
-        .map(|rel| (*rel, read_bytes(&root, rel)))
+        .map(|(path, bytes)| (path.as_str(), bytes.clone()))
         .collect();
 
     let wrong = bare_exemption_violations(&items);
@@ -614,9 +759,14 @@ fn inherited_files_still_carry_no_identifier_and_no_notice() {
 #[test]
 fn inherited_files_with_a_third_party_notice_still_carry_it() {
     let root = workspace_root();
+    let entries = tracked_entries(&root);
+    let want: Vec<&str> = INHERITED_WITH_NOTICE.iter().map(|(p, _, _)| *p).collect();
+    let fetched = blobs_for(&root, &entries, &want);
+
     let items: Vec<(&str, &str, &str, Vec<u8>)> = INHERITED_WITH_NOTICE
         .iter()
-        .map(|(rel, who, needle)| (*rel, *who, *needle, read_bytes(&root, rel)))
+        .zip(fetched.iter())
+        .map(|((rel, who, needle), (_, bytes))| (*rel, *who, *needle, bytes.clone()))
         .collect();
 
     let lost = notice_exemption_violations(&items);
@@ -642,9 +792,12 @@ fn inherited_files_with_a_third_party_notice_still_carry_it() {
 #[test]
 fn the_vendored_files_are_still_apache_only() {
     let root = workspace_root();
+    let entries = tracked_entries(&root);
+    let want: Vec<&str> = APACHE_ONLY_FILES.iter().map(|(p, _)| *p).collect();
+    let fetched = blobs_for(&root, &entries, &want);
 
-    for (rel, why) in APACHE_ONLY_FILES {
-        let head = head_of(&root, rel);
+    for ((rel, why), (_, bytes)) in APACHE_ONLY_FILES.iter().zip(fetched.iter()) {
+        let head = head_of_bytes(bytes);
         let line = head
             .lines()
             .find(|l| l.contains(TOKEN))
@@ -674,19 +827,18 @@ fn the_vendored_files_are_still_apache_only() {
 #[test]
 fn no_tracked_file_carries_an_unaccounted_copyright_notice() {
     let root = workspace_root();
-    let files = tracked_files(&root);
+    let entries = tracked_entries(&root);
 
-    let unexpected: Vec<String> = files
-        .iter()
-        .filter(|f| {
+    let unexpected: Vec<String> = blobs(&root, &entries)
+        .into_iter()
+        .filter(|(path, _)| {
             !COPYRIGHT_ACCOUNTED_FOR
                 .iter()
-                .any(|(p, _)| *p == f.as_str())
+                .any(|(p, _)| *p == path.as_str())
         })
-        .filter_map(|f| {
-            let text = searchable_text(&read_bytes(&root, f));
-            let n = text.matches("copyright").count();
-            (n > 0).then(|| format!("{f} ({n} occurrence(s))"))
+        .filter_map(|(path, bytes)| {
+            let n = searchable_text(&bytes).matches("copyright").count();
+            (n > 0).then(|| format!("{path} ({n} occurrence(s))"))
         })
         .collect();
 
@@ -711,7 +863,7 @@ fn no_tracked_file_carries_an_unaccounted_copyright_notice() {
 #[test]
 fn every_tracked_extension_is_classified() {
     let root = workspace_root();
-    let files = tracked_files(&root);
+    let files: Vec<String> = tracked_entries(&root).into_iter().map(|e| e.path).collect();
 
     let unclassified = unclassified_paths(
         &files,
@@ -738,7 +890,7 @@ fn every_tracked_extension_is_classified() {
 #[test]
 fn no_decline_names_an_extension_that_no_longer_exists() {
     let root = workspace_root();
-    let files = tracked_files(&root);
+    let files: Vec<String> = tracked_entries(&root).into_iter().map(|e| e.path).collect();
 
     let dead = stale_declines(&files, NON_SOURCE_EXTENSIONS);
     assert!(
@@ -948,5 +1100,29 @@ fn the_copyright_scanner_can_see_a_notice() {
         searchable_text(&wide).contains("copyright"),
         "control: a UTF-16BE notice must be found — a UTF-8-only read sees NUL-interleaved bytes \
          and reports a clean file"
+    );
+}
+
+/// A permanent guard against the WRONG fix for the index/disk mismatch above.
+///
+/// The tempting repair when a tracked file is missing from the working tree is
+/// to skip it. ⚠️ **A skip is green forever and hides a real deletion inside
+/// the same branch** — the survey would report a clean repository having never
+/// looked at the file. This asserts Part 1 reads exactly as many blobs as git
+/// enumerated, so introducing a skip reddens here instead of going quiet.
+#[test]
+fn part_1_surveys_every_tracked_file_and_skips_none() {
+    let root = workspace_root();
+    let entries = tracked_entries(&root);
+    let surveyed = blobs(&root, &entries);
+
+    assert_eq!(
+        surveyed.len(),
+        entries.len(),
+        "Part 1 surveyed {} of {} tracked files. A survey that silently drops files reports a \
+         clean repository it never read, which is exactly the failure this gate exists to \
+         prevent. If a file cannot be read, FAIL on it — do not skip it.",
+        surveyed.len(),
+        entries.len()
     );
 }
