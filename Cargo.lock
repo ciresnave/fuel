@@ -5798,9 +5798,9 @@ dependencies = [
 
 [[package]]
 name = "vulkane"
-version = "0.13.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0aba8bce0ec12dc46fa29b4deb1c1be24659444cf5a04f47f18e9f659a30e06a"
+checksum = "ac465b73e7225c339cda9b0cef6361284205fa3ce34f9ed322f9c35051de85fe"
 dependencies = [
  "libloading 0.9.0",
  "ureq 3.3.0",
