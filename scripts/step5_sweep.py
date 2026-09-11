@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """
 Step 5 sweep: replace `CpuStorage` (fuel_core_types alias) with `HostBuffer`
 across the workspace.

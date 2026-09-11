@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 $exts = @('.rs', '.md', '.toml', '.txt', '.yml', '.yaml', '.ps1', '.sh', '.html', '.c', '.cpp', '.h', '.cu')
 $files = git ls-files
 foreach ($f in $files) {

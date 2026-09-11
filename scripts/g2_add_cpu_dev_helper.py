@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Add the cpu_dev() helper near the start of a test module / test file."""
 
 import re
