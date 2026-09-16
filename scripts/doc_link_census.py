@@ -462,24 +462,23 @@ def run_gate(dispositions, targets):
         os.unlink(tmp)
 
 
-def exclude_arms():
-    """ARM H/I/J: the derived exclude list.
+EXCLUDE_FIXTURE = ["env:", "  %s: >-" % EXCLUDES_KEY, "    --exclude a-crate",
+                   "    --exclude b-crate", "  OTHER: >-", "    --exclude not-this-one", ""]
+EXCLUDE_WANT = ["a-crate", "b-crate"]
 
-    H: a block is read, in both line-ending styles, and stops at the dedent.
-    I: an empty or malformed block is REFUSED -- never "exclude nothing".
-    J: a file that disagrees with the exported value is REFUSED.
-    """
-    import shutil
-    import tempfile
 
-    body = ["env:", "  %s: >-" % EXCLUDES_KEY, "    --exclude a-crate",
-            "    --exclude b-crate", "  OTHER: >-", "    --exclude not-this-one", ""]
-    want = ["a-crate", "b-crate"]
+def arm_h():
+    """H: a block is read, in both line-ending styles, and stops at the dedent."""
     try:
-        arms = {"H": all(parse_excludes(sep.join(body)) == want for sep in (NL, "\r" + NL))}
+        return all(parse_excludes(sep.join(EXCLUDE_FIXTURE)) == EXCLUDE_WANT
+                   for sep in (NL, "\r" + NL))
     except CensusUnusable:
-        arms = {"H": False}
+        return False
 
+
+def arm_i():
+    """I: an empty or malformed block is REFUSED -- never "exclude nothing"."""
+    body = EXCLUDE_FIXTURE
     refused = 0
     for bad in (body[:2] + body[4:], body[:2] + ["    --exclude"] + body[4:],
                 body[:2] + ["    --include a-crate"] + body[4:], ["env:"]):
@@ -487,16 +486,22 @@ def exclude_arms():
             parse_excludes(NL.join(bad))
         except CensusUnusable:
             refused += 1
-    arms["I"] = refused == 4
+    return refused == 4
+
+
+def arm_j():
+    """J: a file that disagrees with the exported value is REFUSED."""
+    import shutil
+    import tempfile
 
     root = tempfile.mkdtemp()
     try:
         os.makedirs(os.path.join(root, os.path.dirname(WORKFLOW)))
         with io.open(os.path.join(root, WORKFLOW), "w", encoding="utf-8") as fh:
-            fh.write(NL.join(body))
+            fh.write(NL.join(EXCLUDE_FIXTURE))
         try:
             agree = (excluded_crates(root, {EXCLUDES_KEY: "--exclude a-crate --exclude b-crate"})
-                     == want == excluded_crates(root, {}))
+                     == EXCLUDE_WANT == excluded_crates(root, {}))
         except CensusUnusable:
             agree = False  # without this half, a broken parser would pass J
         try:
@@ -504,10 +509,14 @@ def exclude_arms():
             caught = False
         except CensusUnusable:
             caught = True
-        arms["J"] = agree and caught
+        return agree and caught
     finally:
         shutil.rmtree(root)
-    return arms
+
+
+def exclude_arms():
+    """ARM H/I/J: the exclude list derived from rust-ci.yml."""
+    return {"H": arm_h(), "I": arm_i(), "J": arm_j()}
 
 
 def integration_arms():
