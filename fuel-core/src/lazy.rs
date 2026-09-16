@@ -1867,7 +1867,6 @@ impl Tensor {
         })
     }
 
-    /// Result-returning sibling of [`Self::cast`] / [`Self::to_dtype`].
     /// Detach this tensor from autograd. On lazy, autograd is structural
     /// (every graph edge participates in backward unless explicitly cut
     /// by a non-differentiable op), so there's no per-tensor toggle —
