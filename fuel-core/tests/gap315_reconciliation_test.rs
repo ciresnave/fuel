@@ -79,75 +79,77 @@ where
     }
 }
 
+/// Which arm this build is. Formatting only.
+fn arm_label(guard_present: bool) -> &'static str {
+    if guard_present {
+        "ARM A - guard PRESENT (positive control)"
+    } else {
+        "ARM B - guard ABSENT (what the shipped artifact does)"
+    }
+}
+
+/// A fixture slice. DATA, not logic: extracting this cannot hide a rejector,
+/// because every rejector in this probe lives inside `probe(...)`, which stays
+/// inline with its case. Each case now shows its own inputs on one line.
+fn f32s(v: f32, n: usize) -> Arc<[f32]> {
+    Arc::from(vec![v; n])
+}
+
 #[test]
 #[ignore = "instrument, not a gate: asserts nothing; see the module doc"]
 fn gap315_reconciliation_predicate_probe() {
     println!(
-        "\n=== GAP-315 predicate experiment (A)+(B): reconciliation arm ===\n\
-         debug_assertions = {}  ({})",
-        cfg!(debug_assertions),
-        if cfg!(debug_assertions) {
-            "ARM A - guard PRESENT (positive control)"
-        } else {
-            "ARM B - guard ABSENT (what the shipped artifact does)"
-        }
+        "
+=== GAP-315 predicate experiment (A)+(B): reconciliation arm ==="
     );
+    let on = cfg!(debug_assertions);
+    println!("debug_assertions = {on}  ({})", arm_label(on));
 
-    // ---- (A) layer_norm_affine: PREDICTED NOT (d) ----
-    let g4: Arc<[f32]> = Arc::from(vec![1.0_f32; 4]);
-    let b4: Arc<[f32]> = Arc::from(vec![0.0_f32; 4]);
-    let b3: Arc<[f32]> = Arc::from(vec![0.0_f32; 3]); // WRONG: 3 != gain 4
-    let b9: Arc<[f32]> = Arc::from(vec![0.0_f32; 9]); // WRONG the other way
-
+    // ---- (A) layer_norm_affine: PREDICTED NOT (d) - reshape-family reconciles ----
     println!(
         "  [A-control] gain 4, bias 4 (VALID)   -> {:?}",
-        probe({
-            let (g, b) = (g4.clone(), b4.clone());
-            move || cpu_f32(vec![1.0; 8], &[2, 4]).layer_norm_affine(g, b, 1e-5)
-        })
+        probe(|| cpu_f32(vec![1.0; 8], &[2, 4]).layer_norm_affine(
+            f32s(1.0, 4),
+            f32s(0.0, 4),
+            1e-5
+        ))
     );
     println!(
         "  [A-short]   gain 4, bias 3           -> {:?}",
-        probe({
-            let (g, b) = (g4.clone(), b3.clone());
-            move || cpu_f32(vec![1.0; 8], &[2, 4]).layer_norm_affine(g, b, 1e-5)
-        })
+        probe(|| cpu_f32(vec![1.0; 8], &[2, 4]).layer_norm_affine(
+            f32s(1.0, 4),
+            f32s(0.0, 3),
+            1e-5
+        ))
     );
     println!(
         "  [A-long]    gain 4, bias 9           -> {:?}",
-        probe({
-            let (g, b) = (g4.clone(), b9.clone());
-            move || cpu_f32(vec![1.0; 8], &[2, 4]).layer_norm_affine(g, b, 1e-5)
-        })
+        probe(|| cpu_f32(vec![1.0; 8], &[2, 4]).layer_norm_affine(
+            f32s(1.0, 4),
+            f32s(0.0, 9),
+            1e-5
+        ))
     );
 
-    // ---- (B) channel_affine_4d: PREDICTED NOT (d) ----
+    // ---- (B) channel_affine_4d: PREDICTED NOT (d) - same structure ----
     // input [1, 3, 2, 2] -> channels = 3
-    let g3: Arc<[f32]> = Arc::from(vec![1.0_f32; 3]);
-    let bb3: Arc<[f32]> = Arc::from(vec![0.0_f32; 3]);
-    let g2: Arc<[f32]> = Arc::from(vec![1.0_f32; 2]); // WRONG: 2 != channels 3
-    let g8: Arc<[f32]> = Arc::from(vec![1.0_f32; 8]); // WRONG the other way
-
     println!(
         "  [B-control] gain 3, channels 3 (VALID) -> {:?}",
-        probe({
-            let (g, b) = (g3.clone(), bb3.clone());
-            move || cpu_f32(vec![1.0; 12], &[1, 3, 2, 2]).channel_affine_4d(g, b)
-        })
+        probe(
+            || cpu_f32(vec![1.0; 12], &[1, 3, 2, 2]).channel_affine_4d(f32s(1.0, 3), f32s(0.0, 3))
+        )
     );
     println!(
         "  [B-short]   gain 2, channels 3       -> {:?}",
-        probe({
-            let (g, b) = (g2.clone(), bb3.clone());
-            move || cpu_f32(vec![1.0; 12], &[1, 3, 2, 2]).channel_affine_4d(g, b)
-        })
+        probe(
+            || cpu_f32(vec![1.0; 12], &[1, 3, 2, 2]).channel_affine_4d(f32s(1.0, 2), f32s(0.0, 3))
+        )
     );
     println!(
         "  [B-long]    gain 8, channels 3       -> {:?}",
-        probe({
-            let (g, b) = (g8.clone(), bb3.clone());
-            move || cpu_f32(vec![1.0; 12], &[1, 3, 2, 2]).channel_affine_4d(g, b)
-        })
+        probe(
+            || cpu_f32(vec![1.0; 12], &[1, 3, 2, 2]).channel_affine_4d(f32s(1.0, 8), f32s(0.0, 3))
+        )
     );
 
     println!("  (measurement only - asserts nothing)");
