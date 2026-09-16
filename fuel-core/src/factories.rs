@@ -139,7 +139,10 @@ impl BridgeRealizer {
     ///
     /// Sets `last_kernel_source` from the picker's dispatched sibling
     /// for the realize root.
-    fn realize_as<T: bytemuck::Pod>(&mut self, tensor: &Tensor) -> Result<Vec<T>> {
+    fn realize_as<T: bytemuck::Pod + fuel_ir::WithDType>(
+        &mut self,
+        tensor: &Tensor,
+    ) -> Result<Vec<T>> {
         let graph = tensor.graph_tensor().graph().clone();
         let target = tensor.graph_tensor().id();
 
