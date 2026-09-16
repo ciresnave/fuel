@@ -510,6 +510,42 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-cpu-backend --features mkl --all-targets
 
+      # DOC-LINK CENSUS (GAP-319). Every broken intra-doc link must carry a
+      # human disposition in scripts/doc_link_census.py, or this step fails.
+      # It gates on DISPOSITIONS, never on a count: a count is satisfied by
+      # de-linking a CORRECT link, which is exactly the harm GAP-319 recorded
+      # (four correct links destroyed because their targets were cfg-gated).
+      #
+      # SCOPE -- narrower than "the docs": LINUX x86_64, DEFAULT FEATURES ONLY.
+      # A link that resolves or breaks only under another OS, a target
+      # feature, or a non-default cargo feature is NOT checked here.
+      #
+      # LAST IN THE JOB, AND IT RUNS EVEN WHEN AN EARLIER STEP FAILED. Placed
+      # directly after `Run normal cpu`, a census failure SKIPPED the nine
+      # feature-gated compile checks below it on this leg (measured, PR #212
+      # seeded run; the avx2/neon steps are skipped here by their own
+      # `matrix.os` condition either way) -- a doc-link red hid whether those
+      # still compile. At the end it
+      # neither masks them nor is masked by them. `success() || failure()`
+      # excludes only `cancelled()`. If `Run normal cpu` itself failed, this
+      # step reports CENSUS UNUSABLE with cargo's stderr rather than a count.
+      # It still reuses `Run normal cpu`'s default-feature artifacts: the gated
+      # steps build under different feature hashes and do not evict them.
+      # NOT the ubuntu-24.04 leg: its avx2 RUSTFLAGS build a different
+      # configuration.
+      #
+      # NO SECOND LIST: the script reads its `--exclude` crates from
+      # WORKSPACE_EXCLUDES in this file, and fails if the value exported to
+      # this step disagrees with its own parse.
+      #
+      # `--self-test` first: its arms include the real `--gate` exit path and
+      # the exclude derivation, so a broken gate cannot pass as a clean census.
+      - name: Doc-link census (GAP-319)
+        if: (success() || failure()) && matrix.os == 'ubuntu-latest'
+        run: |
+          python scripts/doc_link_census.py --self-test
+          python scripts/doc_link_census.py --gate
+
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}
