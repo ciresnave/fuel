@@ -12,12 +12,21 @@
 //! the disjoint failure a single representative cannot see (a missed file leaves
 //! its assert AND shorts the count; a green representative says nothing about it).
 //!
-//! Two reconciling assertions on disjoint defects:
+//! The file set is DERIVED FROM A PROPERTY, not hand-listed (see `vision_model_files`):
+//! any `models/lazy_*.rs` carrying a spatial dim check is auto-included, so a 12th
+//! vision model cannot drift past this test invisibly — the hand-list failure the
+//! portfolio rule warns about.
+//!
+//! Three reconciling assertions on disjoint defects:
+//!   - The derived set is NON-EMPTY (and is printed) — fires if the scanner or the
+//!     models directory moved, which would make both counts vacuously satisfied.
 //!   - ZERO remaining production spatial ASSERTS (`dims[2/3], cfg.image_size` in an
 //!     assert-arg position) — fires if a site was missed or one is reintroduced.
-//!   - Exactly 17 spatial DECLINES (`dims[2/3] != cfg.image_size`) — a literal count
+//!   - Exactly 18 spatial DECLINES (`dims[2/3] != <cfg>.image_size`) — a literal count
 //!     committed in advance, so the check RECONCILES rather than merely reports
-//!     (17 entry points across 11 files: two axes each, one logical check).
+//!     (18 entry points across 12 files). Was 17/11 until the derived set surfaced
+//!     lazy_llava.rs, a vision model the hand-list missed — the drift class made
+//!     concrete on the first run of the property derivation.
 //!
 //! Boundary detection is anchored on the `#[cfg(test)]` whose NEXT line declares a
 //! `mod` — NOT the first `#[cfg(test)]`, which lands on a test-only `use` and would
@@ -30,6 +39,18 @@
 //! reason it exists — an assert-zero check that has only ever passed is indistinguishable
 //! from one pointed at an empty region.
 //!
+//! ⚠️ WHY THE SET IS DERIVED, NOT LISTED — AND WHY NO SABOTAGE CAN SUBSTITUTE: no sabotage
+//! placed INSIDE a population can validate that population's BOUNDARY, because validating
+//! the boundary means placing the probe where the instrument does not look. The sabotage
+//! above proves the zero-arm fires for the reason it exists; it says NOTHING about whether
+//! the set is complete. That is the job of `vision_model_files` deriving the set from a
+//! property: a hand-list is not merely staleness-prone, it can be INCOMPLETE AT BIRTH and
+//! indistinguishable from complete by every check that ranges over it — which is exactly
+//! what happened here. The 11-file list was wrong when authored (it omitted lazy_llava.rs),
+//! both count arms agreed, the sabotage passed, and a file was missing the whole time. The
+//! derived set caught it on its first run. This paragraph is the reason nobody should ever
+//! revert the derivation to a list.
+//!
 //! METHOD NOTE (`a-source-scan-must-not-be-inside-what-it-scans`): the assert detector is
 //! deliberately assert-CONTEXT-aware. A naive operand match (`dims[N], cfg.image_size`) is
 //! ALSO satisfied by the DECLINE's own `format!` args line (`dims[2], dims[3],
@@ -38,21 +59,45 @@
 //! assert context (`assert` on the line, or an `assert_eq!(` opener above), which the
 //! decline's format-string predecessor is not.
 
-const FILES: &[&str] = &[
-    "lazy_beit.rs",
-    "lazy_blip_vision.rs",
-    "lazy_clip.rs",
-    "lazy_dinov2.rs",
-    "lazy_dinov2reg4.rs",
-    "lazy_eva2.rs",
-    "lazy_moondream.rs",
-    "lazy_paddleocr_vl_vision.rs",
-    "lazy_pixtral.rs",
-    "lazy_siglip.rs",
-    "lazy_vit.rs",
-];
+/// The vision models in scope, DERIVED FROM A PROPERTY rather than a hand-written list:
+/// every `models/lazy_*.rs` whose PRODUCTION prefix carries a spatial `image_size` /
+/// `img_size` dim check — a converted decline, or (if one ever regresses) an assert. A
+/// 12th vision model added later is auto-included, so it cannot drift past this test
+/// invisibly. A hand-written set can only exclude what its author thought of, and what it
+/// misses is silent (portfolio CLAUDE.md); a `#[test]` reads only source it will not
+/// write, so enumerating the on-disk `src/models` here carries no cross-worktree hazard.
+/// The cheap `image_size` pre-filter keeps `production_prefix` (which hard-fails on a
+/// malformed test-module boundary) off the ~90 non-vision model files.
+fn vision_model_files() -> Vec<String> {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/models");
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir}: {e}")) {
+        let path = entry.unwrap().path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.starts_with("lazy_") && n.ends_with(".rs") => n.to_string(),
+            _ => continue,
+        };
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
+        if !src.contains("image_size") && !src.contains("img_size") {
+            continue;
+        }
+        let prefix = production_prefix(&src, &name);
+        let has_spatial =
+            count_spatial_asserts(&prefix) > 0 || prefix.iter().any(|l| is_spatial_decline(l));
+        if has_spatial {
+            out.push(name);
+        }
+    }
+    out.sort();
+    out
+}
 
-const EXPECTED_DECLINES: usize = 17;
+// 18 spatial-decline entry points across 12 files. Was 17 across 11: the property
+// derivation (see `vision_model_files`) surfaced lazy_llava.rs on its first run — a 12th
+// vision model the hand-list census missed, whose embedded clip vision tower carried the
+// identical spatial asserts. That is the drift the derived set exists to catch, and it
+// caught it: a hand-list would have stayed at 11 and 17 forever, silent.
+const EXPECTED_DECLINES: usize = 18;
 
 /// The production region: everything before the test module. The boundary is the
 /// `#[cfg(test)]` immediately followed by a `mod` declaration.
@@ -123,12 +168,19 @@ fn count_spatial_asserts(prefix: &[&str]) -> usize {
     n
 }
 
-/// A spatial DECLINE line: `dims[2] != cfg.image_size` (the `if` guard).
+/// A spatial DECLINE line: the `if` guard `dims[2] != <cfg>.image_size` (or `img_size`).
+/// Binding-agnostic on the config name — some towers bind it `cfg`, llava's embedded
+/// clip tower binds it `v_cfg` — so the match is `!=` together with a spatial axis and
+/// the size field, rather than a literal `!= cfg.image_size`. This does not collide with
+/// the assert form (`assert_eq!(dims[2], cfg.image_size)` has no `!=`) nor the decline's
+/// own `format!` args line (`dims[2], dims[3], cfg.image_size,` has no `!=`).
 fn is_spatial_decline(line: &str) -> bool {
     if is_comment(line) {
         return false;
     }
-    line.contains("!= cfg.image_size") || line.contains("!= cfg.img_size")
+    let has_axis = line.contains("dims[2]") || line.contains("dims[3]");
+    let has_field = line.contains("image_size") || line.contains("img_size");
+    line.contains("!=") && has_axis && has_field
 }
 
 #[test]
@@ -137,7 +189,24 @@ fn spatial_asserts_are_fully_converted_to_declines() {
     let mut remaining_asserts = 0usize;
     let mut declines = 0usize;
 
-    for file in FILES {
+    let files = vision_model_files();
+    // The derivation must find the population, or every downstream assertion is
+    // vacuous: an empty set means BOTH counts sum to 0, `remaining_asserts == 0`
+    // passes trivially, and only the `declines == 17` arm would notice — so pin the
+    // set is non-empty explicitly, and print it so a wrong-but-non-empty derivation
+    // (e.g. the scanner drifted) is legible rather than hidden behind a count.
+    assert!(
+        !files.is_empty(),
+        "derived vision-model set is EMPTY — the property query (models/lazy_*.rs mentioning \
+         image_size/img_size AND carrying a spatial dim check) found nothing; the scanner or the \
+         models directory moved, and every count below would be vacuously satisfied"
+    );
+    eprintln!(
+        "[pop-check] derived {} vision file(s) by property: {files:?}",
+        files.len()
+    );
+
+    for file in &files {
         let path = format!("{base}{file}");
         let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
         let prefix = production_prefix(&src, file);

@@ -328,9 +328,23 @@ impl LlavaModel {
         let dims = dims.dims();
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[1], v_cfg.num_channels);
-        assert_eq!(dims[2], v_cfg.image_size);
-        assert_eq!(dims[3], v_cfg.image_size);
+        // GAP-314: the channel assert `dims[1] == num_channels` was an a1 REGRESSION —
+        // the patch conv2d weight below is `[embed_dim, num_channels, p, p]`, so a wrong
+        // channel count already surfaces as a typed Err at build; deleted to restore that
+        // guard (matches this tower's embedded clip sibling, which carries no such assert).
+        // The spatial check CONVERTS: the patch reshape below targets the config-derived
+        // `num_patches()` PRODUCT, so it guards the patch COUNT, not the per-axis size — a
+        // count-preserving resize would pass the reshape silently rather than error.
+        if dims[2] != v_cfg.image_size || dims[3] != v_cfg.image_size {
+            return Err(fuel_core::Error::Msg(format!(
+                "llava clip vision: input spatial dims ({}, {}) must equal image_size {}; this \
+                 model is fixed-resolution (position interpolation deferred), and the patch \
+                 reshape targets a config-derived num_patches — it guards the patch COUNT, not \
+                 the per-axis size, so a count-preserving resize would otherwise pass silently \
+                 rather than error",
+                dims[2], dims[3], v_cfg.image_size,
+            )));
+        }
 
         // Patch Conv2d (no bias in CLIP).
         let conv_w = pixel_values.const_f32_like(
@@ -939,6 +953,83 @@ mod tests {
         for &v in &logits.realize_f32() {
             assert!(v.is_finite(), "got non-finite logit {v}");
         }
+    }
+
+    /// GAP-314 (a1 channel-delete MEASUREMENT — evidence parity with #190's 28, per the
+    /// architect's condition: measure the downstream `Err`, do not infer it from shape).
+    ///
+    /// `clip_vision_per_patch` RE-IMPLEMENTS the clip encoder body inline (its own comment
+    /// says so), so it is a DISTINCT conv2d call site that the shared clip/vit
+    /// representative born-red never exercises — llava needs its OWN measurement. The
+    /// channel assert `dims[1] == num_channels` was deleted as a1; this proves the delete
+    /// RESTORES a guard — a wrong channel count is rejected at BUILD by the patch conv2d's
+    /// typed `Err`, not by a panic. It also exercises the count-preserving spatial decline,
+    /// so llava's own decline message is proven to FIRE (the population test proves only
+    /// that the decline TEXT exists, never that it fires). Born-red: against the deleted
+    /// assert the wrong-channel arm PANICS instead of returning `Err`.
+    #[test]
+    fn wrong_channel_count_rejected_at_build_and_spatial_declines() {
+        let v_cfg = tiny_vision_cfg(); // num_channels = 3, image_size = 8, patch = 4
+        let t_cfg = tiny_text_cfg();
+        let mut s: u32 = 78787;
+        let next = move || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
+        let mm_proj = WeightStorage::F32(vec_of(v_cfg.embed_dim * t_cfg.dim, &mut *nb));
+        let mm_proj_bias = vec_of(t_cfg.dim, &mut *nb);
+        let model = LlavaModel {
+            config: LlavaConfig {
+                vision_config: v_cfg.clone(),
+                text_config: t_cfg.clone(),
+                projection_dim: t_cfg.dim,
+            },
+            weights: LlavaWeights {
+                vision: tiny_vision_weights(&v_cfg),
+                mm_proj,
+                mm_proj_bias,
+                text: tiny_llama_weights(&t_cfg),
+            },
+        };
+        let tokens = [1_u32, 2, 3];
+        let img = |c: usize, h: usize, w: usize| {
+            let n = c * h * w;
+            Tensor::from_f32(
+                Arc::from((0..n).map(|i| i as f32 / n as f32).collect::<Vec<_>>()),
+                Shape::from_dims(&[1, c, h, w]),
+                &Device::cpu(),
+            )
+            .unwrap()
+        };
+
+        // Positive control: the conforming image builds.
+        model
+            .forward(
+                &img(v_cfg.num_channels, v_cfg.image_size, v_cfg.image_size),
+                &tokens,
+            )
+            .expect("conforming image must build");
+
+        // a1 measurement: a wrong channel count (spatial kept correct so the spatial guard
+        // passes first) must be rejected at BUILD by the patch conv2d's typed Err.
+        model
+            .forward(
+                &img(v_cfg.num_channels + 1, v_cfg.image_size, v_cfg.image_size),
+                &tokens,
+            )
+            .expect_err("wrong channel count must be rejected at build by the patch conv2d");
+
+        // Spatial convert: [1,3,4,16] holds the 8x8 = 64-pixel product while breaking each
+        // axis, so it passes the num_patches-PRODUCT reshape and would be silently wrong —
+        // the decline must fire instead.
+        let err = model
+            .forward(&img(v_cfg.num_channels, 4, 16), &tokens)
+            .expect_err("count-preserving spatial violation must decline");
+        assert!(
+            format!("{err}").contains("image_size"),
+            "expected the spatial decline naming image_size, got: {err}"
+        );
     }
 
     mod load {

@@ -172,10 +172,11 @@ impl ParlerDecoderModel {
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
         if dims[1] != cfg.num_codebooks {
             return Err(fuel_core::Error::Msg(format!(
-                "parler_tts: input_ids codebook count {} must match the model's {} codebooks; \
-                 an over-long codebook axis is silently truncated by the per-codebook embed loop \
-                 (it iterates the model's codebooks), so the caller's error would never surface",
-                dims[1], cfg.num_codebooks,
+                "parler_tts: expected {} codebooks (the model's codebook count), got {} on the \
+                 input_ids codebook axis (dims[1]); the per-codebook embed loop iterates the \
+                 model's codebooks, so a mismatch does not surface on its own — an over-long axis \
+                 is silently truncated and a short axis indexes out of range downstream",
+                cfg.num_codebooks, dims[1],
             ))
             .bt());
         }
