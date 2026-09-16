@@ -302,6 +302,21 @@ def build_docs(root):
     return out
 
 
+def json_records(path):
+    """Every JSON object in a cargo `--message-format json` capture.
+
+    Non-JSON lines (cargo's own progress text, if any leaks in) are skipped.
+    """
+    for line in io.open(path, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            yield json.loads(line)
+        except ValueError:
+            continue
+
+
 def assert_census_is_real(path):
     """A census with no rustdoc artifacts is not a census.
 
@@ -309,17 +324,7 @@ def assert_census_is_real(path):
     compile-artifact rule: an exit code is evidence about the harness until an
     artifact proves the tool ran on the code you think it did.
     """
-    artifacts = 0
-    for line in io.open(path, encoding="utf-8", errors="replace"):
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            o = json.loads(line)
-        except ValueError:
-            continue
-        if o.get("reason") == "compiler-artifact":
-            artifacts += 1
+    artifacts = sum(1 for o in json_records(path) if o.get("reason") == "compiler-artifact")
     if artifacts == 0:
         raise CensusUnusable(
             "no `compiler-artifact` records in %s -- rustdoc did not run, so a report of\n"
@@ -333,14 +338,7 @@ BROKEN = re.compile(r"unresolved link to `([^`]+)`")
 def broken_links(path):
     """(target, file, line) for every broken_intra_doc_links diagnostic."""
     rows = []
-    for line in io.open(path, encoding="utf-8", errors="replace"):
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            o = json.loads(line)
-        except ValueError:
-            continue
+    for o in json_records(path):
         if o.get("reason") != "compiler-message":
             continue
         m = o.get("message", {})
@@ -445,8 +443,22 @@ def integration_arms():
     return arms
 
 
+ARM_LABELS = (
+    ("A", "undispositioned link is REPORTED       "),
+    ("B", "CORRECT-UNREACHABLE is NOT flagged     "),
+    ("C", "no false stale on a full population    "),
+    ("D", "a vanished subject reports STALE       "),
+    ("E", "unnamed mechanism is CAUGHT            "),
+    ("F0", "real --gate PASSES a clean population  "),
+    ("F1", "real --gate reddens on UNDISPOSITIONED "),
+    ("F2", "real --gate reddens on NO MECHANISM    "),
+    ("F3", "real --gate reddens on STALE           "),
+    ("G", "a census with no artifacts is REFUSED  "),
+)
+
+
 def self_test():
-    """Two arms, because this instrument's whole purpose is telling them apart.
+    """Ten arms; each must be able to fail for the reason it exists.
 
     ARM A (born-red): a broken link with no disposition MUST be reported.
     ARM B (born-green): a link dispositioned CORRECT-UNREACHABLE must NOT be
@@ -476,24 +488,13 @@ def self_test():
         clean = "precise" not in mechanism_violations()
         arm_e = caught and clean
 
-        arms = integration_arms()
+        arms = {"A": arm_a, "B": arm_b, "C": arm_c, "D": arm_d, "E": arm_e}
+        arms.update(integration_arms())
 
         print("SELF-TEST")
-        print("  ARM A  undispositioned link is REPORTED      : %s" % ("PASS" if arm_a else "FAIL"))
-        print("  ARM B  CORRECT-UNREACHABLE is NOT flagged    : %s" % ("PASS" if arm_b else "FAIL"))
-        print("  ARM C  no false stale on a full population   : %s" % ("PASS" if arm_c else "FAIL"))
-        print("  ARM D  a vanished subject reports STALE      : %s" % ("PASS" if arm_d else "FAIL"))
-        print("  ARM E  unnamed mechanism is CAUGHT           : %s" % ("PASS" if arm_e else "FAIL"))
-        labels = (
-            ("F0", "real --gate PASSES a clean population  "),
-            ("F1", "real --gate reddens on UNDISPOSITIONED "),
-            ("F2", "real --gate reddens on NO MECHANISM    "),
-            ("F3", "real --gate reddens on STALE           "),
-            ("G", "a census with no artifacts is REFUSED  "),
-        )
-        for key, text in labels:
+        for key, text in ARM_LABELS:
             print("  ARM %-2s %s: %s" % (key, text, "PASS" if arms[key] else "FAIL"))
-        return 0 if all([arm_a, arm_b, arm_c, arm_d, arm_e] + list(arms.values())) else 1
+        return 0 if all(arms.values()) and len(arms) == len(ARM_LABELS) else 1
     finally:
         DISPOSITIONS = saved
 
