@@ -122,26 +122,64 @@ for _l in lines:
 # extended to a population it mischaracterised -- and the note is PRINTED ON
 # EVERY RUN, so a false premise was re-asserted constantly and re-derived
 # never. It is DERIVED here now so it cannot go stale again.
-tier_shape, _cur2 = {}, None
-for _l in lines:
-    if _l.startswith('| ID'):
-        _cur2 = unescaped_pipes(_l) - 1
-    elif _l.startswith('| GAP-') or _l.startswith('| ~~GAP-'):
-        _cc, _buf = [], []
-        for _k, _ch in enumerate(_l):
-            if _is_cell_boundary(_l, _k):
-                _cc.append(''.join(_buf)); _buf = []
-            else:
-                _buf.append(_ch)
-        _cc.append(''.join(_buf))
-        _cc = [x.strip() for x in _cc][1:-1]
-        _tt = _cc[2] if len(_cc) > 2 else '?'
-        tier_shape[(_tt, _cur2)] = tier_shape.get((_tt, _cur2), 0) + 1
-    elif not _l.startswith('|'):
-        _cur2 = None
+#
+# !! A ROW WITH NO HEADER ABOVE IT IS NOT GIVEN A `None` SHAPE. It used to be
+# keyed `(tier, None)`, and sorting that against `(tier, 4)` raised TypeError
+# before ANY report printed -- so the gate died on exactly the row its
+# headerless-row line exists to name, and reported the crash instead of the
+# row. Such rows are collected BY LINE AND ID and fail the gate below.
+def tier_shape_of(src):
+    """(tier_shape, four_col_tiers, headerless) for a list of lines.
+
+    `headerless` is [(line_number, id)] for GAP rows with no `| ID |` header
+    above them in the same table fragment; they are kept OUT of `tier_shape`.
+    """
+    shape, cur, headerless = {}, None, []
+    for n, l in enumerate(src, 1):
+        if l.startswith('| ID'):
+            cur = unescaped_pipes(l) - 1
+        elif l.startswith('| GAP-') or l.startswith('| ~~GAP-'):
+            cc, buf = [], []
+            for k, ch in enumerate(l):
+                if _is_cell_boundary(l, k):
+                    cc.append(''.join(buf)); buf = []
+                else:
+                    buf.append(ch)
+            cc.append(''.join(buf))
+            cc = [x.strip() for x in cc][1:-1]
+            if cur is None:
+                headerless.append((n, cc[0].strip('~') if cc else '?'))
+                continue
+            tt = cc[2] if len(cc) > 2 else '?'
+            shape[(tt, cur)] = shape.get((tt, cur), 0) + 1
+        elif not l.startswith('|'):
+            cur = None
+    four = {t: k for (t, c), k in sorted(shape.items()) if c == 4}
+    return shape, four, headerless
+
+
+# FOUNDATION CHECK, both directions, on the fixture that crashed: a row above
+# every header SHARING A TIER with a headed row (a different tier never reached
+# the second tuple element, which is how the crash stayed latent). It must be
+# NAMED, not crash; and the same rows under a header must name nothing.
+_HL_PRE = ['| GAP-900 | a | C | a | **OPEN** |',
+           '',
+           '| ID | File | Tier | Gap | Status |',
+           '|---|---|---|---|---|',
+           '| GAP-901 | b | C | b | **OPEN** |']
+_HL_OK = _HL_PRE[2:4] + [_HL_PRE[0]] + _HL_PRE[4:]
+headerless_foundation = []
+try:
+    if tier_shape_of(_HL_PRE)[2] != [(1, 'GAP-900')]:
+        headerless_foundation.append('a row above every header was NOT named')
+    if tier_shape_of(_HL_OK)[2]:
+        headerless_foundation.append('a row UNDER a header was named headerless')
+except Exception as _e:  # the regression this arm exists for is a crash
+    headerless_foundation.append('CRASHED on a row above every header: %r' % _e)
+
+tier_shape, _four_col_tiers, headerless_rows = tier_shape_of(lines)
 a_in_4col = sum(n for (t, c), n in tier_shape.items() if t == 'A' and c == 4)
 rows_in_4col = sum(n for (t, c), n in tier_shape.items() if c == 4)
-_four_col_tiers = {t: n for (t, c), n in sorted(tier_shape.items()) if c == 4}
 
 no_status = sum(1 for c in schema_cols if c == 4)
 headerless = sum(1 for c in schema_cols if c is None)
@@ -341,6 +379,12 @@ print('    still uncovered:                                                    %
 # the looser one silently attributed them to a DIFFERENT table's header.
 print('rows with NO HEADER above them (schema undetermined):     %d'
       % headerless)
+print('headerless-row self-test (a row above every header is named, not a crash;'
+      ' a headed row is not):',
+      'PASS' if not headerless_foundation else headerless_foundation)
+for _n, _id in headerless_rows:
+    print('    line %d: %s has no `| ID |` header above it -- give its table'
+          ' fragment a header' % (_n, _id))
 # THE COMBINED FIGURE -- COMPUTED HERE, NOT QUOTED FROM ANYWHERE.
 #
 # A reader asking "how much of this file does the status convention actually
@@ -1163,5 +1207,6 @@ if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or own_missing or own_bad or own_dupes or own_blind
         or struck4_nodisp or struck4_owned or struck4_foundation
         or owner_foundation
-        or taxonomy_broken):
+        or taxonomy_broken
+        or headerless_rows or headerless_foundation):
     sys.exit(1)
