@@ -3179,9 +3179,9 @@ checksum = "1e89422caebe2116ffe50387612df4a0e9276b0d5db12e5bb363d7b504a2d9fc"
 
 [[package]]
 name = "kiss-ops-vocab"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6543126bce86d20287b71d2a55384b93034ad4965a4e91452cd5c186942d225d"
+checksum = "d6d6f826bb2eeb7dd965504cac7292af12db045e8f1195ed85e967cd94dd24c8"
 
 [[package]]
 name = "kiss-ref-core"
