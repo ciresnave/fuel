@@ -19,7 +19,7 @@
 //! their own crates and implement the same trait pair from
 //! `fuel-core-types`.
 
-#[cfg(any(doc, target_feature = "avx2"))]
+#[cfg(target_feature = "avx2")]
 pub mod avx;
 pub mod cpu;
 pub mod k_quants;

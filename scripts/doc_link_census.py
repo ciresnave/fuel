@@ -150,12 +150,23 @@ MECHANISMS = (
 # seen, not what was assumed.
 DISPOSITIONS = {
     # ---- CORRECT-UNREACHABLE: the link is RIGHT. Do not de-link. ----
+    # The two SIMD mods are SYMMETRIC, and this table said they were not until
+    # CI proved otherwise. See `avx` below for how that was measured.
     "neon": (CORRECT,
              'cfg(target_feature = "neon") on `pub mod neon`, fuel-quantized/src/lib.rs. '
-             "aarch64-only. MEASURED: resolves on aarch64+neon, not on x86; and NO cfg "
-             "fixes it cross-arch -- cfg(any(doc, ...)) compiles the module on x86 where "
-             "its NEON types do not exist (E0425 int8x16_t). The sibling `avx` WAS fixed "
-             "that way; this one cannot be."),
+             "aarch64-only. MEASURED: resolves on aarch64+neon, not on x86. NO cfg fixes "
+             "it cross-arch -- cfg(any(doc, ...)) compiles the module on x86, where its "
+             "NEON types do not exist (E0425 int8x16_t). Its sibling `avx` fails the same "
+             "way in the opposite direction; neither can be cfg-fixed."),
+    "avx": (CORRECT,
+             'cfg(target_feature = "avx2") on `pub mod avx`, fuel-quantized/src/lib.rs. '
+             "x86-only, and the mirror image of `neon` above. MEASURED, and I got this "
+             "one WRONG FIRST: I shipped cfg(any(doc, target_feature = \"avx2\")) on this "
+             "mod, having verified it on x86, and CI rejected it on aarch64-apple-darwin "
+             "with E0425 `cannot find type __m256i` -- the same error class, the same "
+             "cause, the opposite architecture. I had run a two-architecture cross-over "
+             "to prove these two LINKS were correct, then applied a FIX tested on one "
+             "architecture. The cfg is reverted; this entry replaces it."),
     "SType::to_fdx": (CORRECT,
              'cfg(feature = "dlpack") on the impl block at fuel-ir/src/stype.rs:140; '
              "`dlpack = []` is a non-default feature. The doc prose itself says "
@@ -252,17 +263,68 @@ def git_ref(root):
     return r.stdout.strip() or "<unknown>"
 
 
+class CensusUnusable(Exception):
+    """The doc build did not produce a census. NOT the same as a clean census."""
+
+
 def build_docs(root):
-    """Run cargo doc and return the path of the captured json."""
+    """Run cargo doc and return the captured json, or RAISE.
+
+    The first version of this function discarded the exit code and sent stderr
+    to DEVNULL. A failed or empty doc build then yielded ZERO broken links,
+    which this tool would have printed as a perfectly clean census.
+
+    That is the portfolio rule `never discard stderr from a command whose
+    output you are about to count`, and `a tool that fails early reports a
+    smaller population than the truth, and the smaller number looks like good
+    news` -- committed inside the instrument built to catch exactly that. A
+    reviewer reading the code found it; no run of it ever could, because its
+    failure mode IS a clean-looking pass.
+
+    So: keep stderr, check the exit code, and require a POSITIVE ARTIFACT --
+    at least one `compiler-artifact` record proving rustdoc actually ran. An
+    empty file and a successful build of nothing are indistinguishable by size
+    alone.
+    """
     out = os.path.join(root, "target", "doc-link-census.json")
+    err = os.path.join(root, "target", "doc-link-census.err")
     cmd = ["cargo", "doc", "--workspace", "--no-deps", "-j", "4",
            "--message-format", "json"]
     for c in EXCLUDED:
         cmd += ["--exclude", c]
-    with io.open(out, "w", encoding="utf-8") as fh:
-        subprocess.run(cmd, cwd=root, stdout=fh,
-                       stderr=subprocess.DEVNULL, check=False)
+    with io.open(out, "w", encoding="utf-8") as fh, io.open(err, "w", encoding="utf-8") as eh:
+        rc = subprocess.run(cmd, cwd=root, stdout=fh, stderr=eh, check=False).returncode
+    if rc != 0:
+        raise CensusUnusable(
+            "cargo doc exited %d -- stderr kept at %s. A failed doc build yields zero\n"
+            "broken links, which is NOT a clean census. Fix the build, then re-run." % (rc, err))
+    assert_census_is_real(out)
     return out
+
+
+def assert_census_is_real(path):
+    """A census with no rustdoc artifacts is not a census.
+
+    Zero broken links is only meaningful if rustdoc RAN. This is the
+    compile-artifact rule: an exit code is evidence about the harness until an
+    artifact proves the tool ran on the code you think it did.
+    """
+    artifacts = 0
+    for line in io.open(path, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if o.get("reason") == "compiler-artifact":
+            artifacts += 1
+    if artifacts == 0:
+        raise CensusUnusable(
+            "no `compiler-artifact` records in %s -- rustdoc did not run, so a report of\n"
+            "zero broken links would be a statement about nothing." % path)
+    return artifacts
 
 
 BROKEN = re.compile(r"unresolved link to `([^`]+)`")
@@ -323,6 +385,50 @@ def classify(rows):
     return dispositioned, undispositioned, stale
 
 
+def integration_arms():
+    """ARM F and ARM G: the two arms that run the REAL entry points.
+
+    ARM F exercises the actual `--gate` exit path rather than the predicate it
+    consults. A born-red that tests the helper instead of the gate is the
+    "verification that passes on a tree the edit never touched" shape -- it
+    proves the predicate works and says nothing about whether the gate reads it.
+
+    ARM G proves a census whose build produced no rustdoc artifacts is REFUSED
+    rather than reported as clean. Zero broken links means something only if
+    rustdoc ran.
+    """
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    rec_art = '{"reason":"compiler-artifact","target":{"name":"x"}}'
+    rec_bad = ('{"reason":"compiler-message","message":{"code":'
+               '{"code":"rustdoc::broken_intra_doc_links"},"message":'
+               '"unresolved link to `ZzzArmF`","spans":[{"is_primary":true,'
+               '"file_name":"a.rs","line_start":1}]}}')
+    io.open(tmp, "w", encoding="utf-8").write(rec_art + "\n" + rec_bad + "\n")
+    saved_argv = sys.argv
+    try:
+        sys.argv = ["doc_link_census.py", "--from", tmp, "--gate"]
+        arm_f = main() == 1
+    finally:
+        sys.argv = saved_argv
+        os.unlink(tmp)
+
+    fd, tmp2 = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    io.open(tmp2, "w", encoding="utf-8").write("")
+    try:
+        assert_census_is_real(tmp2)
+        arm_g = False
+    except CensusUnusable:
+        arm_g = True
+    finally:
+        os.unlink(tmp2)
+
+    return arm_f, arm_g
+
+
 def self_test():
     """Two arms, because this instrument's whole purpose is telling them apart.
 
@@ -342,7 +448,7 @@ def self_test():
         arm_b = any(t == "known_gated" and c == CORRECT for t, _, _, c, _ in d)
         arm_c = s == []
         # stale arm: a disposition whose subject is gone
-        d2, u2, s2 = classify([("brand_new", "b.rs", 2)])
+        _, _, s2 = classify([("brand_new", "b.rs", 2)])
         arm_d = s2 == ["known_gated"]
 
         # ARM E: a CORRECT-UNREACHABLE reason naming no mechanism must be caught.
@@ -354,15 +460,88 @@ def self_test():
         clean = "precise" not in mechanism_violations()
         arm_e = caught and clean
 
+        arm_f, arm_g = integration_arms()
+
         print("SELF-TEST")
         print("  ARM A  undispositioned link is REPORTED      : %s" % ("PASS" if arm_a else "FAIL"))
         print("  ARM B  CORRECT-UNREACHABLE is NOT flagged    : %s" % ("PASS" if arm_b else "FAIL"))
         print("  ARM C  no false stale on a full population   : %s" % ("PASS" if arm_c else "FAIL"))
         print("  ARM D  a vanished subject reports STALE      : %s" % ("PASS" if arm_d else "FAIL"))
         print("  ARM E  unnamed mechanism is CAUGHT           : %s" % ("PASS" if arm_e else "FAIL"))
-        return 0 if all([arm_a, arm_b, arm_c, arm_d, arm_e]) else 1
+        print("  ARM F  the REAL --gate exit path reddens     : %s" % ("PASS" if arm_f else "FAIL"))
+        print("  ARM G  a census with no artifacts is REFUSED : %s" % ("PASS" if arm_g else "FAIL"))
+        return 0 if all([arm_a, arm_b, arm_c, arm_d, arm_e, arm_f, arm_g]) else 1
     finally:
         DISPOSITIONS = saved
+
+
+def print_by_class(dispositioned):
+    """Group the dispositioned links by class and print each with its reason."""
+    by_class = {}
+    for target, f, ln, cls, why in dispositioned:
+        by_class.setdefault(cls, []).append((target, f, ln, why))
+    for cls in sorted(by_class):
+        print("[%s] (%d)" % (cls, len(by_class[cls])))
+        for target, f, ln, why in by_class[cls]:
+            print("   %-44s %s:%d" % (target[:42], f, ln))
+            print("        %s" % why)
+        print()
+
+
+def print_problems(stale, undispositioned, vague):
+    """The three ways this census asks for attention, each with its reason."""
+    if stale:
+        print("[STALE DISPOSITION] (%d) -- no longer broken; entry is now moot." % len(stale))
+        print("   A disposition whose subject vanished may mean it was FIXED -- or")
+        print("   that a correct link was DESTROYED. Read the site before deleting.")
+        for t in stale:
+            print("   %-44s %s" % (t[:42], DISPOSITIONS[t][0]))
+        print()
+
+    if undispositioned:
+        print("[UNDISPOSITIONED] (%d) -- each needs a REASONED class, not a guess."
+              % len(undispositioned))
+        for target, f, ln in undispositioned:
+            print("   %-44s %s:%d" % (target[:42], f, ln))
+        print()
+        print("   Before classifying one as %s, check whether the target EXISTS but is" % DEFECT)
+        print("   simply UNREACHABLE in this build (cfg / optional dep / excluded crate /")
+        print("   private mod). If so it is %s and DE-LINKING IT IS HARM." % CORRECT)
+
+    if vague:
+        print("[NO MECHANISM NAMED] (%d) -- a %s entry whose reason names none of"
+              % (len(vague), CORRECT))
+        print("   %s" % ", ".join(MECHANISMS))
+        print("   An unnamed mechanism is UNFALSIFIABLE, which is how a wrong")
+        print("   disposition survives. Name the cfg, the feature, the optional dep,")
+        print("   the excluded crate, or the private mod.")
+        for t in vague:
+            print("   %s" % t)
+        print()
+
+
+def resolve_source(root, args):
+    """Where the census json comes from, or raise CensusUnusable."""
+    if "--from" in args:
+        src = args[args.index("--from") + 1]
+        assert_census_is_real(src)
+        return src
+    print("building docs (cargo doc --workspace --no-deps, %d exclusions) ..." % len(EXCLUDED))
+    return build_docs(root)
+
+
+def print_headline(root, src, rows, dispositioned, undispositioned):
+    """The counts, plus the non-comparability warning that must ride with them."""
+    print("doc-link census at %s   (source: %s)" % (git_ref(root), os.path.basename(src)))
+    print("  broken intra-doc link diagnostics : %d" % len(rows))
+    print("  distinct targets                  : %d" % len(set(t for t, _, _ in rows)))
+    print("  dispositioned                     : %d" % len(dispositioned))
+    print("  UNDISPOSITIONED                   : %d" % len(undispositioned))
+    print()
+    print("  these figures are NOT comparable with the 462->21 of #179/#186,")
+    print("  which came from a different, out-of-repo instrument. Settle any")
+    print("  disagreement by a MEMBERSHIP DIFF, never by comparing totals.")
+    print()
 
 
 def main():
@@ -372,69 +551,35 @@ def main():
 
     root = repo_root()
     gate = "--gate" in args
-    src = None
-    if "--from" in args:
-        src = args[args.index("--from") + 1]
-    else:
-        print("building docs (cargo doc --workspace --no-deps, %d exclusions) ..."
-              % len(EXCLUDED))
-        src = build_docs(root)
+    try:
+        src = resolve_source(root, args)
+    except CensusUnusable as exc:
+        print()
+        print("CENSUS UNUSABLE -- refusing to report:")
+        print("   %s" % exc)
+        return 2
 
     rows = broken_links(src)
     d, u, stale = classify(rows)
 
-    print("doc-link census at %s   (source: %s)" % (git_ref(root), os.path.basename(src)))
-    print("  broken intra-doc link diagnostics : %d" % len(rows))
-    print("  distinct targets                  : %d" % len(set(t for t, _, _ in rows)))
-    print("  dispositioned                     : %d" % len(d))
-    print("  UNDISPOSITIONED                   : %d" % len(u))
-    print()
-    print("  ⚠️  these figures are NOT comparable with the 462->21 of #179/#186,")
-    print("      which came from a different, out-of-repo instrument. Settle any")
-    print("      disagreement by a MEMBERSHIP DIFF, never by comparing totals.")
-    print()
+    print_headline(root, src, rows, d, u)
 
-    by_class = {}
-    for target, f, ln, cls, why in d:
-        by_class.setdefault(cls, []).append((target, f, ln, why))
-    for cls in sorted(by_class):
-        print("[%s] (%d)" % (cls, len(by_class[cls])))
-        for target, f, ln, why in by_class[cls]:
-            print("   %-44s %s:%d" % (target[:42], f, ln))
-            print("        %s" % why)
-        print()
-
-    if stale:
-        print("[STALE DISPOSITION] (%d) -- no longer broken; entry is now moot." % len(stale))
-        print("   A disposition whose subject vanished may mean it was FIXED -- or")
-        print("   that a correct link was DESTROYED. Read the site before deleting.")
-        for t in stale:
-            print("   %-44s %s" % (t[:42], DISPOSITIONS[t][0]))
-        print()
-
-    if u:
-        print("[UNDISPOSITIONED] (%d) -- each needs a REASONED class, not a guess." % len(u))
-        for target, f, ln in u:
-            print("   %-44s %s:%d" % (target[:42], f, ln))
-        print()
-        print("   Before classifying one as %s, check whether the target EXISTS but is" % DEFECT)
-        print("   simply UNREACHABLE in this build (cfg / optional dep / excluded crate /")
-        print("   private mod). If so it is %s and DE-LINKING IT IS HARM." % CORRECT)
+    print_by_class(d)
 
     vague = mechanism_violations()
-    if vague:
-        print("[NO MECHANISM NAMED] (%d) -- a %s entry whose reason names none of" % (len(vague), CORRECT))
-        print("   %s" % ", ".join(MECHANISMS))
-        print("   An unnamed mechanism is UNFALSIFIABLE, which is how a wrong")
-        print("   disposition survives. Name the cfg, the feature, the optional dep,")
-        print("   the excluded crate, or the private mod.")
-        for t in vague:
-            print("   %s" % t)
-        print()
+    print_problems(stale, u, vague)
 
-    if gate and (u or vague):
+    if gate and (u or vague or stale):
         print()
-        print("GATE: %d undispositioned, %d without a named mechanism." % (len(u), len(vague)))
+        print("GATE: %d undispositioned, %d without a named mechanism, %d stale."
+              % (len(u), len(vague), len(stale)))
+        if stale:
+            print("   A STALE entry fails the gate DELIBERATELY. This row's own finding is")
+            print("   that an instrument counting what still exists cannot distinguish FIXED")
+            print("   from DESTROYED -- and a gate that could not fail on `stale` was that")
+            print("   same hole one level up: the disposition rots and the gate keeps saying")
+            print("   yes. Read the site, then either delete the entry (it was fixed) or")
+            print("   restore the link (it was destroyed).")
         return 1
     return 0
 
