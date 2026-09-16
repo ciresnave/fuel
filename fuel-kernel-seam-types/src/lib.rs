@@ -474,6 +474,139 @@ pub struct OpAttrs {
     pub fused_op: Option<String>,
 }
 
+/// Structural REGION IDENTITY of an [`OpAttrs`] — the `Hash + Eq` key baracuda's
+/// `region_op_id` uses to bucket kernels (fuel GAP-332 / baracuda #117), replacing a
+/// fragile `format!("{:?}")` of the attrs. Injective over every field that reaches the
+/// emitted kernel:
+///
+/// - `scalars` is DELIBERATELY OMITTED — those values become a runtime `ScalarExpr::Param`
+///   and never reach the kernel; hashing them over-discriminates (one kernel, many ids,
+///   wasted compiles — baracuda #115). Every OTHER field participates.
+/// - Float fields are keyed by their `to_bits` pattern (`pad_value_bits`), so `0.0`/`-0.0`
+///   and distinct NaN payloads stay distinct and `Eq` is reflexive — IEEE equality would
+///   break both (it merges `±0` and gives `NaN != NaN`); see GAP-048/300. `const_bits` is
+///   already a bit pattern.
+/// - Every `Option`/count field is carried as-is, so `None` stays DISTINCT from `Some(0)` —
+///   the GAP-287 `unwrap_or`-collapse-of-unset-into-zero failure is not repeated here.
+///
+/// Fields are private: this type exists to be a hashable/comparable region id, and building
+/// one goes through [`OpAttrs::region_key`], which uses an EXHAUSTIVE destructure (no `..`)
+/// so a field added to `OpAttrs` later fails to compile until someone classifies it as part
+/// of the region identity or explicitly excludes it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RegionKey {
+    axis: Option<i64>,
+    perm: Vec<u8>,
+    target_shape: Vec<i64>,
+    dims: Vec<u8>,
+    cast_dtype: Option<String>,
+    slice_start: Option<u64>,
+    slice_len: Option<u64>,
+    roll_shift: Option<i64>,
+    pad_amounts: Vec<(u64, u64)>,
+    pad_mode: Option<u8>,
+    pad_value_bits: Option<u64>,
+    keepdim: Option<bool>,
+    target_shape_rel: Option<shape_expr::ShapeExpr>,
+    slice_start_rel: Option<shape_expr::Dim>,
+    slice_len_rel: Option<shape_expr::Dim>,
+    axis_last: bool,
+    scalar_rel: Option<shape_expr::Dim>,
+    lhs_roles: Vec<u8>,
+    rhs_roles: Vec<u8>,
+    const_bits: Option<u64>,
+    slot_index: Option<u32>,
+    scan_role: Option<u8>,
+    scan_index: Option<u32>,
+    scan_n_carries: Option<u32>,
+    scan_n_xs: Option<u32>,
+    scan_bound: Option<u32>,
+    scan_emit: Option<u8>,
+    scan_early_exit: Option<bool>,
+    view_slot: Option<u32>,
+    rank0_target: bool,
+    fused_op: Option<String>,
+}
+
+impl OpAttrs {
+    /// Structural region identity of these attrs — see [`RegionKey`]. Excludes the
+    /// scalar-param `scalars` VALUES (runtime `ScalarExpr::Param`), keys floats by `to_bits`,
+    /// keeps `None` distinct from `Some(0)`, and is built by an exhaustive destructure so a
+    /// new `OpAttrs` field must be classified before this compiles.
+    pub fn region_key(&self) -> RegionKey {
+        // EXHAUSTIVE destructure (no `..`): a field added to OpAttrs breaks this line until
+        // it is classified as part of the region identity or explicitly excluded here.
+        let OpAttrs {
+            scalars: _, // EXCLUDED: runtime ScalarExpr::Param values, never reach the kernel.
+            axis,
+            perm,
+            target_shape,
+            dims,
+            cast_dtype,
+            slice_start,
+            slice_len,
+            roll_shift,
+            pad_amounts,
+            pad_mode,
+            pad_value,
+            keepdim,
+            target_shape_rel,
+            slice_start_rel,
+            slice_len_rel,
+            axis_last,
+            scalar_rel,
+            lhs_roles,
+            rhs_roles,
+            const_bits,
+            slot_index,
+            scan_role,
+            scan_index,
+            scan_n_carries,
+            scan_n_xs,
+            scan_bound,
+            scan_emit,
+            scan_early_exit,
+            view_slot,
+            rank0_target,
+            fused_op,
+        } = self;
+        RegionKey {
+            axis: *axis,
+            perm: perm.clone(),
+            target_shape: target_shape.clone(),
+            dims: dims.clone(),
+            cast_dtype: cast_dtype.clone(),
+            slice_start: *slice_start,
+            slice_len: *slice_len,
+            roll_shift: *roll_shift,
+            pad_amounts: pad_amounts.clone(),
+            pad_mode: *pad_mode,
+            // to_bits: keeps 0.0/-0.0 and NaN payloads distinct (Eq-reflexive, cache-safe).
+            pad_value_bits: (*pad_value).map(f64::to_bits),
+            keepdim: *keepdim,
+            target_shape_rel: target_shape_rel.clone(),
+            slice_start_rel: slice_start_rel.clone(),
+            slice_len_rel: slice_len_rel.clone(),
+            axis_last: *axis_last,
+            scalar_rel: scalar_rel.clone(),
+            lhs_roles: lhs_roles.clone(),
+            rhs_roles: rhs_roles.clone(),
+            const_bits: *const_bits,
+            slot_index: *slot_index,
+            scan_role: *scan_role,
+            scan_index: *scan_index,
+            scan_n_carries: *scan_n_carries,
+            scan_n_xs: *scan_n_xs,
+            scan_bound: *scan_bound,
+            scan_emit: *scan_emit,
+            scan_early_exit: *scan_early_exit,
+            view_slot: *view_slot,
+            rank0_target: *rank0_target,
+            fused_op: fused_op.clone(),
+        }
+    }
+}
+
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
 //
 /// Derive the canonical matmul role vectors for a same-rank ≥ 2 contraction
@@ -662,6 +795,163 @@ pub fn advisory_band_reference_cases() -> Vec<(PatternNode, Option<u64>)> {
             Some(8),
         ),
     ]
+}
+
+// ---- GAP-332: OpAttrs::region_key() -> RegionKey (baracuda #117) ------------
+//
+// region_key() is the Hash+Eq structural region identity baracuda's `region_op_id`
+// buckets kernels by. These tests pin its three contracts: (a) every kernel-relevant
+// field participates (per-field perturbation — ALSO the standing sabotage sibling:
+// drop a field from the key and exactly that field's assert_ne! reddens); (b) the
+// scalar-param VALUES are excluded (regions differing only in scalars reuse one kernel
+// bucket — baracuda #115); (c) floats key by `to_bits` and `None` stays distinct from
+// `Some(0)` (GAP-048/300, GAP-287).
+#[cfg(test)]
+mod region_key_tests {
+    use super::*;
+    use crate::shape_expr::{Dim, ShapeExpr};
+
+    #[test]
+    fn every_included_field_changes_the_key() {
+        // Perturb each INCLUDED field off default and require the key to move. If
+        // region_key() stopped carrying a field, ONLY that field's assert_ne! would
+        // fail — this is the standing sabotage sibling for the born-red.
+        let base = OpAttrs::default().region_key();
+        macro_rules! moves {
+            ($field:ident = $val:expr) => {{
+                let a = OpAttrs {
+                    $field: $val,
+                    ..Default::default()
+                };
+                assert_ne!(
+                    a.region_key(),
+                    base,
+                    concat!("region_key() ignores field `", stringify!($field), "`")
+                );
+            }};
+        }
+        moves!(axis = Some(3));
+        moves!(perm = vec![1u8, 0]);
+        moves!(target_shape = vec![2i64, 3]);
+        moves!(dims = vec![1u8]);
+        moves!(cast_dtype = Some("f32".to_string()));
+        moves!(slice_start = Some(5));
+        moves!(slice_len = Some(7));
+        moves!(roll_shift = Some(-1));
+        moves!(pad_amounts = vec![(1u64, 2u64)]);
+        moves!(pad_mode = Some(1u8));
+        moves!(pad_value = Some(1.5));
+        moves!(keepdim = Some(true));
+        moves!(target_shape_rel = Some(ShapeExpr::SameAs { operand: 0 }));
+        moves!(slice_start_rel = Some(Dim::Const(1)));
+        moves!(slice_len_rel = Some(Dim::Const(1)));
+        moves!(axis_last = true);
+        moves!(scalar_rel = Some(Dim::Const(1)));
+        moves!(lhs_roles = vec![1u8]);
+        moves!(rhs_roles = vec![2u8]);
+        moves!(const_bits = Some(42u64));
+        moves!(slot_index = Some(1u32));
+        moves!(scan_role = Some(1u8));
+        moves!(scan_index = Some(1u32));
+        moves!(scan_n_carries = Some(1u32));
+        moves!(scan_n_xs = Some(1u32));
+        moves!(scan_bound = Some(1u32));
+        moves!(scan_emit = Some(1u8));
+        moves!(scan_early_exit = Some(true));
+        moves!(view_slot = Some(1u32));
+        moves!(rank0_target = true);
+        moves!(fused_op = Some("SoftmaxLastDim".to_string()));
+    }
+
+    #[test]
+    fn scalars_are_excluded_from_the_key() {
+        // The one field the key must IGNORE: scalar-param VALUES become a runtime
+        // ScalarExpr::Param, so two regions differing only in scalars are ONE kernel.
+        let a = OpAttrs {
+            scalars: vec![1.0, -0.0, f64::NAN, 2.0],
+            ..Default::default()
+        };
+        assert_eq!(
+            a.region_key(),
+            OpAttrs::default().region_key(),
+            "scalar-param values must not affect the region key (baracuda #115)"
+        );
+    }
+
+    #[test]
+    fn none_stays_distinct_from_some_zero() {
+        // GAP-287: unset must never collapse into zero.
+        let none = OpAttrs::default().region_key();
+        let a = OpAttrs {
+            slice_start: Some(0),
+            ..Default::default()
+        };
+        assert_ne!(a.region_key(), none, "slice_start None vs Some(0)");
+        let b = OpAttrs {
+            pad_value: Some(0.0),
+            ..Default::default()
+        };
+        assert_ne!(b.region_key(), none, "pad_value None vs Some(0.0)");
+        let c = OpAttrs {
+            const_bits: Some(0),
+            ..Default::default()
+        };
+        assert_ne!(c.region_key(), none, "const_bits None vs Some(0)");
+    }
+
+    #[test]
+    fn floats_key_by_to_bits() {
+        let mk = |v: f64| {
+            OpAttrs {
+                pad_value: Some(v),
+                ..Default::default()
+            }
+            .region_key()
+        };
+        // IEEE `==` merges these / breaks reflexivity; `to_bits` does neither.
+        assert_ne!(mk(0.0), mk(-0.0), "pad_value +0.0 vs -0.0 stay distinct");
+        let nan_a = f64::from_bits(0x7ff8_0000_0000_0001);
+        let nan_b = f64::from_bits(0x7ff8_0000_0000_0002);
+        assert!(nan_a.is_nan() && nan_b.is_nan());
+        assert_ne!(mk(nan_a), mk(nan_b), "distinct NaN payloads stay distinct");
+        assert_eq!(
+            mk(f64::NAN),
+            mk(f64::NAN),
+            "same NaN bits => equal keys (Eq reflexive)"
+        );
+    }
+
+    #[test]
+    fn key_buckets_kernels_by_region_ignoring_scalars() {
+        // The end-to-end purpose (baracuda #117): a Hash+Eq map keyed by region_key
+        // reuses one kernel across regions differing only in scalar VALUES, and
+        // separates regions that differ structurally.
+        use std::collections::HashMap;
+        let mut m: HashMap<RegionKey, &str> = HashMap::new();
+        let add = OpAttrs::default(); // e.g. an AddScalar region
+        // structurally different region
+        let other = OpAttrs {
+            axis: Some(1),
+            ..Default::default()
+        };
+        m.insert(add.region_key(), "kernel_add");
+        m.insert(other.region_key(), "kernel_other");
+        assert_eq!(
+            m.len(),
+            2,
+            "structurally distinct regions => distinct kernels"
+        );
+        // Same region, different scalar value => same kernel bucket.
+        let add_val_9 = OpAttrs {
+            scalars: vec![9.0],
+            ..Default::default()
+        };
+        assert_eq!(
+            m.get(&add_val_9.region_key()),
+            Some(&"kernel_add"),
+            "differing scalar values reuse the same kernel (no wasted compile)"
+        );
+    }
 }
 
 #[cfg(test)]
