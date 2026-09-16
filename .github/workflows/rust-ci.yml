@@ -177,6 +177,33 @@ jobs:
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest'
         run: cargo check --workspace ${{ env.WORKSPACE_EXCLUDES }}
 
+      # DOC-LINK CENSUS (GAP-319). Every broken intra-doc link must carry a
+      # human disposition in scripts/doc_link_census.py, or this step fails.
+      # It gates on DISPOSITIONS, never on a count: a count is satisfied by
+      # de-linking a CORRECT link, which is exactly the harm GAP-319 recorded
+      # (four correct links destroyed because their targets were cfg-gated).
+      #
+      # SCOPE -- narrower than "the docs": LINUX x86_64, DEFAULT FEATURES ONLY.
+      # A link that resolves or breaks only under another OS, a target
+      # feature, or a non-default cargo feature is NOT checked here.
+      #
+      # Placed directly after `Run normal cpu` on the same leg, so `cargo doc`
+      # reuses its dependency artifacts (measured locally: 0 units rebuilt,
+      # only the workspace crates are documented). NOT the ubuntu-24.04 leg:
+      # its avx2 RUSTFLAGS build a different configuration.
+      #
+      # NO SECOND LIST: the script reads its `--exclude` crates from
+      # WORKSPACE_EXCLUDES in this file, and fails if the value exported to
+      # this step disagrees with its own parse.
+      #
+      # `--self-test` first: its arms include the real `--gate` exit path and
+      # the exclude derivation, so a broken gate cannot pass as a clean census.
+      - name: Doc-link census (GAP-319)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python scripts/doc_link_census.py --self-test
+          python scripts/doc_link_census.py --gate
+
       - name: Run with avx2
         if: matrix.os == 'ubuntu-24.04'
         run: |

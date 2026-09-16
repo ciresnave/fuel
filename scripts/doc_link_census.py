@@ -97,15 +97,14 @@ import sys
 
 NL = chr(10)
 
-# Crates CI excludes from the workspace build. Kept beside the command that uses
-# them so the two cannot drift apart.
-EXCLUDED = [
-    "fuel-mkl-cpu-backend",
-    "fuel-aocl-cpu-backend",
-    "fuel-cuda-backend",
-    "fuel-metal-backend",
-    "fuel-metal-kernels",
-]
+# The crates the doc build excludes are READ from rust-ci.yml's
+# WORKSPACE_EXCLUDES -- the list CI's own `cargo check --workspace` uses. This
+# file used to keep its own copy, with a comment claiming the copy could not
+# drift; it could, because the list it had to match lived in another file.
+# In CI the value GitHub exports is compared with the parse, so the parser is
+# checked on every run.
+WORKFLOW = os.path.join(".github", "workflows", "rust-ci.yml")
+EXCLUDES_KEY = "WORKSPACE_EXCLUDES"
 
 DEFECT = "DEFECT"
 CORRECT = "CORRECT-UNREACHABLE"
@@ -267,7 +266,53 @@ class CensusUnusable(Exception):
     """The doc build did not produce a census. NOT the same as a clean census."""
 
 
-def build_docs(root):
+def exclude_names(tokens, where):
+    """Crate names from `--exclude a --exclude b ...`, or RAISE.
+
+    An empty or malformed list must not silently mean "exclude nothing": that
+    would pull fuel-cuda-backend into the build, which forges kernels.
+    """
+    if not tokens or len(tokens) % 2 or any(t != "--exclude" for t in tokens[::2]):
+        raise CensusUnusable("%s is not a non-empty `--exclude <crate>` list: %r"
+                             % (where, " ".join(tokens)))
+    return list(tokens[1::2])
+
+
+def parse_excludes(text):
+    """The crate names in a workflow's `WORKSPACE_EXCLUDES: >-` block."""
+    lines = [l.rstrip("\r") for l in text.split(NL)]
+    head = re.compile(r"^( *)%s:\s*>-\s*$" % EXCLUDES_KEY)
+    for i, line in enumerate(lines):
+        m = head.match(line)
+        if m:
+            break
+    else:
+        raise CensusUnusable("no `%s: >-` block in %s" % (EXCLUDES_KEY, WORKFLOW))
+    indent, tokens = len(m.group(1)), []
+    for line in lines[i + 1:]:
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip(" ")) <= indent:
+            break
+        tokens += line.split()
+    return exclude_names(tokens, "%s in %s" % (EXCLUDES_KEY, WORKFLOW))
+
+
+def excluded_crates(root, env):
+    """The exclude list, from the workflow file; cross-checked against `env`."""
+    with io.open(os.path.join(root, WORKFLOW), encoding="utf-8") as fh:
+        crates = parse_excludes(fh.read())
+    exported = env.get(EXCLUDES_KEY)
+    if exported is not None:
+        from_env = exclude_names(exported.split(), "$" + EXCLUDES_KEY)
+        if from_env != crates:
+            raise CensusUnusable(
+                "%s disagrees with its own export: parsed %s, environment %s. The "
+                "parser is wrong; fix it rather than the list." % (WORKFLOW, crates, from_env))
+    return crates
+
+
+def build_docs(root, crates):
     """Run cargo doc and return the captured json, or RAISE.
 
     The first version of this function discarded the exit code and sent stderr
@@ -290,14 +335,18 @@ def build_docs(root):
     err = os.path.join(root, "target", "doc-link-census.err")
     cmd = ["cargo", "doc", "--workspace", "--no-deps", "-j", "4",
            "--message-format", "json"]
-    for c in EXCLUDED:
+    for c in crates:
         cmd += ["--exclude", c]
     with io.open(out, "w", encoding="utf-8") as fh, io.open(err, "w", encoding="utf-8") as eh:
         rc = subprocess.run(cmd, cwd=root, stdout=fh, stderr=eh, check=False).returncode
     if rc != 0:
+        # The tail goes INTO the message: in CI nobody can open the file.
+        with io.open(err, encoding="utf-8", errors="replace") as eh:
+            tail = eh.read().splitlines()[-30:]
         raise CensusUnusable(
             "cargo doc exited %d -- stderr kept at %s. A failed doc build yields zero\n"
-            "broken links, which is NOT a clean census. Fix the build, then re-run." % (rc, err))
+            "broken links, which is NOT a clean census. Fix the build, then re-run.\n"
+            "--- last %d lines of stderr ---\n%s" % (rc, err, len(tail), NL.join(tail)))
     assert_census_is_real(out)
     return out
 
@@ -413,6 +462,54 @@ def run_gate(dispositions, targets):
         os.unlink(tmp)
 
 
+def exclude_arms():
+    """ARM H/I/J: the derived exclude list.
+
+    H: a block is read, in both line-ending styles, and stops at the dedent.
+    I: an empty or malformed block is REFUSED -- never "exclude nothing".
+    J: a file that disagrees with the exported value is REFUSED.
+    """
+    import shutil
+    import tempfile
+
+    body = ["env:", "  %s: >-" % EXCLUDES_KEY, "    --exclude a-crate",
+            "    --exclude b-crate", "  OTHER: >-", "    --exclude not-this-one", ""]
+    want = ["a-crate", "b-crate"]
+    try:
+        arms = {"H": all(parse_excludes(sep.join(body)) == want for sep in (NL, "\r" + NL))}
+    except CensusUnusable:
+        arms = {"H": False}
+
+    refused = 0
+    for bad in (body[:2] + body[4:], body[:2] + ["    --exclude"] + body[4:],
+                body[:2] + ["    --include a-crate"] + body[4:], ["env:"]):
+        try:
+            parse_excludes(NL.join(bad))
+        except CensusUnusable:
+            refused += 1
+    arms["I"] = refused == 4
+
+    root = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(root, os.path.dirname(WORKFLOW)))
+        with io.open(os.path.join(root, WORKFLOW), "w", encoding="utf-8") as fh:
+            fh.write(NL.join(body))
+        try:
+            agree = (excluded_crates(root, {EXCLUDES_KEY: "--exclude a-crate --exclude b-crate"})
+                     == want == excluded_crates(root, {}))
+        except CensusUnusable:
+            agree = False  # without this half, a broken parser would pass J
+        try:
+            excluded_crates(root, {EXCLUDES_KEY: "--exclude a-crate"})
+            caught = False
+        except CensusUnusable:
+            caught = True
+        arms["J"] = agree and caught
+    finally:
+        shutil.rmtree(root)
+    return arms
+
+
 def integration_arms():
     """The arms that run the REAL `--gate`, one per term of its condition.
 
@@ -454,6 +551,9 @@ ARM_LABELS = (
     ("F2", "real --gate reddens on NO MECHANISM    "),
     ("F3", "real --gate reddens on STALE           "),
     ("G", "a census with no artifacts is REFUSED  "),
+    ("H", "excludes are READ from rust-ci.yml     "),
+    ("I", "an empty/malformed exclude list REFUSED"),
+    ("J", "a file/export disagreement is REFUSED  "),
 )
 
 
@@ -490,6 +590,7 @@ def self_test():
 
         arms = {"A": arm_a, "B": arm_b, "C": arm_c, "D": arm_d, "E": arm_e}
         arms.update(integration_arms())
+        arms.update(exclude_arms())
 
         print("SELF-TEST")
         for key, text in ARM_LABELS:
@@ -550,8 +651,9 @@ def resolve_source(root, args):
         src = args[args.index("--from") + 1]
         assert_census_is_real(src)
         return src
-    print("building docs (cargo doc --workspace --no-deps, %d exclusions) ..." % len(EXCLUDED))
-    return build_docs(root)
+    crates = excluded_crates(root, os.environ)
+    print("building docs (cargo doc --workspace --no-deps), excluding: %s" % " ".join(crates))
+    return build_docs(root, crates)
 
 
 def print_headline(root, src, rows, dispositioned, undispositioned):
