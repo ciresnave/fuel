@@ -870,6 +870,35 @@ mod tests {
         }
     }
 
+    /// GAP-314 (b) retained born-red: `assert_eq!(tokens.len(), max_position_embeddings)`
+    /// became a typed build-time decline. It was outcome (b): the assert previously
+    /// panicked, and deleting it would have built an invalid graph that only failed at
+    /// realize (the position table is a fixed `[max_position_embeddings, hidden]` const).
+    /// A wrong token count must be REJECTED AT BUILD with a message naming the count;
+    /// the exact count still builds (positive control against a vacuous pass).
+    #[test]
+    fn wrong_token_count_declined_at_build() {
+        let cfg = tiny_cfg(ClipTextActivation::Gelu, 2);
+        let weights = tiny_weights(&cfg, 7);
+        let model = SdTextEncoder {
+            config: cfg.clone(),
+            weights,
+        };
+        // Positive control: exactly max_position_embeddings tokens builds.
+        let ok: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
+        model.forward(&ok).expect("exact token count must build");
+        // One token short.
+        let short: Vec<u32> = (0..cfg.max_position_embeddings as u32 - 1).collect();
+        let err = model
+            .forward(&short)
+            .expect_err("wrong token count must be declined at build");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("tokens"),
+            "expected a token-count decline, got: {msg}"
+        );
+    }
+
     /// QuickGelu and Gelu must produce different outputs on the
     /// same non-trivial weights — verifies the activation
     /// branch is actually wired through the layer code.

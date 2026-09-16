@@ -856,6 +856,45 @@ mod tests {
         }
     }
 
+    /// GAP-314 retained born-red: `assert_eq!(dims[1], num_codebooks)` became a typed
+    /// decline copying encodec:338's codebook-count contract. Outcome LABEL is
+    /// UNCLASSIFIABLE (no independent value oracle for the invalid input); DISPOSITION
+    /// is convert, because the RVQ decode loop iterates the model's quantizers and
+    /// silently TRUNCATES an over-long codebook axis — so an over-count must be
+    /// REJECTED, not decoded to a silent subset. Correct count still builds.
+    #[test]
+    fn wrong_codebook_count_declined() {
+        let cfg = tiny_dac_config(); // num_codebooks = 2
+        let model = DacModel {
+            config: cfg.clone(),
+            weights: tiny_dac_weights(&cfg),
+        };
+        let time = 4_usize;
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
+        let mk = |n_cb: usize| {
+            let data: Vec<u32> = (0..n_cb * time)
+                .map(|i| (i % cfg.codebook_size) as u32)
+                .collect();
+            anchor
+                .const_u32_like(data, Shape::from_dims(&[1, n_cb, time]))
+                .unwrap()
+        };
+        // Positive control: correct codebook count builds.
+        model
+            .decode_codes(&mk(cfg.num_codebooks))
+            .expect("correct codebook count must build");
+        // Over-long codebook axis (silently truncated before this decline landed).
+        let err = model
+            .decode_codes(&mk(cfg.num_codebooks + 1))
+            .expect_err("wrong codebook count must be declined");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("codebook count"),
+            "expected a codebook-count decline, got: {msg}"
+        );
+    }
+
     #[test]
     fn decode_codes_shape_and_finite() {
         let cfg = tiny_dac_config();

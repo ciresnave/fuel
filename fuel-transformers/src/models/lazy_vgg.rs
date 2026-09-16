@@ -402,6 +402,35 @@ mod tests {
         Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu()).unwrap()
     }
 
+    /// GAP-314 (c) retained born-red: `assert_eq!(h/w, head_spatial)` on the post-conv
+    /// spatial dims became a typed decline (it previously panicked deeper in the fc1
+    /// flat-dim check). A post-conv spatial size != head_spatial must be REJECTED AT
+    /// BUILD naming head_spatial; the canonical input size still builds. 64px is square
+    /// and /32 (so it passes run_backbone's input-shape asserts and REACHES this check),
+    /// but produces 2x the canonical post-conv spatial, violating head_spatial.
+    #[test]
+    fn wrong_post_conv_spatial_declined() {
+        let cfg = tiny_cfg(VggVariant::Vgg13);
+        let weights = build_weights(&cfg, 11);
+        let model = VggModel {
+            config: cfg,
+            weights,
+        };
+        // Positive control: the canonical 32px input builds.
+        model
+            .forward(&tiny_image(32))
+            .expect("canonical input size must build");
+        // 64px -> 2x post-conv spatial -> the converted decline must fire.
+        let err = model
+            .forward(&tiny_image(64))
+            .expect_err("wrong post-conv spatial must be declined");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_spatial"),
+            "expected a head_spatial decline, got: {msg}"
+        );
+    }
+
     #[test]
     fn vgg13_forward_shape() {
         let cfg = tiny_cfg(VggVariant::Vgg13);
