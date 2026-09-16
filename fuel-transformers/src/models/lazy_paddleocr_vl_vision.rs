@@ -994,29 +994,39 @@ impl PaddleOcrVlNaVitModel {
             h > 0 && w > 0,
             "PaddleOcrVlNaVitModel::forward: H and W must be positive, got ({h}, {w})",
         );
-        assert!(
-            h.is_multiple_of(cfg.patch_size),
-            "PaddleOcrVlNaVitModel::forward: H ({h}) is not a multiple of patch_size ({}); \
-             pad host-side before calling forward",
-            cfg.patch_size,
-        );
-        assert!(
-            w.is_multiple_of(cfg.patch_size),
-            "PaddleOcrVlNaVitModel::forward: W ({w}) is not a multiple of patch_size ({}); \
-             pad host-side before calling forward",
-            cfg.patch_size,
-        );
+        // A caller error, so a typed decline rather than a panic (GAP-328). It must
+        // NOT simply be deleted: the patch conv2d (stride = kernel, pad 0) floors
+        // exactly as `h / patch_size` does below, so without this check a
+        // non-multiple image is silently cropped and returned as `Ok`. That was
+        // measured, not reasoned.
+        if !h.is_multiple_of(cfg.patch_size) {
+            return Err(fuel_core::Error::Msg(format!(
+                "PaddleOcrVlNaVitModel::forward: H ({h}) is not a multiple of patch_size ({}); \
+                 pad host-side before calling forward (the patch conv2d would otherwise \
+                 silently crop the extra rows)",
+                cfg.patch_size,
+            )));
+        }
+        if !w.is_multiple_of(cfg.patch_size) {
+            return Err(fuel_core::Error::Msg(format!(
+                "PaddleOcrVlNaVitModel::forward: W ({w}) is not a multiple of patch_size ({}); \
+                 pad host-side before calling forward (the patch conv2d would otherwise \
+                 silently crop the extra columns)",
+                cfg.patch_size,
+            )));
+        }
 
         let h_patches = h / cfg.patch_size;
         let w_patches = w / cfg.patch_size;
         let num_patches = h_patches * w_patches;
         let merge = cfg.spatial_merge_size;
         assert!(merge >= 1, "spatial_merge_size must be >= 1, got {merge}");
-        assert!(
-            h_patches.is_multiple_of(merge) && w_patches.is_multiple_of(merge),
-            "PaddleOcrVlNaVitModel::forward: patch grid ({h_patches}, {w_patches}) is not a \
-             multiple of spatial_merge_size ({merge}) on both axes",
-        );
+        // No check here that the patch grid divides by `merge` (GAP-328). The
+        // projector reshape to `[h/m, m, w/m, m, hidden]` rejects every such grid
+        // with a typed build error, and it does so COMPLETELY:
+        // floor(a/m)*m * floor(b/m)*m equals a*b only when both divide, so no
+        // violation preserves the element count. The panic that stood here
+        // turned that typed error into a crash.
 
         let head_dim = cfg.head_dim();
         assert_eq!(head_dim % 2, 0, "head_dim must be even for split-half RoPE");
@@ -2025,6 +2035,103 @@ mod tests {
             PaddleOcrVlNaVitModel::new(cfg, text_hidden, weights)
         }
 
+        // ── GAP-328: the non-`==` sibling of GAP-314 ────────────────────────
+        //
+        // These pin three input-shape checks in `PaddleOcrVlNaVitModel::forward`
+        // that compare a caller-supplied dim with a config field using a
+        // relation other than `==`. GAP-314's census searched for `==`, which is
+        // a spelling rather than the construct, so it could not see them.
+        //
+        // The SHIPPED code PANICKED on all three. That panic is the live defect:
+        // `forward` returns `Result`, so a caller error belongs in a typed `Err`.
+        //
+        // Which fix each needed was MEASURED, not read, by deleting the assert
+        // and observing the result (GAP-314's recipe). The correct answer was
+        // named from the contract first: the assert's own text said "pad
+        // host-side before calling forward", i.e. REJECT.
+        //   H / W not a multiple of patch_size  ->  (d), so CONVERT.
+        //     With the assert deleted, forward returned Ok, bit-identical to the
+        //     image with the extra rows/cols removed. A pixel changed in a kept
+        //     row changed the output and one changed in a dropped row did not,
+        //     so the input WAS read and the tail WAS silently cropped. The patch
+        //     conv2d (stride = kernel, pad 0) floors exactly as
+        //     `h / patch_size` does, so nothing downstream notices.
+        //     ⚠️ That crop is COUNTERFACTUAL. It is what deletion would have
+        //     created, not what shipped. It is why these are declines rather
+        //     than deletions.
+        //   patch grid not a multiple of spatial_merge_size  ->  (a1), so DELETE.
+        //     The projector reshape rejects it with a typed build `Err`, and that
+        //     guard is COMPLETE: floor(a/m)*m * floor(b/m)*m == a*b only when both
+        //     divide, so no count-preserving violation exists.
+        //
+        // Every rejection test pins its message, so a LATER guard cannot satisfy
+        // it by accident. The acceptance test is the sibling that goes red if a
+        // decline ever over-rejects a valid input.
+
+        #[test]
+        fn height_not_multiple_of_patch_size_declined_not_cropped() {
+            // H = 10: 10 % 4 != 0, but floor(10 / 4) = 2 is a multiple of the
+            // merge size, so ONLY the patch_size predicate is violated.
+            let model = navit_model(24);
+            let cfg = model.config.clone();
+            let err = model
+                .forward(&navit_pixels(&cfg, 10, 8))
+                .expect_err("H = 10 is not a multiple of patch_size = 4; forward must decline");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("H (10)") && msg.contains("multiple of patch_size"),
+                "declined for the wrong reason: {msg}"
+            );
+        }
+
+        #[test]
+        fn width_not_multiple_of_patch_size_declined_not_cropped() {
+            // The mirror of the height case: only the W predicate is violated.
+            let model = navit_model(24);
+            let cfg = model.config.clone();
+            let err = model
+                .forward(&navit_pixels(&cfg, 8, 10))
+                .expect_err("W = 10 is not a multiple of patch_size = 4; forward must decline");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("W (10)") && msg.contains("multiple of patch_size"),
+                "declined for the wrong reason: {msg}"
+            );
+        }
+
+        #[test]
+        fn patch_grid_not_multiple_of_merge_rejected_at_build_by_reshape() {
+            // H = 12 is a multiple of patch_size, but the patch grid (3, 2) is not
+            // a multiple of merge = 2 on the H axis. No dedicated assert guards
+            // this any more: the projector's reshape does, and completely.
+            let model = navit_model(24);
+            let cfg = model.config.clone();
+            let err = model
+                .forward(&navit_pixels(&cfg, 12, 8))
+                .expect_err("patch grid (3, 2) is not a multiple of merge = 2; build must fail");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("element count mismatch"),
+                "rejected, but not by the projector reshape this test pins: {msg}"
+            );
+        }
+
+        #[test]
+        fn non_base_multiples_of_patch_and_merge_still_accepted() {
+            // 16 x 8 gives a (4, 2) patch grid: valid, and not the base grid, so
+            // this catches a decline that over-rejects rather than one that
+            // merely lets the base case through.
+            let text_hidden = 24;
+            let model = navit_model(text_hidden);
+            let cfg = model.config.clone();
+            let out = model
+                .forward(&navit_pixels(&cfg, 16, 8))
+                .expect("16 x 8 is a valid multiple of patch_size and merge");
+            let merge = cfg.spatial_merge_size;
+            let expected = ((16 / cfg.patch_size) * (8 / cfg.patch_size)) / (merge * merge);
+            assert_eq!(out.shape().dims(), &[expected, text_hidden]);
+        }
+
         /// (1) Forward at the base grid (8×8 = 2×2 patches) returns the
         /// expected `(merged_patches, text_hidden)` shape and all finite.
         #[test]
@@ -2161,17 +2268,23 @@ mod tests {
             assert_eq!(model.pos_embed_cache_len(), 2);
         }
 
-        /// (4) Misaligned input panics with a clear message naming
-        /// `patch_size`. Both axes are checked; this test catches the
+        /// (4) Misaligned input is DECLINED with a typed error naming
+        /// `patch_size`. Both axes are checked; this test covers the
         /// `H % patch_size != 0` branch.
+        ///
+        /// Until GAP-328 this test was `#[should_panic]` and pinned the panic
+        /// itself, so converting the panic to a typed `Err` turned it red. Its
+        /// intent (a clear rejection naming `patch_size`) is unchanged.
+        ///
+        /// 13 x 12 violates TWO predicates: H is not a multiple of patch_size,
+        /// and the W patch grid (3) is not a multiple of merge (2). So this also
+        /// checks that the patch_size decline fires FIRST, before the projector
+        /// reshape would reject the input for a different reason.
         #[test]
-        #[should_panic(expected = "H (13) is not a multiple of patch_size (4)")]
-        fn panic_on_misaligned_h() {
+        fn decline_on_misaligned_h() {
             let text_hidden = 16;
             let model = navit_model(text_hidden);
             let cfg = model.config.clone();
-            // H=13 is not a multiple of patch_size=4. Build a valid
-            // tensor of that shape via from_f32 and watch forward panic.
             let n_pix = cfg.num_channels * 13 * 12;
             let data: Vec<f32> = (0..n_pix).map(|i| i as f32).collect();
             let pixels = Tensor::from_f32(
@@ -2180,14 +2293,21 @@ mod tests {
                 &Device::cpu(),
             )
             .unwrap();
-            let _ = model.forward(&pixels);
+            let err = model
+                .forward(&pixels)
+                .expect_err("H = 13 is not a multiple of patch_size = 4");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("H (13) is not a multiple of patch_size (4)"),
+                "wrong rejection, or the merge reshape fired first: {msg}"
+            );
         }
 
-        /// Sibling of (4) — the W-misalignment branch fires with the
-        /// right message.
+        /// Sibling of (4): the W-misalignment branch is declined with the right
+        /// message, again ahead of the merge reshape (12 x 13 leaves an H patch
+        /// grid of 3).
         #[test]
-        #[should_panic(expected = "W (13) is not a multiple of patch_size (4)")]
-        fn panic_on_misaligned_w() {
+        fn decline_on_misaligned_w() {
             let text_hidden = 16;
             let model = navit_model(text_hidden);
             let cfg = model.config.clone();
@@ -2199,7 +2319,14 @@ mod tests {
                 &Device::cpu(),
             )
             .unwrap();
-            let _ = model.forward(&pixels);
+            let err = model
+                .forward(&pixels)
+                .expect_err("W = 13 is not a multiple of patch_size = 4");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("W (13) is not a multiple of patch_size (4)"),
+                "wrong rejection, or the merge reshape fired first: {msg}"
+            );
         }
 
         /// `build_2d_rope_tables_hw` reduces to the existing square
