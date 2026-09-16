@@ -2025,6 +2025,234 @@ mod tests {
             PaddleOcrVlNaVitModel::new(cfg, text_hidden, weights)
         }
 
+        // ── GAP-314 Item A instrument ────────────────────────────────────────
+        //
+        // `#[ignore]`d INSTRUMENT, not a gate. It asserts nothing and PRINTS what
+        // `forward` does. It compiles on every CI run, so it cannot rot, and it
+        // never runs there, so it cannot pass for coverage.
+        //
+        // Item A is the NON-`==` sibling of GAP-314: a caller-supplied runtime dim
+        // checked against a CONFIG field by a relation other than `==`. GAP-314's
+        // census searched for `==`, which is a spelling rather than the construct,
+        // so these were invisible to it. The population was derived by operand
+        // provenance; all three members live in `PaddleOcrVlNaVitModel::forward`:
+        //   h.is_multiple_of(cfg.patch_size)
+        //   w.is_multiple_of(cfg.patch_size)
+        //   h_patches/w_patches.is_multiple_of(cfg.spatial_merge_size)
+        //
+        // CORRECT ANSWER, named from the contract BEFORE probing. The assert's own
+        // message says "pad host-side before calling forward", so a non-multiple
+        // input is a caller error and the answer is REJECT. `forward` returns
+        // `Result`, so a typed rejection is available.
+        //
+        // METHOD, GAP-314's recipe for a release `assert!`: delete it and observe.
+        //   GAP314_ARM=A  the source as shipped
+        //   GAP314_ARM=B  the three asserts deleted (recompile, then RESTORE)
+        // The arm is DECLARED, and the probe checks the declaration against what
+        // the `[h]` case actually does. A deletion that never reached the binary
+        // looks exactly like one nothing caught, so this is the only thing that
+        // separates the two.
+        //
+        // Each case breaks EXACTLY ONE predicate, so every outcome is attributable.
+        //
+        // Predictions, registered before the first run:
+        //   [h] / [w], arm B: Ok, and BIT-IDENTICAL to forward() on the same image
+        //     with the extra rows/cols removed. The patch conv2d is stride=kernel,
+        //     pad 0, which floors exactly as `h / patch_size` does, so the grid,
+        //     RoPE and position embedding all match. That is outcome (d): Ok where
+        //     the contract says reject.
+        //   [merge], arm B: typed Err at build. The projector reshape targets
+        //     floor(h/m)*m * floor(w/m)*m elements, which differs from h*w whenever
+        //     either side is non-divisible. No count-preserving violation exists,
+        //     so that reshape is a COMPLETE guard: outcome (a1).
+        //   [ctl-err], both arms: typed Err. Nothing checks the channel count before
+        //     the patch conv2d, and conv2d rejects it at build. So THIS function has
+        //     a working rejection path, and an arm-B Ok cannot be explained away as
+        //     "forward has no way to fail".
+        //
+        // When the (d) is fixed: un-ignore this, invert the [h]/[w] expectation to
+        // a typed Err, and it becomes the born-red that proves the fix.
+        #[test]
+        #[ignore = "GAP-314 Item A instrument: prints outcomes, asserts nothing"]
+        fn gap314_item_a_non_eq_shape_agreement_probe() {
+            use std::panic::{self, AssertUnwindSafe};
+
+            fn panic_msg(p: &(dyn std::any::Any + Send)) -> String {
+                p.downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_else(|| "<non-string panic payload>".to_string())
+            }
+
+            enum Out {
+                Ok(Vec<usize>, Vec<f32>),
+                Err(String),
+                Panic(String),
+            }
+
+            let declared = std::env::var("GAP314_ARM").unwrap_or_else(|_| "?".to_string());
+            let text_hidden = 24;
+            let model = navit_model(text_hidden);
+            let cfg = model.config.clone();
+            let (p, m, c) = (cfg.patch_size, cfg.spatial_merge_size, cfg.num_channels);
+
+            // Values depend on (channel, y, x), NOT on the pixel count, so a
+            // smaller image is exactly the top-left corner of a larger one.
+            let img = |ch: usize, h: usize, w: usize| -> Tensor {
+                let mut data = Vec::with_capacity(ch * h * w);
+                for ci in 0..ch {
+                    for y in 0..h {
+                        for x in 0..w {
+                            data.push(((ci * 131 + y * 17 + x * 7) % 97) as f32 / 97.0);
+                        }
+                    }
+                }
+                Tensor::from_f32(
+                    Arc::from(data),
+                    Shape::from_dims(&[1, ch, h, w]),
+                    &Device::cpu(),
+                )
+                .unwrap()
+            };
+            // The same image with ONE pixel (channel 0, row py, col pc) changed.
+            let img_poke = |ch: usize, h: usize, w: usize, py: usize, pc: usize| -> Tensor {
+                let mut data = Vec::with_capacity(ch * h * w);
+                for ci in 0..ch {
+                    for y in 0..h {
+                        for x in 0..w {
+                            let v = ((ci * 131 + y * 17 + x * 7) % 97) as f32 / 97.0;
+                            data.push(if ci == 0 && y == py && x == pc {
+                                v + 10.0
+                            } else {
+                                v
+                            });
+                        }
+                    }
+                }
+                Tensor::from_f32(
+                    Arc::from(data),
+                    Shape::from_dims(&[1, ch, h, w]),
+                    &Device::cpu(),
+                )
+                .unwrap()
+            };
+
+            let run = |px: &Tensor| -> Out {
+                match panic::catch_unwind(AssertUnwindSafe(|| model.forward(px))) {
+                    Ok(Ok(t)) => {
+                        let shape = t.shape().dims().to_vec();
+                        match panic::catch_unwind(AssertUnwindSafe(|| t.realize_f32().to_vec())) {
+                            Ok(v) => Out::Ok(shape, v),
+                            Err(e) => Out::Panic(format!("at realize: {}", panic_msg(&*e))),
+                        }
+                    }
+                    Ok(Err(e)) => Out::Err(format!("{e}")),
+                    Err(e) => Out::Panic(panic_msg(&*e)),
+                }
+            };
+            let show = |o: &Out| -> String {
+                match o {
+                    Out::Ok(s, v) => format!("Ok{{shape:{s:?}, n:{}}}", v.len()),
+                    Out::Err(e) => format!("Err({})", e.chars().take(70).collect::<String>()),
+                    Out::Panic(e) => format!("PANIC({})", e.chars().take(70).collect::<String>()),
+                }
+            };
+            let bit_equal = |a: &Out, b: &Out| -> &'static str {
+                match (a, b) {
+                    (Out::Ok(sa, va), Out::Ok(sb, vb)) => {
+                        if sa == sb
+                            && va.len() == vb.len()
+                            && va.iter().zip(vb).all(|(x, y)| x.to_bits() == y.to_bits())
+                        {
+                            "BIT-IDENTICAL"
+                        } else {
+                            "DIFFERENT"
+                        }
+                    }
+                    _ => "n/a (not both Ok)",
+                }
+            };
+
+            let prev_hook = panic::take_hook();
+            panic::set_hook(Box::new(|_| {}));
+
+            let cases: [(&str, usize, usize, usize); 5] = [
+                ("[control]", c, 8, 8),
+                ("[ctl-err]", c + 1, 8, 8),
+                ("[h]      ", c, 10, 8),
+                ("[w]      ", c, 8, 10),
+                ("[merge]  ", c, 12, 8),
+            ];
+            println!("GAP-314 Item A probe  declared GAP314_ARM={declared}  (p={p} m={m} c={c})");
+            println!("case       C  H   W    h%p==0 w%p==0 (h/p)%m==0 (w/p)%m==0   outcome");
+            let mut outs = Vec::new();
+            for (name, ch, h, w) in cases {
+                let o = run(&img(ch, h, w));
+                println!(
+                    "{name}  {ch}  {h:<3} {w:<3}  {:<6} {:<6} {:<10} {:<10}   {}",
+                    h % p == 0,
+                    w % p == 0,
+                    (h / p) % m == 0,
+                    (w / p) % m == 0,
+                    show(&o)
+                );
+                outs.push(o);
+            }
+
+            // Crop oracle: the same image with the extra rows / cols removed.
+            let oracle = run(&img(c, 8, 8));
+            println!();
+            println!(
+                "ORACLE [h] vs forward(top 8 rows of the same image): {}",
+                bit_equal(&outs[2], &oracle)
+            );
+            println!(
+                "ORACLE [w] vs forward(left 8 cols of the same image): {}",
+                bit_equal(&outs[3], &oracle)
+            );
+
+            // SENSITIVITY. "Bit-identical" above proves nothing if `forward`
+            // ignored its input, because a constant output matches any oracle.
+            // So the crop mechanism is checked from both sides:
+            //   KEPT     a changed pixel inside the kept 8x8 region MUST change
+            //            the output
+            //   DROPPED  a changed pixel in row 9 / col 9 MUST NOT (arm B only;
+            //            in arm A those inputs panic at the assert)
+            let kept = run(&img_poke(c, 8, 8, 0, 0));
+            let dropped_h = run(&img_poke(c, 10, 8, 9, 3));
+            let dropped_w = run(&img_poke(c, 8, 10, 3, 9));
+            println!(
+                "SENS kept pixel (0,0) changed   vs oracle: {}  (must be DIFFERENT)",
+                bit_equal(&kept, &oracle)
+            );
+            println!(
+                "SENS dropped row 9 changed      vs [h]:    {}  (arm B: must be BIT-IDENTICAL)",
+                bit_equal(&dropped_h, &outs[2])
+            );
+            println!(
+                "SENS dropped col 9 changed      vs [w]:    {}  (arm B: must be BIT-IDENTICAL)",
+                bit_equal(&dropped_w, &outs[3])
+            );
+
+            // Declared arm vs observed arm, read off the [h] case.
+            let observed = match &outs[2] {
+                Out::Panic(msg) if msg.contains("is not a multiple of patch_size") => "A",
+                _ => "B",
+            };
+            println!();
+            if declared == observed {
+                println!("ARM: declared={declared} observed={observed}  consistent");
+            } else {
+                println!(
+                    "ARM: declared={declared} observed={observed}  MISMATCH: the binary does not \
+                     match the declared source. A stale build or an un-applied deletion. \
+                     Nothing above is evidence about arm {declared}."
+                );
+            }
+
+            panic::set_hook(prev_hook);
+        }
+
         /// (1) Forward at the base grid (8×8 = 2×2 patches) returns the
         /// expected `(merged_patches, text_hidden)` shape and all finite.
         #[test]
