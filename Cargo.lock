@@ -1278,9 +1278,9 @@ dependencies = [
 
 [[package]]
 name = "daachorse"
-version = "1.0.1"
+version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f55d7153ba3b507595872a3874803f07a8a81d1e888abed8e5db7da0597d6e2"
+checksum = "5614204febbc33cc07a2806aa6440b904ac012b68eecc37f4493ea4a76455a3d"
 
 [[package]]
 name = "darling"
@@ -3173,21 +3173,21 @@ dependencies = [
 
 [[package]]
 name = "kiss-classify-vocab"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e89422caebe2116ffe50387612df4a0e9276b0d5db12e5bb363d7b504a2d9fc"
+checksum = "847f6f43c7382fc059a42c1e0ebcb097f13873b7857ca73199bc01b350768543"
 
 [[package]]
 name = "kiss-ops-vocab"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6543126bce86d20287b71d2a55384b93034ad4965a4e91452cd5c186942d225d"
+checksum = "d6d6f826bb2eeb7dd965504cac7292af12db045e8f1195ed85e967cd94dd24c8"
 
 [[package]]
 name = "kiss-ref-core"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e9d7100aaef5a647d305699d6de787d6bb44e021c08c8a777e02dcad619bb3c"
+checksum = "1bb61ad1f7565ace250d54be155afdbe825ad06dd05d9d9393db03424d71fe50"
 dependencies = [
  "half",
  "kiss-classify-vocab",
@@ -4093,7 +4093,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "log",
  "multimap",
  "petgraph",
@@ -4112,7 +4112,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -5300,9 +5300,9 @@ dependencies = [
 
 [[package]]
 name = "tokenizers"
-version = "0.23.1"
+version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44e5bea67576e04b6ff8564c5d9e09c2ef0cf476502245f2f120e497769d3112"
+checksum = "7afbf6e88718afcc138bad01d6ccc3051dbbc3b2ce9793d8b8a3aeb610969cfc"
 dependencies = [
  "ahash",
  "compact_str",
@@ -5798,9 +5798,9 @@ dependencies = [
 
 [[package]]
 name = "vulkane"
-version = "0.13.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0aba8bce0ec12dc46fa29b4deb1c1be24659444cf5a04f47f18e9f659a30e06a"
+checksum = "ac465b73e7225c339cda9b0cef6361284205fa3ce34f9ed322f9c35051de85fe"
 dependencies = [
  "libloading 0.9.0",
  "ureq 3.3.0",

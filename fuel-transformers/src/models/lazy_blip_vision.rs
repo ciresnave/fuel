@@ -151,8 +151,15 @@ impl BlipVisionModel {
         assert_eq!(dims.len(), 4);
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
         assert_eq!(dims[1], 3, "image must have 3 input channels");
-        assert_eq!(dims[2], cfg.image_size);
-        assert_eq!(dims[3], cfg.image_size);
+        if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
+            return Err(fuel_core::Error::Msg(format!(
+                "blip_vision: input spatial dims ({}, {}) must equal image_size {}; this model is \
+                 fixed-resolution (position interpolation deferred), and the patch reshape targets \
+                 a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
+                 so a count-preserving resize would otherwise pass silently rather than error",
+                dims[2], dims[3], cfg.image_size,
+            )));
+        }
 
         let weights = &self.weights;
         let np = cfg.num_patches();
