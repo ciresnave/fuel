@@ -170,7 +170,15 @@ impl ParlerDecoderModel {
             "input_ids must be rank 3 [B, num_codebooks, T]"
         );
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
-        assert_eq!(dims[1], cfg.num_codebooks);
+        if dims[1] != cfg.num_codebooks {
+            return Err(fuel_core::Error::Msg(format!(
+                "parler_tts: input_ids codebook count {} must match the model's {} codebooks; \
+                 an over-long codebook axis is silently truncated by the per-codebook embed loop \
+                 (it iterates the model's codebooks), so the caller's error would never surface",
+                dims[1], cfg.num_codebooks,
+            ))
+            .bt());
+        }
         let t = dims[2];
 
         // Anchor on input_ids — this is the most-common graph the

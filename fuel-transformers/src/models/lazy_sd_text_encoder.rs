@@ -214,13 +214,16 @@ impl SdTextEncoder {
     /// Returns `[1, seq, hidden_size]` hidden states.
     pub fn forward(&self, tokens: &[u32]) -> fuel_core::Result<Tensor> {
         let cfg = &self.config;
-        assert_eq!(
-            tokens.len(),
-            cfg.max_position_embeddings,
-            "SdTextEncoder::forward: expected exactly {} tokens, got {}",
-            cfg.max_position_embeddings,
-            tokens.len(),
-        );
+        if tokens.len() != cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "SdTextEncoder::forward: expected exactly {} tokens, got {}; a shorter/longer \
+                 sequence builds a graph that only fails at realize (the position table is a \
+                 fixed [max_position_embeddings, hidden] const), so it is declined at build",
+                cfg.max_position_embeddings,
+                tokens.len(),
+            ))
+            .bt());
+        }
         let seq = tokens.len();
         let h = cfg.hidden_size;
 
@@ -308,13 +311,16 @@ impl SdTextEncoder {
         until_layer: isize,
     ) -> fuel_core::Result<(Tensor, Tensor)> {
         let cfg = &self.config;
-        assert_eq!(
-            tokens.len(),
-            cfg.max_position_embeddings,
-            "SdTextEncoder::forward_until_encoder_layer: expected exactly {} tokens, got {}",
-            cfg.max_position_embeddings,
-            tokens.len(),
-        );
+        if tokens.len() != cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "SdTextEncoder::forward_until_encoder_layer: expected exactly {} tokens, got {}; \
+                 a shorter/longer sequence builds a graph that only fails at realize (fixed \
+                 [max_position_embeddings, hidden] position const), so it is declined at build",
+                cfg.max_position_embeddings,
+                tokens.len(),
+            ))
+            .bt());
+        }
         let seq = tokens.len();
         let h = cfg.hidden_size;
         let n_layers = self.weights.layers.len() as isize;

@@ -155,11 +155,15 @@ impl DacModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "codes must be rank 3 [B, num_codebooks, T]");
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
-        assert_eq!(
-            dims[1], self.config.num_codebooks,
-            "codes must have {} codebooks, got {}",
-            self.config.num_codebooks, dims[1],
-        );
+        if dims[1] != self.config.num_codebooks {
+            return Err(fuel_core::Error::Msg(format!(
+                "DAC decode_codes: codes codebook count {} must match the model's {} quantizers; \
+                 an over-long codebook axis is silently truncated by the RVQ decode loop (it \
+                 iterates the model's quantizers), so the caller's error would never surface",
+                dims[1], self.config.num_codebooks,
+            ))
+            .bt());
+        }
         let latent = self.rvq_from_codes(codes)?;
         self.decoder_forward(&latent)
     }

@@ -159,16 +159,13 @@ impl VggModel {
         let c = final_dims[1];
         let h = final_dims[2];
         let w = final_dims[3];
-        assert_eq!(
-            h, cfg.head_spatial,
-            "VGG head expects post-conv spatial size {}, got {}",
-            cfg.head_spatial, h
-        );
-        assert_eq!(
-            w, cfg.head_spatial,
-            "VGG head expects post-conv spatial size {}, got {}",
-            cfg.head_spatial, w
-        );
+        if h != cfg.head_spatial || w != cfg.head_spatial {
+            return Err(fuel_core::Error::Msg(format!(
+                "VGG head: post-conv spatial dims ({}, {}) must equal head_spatial {}; a mismatch \
+                 otherwise panics deeper in the fc1 flat-dim check rather than declining here",
+                h, w, cfg.head_spatial,
+            )));
+        }
         let flat_dim = c * h * w;
         assert_eq!(
             flat_dim, self.weights.fc1.in_features,

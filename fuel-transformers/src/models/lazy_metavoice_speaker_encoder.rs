@@ -84,7 +84,14 @@ impl SpeakerEncoderModel {
         let t = dims[1];
         let d = dims[2];
         assert_eq!(b, 1, "v1 supports batch == 1");
-        assert_eq!(d, cfg.mel_n_channels);
+        if d != cfg.mel_n_channels {
+            return Err(fuel_core::Error::Msg(format!(
+                "MetaVoice speaker-encoder: input feature dim {} must equal mel_n_channels {}; \
+                 a mismatch otherwise panics deeper in the LSTM input-dim check rather than \
+                 declining here",
+                d, cfg.mel_n_channels,
+            )));
+        }
 
         // Multi-layer LSTM stack.
         let lstm_out = self.weights.lstm.forward(mels)?;

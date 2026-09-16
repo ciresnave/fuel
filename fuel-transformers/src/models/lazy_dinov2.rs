@@ -149,8 +149,15 @@ impl Dinov2Model {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[2], cfg.image_size);
-        assert_eq!(dims[3], cfg.image_size);
+        if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
+            return Err(fuel_core::Error::Msg(format!(
+                "dinov2: input spatial dims ({}, {}) must equal image_size {}; this model is \
+                 fixed-resolution (position interpolation deferred), and the patch reshape targets \
+                 a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
+                 so a count-preserving resize would otherwise pass silently rather than error",
+                dims[2], dims[3], cfg.image_size,
+            )));
+        }
 
         // Patch Conv2d.
         let conv_w = pixel_values.const_f32_like(
@@ -256,8 +263,15 @@ impl Dinov2Model {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[2], cfg.image_size);
-        assert_eq!(dims[3], cfg.image_size);
+        if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
+            return Err(fuel_core::Error::Msg(format!(
+                "dinov2: input spatial dims ({}, {}) must equal image_size {}; this model is \
+                 fixed-resolution (position interpolation deferred), and the patch reshape targets \
+                 a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
+                 so a count-preserving resize would otherwise pass silently rather than error",
+                dims[2], dims[3], cfg.image_size,
+            )));
+        }
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
