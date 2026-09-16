@@ -3179,9 +3179,9 @@ checksum = "1e89422caebe2116ffe50387612df4a0e9276b0d5db12e5bb363d7b504a2d9fc"
 
 [[package]]
 name = "kiss-ops-vocab"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6543126bce86d20287b71d2a55384b93034ad4965a4e91452cd5c186942d225d"
+checksum = "d6d6f826bb2eeb7dd965504cac7292af12db045e8f1195ed85e967cd94dd24c8"
 
 [[package]]
 name = "kiss-ref-core"
@@ -4808,9 +4808,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.15.2"
+version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 
 [[package]]
 name = "snap"
@@ -5798,9 +5798,9 @@ dependencies = [
 
 [[package]]
 name = "vulkane"
-version = "0.13.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0aba8bce0ec12dc46fa29b4deb1c1be24659444cf5a04f47f18e9f659a30e06a"
+checksum = "ac465b73e7225c339cda9b0cef6361284205fa3ce34f9ed322f9c35051de85fe"
 dependencies = [
  "libloading 0.9.0",
  "ureq 3.3.0",
