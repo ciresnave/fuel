@@ -385,48 +385,64 @@ def classify(rows):
     return dispositioned, undispositioned, stale
 
 
-def integration_arms():
-    """ARM F and ARM G: the two arms that run the REAL entry points.
+def run_gate(dispositions, targets):
+    """Exit code of the REAL `main()` under `--gate`, on a constructed capture.
 
-    ARM F exercises the actual `--gate` exit path rather than the predicate it
-    consults. A born-red that tests the helper instead of the gate is the
-    "verification that passes on a tree the edit never touched" shape -- it
-    proves the predicate works and says nothing about whether the gate reads it.
-
-    ARM G proves a census whose build produced no rustdoc artifacts is REFUSED
-    rather than reported as clean. Zero broken links means something only if
-    rustdoc ran.
+    `dispositions` replaces the table for the call; `targets` become broken-link
+    records. Output is swallowed -- the exit code is the assertion.
     """
+    global DISPOSITIONS
+    import contextlib
     import tempfile
 
+    recs = ['{"reason":"compiler-artifact","target":{"name":"x"}}']
+    for t in targets:
+        recs.append('{"reason":"compiler-message","message":{"code":'
+                    '{"code":"rustdoc::broken_intra_doc_links"},"message":'
+                    '"unresolved link to `%s`","spans":[{"is_primary":true,'
+                    '"file_name":"a.rs","line_start":1}]}}' % t)
     fd, tmp = tempfile.mkstemp(suffix=".json")
     os.close(fd)
-    rec_art = '{"reason":"compiler-artifact","target":{"name":"x"}}'
-    rec_bad = ('{"reason":"compiler-message","message":{"code":'
-               '{"code":"rustdoc::broken_intra_doc_links"},"message":'
-               '"unresolved link to `ZzzArmF`","spans":[{"is_primary":true,'
-               '"file_name":"a.rs","line_start":1}]}}')
-    io.open(tmp, "w", encoding="utf-8").write(rec_art + "\n" + rec_bad + "\n")
-    saved_argv = sys.argv
+    io.open(tmp, "w", encoding="utf-8").write("\n".join(recs) + "\n")
+    saved, saved_argv = DISPOSITIONS, sys.argv
     try:
+        DISPOSITIONS = dispositions
         sys.argv = ["doc_link_census.py", "--from", tmp, "--gate"]
-        arm_f = main() == 1
+        with contextlib.redirect_stdout(io.StringIO()):
+            return main()
     finally:
-        sys.argv = saved_argv
+        DISPOSITIONS, sys.argv = saved, saved_argv
         os.unlink(tmp)
 
-    fd, tmp2 = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    io.open(tmp2, "w", encoding="utf-8").write("")
-    try:
-        assert_census_is_real(tmp2)
-        arm_g = False
-    except CensusUnusable:
-        arm_g = True
-    finally:
-        os.unlink(tmp2)
 
-    return arm_f, arm_g
+def integration_arms():
+    """The arms that run the REAL `--gate`, one per term of its condition.
+
+    Each failing case makes exactly ONE term non-empty. The first version of
+    this arm fed an undispositioned link through a fixture table that ALSO
+    held a mechanism-less CORRECT entry, so the gate reddened on the wrong term
+    and deleting the undispositioned check would have left the arm green.
+    """
+    named = (CORRECT, 'cfg(feature = "x") on mod y')
+    arms = {
+        "F0": run_gate({"T": named}, ["T"]) == 0,
+        "F1": run_gate({}, ["T"]) == 1,
+        "F2": run_gate({"T": (CORRECT, "it is gated")}, ["T"]) == 1,
+        "F3": run_gate({"T": named, "Gone": (DEFECT, "was here")}, ["T"]) == 1,
+    }
+
+    import tempfile
+    fd, tmp = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    io.open(tmp, "w", encoding="utf-8").write("")
+    try:
+        assert_census_is_real(tmp)
+        arms["G"] = False
+    except CensusUnusable:
+        arms["G"] = True
+    finally:
+        os.unlink(tmp)
+    return arms
 
 
 def self_test():
@@ -460,7 +476,7 @@ def self_test():
         clean = "precise" not in mechanism_violations()
         arm_e = caught and clean
 
-        arm_f, arm_g = integration_arms()
+        arms = integration_arms()
 
         print("SELF-TEST")
         print("  ARM A  undispositioned link is REPORTED      : %s" % ("PASS" if arm_a else "FAIL"))
@@ -468,9 +484,16 @@ def self_test():
         print("  ARM C  no false stale on a full population   : %s" % ("PASS" if arm_c else "FAIL"))
         print("  ARM D  a vanished subject reports STALE      : %s" % ("PASS" if arm_d else "FAIL"))
         print("  ARM E  unnamed mechanism is CAUGHT           : %s" % ("PASS" if arm_e else "FAIL"))
-        print("  ARM F  the REAL --gate exit path reddens     : %s" % ("PASS" if arm_f else "FAIL"))
-        print("  ARM G  a census with no artifacts is REFUSED : %s" % ("PASS" if arm_g else "FAIL"))
-        return 0 if all([arm_a, arm_b, arm_c, arm_d, arm_e, arm_f, arm_g]) else 1
+        labels = (
+            ("F0", "real --gate PASSES a clean population  "),
+            ("F1", "real --gate reddens on UNDISPOSITIONED "),
+            ("F2", "real --gate reddens on NO MECHANISM    "),
+            ("F3", "real --gate reddens on STALE           "),
+            ("G", "a census with no artifacts is REFUSED  "),
+        )
+        for key, text in labels:
+            print("  ARM %-2s %s: %s" % (key, text, "PASS" if arms[key] else "FAIL"))
+        return 0 if all([arm_a, arm_b, arm_c, arm_d, arm_e] + list(arms.values())) else 1
     finally:
         DISPOSITIONS = saved
 
