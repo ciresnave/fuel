@@ -4996,6 +4996,77 @@ mod tests {
         assert_eq!(b.realize_f64(), vec![2.25, 6.25, 12.25]);
     }
 
+    /// GAP-327 born-red probe (run with `--ignored --nocapture`).
+    ///
+    /// The typed accessors `realize_f64`/`realize_bf16`/`realize_f16` GUARD (panic) on a
+    /// caller dtype mismatch, but `realize_f32` and `pipelined_bridge::realize_one_as::<T>`
+    /// do NOT — the path ends in `bytemuck::cast_slice::<u8, T>` with no dtype check, so an
+    /// F64 root reinterpreted as f32 silently returns garbage (a GAP-327 (d)-candidate). This
+    /// asserts the DESIRED post-fix behaviour (REJECT, not reinterpret), so it is BORN-RED
+    /// today; the fixer adds the guard to realize_f32/realize_one_as and UN-IGNOREs it, at
+    /// which point it becomes the regression test. `#[ignore]`d so CI stays green until then.
+    /// Reports the raw outputs via `eprintln!` so the measurement is visible under
+    /// `--nocapture`. See docs/gaps.md GAP-327.
+    #[test]
+    #[ignore = "GAP-327 born-red: realize_f32/realize_one_as lack a dtype guard; un-ignore at fix time"]
+    fn gap327_realize_f32_on_f64_root_must_reject_not_reinterpret() {
+        let t =
+            Tensor::from_f64(vec![1.0_f64, 2.0], Shape::from_dims(&[2]), &Device::cpu()).unwrap();
+
+        // Silence the panic hook only around the catch_unwind MEASUREMENTS; restore it
+        // before the assertions so a real failure still prints.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        // Control 1 (RIGHT dtype): realize_f64 on the F64 root succeeds (predicted Ok[1.0, 2.0]).
+        let ctl_f64 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.realize_f64()));
+        // Control 2 (guard FIRES): a MISMATCHED guarded accessor panics with "root dtype is",
+        // proving the harness observes guards — so realize_f32's silence below is a real
+        // absence, not a swallowed panic. (realize_f64 on an F64 root does not mismatch, so it
+        // is not the guard-fires control; realize_f16 is.)
+        let ctl_f16 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.realize_f16()));
+        // SUBJECT A: realize_f32 (public method) on the F64 root.
+        let subj_method =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.realize_f32()));
+        // SUBJECT B: realize_one_as::<f32> (the fallible API production callers are told to use).
+        let graph = t.inner.graph().clone();
+        let target = t.inner.id();
+        let device = Device::cpu();
+        let subj_raw = crate::pipelined_bridge::realize_one_as::<f32>(&graph, target, &device);
+
+        std::panic::set_hook(prev_hook);
+
+        eprintln!("[GAP-327] control realize_f64() on F64 root -> {ctl_f64:?}");
+        eprintln!(
+            "[GAP-327] control realize_f16() on F64 root -> {}",
+            if ctl_f16.is_err() {
+                "PANICKED (guard fired)"
+            } else {
+                "NO PANIC"
+            }
+        );
+        eprintln!("[GAP-327] SUBJECT realize_f32() on F64 root -> {subj_method:?}");
+        eprintln!("[GAP-327] SUBJECT realize_one_as::<f32> on F64 root -> {subj_raw:?}");
+
+        // Positive control MUST fire, or the subject assertions below are vacuous.
+        assert!(
+            ctl_f16.is_err(),
+            "positive control: realize_f16() on an F64 root must panic (guard fires); if it \
+             does not, the harness is not observing panics and the subject asserts are vacuous"
+        );
+        // BORN-RED (desired post-fix behaviour): the f32 paths must REJECT, not reinterpret.
+        assert!(
+            subj_method.is_err(),
+            "realize_f32() on an F64 root must REJECT (panic like its typed siblings), not \
+             silently reinterpret bytes; got Ok({subj_method:?})"
+        );
+        assert!(
+            subj_raw.is_err(),
+            "realize_one_as::<f32> on an F64 root must return Err, not Ok(reinterpreted bytes); \
+             got {subj_raw:?}"
+        );
+    }
+
     #[test]
     fn lazy_tensor_mini_llama_block_forward() {
         // A minimal LLaMA-style attention-only "block" built entirely
