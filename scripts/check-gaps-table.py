@@ -107,11 +107,34 @@ closed_word_anywhere = [r for r in live if 'CLOSED' in r[2]]
 # two doc-vs-code guards each had to close in their own scope statements. Making
 # the hole visible is deliberate; closing it (a status column on nine tables) is
 # a separate decision nobody has taken. See docs/design/gaps-status-vocabulary.md.
+def row_cells(l):
+    out, buf = [], []
+    for k, ch in enumerate(l):
+        if _is_cell_boundary(l, k):
+            out.append(''.join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    out.append(''.join(buf))
+    if out and not out[0].strip():
+        out = out[1:]
+    if out and not out[-1].strip():
+        out = out[:-1]
+    return [c.strip() for c in out]
+
+
+# ONE ROW PREDICATE for every pass that asks "is this a GAP row". The
+# schema pass and the tier-shape pass below used to spell it differently
+# (`^| ~*GAP-` vs `| GAP-` / `| ~~GAP-`); they agreed on the file only because
+# no row had one or three tildes, and a headerless row with one tilde would
+# have been COUNTED by the first and NOT FAILED by the second.
+GAP_ROW = re.compile(r'^\| ~*GAP-')
+
 schema_cols, _cur = [], None
 for _l in lines:
     if re.match(r'^\| ID', _l):
         _cur = unescaped_pipes(_l) - 1
-    elif re.match(r'^\| ~*GAP-', _l):
+    elif GAP_ROW.match(_l):
         schema_cols.append(_cur)
     elif not _l.startswith('|'):
         _cur = None
@@ -138,15 +161,8 @@ def tier_shape_of(src):
     for n, l in enumerate(src, 1):
         if l.startswith('| ID'):
             cur = unescaped_pipes(l) - 1
-        elif l.startswith('| GAP-') or l.startswith('| ~~GAP-'):
-            cc, buf = [], []
-            for k, ch in enumerate(l):
-                if _is_cell_boundary(l, k):
-                    cc.append(''.join(buf)); buf = []
-                else:
-                    buf.append(ch)
-            cc.append(''.join(buf))
-            cc = [x.strip() for x in cc][1:-1]
+        elif GAP_ROW.match(l):
+            cc = row_cells(l)
             if cur is None:
                 headerless.append((n, cc[0].strip('~') if cc else '?'))
                 continue
@@ -385,6 +401,18 @@ print('headerless-row self-test (a row above every header is named, not a crash;
 for _n, _id in headerless_rows:
     print('    line %d: %s has no `| ID |` header above it -- give its table'
           ' fragment a header' % (_n, _id))
+# RECONCILIATION. The count above and the named rows are computed by two
+# separate loops. They share GAP_ROW, but the header-reset rule is still written
+# twice, and two computations of one population drift -- while only the one
+# that FAILS the gate would ever be noticed.
+headerless_mismatch = []
+if headerless != len(headerless_rows):
+    headerless_mismatch.append(
+        'headerless rows COUNTED %d but NAMED %d -- the schema pass and the '
+        'tier-shape pass disagree about which rows have a header'
+        % (headerless, len(headerless_rows)))
+print('headerless count reconciles with the named rows:',
+      'OK' if not headerless_mismatch else headerless_mismatch)
 # THE COMBINED FIGURE -- COMPUTED HERE, NOT QUOTED FROM ANYWHERE.
 #
 # A reader asking "how much of this file does the status convention actually
@@ -812,22 +840,6 @@ def status_prefix(c):
     return None
 
 
-def row_cells(l):
-    out, buf = [], []
-    for k, ch in enumerate(l):
-        if _is_cell_boundary(l, k):
-            out.append(''.join(buf))
-            buf = []
-        else:
-            buf.append(ch)
-    out.append(''.join(buf))
-    if out and not out[0].strip():
-        out = out[1:]
-    if out and not out[-1].strip():
-        out = out[:-1]
-    return [c.strip() for c in out]
-
-
 def vocab_findings(src_lines):
     """(unrecognised-prefix rows, strikethrough contradictions, distribution).
 
@@ -1208,5 +1220,6 @@ if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or struck4_nodisp or struck4_owned or struck4_foundation
         or owner_foundation
         or taxonomy_broken
-        or headerless_rows or headerless_foundation):
+        or headerless_rows or headerless_foundation
+        or headerless_mismatch):
     sys.exit(1)
