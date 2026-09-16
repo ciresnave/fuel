@@ -214,13 +214,16 @@ impl SdTextEncoder {
     /// Returns `[1, seq, hidden_size]` hidden states.
     pub fn forward(&self, tokens: &[u32]) -> fuel_core::Result<Tensor> {
         let cfg = &self.config;
-        assert_eq!(
-            tokens.len(),
-            cfg.max_position_embeddings,
-            "SdTextEncoder::forward: expected exactly {} tokens, got {}",
-            cfg.max_position_embeddings,
-            tokens.len(),
-        );
+        if tokens.len() != cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "SdTextEncoder::forward: expected exactly {} tokens, got {}; a shorter/longer \
+                 sequence builds a graph that only fails at realize (the position table is a \
+                 fixed [max_position_embeddings, hidden] const), so it is declined at build",
+                cfg.max_position_embeddings,
+                tokens.len(),
+            ))
+            .bt());
+        }
         let seq = tokens.len();
         let h = cfg.hidden_size;
 
@@ -308,13 +311,16 @@ impl SdTextEncoder {
         until_layer: isize,
     ) -> fuel_core::Result<(Tensor, Tensor)> {
         let cfg = &self.config;
-        assert_eq!(
-            tokens.len(),
-            cfg.max_position_embeddings,
-            "SdTextEncoder::forward_until_encoder_layer: expected exactly {} tokens, got {}",
-            cfg.max_position_embeddings,
-            tokens.len(),
-        );
+        if tokens.len() != cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "SdTextEncoder::forward_until_encoder_layer: expected exactly {} tokens, got {}; \
+                 a shorter/longer sequence builds a graph that only fails at realize (fixed \
+                 [max_position_embeddings, hidden] position const), so it is declined at build",
+                cfg.max_position_embeddings,
+                tokens.len(),
+            ))
+            .bt());
+        }
         let seq = tokens.len();
         let h = cfg.hidden_size;
         let n_layers = self.weights.layers.len() as isize;
@@ -862,6 +868,35 @@ mod tests {
             final_ln_g: arc(vec![1.0_f32; h]),
             final_ln_b: arc(vec![0.0_f32; h]),
         }
+    }
+
+    /// GAP-314 (b) retained born-red: `assert_eq!(tokens.len(), max_position_embeddings)`
+    /// became a typed build-time decline. It was outcome (b): the assert previously
+    /// panicked, and deleting it would have built an invalid graph that only failed at
+    /// realize (the position table is a fixed `[max_position_embeddings, hidden]` const).
+    /// A wrong token count must be REJECTED AT BUILD with a message naming the count;
+    /// the exact count still builds (positive control against a vacuous pass).
+    #[test]
+    fn wrong_token_count_declined_at_build() {
+        let cfg = tiny_cfg(ClipTextActivation::Gelu, 2);
+        let weights = tiny_weights(&cfg, 7);
+        let model = SdTextEncoder {
+            config: cfg.clone(),
+            weights,
+        };
+        // Positive control: exactly max_position_embeddings tokens builds.
+        let ok: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
+        model.forward(&ok).expect("exact token count must build");
+        // One token short.
+        let short: Vec<u32> = (0..cfg.max_position_embeddings as u32 - 1).collect();
+        let err = model
+            .forward(&short)
+            .expect_err("wrong token count must be declined at build");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("tokens"),
+            "expected a token-count decline, got: {msg}"
+        );
     }
 
     /// QuickGelu and Gelu must produce different outputs on the

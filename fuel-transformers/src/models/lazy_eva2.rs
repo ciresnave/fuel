@@ -134,8 +134,15 @@ impl EvaModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 4);
         assert_eq!(dims[1], 3);
-        assert_eq!(dims[2], cfg.img_size);
-        assert_eq!(dims[3], cfg.img_size);
+        if dims[2] != cfg.img_size || dims[3] != cfg.img_size {
+            return Err(fuel_core::Error::Msg(format!(
+                "eva2: input spatial dims ({}, {}) must equal img_size {}; this model is \
+                 fixed-resolution (position interpolation deferred), and the patch reshape targets \
+                 a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
+                 so a count-preserving resize would otherwise pass silently rather than error",
+                dims[2], dims[3], cfg.img_size,
+            )));
+        }
         let b = dims[0];
         let e = cfg.embed_dim;
         let n_patches = cfg.num_patches();

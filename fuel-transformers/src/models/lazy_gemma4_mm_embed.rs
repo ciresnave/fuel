@@ -47,14 +47,11 @@ impl Gemma4MmEmbedder {
     /// Returns shape `(..., text_hidden_size)`.
     pub fn forward(&self, soft_features: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        let dims = soft_features.shape();
-        let dims = dims.dims();
-        assert!(
-            !dims.is_empty() && *dims.last().unwrap() == cfg.multimodal_hidden_size,
-            "Gemma4MmEmbed: last dim must equal multimodal_hidden_size={}, got shape {:?}",
-            cfg.multimodal_hidden_size,
-            dims,
-        );
+        // GAP-314 (a1): the `dims.last() == multimodal_hidden_size` check is a panic
+        // in front of two downstream typed build-time Errs — `rms_norm_last_dim`
+        // rejects an empty/zero last dim, and `apply_linear` rejects a trailing dim
+        // that is not `multimodal_hidden_size`. Both conjuncts are covered, so the
+        // assert only preempted a typed Err; deleting it lets the typed Err surface.
 
         // Step 1: RMS normalize over the last dim (no learnable gain).
         let normed = soft_features.rms_norm_last_dim(cfg.eps)?;
