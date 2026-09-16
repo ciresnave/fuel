@@ -445,7 +445,7 @@ impl DeviceKvPool {
         let post = dest.write_slice(&src, self.block_write_ranges(phys))?;
         let mut cache = StorageCache::new();
         cache.insert(dest.node_id(), buf);
-        let _ = crate::pipelined_bridge::realize_one_as_with_initial::<u8>(
+        let _ = crate::pipelined_bridge::realize_one_bytes_with_initial(
             post.graph_handle(),
             post.node_id(),
             &self.device,
@@ -455,9 +455,9 @@ impl DeviceKvPool {
     }
 
     /// Dtype-agnostic byte-level block READ — sibling of [`Self::write_block_bytes`].
-    /// Returns the block's raw bytes in the pool's dtype via a uniform
-    /// `realize_one_as::<u8>` (a byte reinterpret of the realized `Slice`, correct
-    /// for ANY dtype — there is no per-dtype read path).
+    /// Returns the block's raw bytes in the pool's dtype via the byte-view entry
+    /// `realize_one_bytes` (a byte reinterpret of the realized `Slice`, correct for ANY
+    /// dtype by design — there is no per-dtype read path; GAP-327 keeps this UNGUARDED).
     pub fn read_block_bytes(
         &self,
         layer: usize,
@@ -482,7 +482,7 @@ impl DeviceKvPool {
             .reshape(Shape::from_dims(&[self.block_elems()]))?;
         let mut cache = StorageCache::new();
         cache.insert(dest.node_id(), buf);
-        crate::pipelined_bridge::realize_one_as_with_initial::<u8>(
+        crate::pipelined_bridge::realize_one_bytes_with_initial(
             block.graph_handle(),
             block.node_id(),
             &self.device,

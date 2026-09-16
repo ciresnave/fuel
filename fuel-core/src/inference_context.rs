@@ -2009,7 +2009,7 @@ impl InferenceContext {
     /// that aren't already in the persistent map get uploaded fresh
     /// from `graph.storage_for(id)` per the existing pipelined-bridge
     /// pattern.
-    pub fn realize_one_as<T: bytemuck::Pod>(
+    pub fn realize_one_as<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
@@ -2023,7 +2023,7 @@ impl InferenceContext {
     /// write offset `cached_len`). The env is **per-pass** (re-supplied
     /// every forward step) while the persistent map is **per-session**;
     /// an empty env is byte-identical to [`Self::realize_one_as`].
-    pub fn realize_one_as_with_env<T: bytemuck::Pod>(
+    pub fn realize_one_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
@@ -2048,7 +2048,7 @@ impl InferenceContext {
     /// `Op::Copy` root) + the cached `OptimizedGraph` and feeds them to
     /// [`Self::realize_prebuilt_as_with_env`] on later tokens to SKIP the
     /// re-plan. See [`crate::pipelined_bridge::prebuild_optimized_env`].
-    pub fn prebuild_optimized_as_with_env<T: bytemuck::Pod>(
+    pub fn prebuild_optimized_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
@@ -2070,7 +2070,7 @@ impl InferenceContext {
     /// prebuilt realizes (which SKIP the const-cache walk) still resolve
     /// every weight Const. Returns
     /// `(effective_target, OptimizedGraph, full_cache, result)`.
-    pub fn prebuild_optimized_capturing_as_with_env<T: bytemuck::Pod>(
+    pub fn prebuild_optimized_capturing_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
@@ -2100,7 +2100,7 @@ impl InferenceContext {
     ///
     /// A `TopologyChanged` error surfaces to the caller (typed, not
     /// retried) — the cached view is stale; invalidate + rebuild the session.
-    pub fn realize_prebuilt_as_with_env<T: bytemuck::Pod>(
+    pub fn realize_prebuilt_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         effective_target: NodeId,
@@ -2118,7 +2118,7 @@ impl InferenceContext {
     }
 
     /// Multi-target counterpart of [`Self::realize_one_as`].
-    pub fn realize_many_as<T: bytemuck::Pod>(
+    pub fn realize_many_as<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         targets: &[NodeId],
@@ -2129,7 +2129,7 @@ impl InferenceContext {
     /// Env-carrying counterpart of [`Self::realize_many_as`] (Phase D
     /// symbolic extents). An empty env is byte-identical to
     /// [`Self::realize_many_as`].
-    pub fn realize_many_as_with_env<T: bytemuck::Pod>(
+    pub fn realize_many_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         targets: &[NodeId],
@@ -2149,7 +2149,7 @@ impl InferenceContext {
     /// rest come back as device-resident `(storage, layout)` pairs —
     /// no D2H for results that feed the next step's graph. See
     /// [`crate::pipelined_bridge::realize_split_as_with_initial`].
-    pub fn realize_split_as<T: bytemuck::Pod>(
+    pub fn realize_split_as<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         targets: &[NodeId],
