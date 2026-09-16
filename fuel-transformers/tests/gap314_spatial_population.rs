@@ -66,30 +66,40 @@
 /// invisibly. A hand-written set can only exclude what its author thought of, and what it
 /// misses is silent (portfolio CLAUDE.md); a `#[test]` reads only source it will not
 /// write, so enumerating the on-disk `src/models` here carries no cross-worktree hazard.
-/// The cheap `image_size` pre-filter keeps `production_prefix` (which hard-fails on a
-/// malformed test-module boundary) off the ~90 non-vision model files.
 fn vision_model_files() -> Vec<String> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/models");
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir}: {e}")) {
         let path = entry.unwrap().path();
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) if n.starts_with("lazy_") && n.ends_with(".rs") => n.to_string(),
-            _ => continue,
+        let Some(name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+        else {
+            continue;
         };
-        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
-        if !src.contains("image_size") && !src.contains("img_size") {
+        if !name.starts_with("lazy_") || !name.ends_with(".rs") {
             continue;
         }
-        let prefix = production_prefix(&src, &name);
-        let has_spatial =
-            count_spatial_asserts(&prefix) > 0 || prefix.iter().any(|l| is_spatial_decline(l));
-        if has_spatial {
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
+        if file_has_spatial_check(&name, &src) {
             out.push(name);
         }
     }
     out.sort();
     out
+}
+
+/// True when `name`'s PRODUCTION prefix carries a spatial dim check (a converted decline,
+/// or an assert if one regressed). The cheap `image_size`/`img_size` text pre-filter keeps
+/// `production_prefix` (which hard-fails on a malformed test-module boundary) off the ~90
+/// non-vision model files.
+fn file_has_spatial_check(name: &str, src: &str) -> bool {
+    if !src.contains("image_size") && !src.contains("img_size") {
+        return false;
+    }
+    let prefix = production_prefix(src, name);
+    count_spatial_asserts(&prefix) > 0 || prefix.iter().any(|l| is_spatial_decline(l))
 }
 
 // 18 spatial-decline entry points across 12 files. Was 17 across 11: the property
@@ -131,56 +141,53 @@ fn is_comment(line: &str) -> bool {
     line.trim_start().starts_with("//")
 }
 
-/// Count spatial ASSERT macros in the production prefix. A line referencing a
-/// spatial axis (`dims[2]`/`dims[3]`) and the config size (`image_size`/`img_size`)
-/// counts as an assert only when it is in ASSERT context: `assert` on the same line
-/// (single-line macro) or an `assert_eq!(` / `assert!(` opener on the line above
-/// (multi-line macro). This is what distinguishes a surviving assert from the
-/// DECLINE's own `format!` args line (`dims[2], dims[3], cfg.image_size,`), whose
-/// line above is the format string, not an assert opener — the false positive that
-/// an operand-only match produced.
+/// Count spatial ASSERT macros in the production prefix — the sites that must be ZERO
+/// after conversion. Delegates the per-line decision to `is_spatial_assert_at`.
 fn count_spatial_asserts(prefix: &[&str]) -> usize {
-    let mut n = 0;
-    for i in 0..prefix.len() {
-        let line = prefix[i];
-        if is_comment(line) {
-            continue;
-        }
-        let has_axis = line.contains("dims[2]") || line.contains("dims[3]");
-        let has_field = line.contains("image_size") || line.contains("img_size");
-        if !has_axis || !has_field {
-            continue;
-        }
-        // Single-line assert: `assert_eq!(dims[2], cfg.image_size)`.
-        if line.contains("assert") {
-            n += 1;
-            continue;
-        }
-        // Multi-line assert operand: the line above is the macro opener. The decline
-        // args line's predecessor is a format string, so it is excluded here.
-        if i > 0 {
-            let prev = prefix[i - 1].trim();
-            if prev.ends_with("assert_eq!(") || prev.ends_with("assert!(") {
-                n += 1;
-            }
-        }
+    (0..prefix.len())
+        .filter(|&i| is_spatial_assert_at(prefix, i))
+        .count()
+}
+
+/// A `dims[2]/[3]` vs `image_size/img_size` reference in ASSERT context at line `i`:
+/// `assert` on the same line (single-line macro), or an `assert_eq!(` / `assert!(` opener
+/// on the line above (multi-line macro). This is what distinguishes a surviving assert from
+/// the DECLINE's own `format!` args line (`dims[2], dims[3], cfg.image_size,`), whose line
+/// above is the format string, not an assert opener — the false positive an operand-only
+/// match produced.
+fn is_spatial_assert_at(prefix: &[&str], i: usize) -> bool {
+    let line = prefix[i];
+    if is_comment(line) || !mentions_spatial_axis_and_field(line) {
+        return false;
     }
-    n
+    line.contains("assert") || opener_above_is_assert(prefix, i)
+}
+
+/// The line above `i` opens an assert macro (`assert_eq!(` / `assert!(`).
+fn opener_above_is_assert(prefix: &[&str], i: usize) -> bool {
+    if i == 0 {
+        return false;
+    }
+    let prev = prefix[i - 1].trim();
+    prev.ends_with("assert_eq!(") || prev.ends_with("assert!(")
+}
+
+/// The line names a spatial axis (`dims[2]`/`dims[3]`) AND the config size field
+/// (`image_size`/`img_size`). Shared by the assert counter and the decline detector.
+fn mentions_spatial_axis_and_field(line: &str) -> bool {
+    let has_axis = line.contains("dims[2]") || line.contains("dims[3]");
+    let has_field = line.contains("image_size") || line.contains("img_size");
+    has_axis && has_field
 }
 
 /// A spatial DECLINE line: the `if` guard `dims[2] != <cfg>.image_size` (or `img_size`).
-/// Binding-agnostic on the config name — some towers bind it `cfg`, llava's embedded
-/// clip tower binds it `v_cfg` — so the match is `!=` together with a spatial axis and
-/// the size field, rather than a literal `!= cfg.image_size`. This does not collide with
-/// the assert form (`assert_eq!(dims[2], cfg.image_size)` has no `!=`) nor the decline's
-/// own `format!` args line (`dims[2], dims[3], cfg.image_size,` has no `!=`).
+/// Binding-agnostic on the config name — some towers bind it `cfg`, llava's embedded clip
+/// tower binds it `v_cfg` — so the match is `!=` together with a spatial axis and the size
+/// field, rather than a literal `!= cfg.image_size`. This does not collide with the assert
+/// form (`assert_eq!(dims[2], cfg.image_size)` has no `!=`) nor the decline's own `format!`
+/// args line (`dims[2], dims[3], cfg.image_size,` has no `!=`).
 fn is_spatial_decline(line: &str) -> bool {
-    if is_comment(line) {
-        return false;
-    }
-    let has_axis = line.contains("dims[2]") || line.contains("dims[3]");
-    let has_field = line.contains("image_size") || line.contains("img_size");
-    line.contains("!=") && has_axis && has_field
+    !is_comment(line) && line.contains("!=") && mentions_spatial_axis_and_field(line)
 }
 
 #[test]

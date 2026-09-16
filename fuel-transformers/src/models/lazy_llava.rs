@@ -917,8 +917,9 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn forward_shape_and_finite() {
+    /// Build a tiny LLaVA model (fixed seed; structural tests do not depend on weight
+    /// values). Shared by `forward_shape_and_finite` and the GAP-314 born-red.
+    fn tiny_llava_model() -> LlavaModel {
         let v_cfg = tiny_vision_cfg();
         let t_cfg = tiny_text_cfg();
         let mut s: u32 = 56565;
@@ -929,21 +930,26 @@ mod tests {
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let mm_proj = WeightStorage::F32(vec_of(v_cfg.embed_dim * t_cfg.dim, &mut *nb));
         let mm_proj_bias = vec_of(t_cfg.dim, &mut *nb);
-        let weights = LlavaWeights {
-            vision: tiny_vision_weights(&v_cfg),
-            mm_proj,
-            mm_proj_bias,
-            text: tiny_llama_weights(&t_cfg),
-        };
-        let cfg = LlavaConfig {
-            vision_config: v_cfg.clone(),
-            text_config: t_cfg.clone(),
-            projection_dim: t_cfg.dim,
-        };
-        let model = LlavaModel {
-            config: cfg,
-            weights,
-        };
+        LlavaModel {
+            config: LlavaConfig {
+                vision_config: v_cfg.clone(),
+                text_config: t_cfg.clone(),
+                projection_dim: t_cfg.dim,
+            },
+            weights: LlavaWeights {
+                vision: tiny_vision_weights(&v_cfg),
+                mm_proj,
+                mm_proj_bias,
+                text: tiny_llama_weights(&t_cfg),
+            },
+        }
+    }
+
+    #[test]
+    fn forward_shape_and_finite() {
+        let v_cfg = tiny_vision_cfg();
+        let t_cfg = tiny_text_cfg();
+        let model = tiny_llava_model();
 
         let img = tiny_image(&v_cfg);
         let text_tokens = [1_u32, 2, 3];
@@ -970,28 +976,7 @@ mod tests {
     #[test]
     fn wrong_channel_count_rejected_at_build_and_spatial_declines() {
         let v_cfg = tiny_vision_cfg(); // num_channels = 3, image_size = 8, patch = 4
-        let t_cfg = tiny_text_cfg();
-        let mut s: u32 = 78787;
-        let next = move || -> f32 {
-            s = s.wrapping_mul(1103515245).wrapping_add(12345);
-            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
-        };
-        let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
-        let mm_proj = WeightStorage::F32(vec_of(v_cfg.embed_dim * t_cfg.dim, &mut *nb));
-        let mm_proj_bias = vec_of(t_cfg.dim, &mut *nb);
-        let model = LlavaModel {
-            config: LlavaConfig {
-                vision_config: v_cfg.clone(),
-                text_config: t_cfg.clone(),
-                projection_dim: t_cfg.dim,
-            },
-            weights: LlavaWeights {
-                vision: tiny_vision_weights(&v_cfg),
-                mm_proj,
-                mm_proj_bias,
-                text: tiny_llama_weights(&t_cfg),
-            },
-        };
+        let model = tiny_llava_model();
         let tokens = [1_u32, 2, 3];
         let img = |c: usize, h: usize, w: usize| {
             let n = c * h * w;
