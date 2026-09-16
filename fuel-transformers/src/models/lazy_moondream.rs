@@ -213,8 +213,16 @@ impl MoondreamModel {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[2], cfg.image_size);
-        assert_eq!(dims[3], cfg.image_size);
+        if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
+            return Err(fuel_core::Error::Msg(format!(
+                "moondream vision: input spatial dims ({}, {}) must equal image_size {}; this \
+                 model is fixed-resolution (position interpolation deferred), and the patch \
+                 reshape targets a config-derived num_patches — it guards the patch COUNT, not \
+                 the per-axis size, so a count-preserving resize would otherwise pass silently",
+                dims[2], dims[3], cfg.image_size,
+            ))
+            .bt());
+        }
         let np_side = cfg.image_size / cfg.patch_size;
         assert_eq!(
             np_side * np_side,

@@ -167,8 +167,15 @@ impl VitModel {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[2], cfg.image_size);
-        assert_eq!(dims[3], cfg.image_size);
+        if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
+            return Err(fuel_core::Error::Msg(format!(
+                "VitModel: input spatial dims ({}, {}) must equal image_size {}; this model is \
+                 fixed-resolution (position interpolation deferred), and the patch reshape targets \
+                 a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
+                 so a count-preserving resize would otherwise pass silently rather than error",
+                dims[2], dims[3], cfg.image_size,
+            )));
+        }
 
         // ---- Patch embeddings via Conv2d -----------------------------------
         let conv_w = pixel_values.const_f32_like(
@@ -268,8 +275,15 @@ impl VitModel {
         assert_eq!(dims.len(), 4);
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
-        assert_eq!(dims[2], cfg.image_size);
-        assert_eq!(dims[3], cfg.image_size);
+        if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
+            return Err(fuel_core::Error::Msg(format!(
+                "VitModel: input spatial dims ({}, {}) must equal image_size {}; this model is \
+                 fixed-resolution (position interpolation deferred), and the patch reshape targets \
+                 a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
+                 so a count-preserving resize would otherwise pass silently rather than error",
+                dims[2], dims[3], cfg.image_size,
+            )));
+        }
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
@@ -683,6 +697,42 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap()
+    }
+
+    /// GAP-314 retained guard for the spatial-size CONVERT. The
+    /// `assert_eq!(dims[2/3], cfg.image_size)` panics were replaced by a typed
+    /// decline because the patch reshape targets a CONFIG-derived num_patches —
+    /// it guards the patch COUNT, not the per-axis size — so a count-preserving
+    /// resize passes reshape silently. This keeps the decline load-bearing: a
+    /// count-preserving spatial violation must be REJECTED with a typed error,
+    /// never silently accepted. Asserts the message fragment + positive control.
+    #[test]
+    fn count_preserving_spatial_violation_declined() {
+        let cfg = tiny_config(); // image_size 16, patch 4 -> 16 patches
+        let model = VitModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, None),
+        };
+        // Positive control: valid [1,3,16,16] builds.
+        model
+            .forward(&tiny_image(&cfg))
+            .expect("valid image must build");
+        // Count-preserving: [1,3,8,32], spatial 256 == 16*16, dims[2]=8 != 16.
+        let n = 1 * 3 * 8 * 32;
+        let bad = Tensor::from_f32(
+            Arc::from((0..n).map(|i| i as f32 / n as f32).collect::<Vec<_>>()),
+            Shape::from_dims(&[1, 3, 8, 32]),
+            &Device::cpu(),
+        )
+        .unwrap();
+        let err = model
+            .forward(&bad)
+            .expect_err("count-preserving spatial violation must be declined");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("image_size") && msg.contains("spatial"),
+            "expected a fixed-resolution spatial decline, got: {msg}"
+        );
     }
 
     /// GAP-314 retained guard for the channel-count DELETE. The

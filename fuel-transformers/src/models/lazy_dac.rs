@@ -155,11 +155,16 @@ impl DacModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "codes must be rank 3 [B, num_codebooks, T]");
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
-        assert_eq!(
-            dims[1], self.config.num_codebooks,
-            "codes must have {} codebooks, got {}",
-            self.config.num_codebooks, dims[1],
-        );
+        if dims[1] != self.config.num_codebooks {
+            return Err(fuel_core::Error::Msg(format!(
+                "DAC decode_codes: expected {} codebooks (the model's quantizer count), got {} on \
+                 the codebook axis (dims[1]); the RVQ decode loop iterates the model's quantizers, \
+                 so a mismatch does not surface on its own — an over-long axis is silently \
+                 truncated and a short axis indexes out of range downstream",
+                self.config.num_codebooks, dims[1],
+            ))
+            .bt());
+        }
         let latent = self.rvq_from_codes(codes)?;
         self.decoder_forward(&latent)
     }
@@ -849,6 +854,52 @@ mod tests {
         let in_data = x.realize_f32();
         for (a, b) in out.iter().zip(in_data.iter()) {
             assert!((a - b).abs() < 1e-5, "α=0 should be identity: {a} vs {b}");
+        }
+    }
+
+    /// GAP-314 retained born-red: `assert_eq!(dims[1], num_codebooks)` became a typed
+    /// decline copying encodec:338's codebook-count contract. Outcome LABEL is
+    /// UNCLASSIFIABLE (no independent value oracle for the invalid input); DISPOSITION
+    /// is convert, because the RVQ decode loop iterates the MODEL's quantizers, so a
+    /// mismatched axis never surfaces as the caller's error on its own — an over-long
+    /// axis is silently truncated to a subset, a short axis indexes out of range
+    /// downstream. The `!=` guard fires in BOTH directions, and the decline message is
+    /// direction-neutral (`expected N codebooks, got M`); this test exercises both so
+    /// the message's both-directions claim is not just prose. Correct count still builds.
+    #[test]
+    fn wrong_codebook_count_declined() {
+        let cfg = tiny_dac_config(); // num_codebooks = 2
+        let model = DacModel {
+            config: cfg.clone(),
+            weights: tiny_dac_weights(&cfg),
+        };
+        let time = 4_usize;
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
+        let mk = |n_cb: usize| {
+            let data: Vec<u32> = (0..n_cb * time)
+                .map(|i| (i % cfg.codebook_size) as u32)
+                .collect();
+            anchor
+                .const_u32_like(data, Shape::from_dims(&[1, n_cb, time]))
+                .unwrap()
+        };
+        // Positive control: correct codebook count builds.
+        model
+            .decode_codes(&mk(cfg.num_codebooks))
+            .expect("correct codebook count must build");
+        // The decline must fire in BOTH directions the `!=` guard covers, with the same
+        // direction-neutral message — over-long (silently truncated) and short (indexed
+        // out of range downstream). num_codebooks = 2, so the short case is 1 codebook.
+        for wrong in [cfg.num_codebooks + 1, cfg.num_codebooks - 1] {
+            let err = model
+                .decode_codes(&mk(wrong))
+                .expect_err("codebook count mismatch must be declined at build");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("expected") && msg.contains("codebooks"),
+                "expected a direction-neutral codebook-count decline for {wrong}, got: {msg}"
+            );
         }
     }
 

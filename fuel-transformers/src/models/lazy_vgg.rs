@@ -159,16 +159,13 @@ impl VggModel {
         let c = final_dims[1];
         let h = final_dims[2];
         let w = final_dims[3];
-        assert_eq!(
-            h, cfg.head_spatial,
-            "VGG head expects post-conv spatial size {}, got {}",
-            cfg.head_spatial, h
-        );
-        assert_eq!(
-            w, cfg.head_spatial,
-            "VGG head expects post-conv spatial size {}, got {}",
-            cfg.head_spatial, w
-        );
+        if h != cfg.head_spatial || w != cfg.head_spatial {
+            return Err(fuel_core::Error::Msg(format!(
+                "VGG head: post-conv spatial dims ({}, {}) must equal head_spatial {}; a mismatch \
+                 otherwise panics deeper in the fc1 flat-dim check rather than declining here",
+                h, w, cfg.head_spatial,
+            )));
+        }
         let flat_dim = c * h * w;
         assert_eq!(
             flat_dim, self.weights.fc1.in_features,
@@ -403,6 +400,35 @@ mod tests {
         let mut nb = rng_seed(123);
         let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
         Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu()).unwrap()
+    }
+
+    /// GAP-314 (c) retained born-red: `assert_eq!(h/w, head_spatial)` on the post-conv
+    /// spatial dims became a typed decline (it previously panicked deeper in the fc1
+    /// flat-dim check). A post-conv spatial size != head_spatial must be REJECTED AT
+    /// BUILD naming head_spatial; the canonical input size still builds. 64px is square
+    /// and /32 (so it passes run_backbone's input-shape asserts and REACHES this check),
+    /// but produces 2x the canonical post-conv spatial, violating head_spatial.
+    #[test]
+    fn wrong_post_conv_spatial_declined() {
+        let cfg = tiny_cfg(VggVariant::Vgg13);
+        let weights = build_weights(&cfg, 11);
+        let model = VggModel {
+            config: cfg,
+            weights,
+        };
+        // Positive control: the canonical 32px input builds.
+        model
+            .forward(&tiny_image(32))
+            .expect("canonical input size must build");
+        // 64px -> 2x post-conv spatial -> the converted decline must fire.
+        let err = model
+            .forward(&tiny_image(64))
+            .expect_err("wrong post-conv spatial must be declined");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_spatial"),
+            "expected a head_spatial decline, got: {msg}"
+        );
     }
 
     #[test]
