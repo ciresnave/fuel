@@ -521,9 +521,11 @@ jobs:
       # feature, or a non-default cargo feature is NOT checked here.
       #
       # LAST IN THE JOB, AND IT RUNS EVEN WHEN AN EARLIER STEP FAILED. Placed
-      # directly after `Run normal cpu`, a census failure SKIPPED the eleven
-      # gated compile checks below it on this leg (measured, PR #212 seeded
-      # run) -- a doc-link red hid whether those still compile. At the end it
+      # directly after `Run normal cpu`, a census failure SKIPPED the nine
+      # feature-gated compile checks below it on this leg (measured, PR #212
+      # seeded run; the avx2/neon steps are skipped here by their own
+      # `matrix.os` condition either way) -- a doc-link red hid whether those
+      # still compile. At the end it
       # neither masks them nor is masked by them. `success() || failure()`
       # excludes only `cancelled()`. If `Run normal cpu` itself failed, this
       # step reports CENSUS UNUSABLE with cargo's stderr rather than a count.

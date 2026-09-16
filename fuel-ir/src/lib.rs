@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Core vocabulary types for the fuel ML framework.
 //!
-//! BORN-RED SEED for the GAP-319 CI step -- REVERTED in the next commit: [`ZzzGap319SeededBrokenLink`].
-//!
 //! This crate contains the foundational types (`DType`, `Shape`, `Layout`, `Error`),
 //! the backend capability **data** (`BackendCapabilities`, `SubstrateClass`,
 //! `TransferPath`, `FitStatus`, `GgmlDType`, bundle `OutputView`s), and CPU
