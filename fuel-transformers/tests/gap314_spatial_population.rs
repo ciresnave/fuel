@@ -23,6 +23,20 @@
 //! `mod` — NOT the first `#[cfg(test)]`, which lands on a test-only `use` and would
 //! scan a truncated prefix that passes vacuously. Each file's scanned extent is
 //! printed so a truncated read cannot masquerade as a total.
+//!
+//! SABOTAGE-VERIFIED (recorded so the next reader need not re-derive it): re-introducing
+//! a single production `assert_eq!(dims[2], cfg.image_size)` takes `remaining_asserts` to
+//! 1 and fails this test. So the zero-remaining arm has been SEEN to be non-zero for the
+//! reason it exists — an assert-zero check that has only ever passed is indistinguishable
+//! from one pointed at an empty region.
+//!
+//! METHOD NOTE (`a-source-scan-must-not-be-inside-what-it-scans`): the assert detector is
+//! deliberately assert-CONTEXT-aware. A naive operand match (`dims[N], cfg.image_size`) is
+//! ALSO satisfied by the DECLINE's own `format!` args line (`dims[2], dims[3],
+//! cfg.image_size,`) — the guard's own text satisfying the guard's own detector, which
+//! made the first run report 17 false "asserts". The fix requires the match to be in
+//! assert context (`assert` on the line, or an `assert_eq!(` opener above), which the
+//! decline's format-string predecessor is not.
 
 const FILES: &[&str] = &[
     "lazy_beit.rs",
