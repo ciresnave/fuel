@@ -19,29 +19,44 @@ SHAPE = re.compile(r"\.dims\(\)|\.shape\(\)|\.rank\(\)|\bdims\[|dims\.len\(\)|\.
 ASSERT = re.compile(r"\b(debug_assert|assert)(_eq|_ne)?!\s*\(")
 
 
+def _test_mod_open_at(lines, i):
+    """If lines[i] is `#[cfg(test)]` (possibly followed by more attrs) heading a
+    `mod ... {`, return the index of that `mod` line; else None."""
+    if "#[cfg(test)]" not in lines[i]:
+        return None
+    j = i + 1
+    while j < len(lines) and lines[j].lstrip().startswith("#["):
+        j += 1
+    if j < len(lines) and re.match(r"\s*(pub\s+)?mod\s+\w+", lines[j]):
+        return j
+    return None
+
+
+def _brace_block_end(lines, start):
+    """Index of the line at which the brace block opening at/after `start` closes
+    (depth returns to 0); the last line if it never closes."""
+    depth, started = 0, False
+    for k in range(start, len(lines)):
+        depth += lines[k].count("{") - lines[k].count("}")
+        if "{" in lines[k]:
+            started = True
+        if started and depth <= 0:
+            return k
+    return len(lines) - 1
+
+
 def strip_test_blocks(lines):
     """Return set of line indices INSIDE a `#[cfg(test)] mod ... {` block (brace-matched)."""
     inside = set()
-    i, n = 0, len(lines)
-    while i < n:
-        if "#[cfg(test)]" in lines[i]:
-            j = i + 1
-            while j < n and lines[j].lstrip().startswith("#["):
-                j += 1
-            if j < n and re.match(r"\s*(pub\s+)?mod\s+\w+", lines[j]):
-                depth, started, k = 0, False, j
-                while k < n:
-                    depth += lines[k].count("{") - lines[k].count("}")
-                    if "{" in lines[k]:
-                        started = True
-                    if started and depth <= 0:
-                        break
-                    k += 1
-                for x in range(i, min(k, n - 1) + 1):
-                    inside.add(x)
-                i = k + 1
-                continue
-        i += 1
+    i = 0
+    while i < len(lines):
+        j = _test_mod_open_at(lines, i)
+        if j is None:
+            i += 1
+            continue
+        k = _brace_block_end(lines, j)
+        inside.update(range(i, k + 1))
+        i = k + 1
     return inside
 
 
