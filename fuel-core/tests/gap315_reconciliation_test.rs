@@ -95,15 +95,18 @@ fn f32s(v: f32, n: usize) -> Arc<[f32]> {
     Arc::from(vec![v; n])
 }
 
+/// Header. Formatting only, moved out so the body is case enumeration.
+fn header() {
+    let on = cfg!(debug_assertions);
+    println!();
+    println!("=== GAP-315 predicate experiment (A)+(B): reconciliation arm ===");
+    println!("debug_assertions = {on}  ({})", arm_label(on));
+}
+
 #[test]
 #[ignore = "instrument, not a gate: asserts nothing; see the module doc"]
 fn gap315_reconciliation_predicate_probe() {
-    println!(
-        "
-=== GAP-315 predicate experiment (A)+(B): reconciliation arm ==="
-    );
-    let on = cfg!(debug_assertions);
-    println!("debug_assertions = {on}  ({})", arm_label(on));
+    header();
 
     // ---- (A) layer_norm_affine: PREDICTED NOT (d) - reshape-family reconciles ----
     println!(
