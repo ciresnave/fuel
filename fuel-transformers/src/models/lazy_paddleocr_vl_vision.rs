@@ -185,8 +185,15 @@ impl PaddleOcrVlVisionModel {
             "pixels axis 0 ({}) must equal tile_grid.0 * tile_grid.1 = {}",
             dims[0], num_tiles,
         );
-        assert_eq!(dims[2], cfg.image_size);
-        assert_eq!(dims[3], cfg.image_size);
+        if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
+            return Err(fuel_core::Error::Msg(format!(
+                "paddleocr_vl_vision (fixed-tile): input spatial dims ({}, {}) must equal \
+                 image_size {}; this entry is fixed-resolution, and the patch reshape targets a \
+                 config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
+                 so a count-preserving resize would otherwise pass silently rather than error",
+                dims[2], dims[3], cfg.image_size,
+            )));
+        }
 
         let num_patches_per_tile = cfg.num_patches_per_tile();
         let merge = cfg.spatial_merge_size;

@@ -84,7 +84,14 @@ impl SpeakerEncoderModel {
         let t = dims[1];
         let d = dims[2];
         assert_eq!(b, 1, "v1 supports batch == 1");
-        assert_eq!(d, cfg.mel_n_channels);
+        if d != cfg.mel_n_channels {
+            return Err(fuel_core::Error::Msg(format!(
+                "MetaVoice speaker-encoder: input feature dim {} must equal mel_n_channels {}; \
+                 a mismatch otherwise panics deeper in the LSTM input-dim check rather than \
+                 declining here",
+                d, cfg.mel_n_channels,
+            )));
+        }
 
         // Multi-layer LSTM stack.
         let lstm_out = self.weights.lstm.forward(mels)?;
@@ -278,6 +285,38 @@ mod tests {
             config: cfg,
             weights,
         }
+    }
+
+    /// GAP-314 (c) retained born-red: `assert_eq!(d, mel_n_channels)` became a typed
+    /// build-time decline (it previously panicked deeper in the LSTM input-dim check).
+    /// A wrong trailing feature dim must be REJECTED AT BUILD naming mel_n_channels;
+    /// the correct dim still builds (positive control against a vacuous pass).
+    #[test]
+    fn wrong_feature_dim_declined_at_build() {
+        let model = tiny_model();
+        let mel = model.config.mel_n_channels;
+        let t = 5;
+        let mk = |d: usize| {
+            Tensor::from_f32(
+                (0..(t * d)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+                Shape::from_dims(&[1, t, d]),
+                &Device::cpu(),
+            )
+            .unwrap()
+        };
+        // Positive control: correct mel_n_channels builds.
+        model
+            .forward(&mk(mel))
+            .expect("correct feature dim must build");
+        // Wrong trailing feature dim.
+        let err = model
+            .forward(&mk(mel + 1))
+            .expect_err("wrong feature dim must be declined at build");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("mel_n_channels"),
+            "expected a mel_n_channels decline, got: {msg}"
+        );
     }
 
     #[test]
