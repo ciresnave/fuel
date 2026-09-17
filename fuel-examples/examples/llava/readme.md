@@ -1,7 +1,7 @@
 # fuel-llava
 
 LLaVA (Large Language-and-Vision Assistant) is an end-to-end trained large
-multimodal model. This example is from [fuel-llava](https://github.com/chenwanqq/fuel-llava)
+multimodal model. This example is from [candle-llava](https://github.com/chenwanqq/candle-llava)
 
 The code is based on [https://github.com/haotian-liu/LLaVA](https://github.com/haotian-liu/LLaVA), Hence the llava-hf version of config may perform differently.
 

@@ -5244,9 +5244,10 @@ pub fn matmul_f64(
 /// SAFETY-WRAPPER: reinterpret a `&[u8]` byte stream as `&[T]`
 /// where `T` is a GGML block type (`#[repr(C)]` with all-Pod
 /// fields, so the cast is sound). Used by the quantized matmul
-/// kernels — fuel-quantized exposes `as_t_slice` for `Cow<[u8]>`
-/// but we need the `&[u8]` flavor here. Returns `Err` on length
-/// or alignment mismatch.
+/// kernels. The borrow keeps the returned slice tied to `bytes`, which
+/// is what makes this sound (GAP-336: fuel-quantized's former
+/// `as_t_slice` took an owned `Cow` and returned a dangling slice).
+/// Returns `Err` on length or alignment mismatch.
 fn block_slice_from_bytes<'a, T>(name: &str, bytes: &'a [u8]) -> Result<&'a [T]> {
     let size = std::mem::size_of::<T>();
     if size == 0 {
