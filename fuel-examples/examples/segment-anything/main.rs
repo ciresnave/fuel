@@ -137,7 +137,7 @@ pub fn main() -> Result<()> {
         Some(model) => std::path::PathBuf::from(model),
         None => {
             let api = hf_hub::api::sync::Api::new()?;
-            let api = api.model("lmz/fuel-sam".to_string());
+            let api = api.model("lmz/candle-sam".to_string());
             let filename = "sam_vit_b_01ec64.safetensors";
             api.get(filename)?
         }

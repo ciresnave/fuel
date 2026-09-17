@@ -181,8 +181,10 @@ f32 path which debug-asserts). Output dtype f16, shape `m*n`, dense, no aliasing
   `from_float`/`from_float_imatrix` → trait, plus size/ptr accessors.
 - `cpu_zeros(dtype, elem_count)` (cpu.rs:83): allocate zeroed `Vec<BlockX>`
   sized `elem_count / BLCK_SIZE` (or `elem_count` for f32/f16/bf16).
-- `cpu_from_data(dtype, data)` (cpu.rs:103): reinterpret raw `Cow<[u8]>` as
-  `&[BlockX]` (`as_t_slice`, asserts size-multiple + alignment) and `.to_vec()`.
+- `cpu_from_data(dtype, data)` (cpu.rs): copy raw `Cow<[u8]>` into an owned
+  `Vec<BlockX>` one `read_unaligned` per block, returning `Err` on a partial
+  trailing block. (GAP-336: it used to reinterpret the bytes via `as_t_slice`,
+  which dangled for an owned `Cow` and panicked on misaligned input.)
 
 These are storage/dispatch glue, not distinct numeric kernels; the actual math
 is the `GgmlType` impls above. The `QuantizedDeviceKernels` /

@@ -134,7 +134,7 @@ fn main() -> Result<()> {
     let second_stage_path = match &args.second_stage {
         Some(p) => std::path::PathBuf::from(p),
         None => api
-            .model("lmz/fuel-metavoice".to_string())
+            .model("lmz/candle-metavoice".to_string())
             .get("second_stage.safetensors")?,
     };
     let first_stage_path = match &args.first_stage {

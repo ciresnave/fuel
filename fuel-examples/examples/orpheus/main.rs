@@ -206,7 +206,7 @@ fn load_snac() -> Result<(SnacModel, SnacConfig)> {
     let config_path = m.get("config.json")?;
     let cfg_json: HfSnacConfig = serde_json::from_reader(std::fs::File::open(config_path)?)?;
     let cfg: SnacConfig = cfg_json.into();
-    let m = api.model("lmz/fuel-snac".to_string());
+    let m = api.model("lmz/candle-snac".to_string());
     let model_path = m.get("snac_24khz.safetensors")?;
     let st = unsafe { fuel::safetensors::MmapedSafetensors::new(&model_path) }
         .map_err(|e| E::msg(format!("mmap snac safetensors: {e}")))?;

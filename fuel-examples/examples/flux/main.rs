@@ -411,7 +411,7 @@ fn run(args: Args) -> Result<()> {
             let packed_out = if quantized {
                 let model_file = match model {
                     Model::Schnell => api
-                        .repo(hf_hub::Repo::model("lmz/fuel-flux".to_string()))
+                        .repo(hf_hub::Repo::model("lmz/candle-flux".to_string()))
                         .get("flux1-schnell.gguf")?,
                     Model::Dev => anyhow::bail!("quantized flux1-dev not supported"),
                 };
