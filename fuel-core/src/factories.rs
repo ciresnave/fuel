@@ -131,15 +131,20 @@ impl BridgeRealizer {
     }
 
     /// Realize `tensor` on the pinned device, reading the output
-    /// storage back as `Vec<T>` (a byte-reinterpret — `T` must match
-    /// the root node's dtype width). Shared body for the per-dtype
+    /// storage back as `Vec<T>` (a byte reinterpret — `T` must EQUAL the
+    /// root node's dtype, now ENFORCED by the realize funnel guard: a
+    /// mismatch returns [`fuel_ir::Error::UnexpectedDType`], GAP-327).
+    /// Shared body for the per-dtype
     /// realize seams: [`Realizer::realize_f32`] is `T = f32`;
     /// [`Realizer::realize_capture_f32`] picks `T` from the root
     /// dtype (F16 → `half::f16`, BF16 → `half::bf16`) and converts.
     ///
     /// Sets `last_kernel_source` from the picker's dispatched sibling
     /// for the realize root.
-    fn realize_as<T: bytemuck::Pod>(&mut self, tensor: &Tensor) -> Result<Vec<T>> {
+    fn realize_as<T: bytemuck::Pod + fuel_ir::WithDType>(
+        &mut self,
+        tensor: &Tensor,
+    ) -> Result<Vec<T>> {
         let graph = tensor.graph_tensor().graph().clone();
         let target = tensor.graph_tensor().id();
 

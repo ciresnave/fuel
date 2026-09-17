@@ -1,6 +1,6 @@
 [package]
 name = "fuel-onnx"
-version = "0.10.3"
+version.workspace = true
 edition = "2021"
 
 description = "ONNX support for Fuel"

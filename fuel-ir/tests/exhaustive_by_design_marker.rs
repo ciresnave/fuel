@@ -49,7 +49,7 @@ const MARKER: &str = "EXHAUSTIVE-BY-DESIGN";
 /// Extending the marker to a new enum means adding it here in the same change —
 /// deliberately, so a new closed-enum declaration is a reviewed act, not a
 /// silent one.
-const EXPECTED_MARKED: &[&str] = &["Scalar", "DType", "Op"];
+const EXPECTED_MARKED: &[&str] = &["Scalar", "DType", "Op", "PatternNode"];
 
 /// One enum definition whose preceding attribute/doc block carries [`MARKER`].
 #[derive(Debug, PartialEq, Eq)]

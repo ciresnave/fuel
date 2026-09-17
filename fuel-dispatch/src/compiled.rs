@@ -113,7 +113,8 @@ pub fn compile_node(
 /// `lookup_with_caps` picks). `None` when the node has no dispatch mapping
 /// (view/structural op) or no registered binding.
 ///
-/// Both fields come from the ONE `find()` — the same [`BindingEntry`] — so
+/// Both fields come from the ONE `find()` — the same
+/// [`BindingEntry`](crate::kernel::BindingEntry) — so
 /// the tag and the revision describe the same kernel by construction; a
 /// second lookup keyed on the tag could not disambiguate variant siblings
 /// that share it, which is precisely the collapse the revision exists to

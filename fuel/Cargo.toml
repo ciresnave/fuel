@@ -17,14 +17,14 @@ description = "Fuel — a DAG-first, lazy-only ML framework for Rust (public fac
 repository = "https://github.com/ciresnave/fuel"
 
 [dependencies]
-fuel-core = { path = "../fuel-core", version = "0.10.3" }
+fuel-core = { path = "../fuel-core", version = "0.11.0" }
 # Stage 2: the facade re-exports the model zoo from fuel-transformers (Models
 # tier). Added in the SAME commit that repoints fuel-transformers -> fuel-core,
 # because a facade depending on a fuel-transformers that still depends on the
 # facade would be a cargo cycle — so this dependency and that repoint cannot be
 # split. The models re-export (`pub use fuel_transformers::models::*`) lands in
 # the move commit; this crate carries the feature forwards from here on.
-fuel-transformers = { path = "../fuel-transformers", version = "0.10.3" }
+fuel-transformers = { path = "../fuel-transformers", version = "0.11.0" }
 
 # Features forward to EVERY dependency that declares them, and to no dependency
 # that does not (see fuel/tests/feature_forwarding.rs, which derives this rule

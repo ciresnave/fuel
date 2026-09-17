@@ -1337,17 +1337,19 @@ impl Tensor {
             .expect("realize_u32 via PipelinedExecutor")
     }
 
-    /// Realize as raw bytes (`u8`). Used to read a `Bool` mask (0/1 per byte) or
-    /// a `U8` tensor back to host (GAP-168(c)).
+    /// Realize as raw bytes (`u8`). A BYTE VIEW: reads a `Bool` mask (0/1 per byte) or a
+    /// `U8` tensor back to host (GAP-168(c)), and by design does NOT guard the root dtype —
+    /// it routes through [`crate::pipelined_bridge::realize_one_bytes`] (the raw byte entry,
+    /// GAP-327), so a `Bool` root (dtype != `U8`) is read as its bytes rather than rejected.
     ///
-    /// **PANICS** on a realize failure; for a fallible realize use
-    /// [`crate::pipelined_bridge::realize_one_as`] (`::<u8>`). See
-    /// [`Self::realize_f32`] for the documented-not-enforced rationale (GAP-186).
+    /// **PANICS** on a realize failure; for a fallible byte view use
+    /// [`crate::pipelined_bridge::realize_one_bytes`]. See [`Self::realize_f32`] for the
+    /// documented-not-enforced rationale (GAP-186).
     pub fn realize_u8(&self) -> Vec<u8> {
         let graph = self.inner.graph().clone();
         let target = self.inner.id();
         let device = crate::Device::cpu();
-        crate::pipelined_bridge::realize_one_as::<u8>(&graph, target, &device)
+        crate::pipelined_bridge::realize_one_bytes(&graph, target, &device)
             .expect("realize_u8 via PipelinedExecutor")
     }
 
@@ -1865,7 +1867,6 @@ impl Tensor {
         })
     }
 
-    /// Result-returning sibling of [`Self::cast`] / [`Self::to_dtype`].
     /// Detach this tensor from autograd. On lazy, autograd is structural
     /// (every graph edge participates in backward unless explicitly cut
     /// by a non-differentiable op), so there's no per-tensor toggle —
@@ -1963,16 +1964,13 @@ impl Tensor {
     /// [`Self::realize_f32`] — executor-unification Session 1
     /// (re-audit gap 8) retires the typed `fuel_graph_cpu` recursive
     /// evaluator from the public API. The root must already be
-    /// F64-dtype (insert [`Self::to_dtype`] otherwise); the guard
-    /// preserves the legacy evaluator's panic-on-mismatch contract —
-    /// without it the byte reinterpretation in
-    /// [`crate::pipelined_bridge::realize_one_as`] would silently
-    /// return garbage.
+    /// F64-dtype (insert [`Self::to_dtype`] otherwise). The dtype guard
+    /// lives at the single realize funnel
+    /// [`crate::pipelined_bridge::realize_one_as`] (GAP-327): a mismatch
+    /// returns [`fuel_ir::Error::UnexpectedDType`], which the `.expect`
+    /// below turns into a panic here — so the byte reinterpretation never
+    /// silently returns garbage.
     pub fn realize_f64(&self) -> Vec<f64> {
-        let dt = self.inner.dtype();
-        if dt != DType::F64 {
-            panic!("realize_f64: root dtype is {dt:?}, not F64");
-        }
         let graph = self.inner.graph().clone();
         let target = self.inner.id();
         let device = crate::Device::cpu();
@@ -1983,10 +1981,6 @@ impl Tensor {
     /// Realize as a `bf16` `Vec`. See [`Self::realize_f64`] for the
     /// routing + dtype-guard rationale.
     pub fn realize_bf16(&self) -> Vec<half::bf16> {
-        let dt = self.inner.dtype();
-        if dt != DType::BF16 {
-            panic!("realize_bf16: root dtype is {dt:?}, not BF16");
-        }
         let graph = self.inner.graph().clone();
         let target = self.inner.id();
         let device = crate::Device::cpu();
@@ -1997,10 +1991,6 @@ impl Tensor {
     /// Realize as an `f16` `Vec`. See [`Self::realize_f64`] for the
     /// routing + dtype-guard rationale.
     pub fn realize_f16(&self) -> Vec<half::f16> {
-        let dt = self.inner.dtype();
-        if dt != DType::F16 {
-            panic!("realize_f16: root dtype is {dt:?}, not F16");
-        }
         let graph = self.inner.graph().clone();
         let target = self.inner.id();
         let device = crate::Device::cpu();
@@ -4994,6 +4984,69 @@ mod tests {
             Tensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let b = a.mul(&a).unwrap();
         assert_eq!(b.realize_f64(), vec![2.25, 6.25, 12.25]);
+    }
+
+    /// GAP-327 regression test (was the born-red probe; now LIVE — the guard has landed).
+    ///
+    /// The realize funnel `pipelined_bridge::extract_cpu_bytes_typed` guards the byte
+    /// reinterpretation on the root's dtype: `realize_one_as::<T>` returns
+    /// `Error::UnexpectedDType` on a mismatch, and the typed `realize_fNN` accessors (which
+    /// `.expect` that result) panic. The BYTE VIEW `realize_one_bytes` is the deliberate
+    /// UNGUARDED escape hatch and still returns raw bytes for any dtype. Measured by probe
+    /// (GAP-327) before the fix: realize_f32()/realize_one_as::<f32> on an F64 [1.0, 2.0]
+    /// root returned Ok([0.0, 1.875, 0.0, 2.0]) — silent reinterpretation; this asserts that
+    /// is now rejected while the byte view is not. See docs/gaps.md GAP-327.
+    #[test]
+    fn gap327_realize_f32_on_f64_root_must_reject_not_reinterpret() {
+        let t =
+            Tensor::from_f64(vec![1.0_f64, 2.0], Shape::from_dims(&[2]), &Device::cpu()).unwrap();
+        let graph = t.inner.graph().clone();
+        let target = t.inner.id();
+        let device = Device::cpu();
+
+        // Silence the panic hook only around the catch_unwind measurements; restore it
+        // before the assertions so a real failure still prints.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        // Control 1 (RIGHT dtype): realize_f64 on the F64 root succeeds.
+        let ctl_f64 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.realize_f64()));
+        // Control 2 (guard FIRES): a MISMATCHED guarded accessor panics — proves the harness
+        // observes guards, so the subject rejection below is real and not a swallowed nothing.
+        let ctl_f16 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.realize_f16()));
+        // SUBJECT A: realize_f32 on the F64 root must now panic (guard -> Err -> .expect).
+        let subj_method =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.realize_f32()));
+        std::panic::set_hook(prev_hook);
+
+        // SUBJECT B: realize_one_as::<f32> must return Err(UnexpectedDType) (matched by variant).
+        let subj_raw = crate::pipelined_bridge::realize_one_as::<f32>(&graph, target, &device);
+        // BYTE VIEW: the unguarded escape hatch must still return the root's RAW bytes
+        // (2 x f64 = 16 bytes) — a dtype mismatch is NOT an error for the byte view.
+        let bytes_view = crate::pipelined_bridge::realize_one_bytes(&graph, target, &device);
+
+        assert!(
+            ctl_f64.is_ok(),
+            "control: realize_f64 on an F64 root must succeed; got {ctl_f64:?}"
+        );
+        assert!(
+            ctl_f16.is_err(),
+            "positive control: realize_f16() on an F64 root must panic (guard fires); if it \
+             does not, the harness is not observing panics and the subject asserts are vacuous"
+        );
+        assert!(
+            subj_method.is_err(),
+            "realize_f32() on an F64 root must REJECT (panic), not silently reinterpret bytes"
+        );
+        assert!(
+            matches!(subj_raw, Err(fuel_ir::Error::UnexpectedDType { .. })),
+            "realize_one_as::<f32> on an F64 root must return Err(UnexpectedDType), not \
+             Ok(reinterpreted bytes); got {subj_raw:?}"
+        );
+        assert!(
+            matches!(&bytes_view, Ok(b) if b.len() == 16),
+            "byte view realize_one_bytes on an F64 [1.0, 2.0] root must return 16 raw bytes \
+             (unguarded), not an error; got {bytes_view:?}"
+        );
     }
 
     #[test]
@@ -8652,10 +8705,11 @@ impl LlamaModel {
     fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
-        let dims = embeds.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
-        let seq = dims[1];
+        let shape = embeds.shape();
+        let (_, seq, _) = shape.dims3().map_err(|e| {
+            e.context("LlamaModel::run_backbone_embeds: embeds must be rank 3 [b, seq, dim]")
+        })?;
+        let dims = shape.dims();
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
         assert_eq!(
             cfg.n_heads * cfg.head_dim,
@@ -8697,10 +8751,13 @@ impl LlamaModel {
     ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
-        let dims = embeds.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
-        let seq = dims[1];
+        let shape = embeds.shape();
+        let (_, seq, _) = shape.dims3().map_err(|e| {
+            e.context(
+                "LlamaModel::forward_hidden_embeds_with_mask: embeds must be rank 3 [b, seq, dim]",
+            )
+        })?;
+        let dims = shape.dims();
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
 
         let mut h = embeds.clone();
@@ -8795,9 +8852,13 @@ impl LlamaModel {
     ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
-        let dims = embeds.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
+        let shape = embeds.shape();
+        shape.dims3().map_err(|e| {
+            e.context(
+                "LlamaModel::run_backbone_with_rope_tables: embeds must be rank 3 [b, seq, dim]",
+            )
+        })?;
+        let dims = shape.dims();
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
         assert_eq!(
             cfg.n_heads * cfg.head_dim,
@@ -24443,6 +24504,79 @@ mod llama_tests {
                 (a - b).abs() < 1e-6,
                 "forward_hidden_embeds + lm_head must match forward_embeds: {a} vs {b}"
             );
+        }
+    }
+
+    /// GAP-326: the three embeds entry points check rank with `Shape::dims3()`,
+    /// so a rank-2 input is a typed `UnexpectedNumberOfDims` naming the entry
+    /// point. Each used to be an `assert_eq!` panic inside a function that
+    /// returns `Result`.
+    #[test]
+    fn embeds_of_the_wrong_rank_are_a_typed_error_not_a_panic() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 1,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let rank2 = Tensor::from_f32(
+            vec![0.0; 4 * cfg.dim],
+            Shape::from_dims(&[4, cfg.dim]),
+            &crate::Device::cpu(),
+        )
+        .unwrap();
+
+        /// The error under any `Context` / `WithBacktrace` wrapping.
+        fn root(e: &crate::Error) -> &crate::Error {
+            match e {
+                crate::Error::Context { inner, .. } | crate::Error::WithBacktrace { inner, .. } => {
+                    root(inner)
+                }
+                other => other,
+            }
+        }
+
+        // The rank check runs before the other arguments are used, so the
+        // rank-2 tensor stands in for the rope tables and the mask.
+        let results = [
+            (
+                "run_backbone_embeds",
+                model.forward_hidden_embeds(&rank2, 0),
+            ),
+            (
+                "forward_hidden_embeds_with_mask",
+                model.forward_hidden_embeds_with_mask(&rank2, &rank2, 0),
+            ),
+            (
+                "run_backbone_with_rope_tables",
+                model.run_backbone_with_rope_tables(&rank2, &rank2, &rank2, &rank2),
+            ),
+        ];
+        for (entry, result) in results {
+            let e = result
+                .err()
+                .unwrap_or_else(|| panic!("{entry}: rank-2 embeds accepted"));
+            assert!(
+                matches!(
+                    root(&e),
+                    crate::Error::UnexpectedNumberOfDims {
+                        expected: 3,
+                        got: 2,
+                        ..
+                    }
+                ),
+                "{entry}: {e}"
+            );
+            assert!(e.to_string().contains(entry), "{entry}: {e}");
         }
     }
 }

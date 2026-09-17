@@ -511,7 +511,8 @@ macro_rules! register_fused {
 /// this set by either (a) registering during their own startup, or
 /// (b) the step-9 binding-table refactor where the route picker pulls
 /// from this registry. Today's executors continue to lookup via the
-/// per-dtype [`crate::dispatch::KernelBindingTable`]; this registry is
+/// per-dtype [`KernelBindingTable`](crate::kernel::KernelBindingTable); this
+/// registry is
 /// the architecture-target shape for CUTLASS / cuBLAS alternative
 /// registrations and step-9's pre-resolved `KernelRef` pipeline.
 pub fn default_kernel_registry() -> &'static FusedKernelRegistry {

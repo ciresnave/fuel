@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shapes describe the dimensionality of tensors.
 //!
-//! This module re-exports shape types from `fuel-core-types` and adds
-//! [`Tensor`](crate::Tensor) dimension-extraction convenience methods.
+//! This module re-exports the shape types of [`fuel_ir::shape`]; it adds
+//! nothing of its own.
 //!
 //! ```rust
 //! use fuel_core::Shape;

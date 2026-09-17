@@ -130,7 +130,7 @@ fn main() -> Result<()> {
     let tokenizer_path = match args.tokenizer_file.as_ref() {
         Some(f) => std::path::PathBuf::from(f),
         None => api
-            .model("lmz/fuel-rwkv".to_string())
+            .model("lmz/candle-rwkv".to_string())
             .get("rwkv_vocab_v20230424.json")?,
     };
     let tokenizer =

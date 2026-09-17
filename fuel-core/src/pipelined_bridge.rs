@@ -86,6 +86,7 @@ use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
 use crate::topology::SystemTopology;
+use fuel_ir::dtype::WithDType;
 
 /// The picker's attribution of a realize root's dispatched kernel:
 /// `(kernel_source tag, kernel_revision_hash)`, threaded out of the reporting
@@ -163,7 +164,7 @@ pub fn optimize_calls_thread_local() -> usize {
 ///    execute pipeline over the run/`lower_run` dispatch order; returns
 ///    a `BackendStorage::Cpu` for the spliced root.
 /// 4. `bytemuck::cast_slice` — reinterpret the CPU bytes as `T`.
-pub fn realize_one_as<T: bytemuck::Pod>(
+pub fn realize_one_as<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
@@ -204,7 +205,7 @@ pub fn realize_one_as<T: bytemuck::Pod>(
 ///
 /// CPU appearing among the extra devices is a no-op (CPU's allocation path
 /// is handle-free; [`device_seed_storage`] returns `Ok(None)` for it).
-pub fn realize_one_as_multi_device<T: bytemuck::Pod>(
+pub fn realize_one_as_multi_device<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
@@ -264,7 +265,7 @@ fn seed_extra_device_handles(
 
 /// Multi-target counterpart of [`realize_one_as`]. Returns parallel
 /// `Vec<Vec<T>>` in the order of `targets`.
-pub fn realize_many_as<T: bytemuck::Pod>(
+pub fn realize_many_as<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     targets: &[NodeId],
     device: &Device,
@@ -279,7 +280,7 @@ pub fn realize_many_as<T: bytemuck::Pod>(
 /// re-uploading them. NodeIds already present in `initial` are
 /// not re-fetched from the graph's storage_map; their Arcs survive
 /// the call.
-pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
+pub fn realize_one_as_with_initial<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
@@ -296,7 +297,7 @@ pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
 /// [`realize_one_as_with_initial`]. Used by
 /// [`crate::inference_context::InferenceContext`] to carry the
 /// session's per-token `cached_len` binding into realize.
-pub fn realize_one_as_with_initial_env<T: bytemuck::Pod>(
+pub fn realize_one_as_with_initial_env<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
@@ -322,7 +323,7 @@ pub fn realize_one_as_with_initial_env<T: bytemuck::Pod>(
 /// the executor then dispatched the first-registered binding via its
 /// `compile_node` fallback, so callers wanting an attribution tag in
 /// that case should fall back to the first-registered convention.
-pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
+pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
@@ -340,7 +341,7 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
 /// [`fuel_dispatch::plan::PlanOptions::allow_cost_placement`]. Backs
 /// [`crate::lazy::Tensor::realize_f32_reference`] + the per-op parity
 /// harness; the replacement for the retiring `fuel-reference-backend` oracle.
-pub fn realize_one_reference_as<T: bytemuck::Pod>(
+pub fn realize_one_reference_as<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
@@ -356,14 +357,19 @@ pub fn realize_one_reference_as<T: bytemuck::Pod>(
     .map(|(bytes, _root_kernel_source)| bytes)
 }
 
-fn realize_one_as_reporting_impl<T: bytemuck::Pod>(
+/// Non-generic executor path shared by the typed ([`realize_one_as_reporting_impl`]) and
+/// byte-view ([`realize_one_bytes_reporting`]) realize entries: prepare → optimize →
+/// dispatch, returning the root's realized CPU [`Storage`] and the dispatched root kernel.
+/// The dtype-typing (or the deliberate lack of it, for the byte view) lives entirely in the
+/// EXTRACTION step the callers apply, not here — so both paths run byte-identical execution.
+fn realize_one_to_storage(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
     initial: StorageCache,
     sym_env: &SymEnv,
     allow_cost_placement: bool,
-) -> Result<(Vec<T>, RootKernelIdent)> {
+) -> Result<(Arc<RwLock<Storage>>, RootKernelIdent)> {
     let (cache, _backend_id, mut effective_targets) = prepare(graph, &[target], device, initial)?;
     let Some(cpu_target) = effective_targets.pop() else {
         return Err(Error::Msg(
@@ -386,7 +392,7 @@ fn realize_one_as_reporting_impl<T: bytemuck::Pod>(
     // settles instead of exhausting instant rebuilds; capped at
     // `MAX_PLAN_REBUILDS` to prevent infinite spin under genuinely
     // persistent churn.
-    let (storage, root_kernel_source) = dispatch_with_plan_retry(
+    dispatch_with_plan_retry(
         graph,
         cpu_target,
         cache,
@@ -394,8 +400,51 @@ fn realize_one_as_reporting_impl<T: bytemuck::Pod>(
         target,
         sym_env,
         allow_cost_placement,
+    )
+}
+
+fn realize_one_as_reporting_impl<T: bytemuck::Pod + WithDType>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+    sym_env: &SymEnv,
+    allow_cost_placement: bool,
+) -> Result<(Vec<T>, RootKernelIdent)> {
+    let (storage, root_kernel_source) = realize_one_to_storage(
+        graph,
+        target,
+        device,
+        initial,
+        sym_env,
+        allow_cost_placement,
     )?;
     Ok((extract_cpu_bytes_typed::<T>(&storage)?, root_kernel_source))
+}
+
+/// GAP-327 byte VIEW entry: realize `target` and return its root's RAW bytes as `u8`, with
+/// NO dtype guard — the deliberate counterpart to [`realize_one_as`] for callers that intend
+/// a byte reinterpret of ANY dtype (`Bool` masks, KV-pool block bytes). A TYPED read must use
+/// [`realize_one_as`], which rejects a dtype mismatch (GAP-327).
+pub fn realize_one_bytes(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+) -> Result<Vec<u8>> {
+    realize_one_bytes_with_initial(graph, target, device, StorageCache::new())
+}
+
+/// Cache-seeded sibling of [`realize_one_bytes`] (used by the device KV pool's byte-level
+/// block read/write, which are dtype-agnostic by design).
+pub fn realize_one_bytes_with_initial(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+) -> Result<Vec<u8>> {
+    let (storage, _root_kernel_source) =
+        realize_one_to_storage(graph, target, device, initial, &SymEnv::default(), true)?;
+    extract_cpu_bytes_raw(&storage)
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +475,7 @@ fn realize_one_as_reporting_impl<T: bytemuck::Pod>(
 /// produces — it IS that path, just additionally surfacing the optimize view
 /// and spliced root. `OPTIMIZE_CALLS` bumps exactly once here (plus once per
 /// `TopologyChanged` retry, as on the normal path).
-pub fn prebuild_optimized_env<T: bytemuck::Pod>(
+pub fn prebuild_optimized_env<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
@@ -456,7 +505,7 @@ pub fn prebuild_optimized_env<T: bytemuck::Pod>(
 /// the per-token data Consts (token-ids / RoPE / mask) are overwritten
 /// in the held cache each token. Without this, the prebuilt path would
 /// error on the first weight Const it can't resolve.
-pub fn prebuild_optimized_env_capturing_cache<T: bytemuck::Pod>(
+pub fn prebuild_optimized_env_capturing_cache<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
@@ -503,7 +552,7 @@ pub fn prebuild_optimized_env_capturing_cache<T: bytemuck::Pod>(
 /// stamps may be wrong, so re-optimizing in place would be incorrect. The
 /// caller (D2b) handles it by invalidating the held session and rebuilding
 /// (§4/§5, Q5). Every other error propagates unchanged. Never panics.
-pub fn realize_one_prebuilt_env<T: bytemuck::Pod>(
+pub fn realize_one_prebuilt_env<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     effective_target: NodeId,
     optimized: &OptimizedGraph,
@@ -901,7 +950,7 @@ fn dispatch_with_plan_retry(
 }
 
 /// Multi-target counterpart of [`realize_one_as_with_initial`].
-pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
+pub fn realize_many_as_with_initial<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     targets: &[NodeId],
     device: &Device,
@@ -914,7 +963,7 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
 /// per-pass [`SymEnv`] for `DynScalar` op params (Phase D symbolic
 /// extents). An **empty** env is byte-identical to
 /// [`realize_many_as_with_initial`].
-pub fn realize_many_as_with_initial_env<T: bytemuck::Pod>(
+pub fn realize_many_as_with_initial_env<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     targets: &[NodeId],
     device: &Device,
@@ -956,7 +1005,7 @@ pub type SplitRealizeOutput<T> = (Vec<Vec<T>>, Vec<(Arc<RwLock<Storage>>, Layout
 /// Resident results are `(storage, layout)` pairs in `targets` order
 /// (offset by `n_host`); the storage Arc's `BackendStorage` variant
 /// carries the device identity.
-pub fn realize_split_as_with_initial<T: bytemuck::Pod>(
+pub fn realize_split_as_with_initial<T: bytemuck::Pod + WithDType>(
     graph: &Arc<RwLock<Graph>>,
     targets: &[NodeId],
     n_host: usize,
@@ -1052,10 +1101,29 @@ fn dispatch_many_with_plan_retry(
 /// devices) or directly on CPU (for CPU realizes). Either way, this
 /// is a `BackendStorage::Cpu` — extract its bytes via the
 /// CPU-variant pattern.
-fn extract_cpu_bytes_typed<T: bytemuck::Pod>(storage: &Arc<RwLock<Storage>>) -> Result<Vec<T>> {
+fn extract_cpu_bytes_typed<T: bytemuck::Pod + WithDType>(
+    storage: &Arc<RwLock<Storage>>,
+) -> Result<Vec<T>> {
     let guard = storage
         .read()
         .map_err(|_| Error::Msg("storage lock poisoned".into()).bt())?;
+    // GAP-327: the `cast_slice::<u8, T>` below is a byte REINTERPRETATION and is only
+    // correct when the root's logical dtype equals the requested element type `T`. Without
+    // this guard a dtype mismatch returns garbage silently (measured: an F64 root read as
+    // f32 yields 4 reinterpreted values, not 2). This is the single funnel every typed
+    // realize path passes through. Byte-VIEW callers that intend a raw reinterpret of ANY
+    // dtype (Bool masks, KV-pool block bytes) must use `extract_cpu_bytes_raw` /
+    // `realize_one_bytes*` instead, which is unguarded by design.
+    let root = guard.dtype();
+    if root != T::DTYPE {
+        return Err(Error::UnexpectedDType {
+            msg: "realize: root dtype does not match the requested element type \
+                  (use realize_one_bytes* for a raw byte view)",
+            expected: T::DTYPE,
+            got: root,
+        }
+        .bt());
+    }
     let bytes: &[u8] = match &guard.inner {
         BackendStorage::Cpu(s) => s.bytes(),
         // The other arms are feature-gated; on default-features-only
@@ -1073,6 +1141,26 @@ fn extract_cpu_bytes_typed<T: bytemuck::Pod>(storage: &Arc<RwLock<Storage>>) -> 
         }
     };
     Ok(bytemuck::cast_slice::<u8, T>(bytes).to_vec())
+}
+
+/// GAP-327 byte VIEW: return the realized root's RAW bytes as `u8`, with NO dtype guard —
+/// correct for ANY dtype by design (a `Bool` mask, a `U8` tensor, or a raw reinterpret of
+/// a wider dtype's storage). This is the deliberate escape hatch from
+/// [`extract_cpu_bytes_typed`]'s guard; a TYPED read must use that function. There is no
+/// `cast_slice` here — the bytes are already `u8`.
+fn extract_cpu_bytes_raw(storage: &Arc<RwLock<Storage>>) -> Result<Vec<u8>> {
+    let guard = storage
+        .read()
+        .map_err(|_| Error::Msg("storage lock poisoned".into()).bt())?;
+    match &guard.inner {
+        BackendStorage::Cpu(s) => Ok(s.bytes().to_vec()),
+        #[allow(unreachable_patterns)]
+        other => Err(Error::Msg(format!(
+            "pipelined_bridge: realize root produced non-CPU storage ({other:?}) — the \
+             Op::Copy splice in `prepare()` should have made the root CPU-resident. This is a bug.",
+        ))
+        .bt()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1921,7 +2009,7 @@ fn seed_placed_device_handles(
 
 /// Allocate a small "device anchor" storage on `device` — enough bytes
 /// to carry the device handle into the [`StorageCache`] so the
-/// pipelined executor's [`WorkItemKind::Alloc`] arm can derive the
+/// pipelined executor's `WorkItemKind::Alloc` arm can derive the
 /// per-backend handle for `Op::Alloc` nodes.
 ///
 /// Phase 3a of bridge-retirement (post-9c). This is the *residual*
@@ -2676,5 +2764,34 @@ mod tests {
             StorageCache::new(),
         );
         assert!(err.is_err(), "n_host > targets.len() must be a typed Err");
+    }
+}
+
+#[cfg(test)]
+mod gap327_funnel_check {
+    //! GAP-327: the generic byte reinterpret must live at exactly ONE code site — the
+    //! guarded funnel `extract_cpu_bytes_typed` — and behind the dtype guard. The byte VIEW
+    //! (`extract_cpu_bytes_raw`) returns raw bytes with no cast. The search pattern is
+    //! assembled from fragments so this test's own source does not contain the literal it
+    //! scans for (the source-scan-inside-what-it-scans trap); comment lines are excluded.
+    #[test]
+    fn cast_slice_u8_is_a_single_guarded_site() {
+        let src = include_str!("pipelined_bridge.rs");
+        let call = concat!("cast_slice::<u8, ", "T>(");
+        let n = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//") && l.contains(call))
+            .count();
+        assert_eq!(
+            n, 1,
+            "the generic byte-reinterpret funnel must occur at exactly ONE code site; found {n}"
+        );
+        let guard = "!= T::DTYPE";
+        let cast_pos = src.find(call).expect("the funnel cast site");
+        let guard_pos = src.find(guard).expect("the dtype guard");
+        assert!(
+            guard_pos < cast_pos,
+            "the dtype guard must precede the byte-reinterpret funnel"
+        );
     }
 }
