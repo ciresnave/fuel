@@ -232,14 +232,9 @@ fn mmvq_format(dtype: GgmlDType) -> Result<MmvqFormat> {
     })
 }
 
-/// GAP-331: check every argument the MMVQ kernel trusts, before any
-/// allocation or launch. The module docs list the predicates and where
-/// each one comes from. Host-only, so each predicate is unit-tested
-/// without a device.
-#[allow(clippy::too_many_arguments)]
-fn validate_mmvq_extent(
-    op_label: &'static str,
-    fmt: MmvqFormat,
+/// The caller-supplied arguments that `validate_mmvq_extent` checks.
+#[derive(Clone, Copy, Debug)]
+struct MmvqCall {
     w_len_bytes: usize,
     w_start_byte_offset: i64,
     act_len_bytes: usize,
@@ -247,44 +242,89 @@ fn validate_mmvq_extent(
     stride_y: i64,
     ncols: usize,
     nrows: usize,
-) -> Result<()> {
-    let fail = |msg: String| Err(Error::Msg(format!("{op_label}: {msg}")).bt());
-    let overflow = || fail("W or activation extent overflows usize".to_string());
+}
 
-    let Ok(offset) = usize::try_from(w_start_byte_offset) else {
-        return fail(format!(
-            "negative w_start_byte_offset {w_start_byte_offset}"
-        ));
-    };
+fn mmvq_err(op_label: &str, msg: String) -> Error {
+    Error::Msg(format!("{op_label}: {msg}")).bt()
+}
+
+fn mmvq_overflow(op_label: &str) -> Error {
+    mmvq_err(
+        op_label,
+        "W or activation extent overflows usize".to_string(),
+    )
+}
+
+/// GAP-331: check every argument the MMVQ kernel trusts, before any
+/// allocation or launch. The module docs list the predicates and where
+/// each one comes from. Host-only, so each predicate is unit-tested
+/// without a device.
+fn validate_mmvq_extent(op_label: &'static str, fmt: MmvqFormat, call: MmvqCall) -> Result<()> {
+    let offset = checked_w_offset(op_label, fmt, call.w_start_byte_offset)?;
+    check_mmvq_shape(op_label, fmt, &call)?;
+    check_act_extent(op_label, &call)?;
+    check_w_extent(op_label, fmt, &call, offset)
+}
+
+/// The W offset: not negative, and a multiple of the format's alignment.
+fn checked_w_offset(op_label: &str, fmt: MmvqFormat, w_start_byte_offset: i64) -> Result<usize> {
+    let offset = usize::try_from(w_start_byte_offset).map_err(|_| {
+        mmvq_err(
+            op_label,
+            format!("negative w_start_byte_offset {w_start_byte_offset}"),
+        )
+    })?;
     if offset % fmt.w_align_bytes != 0 {
-        return fail(format!(
-            "w_start_byte_offset ({offset}) is not a multiple of {} bytes, this block \
-             format's alignment; the kernel would read misaligned blocks",
-            fmt.w_align_bytes,
+        return Err(mmvq_err(
+            op_label,
+            format!(
+                "w_start_byte_offset ({offset}) is not a multiple of {} bytes, this block \
+                 format's alignment; the kernel would read misaligned blocks",
+                fmt.w_align_bytes,
+            ),
         ));
     }
-    if ncols % fmt.read_chunk != 0 {
-        return fail(format!(
-            "ncols ({ncols}) is not a multiple of {}, the kernel's column read chunk; \
-             the kernel would read past ncols",
-            fmt.read_chunk,
-        ));
-    }
-    if act_start_offset != 0 {
-        return fail(format!(
-            "activation view has start_offset {act_start_offset}; the kernel reads from \
-             the buffer base, so it would read the wrong elements",
-        ));
-    }
-    if stride_y < 0 && ncols > 1 {
-        return fail(format!(
-            "negative activation stride {stride_y}; the kernel would read before the \
-             buffer base",
-        ));
-    }
+    Ok(offset)
+}
 
-    // Activation: y[i * stride_y] for i < ncols, from the buffer base.
-    let act_elems = match (ncols, stride_y) {
+/// Shape: the kernel's column read chunk, a start offset the kernel would
+/// ignore, and a stride that would read before the buffer.
+fn check_mmvq_shape(op_label: &str, fmt: MmvqFormat, call: &MmvqCall) -> Result<()> {
+    if call.ncols % fmt.read_chunk != 0 {
+        return Err(mmvq_err(
+            op_label,
+            format!(
+                "ncols ({}) is not a multiple of {}, the kernel's column read chunk; \
+                 the kernel would read past ncols",
+                call.ncols, fmt.read_chunk,
+            ),
+        ));
+    }
+    if call.act_start_offset != 0 {
+        return Err(mmvq_err(
+            op_label,
+            format!(
+                "activation view has start_offset {}; the kernel reads from the buffer \
+                 base, so it would read the wrong elements",
+                call.act_start_offset,
+            ),
+        ));
+    }
+    if call.stride_y < 0 && call.ncols > 1 {
+        return Err(mmvq_err(
+            op_label,
+            format!(
+                "negative activation stride {}; the kernel would read before the buffer base",
+                call.stride_y,
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The activation read: `y[i * stride_y]` for `i < ncols`, from the buffer base.
+fn check_act_extent(op_label: &str, call: &MmvqCall) -> Result<()> {
+    let elems = match (call.ncols, call.stride_y) {
         (0, _) => Some(0),
         (_, s) if s <= 0 => Some(1),
         (n, s) => usize::try_from(s)
@@ -292,29 +332,39 @@ fn validate_mmvq_extent(
             .and_then(|s| (n - 1).checked_mul(s))
             .and_then(|last| last.checked_add(1)),
     };
-    let Some(act_need) = act_elems.and_then(|e| e.checked_mul(std::mem::size_of::<f32>())) else {
-        return overflow();
-    };
-    if act_need > act_len_bytes {
-        return fail(format!(
-            "activation read needs {act_need} bytes (ncols {ncols}, stride {stride_y}) but \
-             the buffer holds {act_len_bytes}",
+    let need = elems
+        .and_then(|e| e.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| mmvq_overflow(op_label))?;
+    if need > call.act_len_bytes {
+        return Err(mmvq_err(
+            op_label,
+            format!(
+                "activation read needs {need} bytes (ncols {}, stride {}) but the buffer \
+                 holds {}",
+                call.ncols, call.stride_y, call.act_len_bytes,
+            ),
         ));
     }
+    Ok(())
+}
 
-    // W: `nrows` rows of `ncols / block_elems` blocks, starting at `offset`.
-    let Some(w_need) = ncols
+/// The W read: `nrows` rows of `ncols / block_elems` blocks, from `offset`.
+fn check_w_extent(op_label: &str, fmt: MmvqFormat, call: &MmvqCall, offset: usize) -> Result<()> {
+    let need = call
+        .ncols
         .div_ceil(fmt.block_elems)
-        .checked_mul(nrows)
+        .checked_mul(call.nrows)
         .and_then(|blocks| blocks.checked_mul(fmt.block_bytes))
         .and_then(|bytes| bytes.checked_add(offset))
-    else {
-        return overflow();
-    };
-    if w_need > w_len_bytes {
-        return fail(format!(
-            "W read needs {w_need} bytes (offset {offset}, {nrows} rows x {ncols} cols) but \
-             the buffer holds {w_len_bytes}",
+        .ok_or_else(|| mmvq_overflow(op_label))?;
+    if need > call.w_len_bytes {
+        return Err(mmvq_err(
+            op_label,
+            format!(
+                "W read needs {need} bytes (offset {offset}, {} rows x {} cols) but the \
+                 buffer holds {}",
+                call.nrows, call.ncols, call.w_len_bytes,
+            ),
         ));
     }
     Ok(())
@@ -354,13 +404,15 @@ fn mmvq_run(
     validate_mmvq_extent(
         op_label,
         mmvq_format(dtype)?,
-        weights.len_bytes(),
-        w_start_byte_offset,
-        activations.len_bytes(),
-        act_layout.map_or(0, Layout::start_offset),
-        stride_y,
-        ncols,
-        nrows,
+        MmvqCall {
+            w_len_bytes: weights.len_bytes(),
+            w_start_byte_offset,
+            act_len_bytes: activations.len_bytes(),
+            act_start_offset: act_layout.map_or(0, Layout::start_offset),
+            stride_y,
+            ncols,
+            nrows,
+        },
     )?;
 
     let ncols_i32 = i32::try_from(ncols).map_err(|_| {
@@ -540,13 +592,15 @@ mod tests {
             validate_mmvq_extent(
                 "mmvq_test",
                 self.fmt,
-                self.w_len,
-                self.offset,
-                self.a_len,
-                self.a_start,
-                self.stride,
-                self.ncols,
-                self.nrows,
+                MmvqCall {
+                    w_len_bytes: self.w_len,
+                    w_start_byte_offset: self.offset,
+                    act_len_bytes: self.a_len,
+                    act_start_offset: self.a_start,
+                    stride_y: self.stride,
+                    ncols: self.ncols,
+                    nrows: self.nrows,
+                },
             )
         }
 
