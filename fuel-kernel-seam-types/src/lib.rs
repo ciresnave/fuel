@@ -645,6 +645,12 @@ pub fn matmul_roles(lhs_rank: usize, rhs_rank: usize) -> (Vec<u8>, Vec<u8>) {
     clippy::large_enum_variant,
     reason = "Op-payload boxing deferred: ~150 cross-crate construction sites, sequenced after the in-flight rename sweep"
 )]
+// EXHAUSTIVE-BY-DESIGN: baracuda's region_op_id (baracuda #117) walks this enum
+// with an EXHAUSTIVE match to build its kernel region key. Do NOT add
+// #[non_exhaustive] — it would force downstream wildcard arms and silently drop a
+// new variant from the kernel identity (the GAP-049 failure shape). Enforced by
+// fuel-ir/tests/exhaustive_by_design_marker.rs (marker + #[non_exhaustive] is a
+// hard test failure naming this enum).
 pub enum PatternNode {
     /// An op over the [`OpTag`] vocabulary with one child per tensor input
     /// (ordered, exact arity). `attrs` carries the scalar slot / load-bearing
