@@ -8705,10 +8705,11 @@ impl LlamaModel {
     fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
-        let dims = embeds.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
-        let seq = dims[1];
+        let shape = embeds.shape();
+        let (_, seq, _) = shape.dims3().map_err(|e| {
+            e.context("LlamaModel::run_backbone_embeds: embeds must be rank 3 [b, seq, dim]")
+        })?;
+        let dims = shape.dims();
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
         assert_eq!(
             cfg.n_heads * cfg.head_dim,
@@ -8750,10 +8751,13 @@ impl LlamaModel {
     ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
-        let dims = embeds.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
-        let seq = dims[1];
+        let shape = embeds.shape();
+        let (_, seq, _) = shape.dims3().map_err(|e| {
+            e.context(
+                "LlamaModel::forward_hidden_embeds_with_mask: embeds must be rank 3 [b, seq, dim]",
+            )
+        })?;
+        let dims = shape.dims();
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
 
         let mut h = embeds.clone();
@@ -8848,9 +8852,13 @@ impl LlamaModel {
     ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
-        let dims = embeds.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
+        let shape = embeds.shape();
+        shape.dims3().map_err(|e| {
+            e.context(
+                "LlamaModel::run_backbone_with_rope_tables: embeds must be rank 3 [b, seq, dim]",
+            )
+        })?;
+        let dims = shape.dims();
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
         assert_eq!(
             cfg.n_heads * cfg.head_dim,
@@ -24496,6 +24504,79 @@ mod llama_tests {
                 (a - b).abs() < 1e-6,
                 "forward_hidden_embeds + lm_head must match forward_embeds: {a} vs {b}"
             );
+        }
+    }
+
+    /// GAP-326: the three embeds entry points check rank with `Shape::dims3()`,
+    /// so a rank-2 input is a typed `UnexpectedNumberOfDims` naming the entry
+    /// point. Each used to be an `assert_eq!` panic inside a function that
+    /// returns `Result`.
+    #[test]
+    fn embeds_of_the_wrong_rank_are_a_typed_error_not_a_panic() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 1,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let rank2 = Tensor::from_f32(
+            vec![0.0; 4 * cfg.dim],
+            Shape::from_dims(&[4, cfg.dim]),
+            &crate::Device::cpu(),
+        )
+        .unwrap();
+
+        /// The error under any `Context` / `WithBacktrace` wrapping.
+        fn root(e: &crate::Error) -> &crate::Error {
+            match e {
+                crate::Error::Context { inner, .. } | crate::Error::WithBacktrace { inner, .. } => {
+                    root(inner)
+                }
+                other => other,
+            }
+        }
+
+        // The rank check runs before the other arguments are used, so the
+        // rank-2 tensor stands in for the rope tables and the mask.
+        let results = [
+            (
+                "run_backbone_embeds",
+                model.forward_hidden_embeds(&rank2, 0),
+            ),
+            (
+                "forward_hidden_embeds_with_mask",
+                model.forward_hidden_embeds_with_mask(&rank2, &rank2, 0),
+            ),
+            (
+                "run_backbone_with_rope_tables",
+                model.run_backbone_with_rope_tables(&rank2, &rank2, &rank2, &rank2),
+            ),
+        ];
+        for (entry, result) in results {
+            let e = result
+                .err()
+                .unwrap_or_else(|| panic!("{entry}: rank-2 embeds accepted"));
+            assert!(
+                matches!(
+                    root(&e),
+                    crate::Error::UnexpectedNumberOfDims {
+                        expected: 3,
+                        got: 2,
+                        ..
+                    }
+                ),
+                "{entry}: {e}"
+            );
+            assert!(e.to_string().contains(entry), "{entry}: {e}");
         }
     }
 }
