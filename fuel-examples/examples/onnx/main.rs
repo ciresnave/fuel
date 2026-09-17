@@ -93,7 +93,7 @@ pub fn main() -> Result<()> {
         Some(model) => std::path::PathBuf::from(model),
         None => match args.which {
             Which::SqueezeNet => hf_hub::api::sync::Api::new()?
-                .model("lmz/fuel-onnx".into())
+                .model("lmz/candle-onnx".into())
                 .get("squeezenet1.1-7.onnx")?,
             Which::EfficientNet => hf_hub::api::sync::Api::new()?
                 .model("onnx/EfficientNet-Lite4".into())
