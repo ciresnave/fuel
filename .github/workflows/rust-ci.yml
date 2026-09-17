@@ -546,6 +546,29 @@ jobs:
           python scripts/doc_link_census.py --self-test
           python scripts/doc_link_census.py --gate
 
+      # GAP-326: fuel-transformers' model inputs are checked by typed calls
+      # (`image_nchw`, `dims4()`, `dims3()`), not by `assert_eq!` panics. Two
+      # checks, because either one alone can be satisfied the wrong way:
+      #   PROPERTY   -- no inlined rank-4, rank-3 or 3-channel guard remains
+      #                 under fuel-transformers/src/models. Deleting a guard
+      #                 satisfies this too.
+      #   MEMBERSHIP -- every function recorded in
+      #                 scripts/gap326_guarded_functions.txt (derived at
+      #                 9756a1ae, before the fix) still calls a typed check.
+      #                 This is the check that catches a deleted guard.
+      # SCOPE: those three classes only. The gate's output, pass or fail, names
+      # the guards it deliberately does not cover and the rows that own them.
+      #
+      # It reads the git index and needs no cargo, so it does not depend on
+      # anything an earlier step built. Like the census, it runs even when an
+      # earlier step failed. `--gap326-self-test` runs first, so a broken
+      # checker cannot pass as a clean tree.
+      - name: Input-guard gate (GAP-326)
+        if: (success() || failure()) && matrix.os == 'ubuntu-latest'
+        run: |
+          python scripts/sharedop_assert_census.py --gap326-self-test
+          python scripts/sharedop_assert_census.py --gap326-gate
+
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}

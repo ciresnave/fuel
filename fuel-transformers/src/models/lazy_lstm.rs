@@ -160,6 +160,46 @@ mod tests {
     use super::*;
     use fuel_core::Device;
 
+    /// GAP-326: `lstm_layer_forward` checks rank with `dims3()`, so a rank-2
+    /// input is a typed rank error naming the function. It used to be an
+    /// `assert_eq!` panic.
+    #[test]
+    fn a_wrong_rank_input_is_a_typed_error_not_a_panic() {
+        let (d_in, d_h) = (2, 2);
+        let stack = LstmStack {
+            layers: vec![LstmCellWeights {
+                w_ih: Arc::from(vec![0.0_f32; 4 * d_h * d_in]),
+                w_hh: Arc::from(vec![0.0_f32; 4 * d_h * d_h]),
+                b_ih: Arc::from(vec![0.0_f32; 4 * d_h]),
+                b_hh: Arc::from(vec![0.0_f32; 4 * d_h]),
+                input_dim: d_in,
+                hidden_dim: d_h,
+            }],
+        };
+        let tensor = |dims: &[usize]| {
+            let count = dims.iter().product();
+            Tensor::from_f32(
+                Arc::from(vec![0.0_f32; count]),
+                Shape::from_dims(dims),
+                &Device::cpu(),
+            )
+            .unwrap()
+        };
+        // Positive control: a rank-3 input still builds.
+        stack
+            .forward(&tensor(&[1, 3, d_in]))
+            .expect("a rank-3 input must build");
+        let text = stack
+            .forward(&tensor(&[3, d_in]))
+            .expect_err("a rank-2 input must be declined")
+            .to_string();
+        assert!(text.contains("lstm::lstm_layer_forward: x"), "{text}");
+        assert!(
+            text.contains("unexpected rank, expected: 3, got: 2"),
+            "{text}"
+        );
+    }
+
     /// Reference Rust implementation of a single LSTM layer with
     /// zero initial state, applied to a single batch and explicit
     /// gate values. Hidden / input dims are 2 in this fixture.
