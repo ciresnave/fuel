@@ -673,7 +673,7 @@ struct Args {
 
     /// The input to be processed, in wav format, will default to `jfk.wav`. Alternatively
     /// this can be set to sample:jfk, sample:gb1, ... to fetch a sample from the following
-    /// repo: https://huggingface.co/datasets/Narsil/fuel_demo/
+    /// repo: https://huggingface.co/datasets/Narsil/candle_demo/
     #[arg(long)]
     input: Option<String>,
 

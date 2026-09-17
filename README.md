@@ -7,12 +7,12 @@
 
 Fuel is a minimalist ML framework for Rust with a focus on performance (including GPU support) 
 and ease of use. Try our online demos: 
-[whisper](https://huggingface.co/spaces/lmz/fuel-whisper),
-[LLaMA2](https://huggingface.co/spaces/lmz/fuel-llama2),
-[T5](https://huggingface.co/spaces/radames/Fuel-T5-Generation-Wasm),
-[yolo](https://huggingface.co/spaces/lmz/fuel-yolo),
+[whisper](https://huggingface.co/spaces/lmz/candle-whisper),
+[LLaMA2](https://huggingface.co/spaces/lmz/candle-llama2),
+[T5](https://huggingface.co/spaces/radames/Candle-T5-Generation-Wasm),
+[yolo](https://huggingface.co/spaces/lmz/candle-yolo),
 [Segment
-Anything](https://huggingface.co/spaces/radames/fuel-segment-anything-wasm).
+Anything](https://huggingface.co/spaces/radames/candle-segment-anything-wasm).
 
 ## Architecture
 
@@ -59,14 +59,14 @@ For more advanced examples, please have a look at the following section.
 ## Check out our examples
 
 These online demos run entirely in your browser:
-- [yolo](https://huggingface.co/spaces/lmz/fuel-yolo): pose estimation and
+- [yolo](https://huggingface.co/spaces/lmz/candle-yolo): pose estimation and
   object recognition.
-- [whisper](https://huggingface.co/spaces/lmz/fuel-whisper): speech recognition.
-- [LLaMA2](https://huggingface.co/spaces/lmz/fuel-llama2): text generation.
-- [T5](https://huggingface.co/spaces/radames/Fuel-T5-Generation-Wasm): text generation.
-- [Phi-1.5, and Phi-2](https://huggingface.co/spaces/radames/Fuel-Phi-1.5-Wasm): text generation.
-- [Segment Anything Model](https://huggingface.co/spaces/radames/fuel-segment-anything-wasm): Image segmentation.
-- [BLIP](https://huggingface.co/spaces/radames/Fuel-BLIP-Image-Captioning): image captioning.
+- [whisper](https://huggingface.co/spaces/lmz/candle-whisper): speech recognition.
+- [LLaMA2](https://huggingface.co/spaces/lmz/candle-llama2): text generation.
+- [T5](https://huggingface.co/spaces/radames/Candle-T5-Generation-Wasm): text generation.
+- [Phi-1.5, and Phi-2](https://huggingface.co/spaces/radames/Candle-Phi-1.5-Wasm): text generation.
+- [Segment Anything Model](https://huggingface.co/spaces/radames/candle-segment-anything-wasm): Image segmentation.
+- [BLIP](https://huggingface.co/spaces/radames/Candle-BLIP-Image-Captioning): image captioning.
 
 We also provide some command line based examples using state of the art models:
 
@@ -103,27 +103,27 @@ We also provide some command line based examples using state of the art models:
   [llama.cpp](https://github.com/ggerganov/llama.cpp).
 - [Quantized Qwen3 MoE](./fuel-examples/examples/quantized-qwen3-moe/): support gguf quantized models of Qwen3 MoE models.
 
-<img src="https://github.com/huggingface/fuel/raw/main/fuel-examples/examples/quantized/assets/aoc.gif" width="600">
+<img src="https://github.com/huggingface/candle/raw/main/candle-examples/examples/quantized/assets/aoc.gif" width="600">
   
 - [Stable Diffusion](./fuel-examples/examples/stable-diffusion/): text to
   image generative model, support for the 1.5, 2.1, SDXL 1.0 and Turbo versions.
 
-<img src="https://github.com/huggingface/fuel/raw/main/fuel-examples/examples/stable-diffusion/assets/stable-diffusion-xl.jpg" width="200">
+<img src="https://github.com/huggingface/candle/raw/main/candle-examples/examples/stable-diffusion/assets/stable-diffusion-xl.jpg" width="200">
 
 - [Wuerstchen](./fuel-examples/examples/wuerstchen/): another text to
   image generative model.
 
-<img src="https://github.com/huggingface/fuel/raw/main/fuel-examples/examples/wuerstchen/assets/cat.jpg" width="200">
+<img src="https://github.com/huggingface/candle/raw/main/candle-examples/examples/wuerstchen/assets/cat.jpg" width="200">
 
 - [yolo-v3](./fuel-examples/examples/yolo-v3/) and
   [yolo-v8](./fuel-examples/examples/yolo-v8/): object detection and pose
   estimation models.
 
-<img src="https://github.com/huggingface/fuel/raw/main/fuel-examples/examples/yolo-v8/assets/bike.od.jpg" width="200"><img src="https://github.com/huggingface/fuel/raw/main/fuel-examples/examples/yolo-v8/assets/bike.pose.jpg" width="200">
+<img src="https://github.com/huggingface/candle/raw/main/candle-examples/examples/yolo-v8/assets/bike.od.jpg" width="200"><img src="https://github.com/huggingface/candle/raw/main/candle-examples/examples/yolo-v8/assets/bike.pose.jpg" width="200">
 - [segment-anything](./fuel-examples/examples/segment-anything/): image
   segmentation model with prompt.
 
-<img src="https://github.com/huggingface/fuel/raw/main/fuel-examples/examples/segment-anything/assets/sam_merged.jpg" width="200">
+<img src="https://github.com/huggingface/candle/raw/main/candle-examples/examples/segment-anything/assets/sam_merged.jpg" width="200">
 
 - [SegFormer](./fuel-examples/examples/segformer/): transformer based semantic segmentation model.
 - [Whisper](./fuel-examples/examples/whisper/): speech recognition model.
@@ -325,18 +325,18 @@ fuel-core = { version = "0.10.2" }                        # CPU only
 There are also some wasm examples for whisper and
 [llama2.c](https://github.com/karpathy/llama2.c). You can either build them with
 `trunk` or try them online:
-[whisper](https://huggingface.co/spaces/lmz/fuel-whisper),
-[llama2](https://huggingface.co/spaces/lmz/fuel-llama2),
-[T5](https://huggingface.co/spaces/radames/Fuel-T5-Generation-Wasm),
-[Phi-1.5, and Phi-2](https://huggingface.co/spaces/radames/Fuel-Phi-1.5-Wasm),
-[Segment Anything Model](https://huggingface.co/spaces/radames/fuel-segment-anything-wasm).
+[whisper](https://huggingface.co/spaces/lmz/candle-whisper),
+[llama2](https://huggingface.co/spaces/lmz/candle-llama2),
+[T5](https://huggingface.co/spaces/radames/Candle-T5-Generation-Wasm),
+[Phi-1.5, and Phi-2](https://huggingface.co/spaces/radames/Candle-Phi-1.5-Wasm),
+[Segment Anything Model](https://huggingface.co/spaces/radames/candle-segment-anything-wasm).
 
 For LLaMA2, run the following command to retrieve the weight files and start a
 test server:
 ```bash
 cd fuel-wasm-examples/llama2-c
-wget https://huggingface.co/spaces/lmz/fuel-llama2/resolve/main/model.bin
-wget https://huggingface.co/spaces/lmz/fuel-llama2/resolve/main/tokenizer.json
+wget https://huggingface.co/spaces/lmz/candle-llama2/resolve/main/model.bin
+wget https://huggingface.co/spaces/lmz/candle-llama2/resolve/main/tokenizer.json
 trunk serve --release --port 8081
 ```
 And then head over to
@@ -345,26 +345,26 @@ And then head over to
 <!--- ANCHOR: useful_libraries --->
 
 ## Useful External Resources
-- [`fuel-tutorial`](https://github.com/ToluClassics/fuel-tutorial): A
+- [`candle-tutorial`](https://github.com/ToluClassics/candle-tutorial): A
   very detailed tutorial showing how to convert a PyTorch model to Fuel.
-- [`fuel-lora`](https://github.com/EricLBuehler/fuel-lora): Efficient and
+- [`candle-lora`](https://github.com/EricLBuehler/candle-lora): Efficient and
   ergonomic LoRA implementation for Fuel. `fuel-lora` has      
   out-of-the-box LoRA support for many models from Fuel, which can be found
-  [here](https://github.com/EricLBuehler/fuel-lora/tree/master/fuel-lora-transformers/examples).
-- [`fuel-video`](https://github.com/FerrisMind/fuel-video): Rust library for text-to-video generation (LTX-Video and related models) built on Fuel, focused on fast, Python-free inference.
+  [here](https://github.com/EricLBuehler/candle-lora/tree/master/candle-lora-transformers/examples).
+- [`candle-video`](https://github.com/FerrisMind/candle-video): Rust library for text-to-video generation (LTX-Video and related models) built on Candle, focused on fast, Python-free inference.
 - [`optimisers`](https://github.com/KGrewal1/optimisers): A collection of optimisers
   including SGD with momentum, AdaGrad, AdaDelta, AdaMax, NAdam, RAdam, and RMSprop.
-- [`fuel-vllm`](https://github.com/EricLBuehler/fuel-vllm): Efficient platform for inference and
+- [`candle-vllm`](https://github.com/EricLBuehler/candle-vllm): Efficient platform for inference and
   serving local LLMs including an OpenAI compatible API server.
-- [`fuel-ext`](https://github.com/mokeyish/fuel-ext): An extension library to Fuel that provides PyTorch functions not currently available in Fuel.
-- [`fuel-coursera-ml`](https://github.com/vishpat/fuel-coursera-ml): Implementation of ML algorithms from Coursera's [Machine Learning Specialization](https://www.coursera.org/specializations/machine-learning-introduction) course.
+- [`candle-ext`](https://github.com/mokeyish/candle-ext): An extension library to Candle that provides PyTorch functions not currently available in Candle.
+- [`candle-coursera-ml`](https://github.com/vishpat/candle-coursera-ml): Implementation of ML algorithms from Coursera's [Machine Learning Specialization](https://www.coursera.org/specializations/machine-learning-introduction) course.
 - [`kalosm`](https://github.com/floneum/floneum/tree/master/interfaces/kalosm): A multi-modal meta-framework in Rust for interfacing with local pre-trained models with support for controlled generation, custom samplers, in-memory vector databases, audio transcription, and more.
-- [`fuel-sampling`](https://github.com/EricLBuehler/fuel-sampling): Sampling techniques for Fuel.
+- [`candle-sampling`](https://github.com/EricLBuehler/candle-sampling): Sampling techniques for Candle.
 - [`gpt-from-scratch-rs`](https://github.com/jeroenvlek/gpt-from-scratch-rs): A port of Andrej Karpathy's _Let's build GPT_ tutorial on YouTube showcasing the Fuel API on a toy problem.
-- [`fuel-einops`](https://github.com/tomsanbear/fuel-einops): A pure rust implementation of the python [einops](https://github.com/arogozhnikov/einops) library.
+- [`candle-einops`](https://github.com/tomsanbear/candle-einops): A pure rust implementation of the python [einops](https://github.com/arogozhnikov/einops) library.
 - [`atoma-infer`](https://github.com/atoma-network/atoma-infer): A Rust library for fast inference at scale, leveraging FlashAttention2 for efficient attention computation, PagedAttention for efficient KV-cache memory management, and multi-GPU support. It is OpenAI api compatible.
 - [`llms-from-scratch-rs`](https://github.com/nerdai/llms-from-scratch-rs): A comprehensive Rust translation of the code from Sebastian Raschka's Build an LLM from Scratch book.
-- [`vllm.rs`](https://github.com/guoqingbao/vllm.rs): A minimalist vLLM implementation in Rust based on Fuel.
+- [`vllm.rs`](https://github.com/guoqingbao/vllm.rs): A minimalist vLLM implementation in Rust based on Candle.
 
 If you have an addition to this list, please submit a pull request.
 
@@ -376,7 +376,7 @@ If you have an addition to this list, please submit a pull request.
 
 - Simple syntax, looks and feels like PyTorch.
     - Model training.
-    - Embed user-defined ops/kernels, such as [flash-attention v2](https://github.com/huggingface/fuel/blob/89ba005962495f2bfbda286e185e9c3c7f5300a3/fuel-flash-attn/src/lib.rs#L152).
+    - Embed user-defined ops/kernels, such as [flash-attention v2](https://github.com/huggingface/candle/blob/89ba005962495f2bfbda286e185e9c3c7f5300a3/candle-flash-attn/src/lib.rs#L152).
 - Backends.
     - Optimized CPU backend with optional MKL support for x86 and Accelerate for macs.
     - CUDA backend for efficiently running on GPUs, multiple GPU distribution via NCCL.
@@ -539,7 +539,7 @@ This is likely because you're not permissioned for the LLaMA-v2 model. To fix
 this, you have to register on the huggingface-hub, accept the [LLaMA-v2 model
 conditions](https://huggingface.co/meta-llama/Llama-2-7b-hf), and set up your
 authentication token. See issue
-[#350](https://github.com/huggingface/fuel/issues/350) for more details.
+[#350](https://github.com/huggingface/candle/issues/350) for more details.
 
 #### Docker build
 
