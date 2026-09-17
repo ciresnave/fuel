@@ -141,9 +141,11 @@ type MmvqActStridedRun = unsafe extern "C" fn(
 fn dequant_run(
     src: &CudaStorageBytes,
     numel: usize,
+    dtype: GgmlDType,
     kernel: DequantRun,
     op_label: &'static str,
 ) -> Result<CudaStorageBytes> {
+    dtype.check_dequant_count(op_label, numel, src.len_bytes())?;
     let device = src.device().clone();
     let out_bytes = numel * std::mem::size_of::<f32>();
     if out_bytes == 0 {
@@ -155,9 +157,11 @@ fn dequant_run(
     let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
     let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
 
-    // SAFETY: x bytes are validated by the caller's QuantType +
-    // block size contract; output buffer is contig + correctly
-    // sized for the f32 element count.
+    // SAFETY: `GgmlDType::check_dequant_count` has checked that `numel` is a
+    // whole number of blocks and that those blocks fit in `src.len_bytes()`.
+    // The output buffer is fresh and sized for `numel` f32s. Nothing checks
+    // `len_bytes` against the real allocation; that is
+    // `CudaStorageBytes::from_parts`'s contract.
     let status = unsafe {
         kernel(
             numel as i64,
@@ -197,7 +201,7 @@ fn activation_stride(act_layout: Option<&Layout>, op_label: &'static str) -> Res
 
 /// What `validate_mmvq_extent` needs to know about one MMVQ block format.
 #[derive(Clone, Copy, Debug)]
-struct MmvqFormat {
+pub(crate) struct MmvqFormat {
     /// The W offset must be a multiple of this (the block struct's
     /// natural alignment, per baracuda's `required_alignment`).
     w_align_bytes: usize,
@@ -214,7 +218,7 @@ struct MmvqFormat {
 /// MMVQ kernel for. Alignment is baracuda's `required_alignment` table
 /// (alpha.79); the read chunk is 64 for type-0/1 and 256 for k-quants.
 /// No wildcard arm, so a new `GgmlDType` has to be placed here on purpose.
-fn mmvq_format(dtype: GgmlDType) -> Result<MmvqFormat> {
+pub(crate) fn mmvq_format(dtype: GgmlDType) -> Result<MmvqFormat> {
     let (w_align_bytes, read_chunk) = match dtype {
         GgmlDType::Q4_0 | GgmlDType::Q5_0 | GgmlDType::Q8_0 => (2, 64),
         GgmlDType::Q4_1 | GgmlDType::Q5_1 => (4, 64),
@@ -234,14 +238,14 @@ fn mmvq_format(dtype: GgmlDType) -> Result<MmvqFormat> {
 
 /// The caller-supplied arguments that `validate_mmvq_extent` checks.
 #[derive(Clone, Copy, Debug)]
-struct MmvqCall {
-    w_len_bytes: usize,
-    w_start_byte_offset: i64,
-    act_len_bytes: usize,
-    act_start_offset: usize,
-    stride_y: i64,
-    ncols: usize,
-    nrows: usize,
+pub(crate) struct MmvqCall {
+    pub(crate) w_len_bytes: usize,
+    pub(crate) w_start_byte_offset: i64,
+    pub(crate) act_len_bytes: usize,
+    pub(crate) act_start_offset: usize,
+    pub(crate) stride_y: i64,
+    pub(crate) ncols: usize,
+    pub(crate) nrows: usize,
 }
 
 fn mmvq_err(op_label: &str, msg: String) -> Error {
@@ -259,7 +263,11 @@ fn mmvq_overflow(op_label: &str) -> Error {
 /// allocation or launch. The module docs list the predicates and where
 /// each one comes from. Host-only, so each predicate is unit-tested
 /// without a device.
-fn validate_mmvq_extent(op_label: &'static str, fmt: MmvqFormat, call: MmvqCall) -> Result<()> {
+pub(crate) fn validate_mmvq_extent(
+    op_label: &'static str,
+    fmt: MmvqFormat,
+    call: MmvqCall,
+) -> Result<()> {
     let offset = checked_w_offset(op_label, fmt, call.w_start_byte_offset)?;
     check_mmvq_shape(op_label, fmt, &call)?;
     check_act_extent(op_label, &call)?;
@@ -491,13 +499,14 @@ fn mmvq_run(
 }
 
 macro_rules! gguf_dequant {
-    ($name:ident, $sys_stem:ident, $op_label:expr $(,)?) => {
+    ($name:ident, $sys_stem:ident, $dtype:ident, $op_label:expr $(,)?) => {
         ::paste::paste! {
             #[doc = concat!("Baracuda GGUF `", $op_label, "` block-format dequantize → f32.")]
             pub fn $name(src: &CudaStorageBytes, numel: usize) -> Result<CudaStorageBytes> {
                 dequant_run(
                     src,
                     numel,
+                    GgmlDType::$dtype,
                     sys::[<baracuda_kernels_dequantize_ $sys_stem _run>],
                     $op_label,
                 )
@@ -538,19 +547,19 @@ macro_rules! gguf_mmvq {
 }
 
 // Dequant — type-0/1 formats (Q4_0..Q8_0, lowercase block tag)
-gguf_dequant!(dequant_q4_0, q4_0, "dequant_q4_0");
-gguf_dequant!(dequant_q4_1, q4_1, "dequant_q4_1");
-gguf_dequant!(dequant_q5_0, q5_0, "dequant_q5_0");
-gguf_dequant!(dequant_q5_1, q5_1, "dequant_q5_1");
-gguf_dequant!(dequant_q8_0, q8_0, "dequant_q8_0");
+gguf_dequant!(dequant_q4_0, q4_0, Q4_0, "dequant_q4_0");
+gguf_dequant!(dequant_q4_1, q4_1, Q4_1, "dequant_q4_1");
+gguf_dequant!(dequant_q5_0, q5_0, Q5_0, "dequant_q5_0");
+gguf_dequant!(dequant_q5_1, q5_1, Q5_1, "dequant_q5_1");
+gguf_dequant!(dequant_q8_0, q8_0, Q8_0, "dequant_q8_0");
 
 // Dequant — k-quants (uppercase K block tag per the FFI naming)
-gguf_dequant!(dequant_q2_k, q2_K, "dequant_q2_K");
-gguf_dequant!(dequant_q3_k, q3_K, "dequant_q3_K");
-gguf_dequant!(dequant_q4_k, q4_K, "dequant_q4_K");
-gguf_dequant!(dequant_q5_k, q5_K, "dequant_q5_K");
-gguf_dequant!(dequant_q6_k, q6_K, "dequant_q6_K");
-gguf_dequant!(dequant_q8_k, q8_K, "dequant_q8_K");
+gguf_dequant!(dequant_q2_k, q2_K, Q2K, "dequant_q2_K");
+gguf_dequant!(dequant_q3_k, q3_K, Q3K, "dequant_q3_K");
+gguf_dequant!(dequant_q4_k, q4_K, Q4K, "dequant_q4_K");
+gguf_dequant!(dequant_q5_k, q5_K, Q5K, "dequant_q5_K");
+gguf_dequant!(dequant_q6_k, q6_K, Q6K, "dequant_q6_K");
+gguf_dequant!(dequant_q8_k, q8_K, Q8K, "dequant_q8_K");
 
 // MMVQ — all 11 formats. Per-format checks come from `mmvq_format`.
 gguf_mmvq!(mmvq_q4_0, q4_0, Q4_0, "mmvq_q4_0");
