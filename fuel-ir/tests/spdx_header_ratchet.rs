@@ -234,6 +234,30 @@ const NON_SOURCE_PATHS_WITHOUT_EXTENSION: &[(&str, &str)] = &[
     ("LICENSE-APACHE", "licence text"),
     ("LICENSE-MIT", "licence text"),
     ("fuel-core/LICENSE", "licence text"),
+    (
+        "fuel-kernel-seam/LICENSE-APACHE",
+        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam/LICENSE-MIT",
+        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam-types/LICENSE-APACHE",
+        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam-types/LICENSE-MIT",
+        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam-announce/LICENSE-APACHE",
+        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam-announce/LICENSE-MIT",
+        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
+    ),
     (".gitignore", "git configuration"),
     (".gitattributes", "git configuration"),
     (
@@ -328,6 +352,30 @@ const COPYRIGHT_ACCOUNTED_FOR: &[(&str, &str)] = &[
     ("LICENSE-APACHE", "the licence text itself"),
     ("LICENSE-MIT", "the licence text itself"),
     ("fuel-core/LICENSE", "the licence text itself"),
+    (
+        "fuel-kernel-seam/LICENSE-APACHE",
+        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam/LICENSE-MIT",
+        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam-types/LICENSE-APACHE",
+        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam-types/LICENSE-MIT",
+        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam-announce/LICENSE-APACHE",
+        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
+    ),
+    (
+        "fuel-kernel-seam-announce/LICENSE-MIT",
+        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
+    ),
     (
         "fuel-examples/src/bs1770.rs",
         "vendored Apache-2.0 work; asserted separately by its own arm",
@@ -1139,5 +1187,55 @@ fn part_1_surveys_every_tracked_file_and_skips_none() {
          prevent. If a file cannot be read, FAIL on it — do not skip it.",
         surveyed.len(),
         entries.len()
+    );
+}
+
+/// Byte-identical copies of the root licence files, shipped inside each
+/// publishable seam crate so the packaged crate carries its licence text. They are
+/// named by path in PART 1 and PART 3; this test stops a copy from DRIFTING from
+/// the root while still satisfying those path-keyed lists, and stops the three
+/// lists from disagreeing about which copies exist.
+const PACKAGED_LICENCE_COPIES: &[(&str, &str)] = &[
+    ("fuel-kernel-seam/LICENSE-APACHE", "LICENSE-APACHE"),
+    ("fuel-kernel-seam/LICENSE-MIT", "LICENSE-MIT"),
+    ("fuel-kernel-seam-types/LICENSE-APACHE", "LICENSE-APACHE"),
+    ("fuel-kernel-seam-types/LICENSE-MIT", "LICENSE-MIT"),
+    ("fuel-kernel-seam-announce/LICENSE-APACHE", "LICENSE-APACHE"),
+    ("fuel-kernel-seam-announce/LICENSE-MIT", "LICENSE-MIT"),
+];
+
+#[test]
+fn packaged_licence_copies_are_listed_and_match_the_root_files() {
+    let root = workspace_root();
+    let entries = tracked_entries(&root);
+    let mut want: Vec<&str> = Vec::new();
+    for (copy, original) in PACKAGED_LICENCE_COPIES {
+        want.push(*copy);
+        want.push(*original);
+    }
+    let blobs: std::collections::HashMap<String, Vec<u8>> =
+        blobs_for(&root, &entries, &want).into_iter().collect();
+    let mut problems = Vec::new();
+    for (copy, original) in PACKAGED_LICENCE_COPIES {
+        match (blobs.get(*copy), blobs.get(*original)) {
+            (Some(c), Some(o)) if c == o => {}
+            (Some(_), Some(_)) => problems.push(format!("{copy} differs from {original}")),
+            _ => problems.push(format!("{copy} or {original} is not tracked")),
+        }
+        if !NON_SOURCE_PATHS_WITHOUT_EXTENSION
+            .iter()
+            .any(|(p, _)| p == copy)
+        {
+            problems.push(format!(
+                "{copy} is missing from NON_SOURCE_PATHS_WITHOUT_EXTENSION"
+            ));
+        }
+        if !COPYRIGHT_ACCOUNTED_FOR.iter().any(|(p, _)| p == copy) {
+            problems.push(format!("{copy} is missing from COPYRIGHT_ACCOUNTED_FOR"));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "packaged licence copies must be byte-identical to the root files and named in both          path-keyed lists: {problems:#?}"
     );
 }
