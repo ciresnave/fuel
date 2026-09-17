@@ -49,7 +49,7 @@ pub fn main() -> Result<()> {
     let model_file = match args.model {
         None => {
             let api = hf_hub::api::sync::Api::new()?;
-            let api = api.model("lmz/fuel-convmixer".into());
+            let api = api.model("lmz/candle-convmixer".into());
             api.get("convmixer_1024_20_ks9_p14.safetensors")?
         }
         Some(model) => model.into(),

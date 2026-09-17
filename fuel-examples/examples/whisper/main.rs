@@ -673,7 +673,7 @@ struct Args {
 
     /// The input to be processed, in wav format, will default to `jfk.wav`. Alternatively
     /// this can be set to sample:jfk, sample:gb1, ... to fetch a sample from the following
-    /// repo: https://huggingface.co/datasets/Narsil/fuel_demo/
+    /// repo: https://huggingface.co/datasets/Narsil/candle_demo/
     #[arg(long)]
     input: Option<String>,
 
@@ -724,7 +724,7 @@ fn main() -> Result<()> {
     };
     let _device = fuel_examples::device(args.cpu)?;
     let (default_model, default_revision) = if args.quantized {
-        ("lmz/fuel-whisper", "main")
+        ("lmz/candle-whisper", "main")
     } else {
         args.model.model_and_revision()
     };
@@ -739,7 +739,7 @@ fn main() -> Result<()> {
 
     let (config_filename, tokenizer_filename, weights_filename, input) = {
         let api = Api::new()?;
-        let dataset = api.dataset("Narsil/fuel-examples".to_string());
+        let dataset = api.dataset("Narsil/candle-examples".to_string());
         let repo = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
         let sample = if let Some(input) = args.input {
             if let Some(sample) = input.strip_prefix("sample:") {
