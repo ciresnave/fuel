@@ -1,9 +1,7 @@
 # fuel
 [![discord server](https://dcbadge.limes.pink/api/server/hugging-face-879548962464493619)](https://discord.gg/hugging-face-879548962464493619)
-[![Latest version](https://img.shields.io/crates/v/fuel-core.svg)](https://crates.io/crates/fuel-core)
-[![Documentation](https://docs.rs/fuel-core/badge.svg)](https://docs.rs/fuel-core)
-[![License](https://img.shields.io/github/license/base-org/node?color=blue)](https://github.com/huggingface/fuel/blob/main/LICENSE-MIT)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](https://github.com/huggingface/fuel/blob/main/LICENSE-APACHE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE-MIT)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE-APACHE)
 
 Fuel is a minimalist ML framework for Rust with a focus on performance (including GPU support) 
 and ease of use. Try our online demos: 
@@ -25,7 +23,7 @@ For the in-flight phase work and the planned order, see
 
 ## Get started
 
-Make sure that you have [`fuel-core`](https://github.com/huggingface/fuel/tree/main/fuel-core) correctly installed as described in [**Installation**](https://huggingface.github.io/fuel/guide/installation.html).
+Make sure that you have [`fuel-core`](https://github.com/ciresnave/fuel/tree/main/fuel-core) correctly installed as described in [**Installation**](https://huggingface.github.io/candle/guide/installation.html).
 
 Let's see how to run a simple matrix multiplication.
 Write the following to your `myapp/src/main.rs` file:
@@ -559,7 +557,7 @@ RUN set -eux; \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 # Clone fuel repo
-RUN git clone https://github.com/huggingface/fuel.git
+RUN git clone https://github.com/ciresnave/fuel.git
 
 # Set compute capability for the build
 ARG CUDA_COMPUTE_CAP=90

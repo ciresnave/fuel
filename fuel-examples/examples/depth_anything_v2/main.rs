@@ -62,7 +62,7 @@ pub fn main() -> anyhow::Result<()> {
     let dinov2_model_file = match args.dinov2_model {
         None => {
             let api = hf_hub::api::sync::Api::new()?;
-            let api = api.model("lmz/fuel-dino-v2".into());
+            let api = api.model("lmz/candle-dino-v2".into());
             api.get("dinov2_vits14.safetensors")?
         }
         Some(dinov2_model) => dinov2_model,

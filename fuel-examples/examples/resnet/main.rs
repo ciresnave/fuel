@@ -66,7 +66,7 @@ pub fn main() -> anyhow::Result<()> {
     let model_file = match args.model {
         None => {
             let api = hf_hub::api::sync::Api::new()?;
-            let api = api.model("lmz/fuel-resnet".into());
+            let api = api.model("lmz/candle-resnet".into());
             let filename = match args.which {
                 Which::Resnet18 => "resnet18.safetensors",
                 Which::Resnet34 => "resnet34.safetensors",
