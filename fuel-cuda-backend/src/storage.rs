@@ -3528,6 +3528,75 @@ fn cast_baracuda(
     Ok(())
 }
 
+/// GAP-334: every argument `matmul_q_gguf_baracuda` hands the batched `-sys`
+/// runner (which checks none of them, baracuda#128), checked before any
+/// allocation or launch. This wrapper only reads the two storages' lengths;
+/// `check_q_gguf` does the checking.
+fn validate_q_gguf(
+    a: &CudaStorage,
+    w_q_bytes: &CudaStorage,
+    a_layout: &Layout,
+    ncols: usize,
+    nrows: usize,
+    dtype: GgmlDType,
+) -> Result<()> {
+    let a_len = match &a.slice {
+        CudaStorageSlice::F32(s) => s.len(),
+        _ => fuel_ir::bail!("matmul_q_gguf: A must be F32"),
+    };
+    let w_len_bytes = match &w_q_bytes.slice {
+        CudaStorageSlice::U32(s) => s.len().saturating_mul(std::mem::size_of::<u32>()),
+        CudaStorageSlice::U8(s) => s.len(),
+        _ => fuel_ir::bail!("matmul_q_gguf: weight blob must be U8 or U32 storage"),
+    };
+    check_q_gguf(
+        a_layout.dims(),
+        a_len,
+        a_layout.start_offset(),
+        w_len_bytes,
+        ncols,
+        nrows,
+        dtype,
+    )
+}
+
+/// The checks behind `validate_q_gguf`, on plain numbers so they are
+/// unit-tested without a device. `ncols` (the caller's `k`) must be A's real
+/// last dim, and A must hold `k` elements from its start offset. The rest are
+/// the shared MMVQ checks: the column read chunk and the W extent.
+fn check_q_gguf(
+    a_dims: &[usize],
+    a_len: usize,
+    a_start: usize,
+    w_len_bytes: usize,
+    ncols: usize,
+    nrows: usize,
+    dtype: GgmlDType,
+) -> Result<()> {
+    use crate::baracuda::gguf::{MmvqCall, mmvq_format, validate_mmvq_extent};
+    let op = "matmul_q_gguf";
+    if a_dims.last() != Some(&ncols) {
+        fuel_ir::bail!("{op}: k ({ncols}) is not A's last dim {a_dims:?}");
+    }
+    let Some(a_avail) = a_len.checked_sub(a_start) else {
+        fuel_ir::bail!("{op}: A's start offset {a_start} is past its {a_len} elements");
+    };
+    validate_mmvq_extent(
+        op,
+        mmvq_format(dtype)?,
+        MmvqCall {
+            w_len_bytes,
+            w_start_byte_offset: 0,
+            act_len_bytes: a_avail.saturating_mul(std::mem::size_of::<f32>()),
+            // The activation pointer is already advanced by `a_start`.
+            act_start_offset: 0,
+            stride_y: 1,
+            ncols,
+            nrows,
+        },
+    )
+}
+
 fn matmul_q_gguf_baracuda(
     a: &CudaStorage,
     w_q_bytes: &CudaStorage,
@@ -3538,6 +3607,7 @@ fn matmul_q_gguf_baracuda(
     dev: &CudaDevice,
 ) -> Result<CudaStorage> {
     use baracuda_kernels_sys as sys;
+    validate_q_gguf(a, w_q_bytes, a_layout, ncols, nrows, dtype)?;
     // Activation pointer: A is F32 + contiguous + offset-aware.
     let a_ptr = match &a.slice {
         CudaStorageSlice::F32(s) => {
@@ -3591,8 +3661,11 @@ fn matmul_q_gguf_baracuda(
         GgmlDType::Q6K => sys::baracuda_kernels_mmvq_q6_K_batched_run,
         other => fuel_ir::bail!("matmul_q_gguf: unsupported dtype {other:?}"),
     };
-    // SAFETY: all pointers validated above; workspace sized per FFI
-    // contract (m_total=1 → 4 bytes); top_k=1 ⇒ plain stores.
+    // SAFETY: `validate_q_gguf` has checked A's element count from its start
+    // offset, the W blob's byte length, and the kernel's column read chunk
+    // against `ncols`/`nrows`; the callers checked A is F32, contiguous and
+    // a single row. Workspace is sized per the FFI contract (m_total=1 → 4
+    // bytes); top_k=1 ⇒ plain stores.
     let status = unsafe {
         run(
             /* n_experts */ 1,
@@ -4478,11 +4551,8 @@ impl CudaStorage {
                  got total_rows={total_rows}. Route prefill to Vulkan."
             );
         }
-        if k < 64 {
-            return fuel_ir::bail!(
-                "CudaStorage::matmul_q4_0: baracuda batched MMVQ requires k >= 64 for type-0/1 quants, got {k}"
-            );
-        }
+        // GAP-334: `k` (read chunk 64, which also rules out k < 64), the W
+        // blob length and A's extent are checked in `matmul_q_gguf_baracuda`.
         let device = self.device().clone();
         matmul_q_gguf_baracuda(self, w_q_bytes, a_layout, k, n, GgmlDType::Q4_0, &device)
     }
@@ -6091,5 +6161,93 @@ unsafe fn gemm_strided_batched_f64(
             cublasComputeType_t::Compute64F,
             99_i32,
         )
+    }
+}
+
+/// GAP-334: `matmul_q4_0` / `matmul_q4_km` argument checks, without a device.
+#[cfg(test)]
+mod gap334_q_gguf_tests {
+    use super::*;
+
+    #[track_caller]
+    fn declined(r: Result<()>, needle: &str) {
+        let msg = r.expect_err("expected a decline").to_string();
+        assert!(msg.contains(needle), "wrong decline: {msg}");
+    }
+
+    /// Q4_0, one row of k = 64 (2 blocks, 36 bytes) for n = 3 outputs:
+    /// W holds 3 rows (108 bytes), A holds one row of 64.
+    #[test]
+    fn a_full_call_is_accepted() {
+        check_q_gguf(&[1, 64], 64, 0, 108, 64, 3, GgmlDType::Q4_0).unwrap();
+        // A offset into a larger buffer still has its 64 elements.
+        check_q_gguf(&[1, 64], 100, 36, 108, 64, 3, GgmlDType::Q4_0).unwrap();
+        check_q_gguf(&[1, 256], 256, 0, 144, 256, 1, GgmlDType::Q4K).unwrap();
+    }
+
+    /// `k` is a separate argument; it used to be trusted against A's shape.
+    #[test]
+    fn k_that_is_not_as_last_dim_is_declined() {
+        declined(
+            check_q_gguf(&[1, 64], 128, 0, 1_000, 128, 1, GgmlDType::Q4_0),
+            "k (128) is not A's last dim [1, 64]",
+        );
+    }
+
+    #[test]
+    fn a_short_of_k_from_its_offset_is_declined() {
+        declined(
+            check_q_gguf(&[1, 64], 100, 37, 108, 64, 3, GgmlDType::Q4_0),
+            "activation read needs 256 bytes",
+        );
+        declined(
+            check_q_gguf(&[1, 64], 10, 11, 108, 64, 3, GgmlDType::Q4_0),
+            "A's start offset 11 is past its 10 elements",
+        );
+    }
+
+    /// The W blob length was stated in the doc and never checked.
+    #[test]
+    fn a_short_weight_blob_is_declined() {
+        declined(
+            check_q_gguf(&[1, 64], 64, 0, 107, 64, 3, GgmlDType::Q4_0),
+            "W read needs 108 bytes",
+        );
+    }
+
+    /// Replaces `matmul_q4_0`'s `k < 64` check, and also catches 96.
+    #[test]
+    fn q4_0_k_not_a_multiple_of_64_is_declined() {
+        declined(
+            check_q_gguf(&[1, 96], 96, 0, 1_000, 96, 1, GgmlDType::Q4_0),
+            "ncols (96) is not a multiple of 64",
+        );
+        declined(
+            check_q_gguf(&[1, 32], 32, 0, 1_000, 32, 1, GgmlDType::Q4_0),
+            "ncols (32) is not a multiple of 64",
+        );
+    }
+
+    /// Wiring: `matmul_q4_0` runs the checks before it launches. `k` = 64
+    /// against an A whose last dim is 128. Without the check the kernel would
+    /// read 64 of A's 128 elements and W's 2 zero blocks: in bounds either way.
+    #[test]
+    #[ignore = "live GPU: run via scripts/gpu-run.ps1"]
+    fn matmul_q4_0_runs_its_checks_before_launch() {
+        fuel_test_support::require_gpu_run_lock();
+        let dev = fuel_test_support::required_ok("CUDA device 0", CudaDevice::new(0));
+        let a = dev
+            .storage_from_cpu_storage(&fuel_ir::HostBuffer::F32(vec![0.0; 128]))
+            .unwrap();
+        // 9 u32s = 36 bytes = 2 Q4_0 blocks: one row of k = 64.
+        let w = dev
+            .storage_from_cpu_storage(&fuel_ir::HostBuffer::U32(vec![0; 9]))
+            .unwrap();
+        let layout = Layout::contiguous((1, 128));
+        let err = a
+            .matmul_q4_0(&w, 64, 1, &layout)
+            .expect_err("k != A's last dim must be declined")
+            .to_string();
+        assert!(err.contains("k (64) is not A's last dim [1, 128]"), "{err}");
     }
 }
