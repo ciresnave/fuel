@@ -181,21 +181,32 @@ def enclosing_fn(lines, idx):
     return "-", "<none>"
 
 
-def _skip_literal(line, i):
-    """Index of the last character of a string or char literal starting at `i`,
-    or `i` itself when `line[i]` does not open one (a lifetime, say)."""
-    n = len(line)
-    if line[i] == '"':
-        i += 1
-        while i < n and line[i] != '"':
-            i += 2 if line[i] == "\\" else 1
+def _skip_string(line, i):
+    """Index of the closing quote of the string literal opening at `i`
+    (or the end of the line, when it does not close there)."""
+    i += 1
+    while i < len(line) and line[i] != '"':
+        i += 2 if line[i] == "\\" else 1
+    return i
+
+
+def _skip_char(line, i):
+    """Index of the closing quote of the char literal opening at `i`, or `i`
+    when this `'` is not a char literal (a lifetime, say)."""
+    if i + 2 >= len(line):
         return i
-    if line[i] == "'" and i + 2 < n:
-        if line[i + 1] == "\\":
-            end = line.find("'", i + 2)
-            return end if end != -1 else i
-        if line[i + 2] == "'":
-            return i + 2
+    if line[i + 1] == "\\":
+        end = line.find("'", i + 2)
+        return end if end != -1 else i
+    return i + 2 if line[i + 2] == "'" else i
+
+
+def _skip_literal(line, i):
+    """Index of the last character of a literal starting at `i`, or `i`."""
+    if line[i] == '"':
+        return _skip_string(line, i)
+    if line[i] == "'":
+        return _skip_char(line, i)
     return i
 
 
@@ -231,15 +242,21 @@ def _scopes(lines, impl):
             if line.startswith("impl") and _impl_header(lines, j) == impl]
 
 
+def _fn_starts(scope, name, top_level):
+    """Line indices in `scope` where `fn name` is declared (unindented only,
+    for a free function)."""
+    for k, line in enumerate(scope):
+        m = FN_RE.match(line)
+        if m and m.group(2) == name and not (top_level and m.group(1)):
+            yield k
+
+
 def fn_body(text, impl, name):
     """The text of `fn name` inside `impl` (or at top level), or None; raises if ambiguous."""
     top_level = impl == "-"
-    hits = []
-    for scope in _scopes(text.splitlines(), impl):
-        for k, line in enumerate(scope):
-            m = FN_RE.match(line)
-            if m and m.group(2) == name and not (top_level and m.group(1)):
-                hits.append("\n".join(_block(scope, k)))
+    hits = ["\n".join(_block(scope, k))
+            for scope in _scopes(text.splitlines(), impl)
+            for k in _fn_starts(scope, name, top_level)]
     if len(hits) > 1:
         raise ValueError(f"{impl} :: {name} is ambiguous ({len(hits)} definitions)")
     return hits[0] if hits else None
@@ -307,10 +324,15 @@ def _entry_problems(files, path, impl, name, classes):
         return [f"{path}: {e}"]
     if body is None:
         return [f"{path}: {impl} :: {name} is gone; re-point it with a reason"]
-    return [f"{path}: {impl} :: {name} held a {cls} guard and calls none of "
-            f"{' / '.join(GAP326_REQUIRED[cls])}; a deleted guard is not a fix"
+    return [_unrouted(path, impl, name, cls)
             for cls in classes
             if not any(op in body for op in GAP326_REQUIRED[cls])]
+
+
+def _unrouted(path, impl, name, cls):
+    ops = " / ".join(GAP326_REQUIRED[cls])
+    why = "a deleted guard is not a fix"
+    return f"{path}: {impl} :: {name} held a {cls} guard and calls none of {ops}; {why}"
 
 
 def gap326_check(files, entries):
