@@ -161,16 +161,21 @@ mod tests {
 
     #[test]
     fn owned_q4_0_blocks_round_trip() {
-        let xs: Vec<f32> = (0..64).map(|i| (i as f32 * 0.37).sin()).collect();
-        let mut q = cpu_zeros(GgmlDType::Q4_0, 64);
-        q.from_float(&xs);
-        let want = dequant(q.as_ref(), 64);
-        // SAFETY: `as_ptr` points at the storage's `storage_size_in_bytes`
-        // initialised bytes, and `q` outlives this borrow.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(q.as_ptr(), q.storage_size_in_bytes()) }.to_vec();
-        assert_eq!(bytes.len(), 2 * 18);
+        // Two hand-built blocks, checked against the format's own rule
+        // (`value = (nibble - 8) * d`, low nibbles first), so the test trusts
+        // neither the quantizer nor a raw-pointer read.
+        let mut bytes = Vec::new();
+        for (d, q) in [(1.0_f32, 0x3A_u8), (0.5, 0x81)] {
+            bytes.extend_from_slice(&f16::from_f32(d).to_le_bytes());
+            bytes.extend(std::iter::repeat_n(q, 16));
+        }
         let back = cpu_from_data(GgmlDType::Q4_0, Cow::Owned(bytes)).unwrap();
+        // Block 0: low 0xA -> 2, high 0x3 -> -5, scale 1. Block 1: low 0x1 -> -7,
+        // high 0x8 -> 0, scale 0.5.
+        let want: Vec<f32> = [2.0, -5.0, -3.5, 0.0]
+            .iter()
+            .flat_map(|&v| std::iter::repeat_n(v, 16))
+            .collect();
         assert_eq!(dequant(back.as_ref(), 64), want);
     }
 
