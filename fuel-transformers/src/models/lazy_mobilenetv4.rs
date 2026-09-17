@@ -321,10 +321,7 @@ impl Mv4Model {
     /// pooled features `(1, head_in_channels)`.
     pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
+        crate::models::input_guard::image_nchw(image, 3, "Mv4Model::forward: image")?;
 
         let mut x = apply_conv_bn_act(image, &self.weights.stem, cfg.activation, image)?;
         for blk in &self.weights.blocks {
@@ -357,10 +354,7 @@ impl Mv4Model {
     /// and the optional head.
     pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
-        assert_eq!(dims[1], 3);
+        crate::models::input_guard::image_nchw(image, 3, "Mv4Model::forward_features: image")?;
         let mut x = apply_conv_bn_act(image, &self.weights.stem, cfg.activation, image)?;
         for blk in &self.weights.blocks {
             x = apply_block(&x, blk, cfg.activation, image)?;
