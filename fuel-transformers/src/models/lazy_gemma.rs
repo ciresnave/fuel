@@ -239,7 +239,10 @@ impl GemmaModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("GemmaModel::forward_embeds: embeds"))?;
         let seq = dims[1];
         // GAP-281: a typed decline, not a panic. Copied from the conformant
         // form in `lazy_mixtral.rs`, one of 15 models already declining here.
@@ -308,7 +311,10 @@ impl GemmaModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("GemmaModel::forward_hidden_embeds: embeds"))?;
         let seq = dims[1];
         let mut h = embeds.clone();
         let (rope_cos, rope_sin) =

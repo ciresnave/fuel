@@ -164,11 +164,10 @@ impl ParlerDecoderModel {
 
         let dims = input_ids.shape();
         let dims = dims.dims();
-        assert_eq!(
-            dims.len(),
-            3,
-            "input_ids must be rank 3 [B, num_codebooks, T]"
-        );
+        input_ids
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("ParlerDecoderModel::forward: input_ids"))?;
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
         if dims[1] != cfg.num_codebooks {
             return Err(fuel_ir::error::Error::Msg(format!(

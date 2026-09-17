@@ -79,7 +79,9 @@ impl LstmStack {
 fn lstm_layer_forward(x: &Tensor, w: &LstmCellWeights) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    assert_eq!(dims.len(), 3, "LSTM input must be rank 3 [B, T, D_in]");
+    x.shape()
+        .dims3()
+        .map_err(|e| e.context("lstm::lstm_layer_forward: x"))?;
     let b = dims[0];
     let t = dims[1];
     let d_in = dims[2];

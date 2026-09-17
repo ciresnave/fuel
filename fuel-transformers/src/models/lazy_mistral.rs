@@ -235,7 +235,10 @@ impl MistralModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("MistralModel::forward_embeds: embeds"))?;
         let seq = dims[1];
         // GAP-281: a typed decline, not a panic. The relation is a CONFIG
         // property a real checkpoint can violate, so it is an error to return,
@@ -313,7 +316,10 @@ impl MistralModel {
         let _weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("MistralModel::forward_hidden_embeds: embeds"))?;
         let seq = dims[1];
         let mask = self.build_sliding_window_mask(embeds, seq);
         self.forward_hidden_embeds_with_mask_impl(embeds, &mask, start_pos)
@@ -347,7 +353,10 @@ impl MistralModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("MistralModel::forward_hidden_embeds_with_mask_impl: embeds"))?;
         let seq = dims[1];
         let mut h = embeds.clone();
         let (rope_cos, rope_sin) =
