@@ -29,17 +29,10 @@
 //! cross-check (VMA block granularity makes it noisy, so it is not
 //! hard-asserted).
 
-use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
+use fuel_vulkan_backend::VulkanBackend;
 
-fn backend_or_skip() -> Option<VulkanBackend> {
-    match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
-        Ok(b) => Some(b),
-        Err(e) => {
-            eprintln!("no Vulkan device; skipping: {e:?}");
-            None
-        }
-    }
-}
+mod live_adapter;
+use live_adapter::backend_or_skip;
 
 /// One "full realize" uploads a fixed weight working-set (several MB of
 /// distinct sizes) held simultaneously, then drops it all at end-of-
