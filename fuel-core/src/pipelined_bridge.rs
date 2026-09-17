@@ -2009,7 +2009,7 @@ fn seed_placed_device_handles(
 
 /// Allocate a small "device anchor" storage on `device` — enough bytes
 /// to carry the device handle into the [`StorageCache`] so the
-/// pipelined executor's [`WorkItemKind::Alloc`] arm can derive the
+/// pipelined executor's `WorkItemKind::Alloc` arm can derive the
 /// per-backend handle for `Op::Alloc` nodes.
 ///
 /// Phase 3a of bridge-retirement (post-9c). This is the *residual*
