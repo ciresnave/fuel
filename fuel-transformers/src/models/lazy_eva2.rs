@@ -132,8 +132,7 @@ impl EvaModel {
         let cfg = &self.config;
         let dims = image.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
-        assert_eq!(dims[1], 3);
+        crate::models::input_guard::image_nchw(image, 3, "EvaModel::forward: image")?;
         if dims[2] != cfg.img_size || dims[3] != cfg.img_size {
             return Err(fuel_core::Error::Msg(format!(
                 "eva2: input spatial dims ({}, {}) must equal img_size {}; this model is \

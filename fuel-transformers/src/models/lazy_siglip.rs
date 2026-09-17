@@ -295,7 +295,10 @@ impl SiglipVisionModel {
         let weights = &self.weights;
         let dims = pixel_values.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
+        pixel_values
+            .shape()
+            .dims4()
+            .map_err(|e| e.context("SiglipVisionModel::forward: pixel_values"))?;
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
@@ -390,7 +393,9 @@ impl SiglipVisionModel {
         let weights = &self.weights;
         let dims = pixel_values.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
+        pixel_values.shape().dims4().map_err(|e| {
+            e.context("SiglipVisionModel::forward_intermediate_layers: pixel_values")
+        })?;
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {

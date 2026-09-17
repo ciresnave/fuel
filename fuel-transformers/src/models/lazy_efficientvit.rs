@@ -207,10 +207,7 @@ impl EfficientVitModel {
     /// pooled features `(1, channels[2])`.
     pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
+        crate::models::input_guard::image_nchw(image, 3, "EfficientVitModel::forward: image")?;
 
         let mut x = self.run_stem(image)?;
         for (si, stage_w) in self.weights.stages.iter().enumerate() {
@@ -243,10 +240,11 @@ impl EfficientVitModel {
     /// first feature map BEFORE global mean pool and the classifier.
     pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
-        assert_eq!(dims[1], 3);
+        crate::models::input_guard::image_nchw(
+            image,
+            3,
+            "EfficientVitModel::forward_features: image",
+        )?;
         let mut x = self.run_stem(image)?;
         for (si, stage_w) in self.weights.stages.iter().enumerate() {
             if let Some(ds) = &stage_w.downsample {

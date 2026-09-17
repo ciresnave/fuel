@@ -209,10 +209,7 @@ impl ResNetModel {
     }
 
     fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
+        crate::models::input_guard::image_nchw(image, 3, "ResNetModel::run_backbone: image")?;
 
         let stem_w = self
             .weights
@@ -744,6 +741,55 @@ mod tests {
         let mut nb = rng_seed(42);
         let data: Arc<[f32]> = Arc::from((0..3 * h * w).map(|_| nb()).collect::<Vec<_>>());
         Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), &Device::cpu()).unwrap()
+    }
+
+    /// GAP-326: `run_backbone` validates its input through `image_nchw`, so a
+    /// wrong rank or channel count is a typed error naming the entry point.
+    /// Both used to be `assert_eq!` panics.
+    #[test]
+    fn a_wrong_input_shape_is_a_typed_error_not_a_panic() {
+        let cfg = ResNetConfig::resnet18(Some(10));
+        let weights = build_tiny_weights(&cfg, 1234);
+        let model = ResNetModel {
+            config: cfg,
+            weights,
+        };
+        let tensor = |dims: &[usize]| {
+            let count = dims.iter().product();
+            Tensor::from_f32(
+                Arc::from(vec![0.0_f32; count]),
+                Shape::from_dims(dims),
+                &Device::cpu(),
+            )
+            .unwrap()
+        };
+        // Positive control: the canonical shape still builds.
+        model
+            .forward(&tiny_image(64, 64))
+            .expect("valid image must build");
+        for (what, dims, expected) in [
+            (
+                "rank 3",
+                vec![3, 64, 64],
+                "unexpected rank, expected: 4, got: 3",
+            ),
+            (
+                "4 channels",
+                vec![1, 4, 64, 64],
+                "expected 3 input channels, got 4",
+            ),
+        ] {
+            let e = model
+                .forward(&tensor(&dims))
+                .err()
+                .unwrap_or_else(|| panic!("{what}: accepted"));
+            let text = e.to_string();
+            assert!(
+                text.contains("ResNetModel::run_backbone: image"),
+                "{what}: {text}"
+            );
+            assert!(text.contains(expected), "{what}: {text}");
+        }
     }
 
     #[test]

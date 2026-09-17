@@ -202,8 +202,7 @@ impl HieraModel {
     pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let dims = image.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
-        assert_eq!(dims[1], 3);
+        crate::models::input_guard::image_nchw(image, 3, "HieraModel::forward: image")?;
         assert_eq!(dims[2], 224);
         assert_eq!(dims[3], 224);
         let b = dims[0];

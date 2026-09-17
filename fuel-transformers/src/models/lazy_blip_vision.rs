@@ -148,9 +148,12 @@ impl BlipVisionModel {
         let cfg = &self.config;
         let dims = pixel_values.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
+        crate::models::input_guard::image_nchw(
+            pixel_values,
+            3,
+            "BlipVisionModel::forward: pixel_values",
+        )?;
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
             return Err(fuel_core::Error::Msg(format!(
                 "blip_vision: input spatial dims ({}, {}) must equal image_size {}; this model is \

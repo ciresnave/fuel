@@ -200,7 +200,10 @@ impl PixtralModel {
         let weights = &self.weights.vision;
         let dims = pixel_values.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
+        pixel_values
+            .shape()
+            .dims4()
+            .map_err(|e| e.context("PixtralModel::encode_vision: pixel_values"))?;
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {

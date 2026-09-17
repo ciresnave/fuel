@@ -791,7 +791,9 @@ pub fn apply_interleaved_partial_rope(
     }
     let shape = qk.shape();
     let dims = shape.dims();
-    assert_eq!(dims.len(), 4);
+    shape
+        .dims4()
+        .map_err(|e| e.context("glm4::apply_interleaved_partial_rope: qk"))?;
     let batch = dims[0];
     let n_heads = dims[1];
     let seq = dims[2];

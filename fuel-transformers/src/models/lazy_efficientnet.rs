@@ -256,10 +256,7 @@ impl EfficientNetModel {
     }
 
     fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
+        crate::models::input_guard::image_nchw(image, 3, "EfficientNetModel::run_backbone: image")?;
 
         let mut x = self.apply_conv_bn(image, &self.weights.init_cna)?;
         x = swish(&x)?;

@@ -406,7 +406,9 @@ pub(crate) fn layer_norm_2d(
     // mean over dim 1 (channel), keepdim.
     let dims = x.shape();
     let dims = dims.dims();
-    assert_eq!(dims.len(), 4, "layer_norm_2d: expected rank-4 input");
+    x.shape()
+        .dims4()
+        .map_err(|e| e.context("sam::layer_norm_2d: x"))?;
     let n = dims[0];
     let h = dims[2];
     let w = dims[3];
@@ -446,7 +448,9 @@ fn apply_attention(
 ) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    assert_eq!(dims.len(), 4, "SAM attn: expected rank-4 input");
+    x.shape()
+        .dims4()
+        .map_err(|e| e.context("sam::apply_attention: x"))?;
     let batch = dims[0];
     let h = dims[1];
     let wid = dims[2];
@@ -1237,11 +1241,10 @@ pub fn apply_two_way_transformer(
 ) -> Result<(Tensor, Tensor)> {
     let ie_dims = image_embedding.shape();
     let ie_dims = ie_dims.dims();
-    assert_eq!(
-        ie_dims.len(),
-        4,
-        "two-way transformer: image_embedding must be (b, c, h, w)"
-    );
+    image_embedding
+        .shape()
+        .dims4()
+        .map_err(|e| e.context("sam::apply_two_way_transformer: image_embedding"))?;
     let b = ie_dims[0];
     let c = ie_dims[1];
     let h = ie_dims[2];

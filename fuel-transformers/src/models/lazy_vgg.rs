@@ -192,8 +192,7 @@ impl VggModel {
     fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
         let dims = image.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
+        crate::models::input_guard::image_nchw(image, 3, "VggModel::run_backbone: image")?;
         assert_eq!(dims[2], dims[3], "VGG expects square inputs");
         assert!(
             dims[2].is_multiple_of(32),

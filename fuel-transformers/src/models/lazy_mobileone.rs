@@ -196,10 +196,7 @@ impl MobileOneModel {
     }
 
     fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(dims[1], 3, "image must have 3 input channels");
+        crate::models::input_guard::image_nchw(image, 3, "MobileOneModel::run_backbone: image")?;
 
         let mut x = self.apply_layer(image, &self.weights.stem)?;
         for stage in &self.weights.stages {

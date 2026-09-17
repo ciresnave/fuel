@@ -111,11 +111,10 @@ impl Gemma4VisionModel {
         let weights = &self.weights;
         let dims = pixel_values.shape();
         let dims = dims.dims();
-        assert_eq!(
-            dims.len(),
-            4,
-            "pixel_values must be rank 4 [batch, c, h, w]"
-        );
+        pixel_values
+            .shape()
+            .dims4()
+            .map_err(|e| e.context("Gemma4VisionModel::forward: pixel_values"))?;
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         let c = dims[1];

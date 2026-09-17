@@ -179,7 +179,10 @@ impl PaddleOcrVlVisionModel {
         assert!(num_tiles > 0, "tile_grid must have rows*cols > 0");
         let dims = pixels.shape();
         let dims = dims.dims().to_vec();
-        assert_eq!(dims.len(), 4, "pixels must be rank-4 (tiles, c, h, w)");
+        pixels
+            .shape()
+            .dims4()
+            .map_err(|e| e.context("PaddleOcrVlVisionModel::forward: pixels"))?;
         assert_eq!(
             dims[0], num_tiles,
             "pixels axis 0 ({}) must equal tile_grid.0 * tile_grid.1 = {}",
@@ -978,11 +981,10 @@ impl PaddleOcrVlNaVitModel {
         let cfg = &self.config;
         let dims = pixel_values.shape();
         let dims = dims.dims().to_vec();
-        assert_eq!(
-            dims.len(),
-            4,
-            "PaddleOcrVlNaVitModel::forward: pixel_values must be rank-4 (1, C, H, W), got {dims:?}",
-        );
+        pixel_values
+            .shape()
+            .dims4()
+            .map_err(|e| e.context("PaddleOcrVlNaVitModel::forward: pixel_values"))?;
         assert_eq!(
             dims[0], 1,
             "PaddleOcrVlNaVitModel::forward: only batch=1 is supported (v1); got batch={}",

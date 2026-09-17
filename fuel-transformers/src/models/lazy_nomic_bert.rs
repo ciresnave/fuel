@@ -512,8 +512,9 @@ fn apply_rope(
     // Split-half partial rope: rotate the first rope_dim features,
     // pass the rest through unchanged.
     let shape = qk.shape();
-    let dims = shape.dims();
-    assert_eq!(dims.len(), 4);
+    shape
+        .dims4()
+        .map_err(|e| e.context("nomic_bert::apply_rope: qk"))?;
     let pass_dim = head_dim - rope_dim;
     let rot = qk.slice(3_usize, 0, rope_dim)?;
     let pass = qk.slice(3_usize, rope_dim, pass_dim)?;

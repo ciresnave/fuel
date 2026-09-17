@@ -269,10 +269,7 @@ impl FastVitModel {
     /// Run the backbone (stem + 4 stages) and return the channels-
     /// first feature map BEFORE global mean pool and the head.
     pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
-        assert_eq!(dims[1], 3);
+        crate::models::input_guard::image_nchw(image, 3, "FastVitModel::forward_features: image")?;
         let mut x = self.run_stem(image)?;
         for (si, stage) in self.weights.stages.iter().enumerate() {
             x = run_stage(&x, stage, image)?;
