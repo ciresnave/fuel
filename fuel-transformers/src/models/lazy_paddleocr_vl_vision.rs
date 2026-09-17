@@ -2117,6 +2117,35 @@ mod tests {
         }
 
         #[test]
+        fn patch_grid_not_multiple_of_merge_on_w_axis_alone_rejected_by_reshape() {
+            // The W-axis-ONLY case. The H-axis test above cannot cover it, and the
+            // two `decline_on_misaligned_*` tests cannot either: their inputs
+            // also break patch_size, so that earlier decline answers first and
+            // the merge stage is never reached on its own (the short-circuit
+            // route in method-rules § vacuous-oracle-four-routes).
+            //
+            // 8 x 12 passes BOTH patch_size checks (8 % 4 == 0, 12 % 4 == 0), and
+            // its grid (2, 3) breaks merge = 2 on W only. So the rejection must
+            // come from the merge stage. Verified by sabotage: with the old merge
+            // `assert!` restored, this test fails with THAT panic ("patch grid
+            // (2, 3)"), not the patch_size decline.
+            let model = navit_model(24);
+            let cfg = model.config.clone();
+            let err = model.forward(&navit_pixels(&cfg, 8, 12)).expect_err(
+                "patch grid (2, 3) is not a multiple of merge = 2 on W; build must fail",
+            );
+            let msg = format!("{err}");
+            assert!(
+                !msg.contains("multiple of patch_size"),
+                "the patch_size decline answered first, so the merge stage was never reached: {msg}"
+            );
+            assert!(
+                msg.contains("element count mismatch"),
+                "rejected, but not by the projector reshape this test pins: {msg}"
+            );
+        }
+
+        #[test]
         fn non_base_multiples_of_patch_and_merge_still_accepted() {
             // 16 x 8 gives a (4, 2) patch grid: valid, and not the base grid, so
             // this catches a decline that over-rejects rather than one that
