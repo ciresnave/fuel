@@ -48,13 +48,13 @@
 //! Fuel consists of a number of crates. This crate holds core the common data structures but you may wish
 //! to look at the docs for the other crates which can be found here:
 //!
-//! - [fuel-core](https://docs.rs/fuel-core/). Core Datastructures and DataTypes.
-//! - [fuel-nn](https://docs.rs/fuel-nn/). Building blocks for Neural Nets.
-//! - [fuel-datasets](https://docs.rs/fuel-datasets/). Rust access to commonly used Datasets like MNIST.
-//! - [fuel-examples](https://docs.rs/fuel-examples/). Examples of Fuel in Use.
-//! - [fuel-onnx](https://docs.rs/fuel-onnx/). Loading and using ONNX models.
-//! - [fuel-pyo3](https://docs.rs/fuel-pyo3/). Access to Fuel from Python.
-//! - [fuel-transformers](https://docs.rs/fuel-transformers/). Fuel implementation of many published transformer models.
+//! - [fuel-core](https://github.com/ciresnave/fuel/tree/main/fuel-core). Core Datastructures and DataTypes.
+//! - [fuel-nn](https://github.com/ciresnave/fuel/tree/main/fuel-nn). Building blocks for Neural Nets.
+//! - [fuel-datasets](https://github.com/ciresnave/fuel/tree/main/fuel-datasets). Rust access to commonly used Datasets like MNIST.
+//! - [fuel-examples](https://github.com/ciresnave/fuel/tree/main/fuel-examples). Examples of Fuel in Use.
+//! - [fuel-onnx](https://github.com/ciresnave/fuel/tree/main/fuel-onnx). Loading and using ONNX models.
+//! - `fuel-pyo3`. Access to Fuel from Python.
+//! - [fuel-transformers](https://github.com/ciresnave/fuel/tree/main/fuel-transformers). Fuel implementation of many published transformer models.
 //!
 
 // GAP-229: `clippy::identity_op` fires 128x across fuel-core+fuel-dispatch and is a

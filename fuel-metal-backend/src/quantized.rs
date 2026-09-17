@@ -40,6 +40,13 @@ impl QMetalStorage {
     pub fn dequantize(&self, elem_count: usize) -> Result<MetalStorage> {
         use fuel_quantized::GgmlType;
 
+        // GAP-333: `read_to_vec` below reads `elem_count / block_size` blocks
+        // from the buffer, and nothing else checks that they fit.
+        self.dtype.check_dequant_count(
+            "QMetalStorage::dequantize",
+            elem_count,
+            self.buffer.length(),
+        )?;
         let buffer = self.device.allocate_buffer(self.buffer.length())?;
         let blit = self.device.blit_command_encoder()?;
         blit.set_label("blit_to_cpu");

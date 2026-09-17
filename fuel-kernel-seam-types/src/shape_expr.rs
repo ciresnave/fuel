@@ -33,7 +33,7 @@ pub const SYMBOLIC: i64 = i64::MIN;
 pub const LAST: u8 = 0xFF;
 
 /// A single-dimension expression (`DimExpr`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Dim {
     /// The size of `operand`'s `axis` (non-negative index, or [`LAST`] = trailing).
     Extent {
@@ -54,7 +54,7 @@ pub enum Dim {
 /// and `Dims` are the experimental-range extension constructors registered via the
 /// KISS umbrella §6.4 registry (Ops §6.20-0009/-0010, issue #80), activating the
 /// §6.20-0005 tags `0x0A`/`0x0B`. `Reduce` (`0x09`) stays reserved (no consumer).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ShapeExpr {
     /// The operand's whole shape.
     SameAs { operand: u8 },
