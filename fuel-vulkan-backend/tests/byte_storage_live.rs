@@ -1,23 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-device tests for the Phase 7.5 A4 substrate methods on
-//! [`VulkanBackend`] / [`VulkanStorageBytes`]. Gated `#[ignore]` —
+//! [`VulkanBackend`](fuel_vulkan_backend::VulkanBackend) / `VulkanStorageBytes`. Gated `#[ignore]` —
 //! run with:
 //!
 //! ```sh
 //! cargo test -p fuel-vulkan-backend --test byte_storage_live -- --ignored --nocapture
 //! ```
 
-use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
-
-fn backend_or_skip() -> Option<VulkanBackend> {
-    match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
-        Ok(b) => Some(b),
-        Err(e) => {
-            eprintln!("no Vulkan device; skipping: {e:?}");
-            None
-        }
-    }
-}
+mod live_adapter;
+use live_adapter::backend_or_skip;
 
 /// Smoke: alloc_bytes(byte_count) reports the right len_bytes and is
 /// readable back via download_bytes.
