@@ -1698,15 +1698,28 @@ macro_rules! cuda_write_slice_doff_baracuda_wrapper {
             }
             let dyn_start_dev = off_cuda.buffer().as_raw().0 as *const i64;
             let dest_cuda = cuda_output(&mut out_guard)?;
-            $baracuda_fn(
-                dest_cuda,
-                src_cuda,
-                dest_shape,
-                &source_shape,
-                &range_start,
-                axis,
-                dyn_start_dev,
-            )
+            // SAFETY (GAP-337): `$baracuda_fn` (a `write_slice_doff_b*`) requires the
+            // device start value `*dyn_start_dev` to satisfy `start + width <= dest
+            // dim[axis]`; the kernel does not clamp, so an out-of-range start is an
+            // out-of-bounds device write. On the in-tree decode paths that value is the
+            // KV `cached_len`, bounded BEFORE this launch by the per-token check in
+            // `build_decode_token_data` and the build guards in
+            // `build_batched_decode_logits` / `forward_with_kv_context` /
+            // `build_and_realize_first_decode_token`, and for paged KV by the block-pool
+            // allocator (a valid physical slot). Those are the PRIMARY live paths, NOT an
+            // exhaustive caller census. `dyn_start_dev` is the `offset` operand's live
+            // device i64 pointer, checked non-null and >= 8 bytes above.
+            unsafe {
+                $baracuda_fn(
+                    dest_cuda,
+                    src_cuda,
+                    dest_shape,
+                    &source_shape,
+                    &range_start,
+                    axis,
+                    dyn_start_dev,
+                )
+            }
         }
     };
 }
