@@ -193,11 +193,11 @@ mod tests {
         let body = f32_bytes(&xs);
         let mut buf = vec![0_u8; 3 + body.len()];
         let off = (0..3)
-            .find(|o| (buf.as_ptr() as usize + o) % std::mem::align_of::<f32>() != 0)
+            .find(|o| !(buf.as_ptr() as usize + o).is_multiple_of(std::mem::align_of::<f32>()))
             .expect("one of three offsets is misaligned for f32");
         buf[off..off + body.len()].copy_from_slice(&body);
         let bytes = &buf[off..off + body.len()];
-        assert_ne!(bytes.as_ptr() as usize % std::mem::align_of::<f32>(), 0);
+        assert!(!(bytes.as_ptr() as usize).is_multiple_of(std::mem::align_of::<f32>()));
         let q = cpu_from_data(GgmlDType::F32, Cow::Borrowed(bytes)).unwrap();
         assert_eq!(dequant(q.as_ref(), 4), xs);
     }
