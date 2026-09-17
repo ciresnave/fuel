@@ -11538,8 +11538,9 @@ struct TokenDataBytes {
 /// `BackendStorage` variants every other pipelined D2H site in this
 /// codebase does (`CudaStorageBytes::to_cpu_bytes` / `CpuStorageBytes::
 /// bytes`) rather than hand-rolling a new D2H mechanism. Capture is
-/// f32-only today (project constraint), so the bytes are reinterpreted
-/// as f32 directly.
+/// f32-only today (project constraint); the root storage dtype is checked
+/// to be F32 before the reinterpret (GAP-329), so a non-F32 buffer is a typed
+/// `UnexpectedDType` error rather than a silent 2x-length garbage view.
 #[cfg(feature = "cuda")]
 fn captured_output_to_f32(
     output: &Arc<std::sync::RwLock<fuel_memory::Storage>>,
@@ -11548,6 +11549,25 @@ fn captured_output_to_f32(
     let guard = output.read().map_err(|_| {
         fuel_ir::Error::Msg("captured decode output storage lock poisoned".into()).bt()
     })?;
+    // GAP-329: guard the reinterpret AT the reinterpret point. The final
+    // `bytemuck::cast_slice::<u8, f32>` is a raw byte view, so a non-F32 root storage
+    // would be silently reinterpreted as a 2x-length garbage vector rather than
+    // rejected. The f32-only assumption is currently held by the upstream
+    // `.to_dtype(DType::F32)` casts on each capture path (build_batched_decode_logits,
+    // forward_paged_step[_batched], build_and_realize_first_paged_token), NOT here — and
+    // `forward_paged_step`'s pool-dtype gate already accepts F32/BF16/F16, so a future
+    // capture path that omits the cast would land a BF16/F16 root here. This is the
+    // GAP-327 sibling (funnel guard), same matchable error variant.
+    let root_dtype = guard.dtype();
+    if root_dtype != DType::F32 {
+        return Err(fuel_ir::Error::UnexpectedDType {
+            msg: "captured_output_to_f32: captured decode output storage is not F32; a \
+                  byte->f32 reinterpret of a non-F32 buffer would be silent garbage (GAP-329)",
+            expected: DType::F32,
+            got: root_dtype,
+        }
+        .bt());
+    }
     let bytes: Vec<u8> = match &guard.inner {
         BackendStorage::Cpu(c) => c.bytes().to_vec(),
         BackendStorage::Cuda(c) => c.to_cpu_bytes()?,
