@@ -9,7 +9,7 @@ and on the model architecture described in this
 tasks are object detection and pose estimation.
 
 You can try this model online on the [Fuel YOLOv8
-Space](https://huggingface.co/spaces/lmz/fuel-yolo). The model then fully runs
+Space](https://huggingface.co/spaces/lmz/candle-yolo). The model then fully runs
 in your browser using WebAssembly - if you use a custom image it will never
 leave your phone/computer!
 

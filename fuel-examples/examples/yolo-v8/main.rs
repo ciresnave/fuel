@@ -171,7 +171,7 @@ impl Args {
             Some(model) => std::path::PathBuf::from(model),
             None => {
                 let api = hf_hub::api::sync::Api::new()?;
-                let api = api.model("lmz/fuel-yolo-v8".to_string());
+                let api = api.model("lmz/candle-yolo-v8".to_string());
                 let size = match self.which {
                     Which::N => "n",
                     Which::S => "s",

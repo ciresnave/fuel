@@ -254,8 +254,24 @@ type WriteSliceDoffRun = unsafe extern "C" fn(
 /// Validates rank / shapes / byte-sizes host-side; the `dyn_axis` start
 /// is NOT bounds-checked here (it is device-only — the caller's
 /// contract, matching the kernel's no-clamp behavior).
+///
+/// # Safety
+///
+/// `dyn_start_dev` must be a live, readable device pointer to a single `i64`
+/// whose VALUE `start` satisfies
+/// `start + source_shape[dyn_axis] <= dest_shape[dyn_axis]` — the slab
+/// `[start, start + width)` on `dyn_axis` must land within the destination's
+/// extent. That start is DEVICE-ONLY (read on the device at kernel entry) and
+/// the kernel does NOT clamp, so an out-of-range value is an out-of-bounds
+/// device WRITE this function cannot detect (GAP-337). On the in-tree decode
+/// paths the value is the KV `cached_len`, bounded before launch by the
+/// per-token check in `build_decode_token_data` and the build guards in
+/// `build_batched_decode_logits` / `forward_with_kv_context` /
+/// `build_and_realize_first_decode_token` (and, for paged KV, the block-pool
+/// allocator's valid physical slot). Those are the PRIMARY live paths, NOT an
+/// exhaustive caller census — every new caller must re-establish this bound.
 #[allow(clippy::too_many_arguments)]
-pub fn write_slice_doff_run(
+pub unsafe fn write_slice_doff_run(
     dest: &mut CudaStorageBytes,
     source: &CudaStorageBytes,
     dest_shape: &[usize],
@@ -397,8 +413,15 @@ macro_rules! write_slice_doff_kernel {
                 "Baracuda `", $op_label, "` — in-place slab assign with a device-resident ",
                 "axis start for ", stringify!($dtype_size), "-byte elements.",
             )]
+            /// # Safety
+            ///
+            /// Same contract as [`write_slice_doff_run`]: `dyn_start_dev` must point at a
+            /// live device `i64` whose value `start` satisfies
+            /// `start + source_shape[dyn_axis] <= dest_shape[dyn_axis]`. The start is
+            /// device-only and the kernel does not clamp, so an out-of-range value is an
+            /// out-of-bounds device write the caller must prevent (GAP-337).
             #[allow(clippy::too_many_arguments)]
-            pub fn $name(
+            pub unsafe fn $name(
                 dest: &mut CudaStorageBytes,
                 source: &CudaStorageBytes,
                 dest_shape: &[usize],
@@ -407,14 +430,18 @@ macro_rules! write_slice_doff_kernel {
                 dyn_axis: usize,
                 dyn_start_dev: *const i64,
             ) -> Result<()> {
-                write_slice_doff_run(
-                    dest, source,
-                    dest_shape, source_shape, range_start,
-                    dyn_axis, dyn_start_dev,
-                    sys::[<baracuda_kernels_write_slice_ $sys_stem _doff_run>],
-                    $op_label,
-                    $dtype_size,
-                )
+                // SAFETY: this fn's own contract IS write_slice_doff_run's contract; the
+                // caller's guarantee on `*dyn_start_dev` is forwarded unchanged.
+                unsafe {
+                    write_slice_doff_run(
+                        dest, source,
+                        dest_shape, source_shape, range_start,
+                        dyn_axis, dyn_start_dev,
+                        sys::[<baracuda_kernels_write_slice_ $sys_stem _doff_run>],
+                        $op_label,
+                        $dtype_size,
+                    )
+                }
             }
         }
     };
