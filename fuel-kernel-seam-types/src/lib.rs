@@ -479,9 +479,16 @@ pub struct OpAttrs {
 /// fragile `format!("{:?}")` of the attrs. Injective over every field that reaches the
 /// emitted kernel:
 ///
-/// - `scalars` is DELIBERATELY OMITTED — those values become a runtime `ScalarExpr::Param`
-///   and never reach the kernel; hashing them over-discriminates (one kernel, many ids,
-///   wasted compiles — baracuda #115). Every OTHER field participates.
+/// - `scalars` is DELIBERATELY OMITTED — VALUES *and* LENGTH. A scalar-param value becomes
+///   a runtime `ScalarExpr::Param` and never reaches the kernel (baracuda #115), so keying
+///   the values over-discriminates (one kernel, many ids, a wasted compile per distinct
+///   scalar). The scalar ARITY that DOES reach the kernel is `scalar_slot_arity(op)`, a pure
+///   function of `OpTag` (fuel-graph `runtime_fused`), which baracuda already hashes per node
+///   — so `region_key` need not carry it, and no two same-`OpTag` regions can differ in
+///   arity. `scalars.len()` must NOT be keyed either: the SAME op is `scalars: vec![]` as an
+///   open slot vs `vec![x]` as a baked snapshot (both become a runtime `Param` in baracuda's
+///   emitter — baracuda #115 — hence ONE kernel), so keying the length would split one kernel
+///   into open-vs-baked ids (a milder #115). Every OTHER field participates.
 /// - Float fields are keyed by their `to_bits` pattern (`pad_value_bits`), so `0.0`/`-0.0`
 ///   and distinct NaN payloads stay distinct and `Eq` is reflexive — IEEE equality would
 ///   break both (it merges `±0` and gives `NaN != NaN`); see GAP-048/300. `const_bits` is
@@ -537,7 +544,7 @@ impl OpAttrs {
         // EXHAUSTIVE destructure (no `..`): a field added to OpAttrs breaks this line until
         // it is classified as part of the region identity or explicitly excluded here.
         let OpAttrs {
-            scalars: _, // EXCLUDED: runtime ScalarExpr::Param values, never reach the kernel.
+            scalars: _, // EXCLUDED (values AND length): runtime Param, never reaches the kernel; arity = scalar_slot_arity(op) = f(OpTag), carried by OpTag; len varies open-vs-baked (baracuda #115).
             axis,
             perm,
             target_shape,
@@ -870,18 +877,37 @@ mod region_key_tests {
     }
 
     #[test]
-    fn scalars_are_excluded_from_the_key() {
-        // The one field the key must IGNORE: scalar-param VALUES become a runtime
-        // ScalarExpr::Param, so two regions differing only in scalars are ONE kernel.
-        let a = OpAttrs {
-            scalars: vec![1.0, -0.0, f64::NAN, 2.0],
-            ..Default::default()
-        };
-        assert_eq!(
-            a.region_key(),
-            OpAttrs::default().region_key(),
-            "scalar-param values must not affect the region key (baracuda #115)"
-        );
+    fn scalars_length_and_values_are_excluded_from_the_key() {
+        // The key must ignore `scalars` ENTIRELY — both VALUES and LENGTH.
+        // VALUES: a scalar-param value becomes a runtime ScalarExpr::Param and never
+        // reaches the kernel (baracuda #115), so keying values over-discriminates.
+        // LENGTH: the kernel's scalar ARITY is `scalar_slot_arity(op)`, a pure function
+        // of OpTag (fuel-graph runtime_fused.rs:589-591), which baracuda already hashes
+        // per node — and the SAME op is `scalars: vec![]` as an open slot vs `vec![x]` as
+        // a baked snapshot (count_scalar_slots, runtime_fused.rs:916, treats the empty one
+        // as a slot; both become a runtime Param in baracuda's emitter, so ONE kernel), so
+        // keying `scalars.len()` would split one kernel into open-vs-baked ids (a milder
+        // #115). So every length AND value maps to one key. (This reddens if a future edit
+        // adds scalars or scalars.len() to RegionKey.)
+        let base = OpAttrs::default().region_key(); // scalars: vec![] (len 0)
+        for scalars in [
+            vec![],
+            vec![0.0],
+            vec![9.0],
+            vec![1.0, 2.0],
+            vec![-0.0, f64::NAN, 3.5],
+        ] {
+            let a = OpAttrs {
+                scalars,
+                ..Default::default()
+            };
+            assert_eq!(
+                a.region_key(),
+                base,
+                "scalars length and values must not affect the region key (baracuda #115; \
+                 arity is scalar_slot_arity(op), a function of OpTag)"
+            );
+        }
     }
 
     #[test]
