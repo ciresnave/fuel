@@ -151,7 +151,7 @@ fn dequant_run(
     }
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
     let scratch = Workspace::alloc(&device, 0)?;
-    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+    let stream = device.stream().as_raw();
     let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
     let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
 
@@ -274,7 +274,7 @@ fn checked_w_offset(op_label: &str, fmt: MmvqFormat, w_start_byte_offset: i64) -
             format!("negative w_start_byte_offset {w_start_byte_offset}"),
         )
     })?;
-    if offset % fmt.w_align_bytes != 0 {
+    if !offset.is_multiple_of(fmt.w_align_bytes) {
         return Err(mmvq_err(
             op_label,
             format!(
@@ -290,7 +290,7 @@ fn checked_w_offset(op_label: &str, fmt: MmvqFormat, w_start_byte_offset: i64) -
 /// Shape: the kernel's column read chunk, a start offset the kernel would
 /// ignore, and a stride that would read before the buffer.
 fn check_mmvq_shape(op_label: &str, fmt: MmvqFormat, call: &MmvqCall) -> Result<()> {
-    if call.ncols % fmt.read_chunk != 0 {
+    if !call.ncols.is_multiple_of(fmt.read_chunk) {
         return Err(mmvq_err(
             op_label,
             format!(
@@ -435,7 +435,7 @@ fn mmvq_run(
     }
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
     let scratch = Workspace::alloc(&device, 0)?;
-    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+    let stream = device.stream().as_raw();
     let x_ptr = weights.buffer().as_raw().0 as *const std::ffi::c_void;
     let y_ptr = activations.buffer().as_raw().0 as *const std::ffi::c_void;
     let dst_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
