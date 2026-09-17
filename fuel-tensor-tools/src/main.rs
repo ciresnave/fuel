@@ -219,7 +219,7 @@ fn gguf_read_raw<R: Read + Seek>(
 
 /// Dequantize raw block bytes to host f32.
 fn to_f32(dtype: GgmlDType, bytes: &[u8], elem_count: usize) -> Result<Vec<f32>> {
-    let q = cpu_from_data(dtype, std::borrow::Cow::Borrowed(bytes));
+    let q = cpu_from_data(dtype, std::borrow::Cow::Borrowed(bytes))?;
     let buf = q.dequantize(elem_count)?;
     Ok(buf.as_slice::<f32>()?.to_vec())
 }

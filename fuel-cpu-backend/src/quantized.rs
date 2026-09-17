@@ -154,6 +154,6 @@ impl QuantizedDeviceKernels for CpuBackendDevice {
         dtype: GgmlDType,
         data: Cow<'_, [u8]>,
     ) -> Result<Box<dyn DynQuantizedStorage>> {
-        Ok(Box::new(CpuQStorage(cpu_from_data(dtype, data))))
+        Ok(Box::new(CpuQStorage(cpu_from_data(dtype, data)?)))
     }
 }
