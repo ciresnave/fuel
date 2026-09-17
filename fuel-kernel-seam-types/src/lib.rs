@@ -494,7 +494,8 @@ pub struct OpAttrs {
 ///   break both (it merges `±0` and gives `NaN != NaN`); see GAP-048/300. `const_bits` is
 ///   already a bit pattern.
 /// - Every `Option`/count field is carried as-is, so `None` stays DISTINCT from `Some(0)` —
-///   the GAP-287 `unwrap_or`-collapse-of-unset-into-zero failure is not repeated here.
+///   the collapse-of-unset-into-zero failure GAP-287 records is not repeated here. (This doc
+///   avoids that gap's literal anchor text so the dead-anchor baseline stays honest.)
 ///
 /// Fields are private: this type exists to be a hashable/comparable region id, and building
 /// one goes through [`OpAttrs::region_key`], which uses an EXHAUSTIVE destructure (no `..`)
