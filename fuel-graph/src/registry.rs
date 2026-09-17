@@ -261,7 +261,7 @@ pub enum FusedOpParams {
     /// convention, = `cached_len` in decode). This is the runtime
     /// `k_len` decoupled from K's allocated shape that backs flash
     /// decode over a persistent capacity KV-cache. Build via
-    /// [`NodeHandle::flash_attn_dyn`].
+    /// [`NodeHandle::flash_attn_dyn`](crate::NodeHandle::flash_attn_dyn).
     FlashAttn {
         softmax_scale: f32,
         causal: bool,

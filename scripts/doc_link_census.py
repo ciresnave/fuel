@@ -187,6 +187,14 @@ DISPOSITIONS = {
              "and also a CI-excluded crate; `pub mod metal_backend` is UNGATED. "
              "STRUCTURAL, not build-verified: confirming needs an Apple target."),
 
+    "fuel_dispatch::pipelined::CapturedDecodeSession::capture": (CORRECT,
+             'cfg(feature = "cuda") on `pub struct CapturedDecodeSession` in '
+             "fuel-dispatch/src/pipelined.rs, inside the UNGATED `pub mod pipelined`; "
+             "fuel-core's `cuda` feature enables `fuel-dispatch/cuda`. STRUCTURAL, not "
+             "build-verified: confirming needs a --features cuda doc build (the "
+             "baracuda forge). WAS MIS-DISPOSITIONED DEFECT ('declared nowhere') until "
+             "GAP-330's repair read the site -- the harm this table exists to prevent."),
+
     # ---- NOT-A-LINK: notation rustdoc misreads. Fix with a code span. ----
     "Layout::contiguous(shape)": (NOT_A_LINK,
              "a CALL EXPRESSION, not a path -- the trailing `(shape)` makes it notation. "
@@ -195,59 +203,9 @@ DISPOSITIONS = {
              "a bare prose word in brackets at fuel-vulkan-backend/src/lib.rs:11054, not "
              "an item reference."),
 
-    # ---- DEFECT: repair the link. ----
-    "crate::dispatch::KernelBindingTable": (DEFECT,
-             "`pub struct KernelBindingTable` is at fuel-dispatch/src/kernel.rs:944 and is "
-             "re-exported at the crate root (lib.rs:154). There is NO `dispatch` module "
-             "holding it, so the path names something that does not exist. Repoint to "
-             "`crate::KernelBindingTable`."),
-    "crate::Tensor": (DEFECT,
-             "STALE NAME. `Tensor` was renamed to `NodeHandle` (cf861588) and the eager "
-             "type is gone. fuel-core/src/shape.rs:5."),
-    "fuel_dispatch::pipelined::CapturedDecodeSession::capture": (DEFECT,
-             "no declaration of `CapturedDecodeSession` anywhere in the workspace -- a "
-             "DEAD REFERENCE, not a path defect."),
-    "BindingEntry": (DEFECT,
-             "`pub struct BindingEntry` exists at fuel-dispatch/src/kernel.rs:838, but the "
-             "bare shorthand is not in scope at compiled.rs:116 / ranker/candidate.rs:6. "
-             "Needs a path."),
-    "CostEstimate": (DEFECT,
-             "`pub struct CostEstimate` at fuel-dispatch/src/fused.rs:88; bare shorthand "
-             "not in scope at ranker/cost_vector.rs:107. Needs a path."),
-    "RESERVED_DTYPE_TOKENS": (DEFECT,
-             "`pub const` at fuel-ir/src/dtype.rs:453; bare shorthand not in scope at "
-             "token_kind.rs:72. Needs a path."),
-    "Op::Conv1D": (DEFECT,
-             "`Conv1D` is a `pub struct` in fuel-cpu-backend, NOT an `Op` variant -- the "
-             "same class as the QMatMul/Conv2D/FlashAttn sites #179 repaired, where the "
-             "SENTENCE is false rather than merely unlinked. Name the real construct."),
-    "Op::NonZeroIndices": (DEFECT,
-             "the variant exists but the link is cross-crate from fuel-nn; needs "
-             "`fuel_graph::Op::NonZeroIndices`."),
-    "Op::WriteSlice": (DEFECT,
-             "cross-crate from fuel-transformers; needs `fuel_graph::Op::WriteSlice`."),
-    "WorkItemKind::Alloc": (DEFECT,
-             "the `Alloc` variant is at fuel-dispatch/src/pipelined.rs:667; the link is "
-             "cross-crate from fuel-core/src/pipelined_bridge.rs. Needs the full path."),
-    "Self::cast": (DEFECT,
-             "`pub fn cast` lives on `NodeHandle` at fuel-graph/src/lib.rs:6609. `Self` at "
-             "fuel-core/src/lazy.rs:1868 is a different type, so `Self::` names the wrong "
-             "one."),
-    "NodeHandle::flash_attn_dyn": (DEFECT,
-             "`pub fn flash_attn_dyn` is at fuel-graph/src/lib.rs:5202; the link at "
-             "registry.rs:264 does not resolve against `NodeHandle`. Verify the enclosing "
-             "impl before repointing -- a pub-mod chain reaches a MODULE, not an item "
-             "inside an impl."),
-    "PrecisionGuarantee::UNAUDITED": (DEFECT,
-             "`pub const UNAUDITED` at fuel-dispatch/src/fused.rs:208; the link at "
-             "kernel.rs:981 does not resolve. An associated-const link needs the exact "
-             "owning type path."),
-    "LlamaModel::forward_paged_step": (DEFECT,
-             "`pub fn forward_paged_step` at fuel-core/src/lazy.rs:9160; the link at "
-             "inference_context.rs:1547/1553 does not resolve against `LlamaModel`. Check "
-             "the enclosing impl before repointing."),
-    "LlamaModel::forward_paged_step_persistent": (DEFECT,
-             "same shape as its sibling above, at inference_context.rs:1527."),
+    # ---- DEFECT: none remain -- GAP-330 repaired the last 14. A new one
+    # needs a reason naming what the code says the target became, and the
+    # repair deletes its entry in the same change (`--gate` fails on stale).
 }
 
 
@@ -333,6 +291,10 @@ def build_docs(root, crates):
     """
     out = os.path.join(root, "target", "doc-link-census.json")
     err = os.path.join(root, "target", "doc-link-census.err")
+    # A fresh checkout has no `target/` until cargo makes one, and these files
+    # are opened BEFORE cargo runs. CI never saw this: `Run normal cpu` creates
+    # `target/` first. A clean worktree crashed here with FileNotFoundError.
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     cmd = ["cargo", "doc", "--workspace", "--no-deps", "-j", "4",
            "--message-format", "json"]
     for c in crates:

@@ -978,7 +978,8 @@ impl KernelBindingTable {
     /// [`Self::finalize`] (run once after bulk registration) and
     /// returned as a `Result`, not raised as an inline panic.
     ///
-    /// PrecisionGuarantee defaults to [`PrecisionGuarantee::UNAUDITED`].
+    /// PrecisionGuarantee defaults to
+    /// [`PrecisionGuarantee::UNAUDITED`](crate::fused::PrecisionGuarantee::UNAUDITED).
     /// Step-7b convention: the always-built backend
     /// (fuel-cpu-backend) runs [`Self::fill_unset_cpu_precision`] at
     /// the end of its bulk registration pass to upgrade every UNAUDITED
