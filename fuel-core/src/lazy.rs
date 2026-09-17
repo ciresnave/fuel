@@ -5049,6 +5049,40 @@ mod tests {
         );
     }
 
+    /// GAP-329 born-red (guard now LIVE). `captured_output_to_f32` guards the
+    /// byte->f32 reinterpret on the root storage dtype: a non-F32 root (here a BF16
+    /// CPU storage) must be REJECTED with `Error::UnexpectedDType`, not silently
+    /// reinterpreted as a 2x-length garbage vector. The GAP-327 sibling (the cuda
+    /// captured-decode readback). The control (an F32 root) must SUCCEED, proving the
+    /// guard is not rejecting everything. CPU-only body — the guard fires before the
+    /// Cpu/Cuda match, so no GPU is touched (the test only compiles under `cuda`
+    /// because the fn does).
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn gap329_captured_output_to_f32_rejects_non_f32_root() {
+        // Subject: a BF16 CPU root must be rejected (guard fires on dtype != F32).
+        let bf16 = std::sync::Arc::new(std::sync::RwLock::new(fuel_memory::from_slice_cpu(&[
+            half::bf16::from_f32(1.0),
+            half::bf16::from_f32(2.0),
+        ])));
+        let got = captured_output_to_f32(&bf16);
+        assert!(
+            matches!(&got, Err(fuel_ir::Error::UnexpectedDType { expected, got: g, .. })
+                if *expected == DType::F32 && *g == DType::BF16),
+            "captured_output_to_f32 on a BF16 root must Err(UnexpectedDType {{expected: F32, \
+             got: BF16}}), not silently reinterpret; got {got:?}"
+        );
+        // Control: an F32 CPU root must SUCCEED (the guard is not rejecting everything).
+        let f32s = std::sync::Arc::new(std::sync::RwLock::new(fuel_memory::from_slice_cpu(&[
+            1.0_f32, 2.0, 3.0, 4.0,
+        ])));
+        assert_eq!(
+            captured_output_to_f32(&f32s).unwrap(),
+            vec![1.0_f32, 2.0, 3.0, 4.0],
+            "captured_output_to_f32 on an F32 root must return the f32 values"
+        );
+    }
+
     #[test]
     fn lazy_tensor_mini_llama_block_forward() {
         // A minimal LLaMA-style attention-only "block" built entirely
