@@ -25,7 +25,7 @@ Workspace `edition = "2024"`, Rust resolver `"2"`.
 | Crate               | Version               | Fuel pin                              | Status                                                   |
 | ------------------- | --------------------- | --------------------------------------- | -------------------------------------------------------- |
 | `fuel-optimisers` | `0.10.0-alpha.2`      | `0.9.2-alpha.1` registry                | **Outdated** — pins older alpha, needs bump to `0.10.2`  |
-| `fuel-bhop`       | git (upstream HF ref) | `db08cc0a…` huggingface/fuel          | **Outdated** — should point to fork `main`, not upstream |
+| `candle-bhop`       | git (upstream HF ref) | `db08cc0a…` huggingface/candle          | **Outdated** — should point to fork `main`, not upstream |
 | `fuel-layer-norm` | `0.0.3`               | `git = ciresnave/fuel, branch = main` | OK for local builds; no crates.io version                |
 | `fuellight`       | `0.2.1`               | `git = ciresnave/fuel` (no rev pin)   | OK for local builds; floating ref                        |
 | `fuel-cuda-vmm`   | `0.1.1`               | N/A — local path dep                    | Used locally; not yet on crates.io                       |
@@ -39,12 +39,12 @@ the registry. The workspace has moved to `0.10.2`. Any project that pulls both
 `fuel-optimisers` and workspace crates will see a version conflict.
 
 **Action required**: Bump to `fuel-core = "0.10.2"` and publish to crates.io,
-or switch to `git = "https://github.com/ciresnave/fuel-optimisers"` with the
+or switch to `git = "https://github.com/ciresnave/candle-optimisers"` with the
 `update-fuel-deps-for-cuda-13` branch.
 
 #### `fuel-bhop`
 
-Uses `git = "https://github.com/huggingface/fuel", rev = "db08cc0a…"` — this
+Uses `git = "https://github.com/huggingface/candle", rev = "db08cc0a…"` — this
 is a specific commit in the upstream HuggingFace repo, not our fork. When new
 APIs are added to our fork they will not be visible to `fuel-bhop`.
 
