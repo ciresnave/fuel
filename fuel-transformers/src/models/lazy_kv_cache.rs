@@ -18,7 +18,8 @@
 //! sequence axis is always dim 0.
 //!
 //! Per-layer K/V buffers are held as separate [`Tensor`]s so an
-//! `append` to layer `l` only emits one [`Op::WriteSlice`] node per
+//! `append` to layer `l` only emits one
+//! [`Op::WriteSlice`](fuel_graph::Op::WriteSlice) node per
 //! K/V, not one per layer × KV. The cost is `Vec` capacity of
 //! `2 * n_layers` `Tensor`s — cheap since each is a `(graph, id)`
 //! pair behind an `Arc`.

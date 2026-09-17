@@ -3,7 +3,8 @@
 //! the optimizer ranker is considering at a graph decision point.
 //!
 //! Phase 1.1 of the picker-work arc. A candidate is what the
-//! ranker filters and ranks. Today's [`BindingEntry`] is the
+//! ranker filters and ranks. Today's
+//! [`BindingEntry`](crate::kernel::BindingEntry) is the
 //! per-(op, dtypes, backend)-key cousin; a `Candidate` is the
 //! per-decision-point view that adds placement (`BackendId` ×
 //! `DeviceLocation`), the `OpParams` the kernel will see at runtime,

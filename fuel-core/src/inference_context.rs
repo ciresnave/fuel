@@ -1524,7 +1524,8 @@ impl DecodeSession {
 }
 
 /// Runtime policy for the paged persistent decode path
-/// ([`LlamaModel::forward_paged_step_persistent`]): whether to build the plan
+/// ([`LlamaModel::forward_paged_step_persistent`](crate::lazy::LlamaModel::forward_paged_step_persistent)):
+/// whether to build the plan
 /// ONCE and reuse it across tokens, or re-plan every token (the pre-plan-once
 /// behavior). The paged driver holds this per config and passes it each step;
 /// **the driver default is [`PlanOnce`](Self::PlanOnce)** (set by
@@ -1544,13 +1545,14 @@ impl DecodeSession {
 /// and because `Replan` is the parity reference the plan-once path is checked
 /// against. On [`Replan`](Self::Replan) the persistent forward drops any held
 /// session (so nothing stale lingers) and delegates to the re-planning
-/// [`LlamaModel::forward_paged_step`]; on [`PlanOnce`](Self::PlanOnce) it
+/// [`LlamaModel::forward_paged_step`](crate::lazy::LlamaModel::forward_paged_step);
+/// on [`PlanOnce`](Self::PlanOnce) it
 /// builds-once / rebinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PagedDecodePlan {
     /// Re-plan (build + optimize the graph) every token — the pre-plan-once
     /// path. Drops any held [`PagedDecodeSession`] and routes to
-    /// [`LlamaModel::forward_paged_step`].
+    /// [`LlamaModel::forward_paged_step`](crate::lazy::LlamaModel::forward_paged_step).
     Replan,
     /// Build + optimize the graph ONCE (into a [`PagedDecodeSession`]) and reuse
     /// it (rebinding only the per-token data) for every subsequent token.

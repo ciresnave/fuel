@@ -319,7 +319,8 @@ impl MoeLayer {
     /// **Sparse (dropless) dispatch.** Each expert's FFN is computed only
     /// for the tokens the router sent to it, not for all `N` tokens: per
     /// expert `e` we take the gate-weight column (nonzero exactly at the
-    /// routed tokens), find those token rows with [`Op::NonZeroIndices`]
+    /// routed tokens), find those token rows with
+    /// [`Op::NonZeroIndices`](fuel_graph::Op::NonZeroIndices)
     /// (`Tensor::nonzero_indices_bundled`) — which also publishes the
     /// runtime count `count_e` into the pass's `SymEnv` — gather those rows
     /// into a `[capacity=N, hidden]` buffer, run the SwiGLU FFN over exactly
