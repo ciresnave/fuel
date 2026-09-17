@@ -53,6 +53,10 @@ impl<T: GgmlType + Send + Sync> QuantizedType for Vec<T> {
         T::BLCK_SIZE
     }
     fn dequantize(&self, elem_count: usize) -> Result<HostBuffer> {
+        // GAP-333: without this, too many elements panicked on a block index
+        // and a partial block left a silently-zero tail (`to_float` only
+        // `debug_assert`s the block multiple).
+        T::DTYPE.check_dequant_count("dequantize", elem_count, self.storage_size_in_bytes())?;
         let mut ys = vec![0.0f32; elem_count];
         T::to_float(self.as_slice(), &mut ys);
         Ok(HostBuffer::F32(ys))
@@ -177,6 +181,23 @@ mod tests {
             .flat_map(|&v| std::iter::repeat_n(v, 16))
             .collect();
         assert_eq!(dequant(back.as_ref(), 64), want);
+    }
+
+    /// GAP-333: `dequantize` checks the count against the stored blocks.
+    #[test]
+    fn dequantize_declines_a_count_the_blocks_cannot_supply() {
+        let q = cpu_zeros(GgmlDType::Q4_0, 64); // 2 blocks, 36 bytes
+        assert_eq!(dequant(q.as_ref(), 64), vec![0.0; 64]);
+        let too_many = q.dequantize(96).expect_err("3 blocks from 2").to_string();
+        assert!(
+            too_many.contains("96 elements need 54 bytes of Q4_0 blocks, but the buffer holds 36"),
+            "{too_many}"
+        );
+        let partial = q.dequantize(40).expect_err("a partial block").to_string();
+        assert!(
+            partial.contains("element count 40 is not a multiple of Q4_0's block size 32"),
+            "{partial}"
+        );
     }
 
     #[test]
