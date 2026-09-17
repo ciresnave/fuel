@@ -181,24 +181,32 @@ def enclosing_fn(lines, idx):
     return "-", "<none>"
 
 
+def _skip_literal(line, i):
+    """Index of the last character of a string or char literal starting at `i`,
+    or `i` itself when `line[i]` does not open one (a lifetime, say)."""
+    n = len(line)
+    if line[i] == '"':
+        i += 1
+        while i < n and line[i] != '"':
+            i += 2 if line[i] == "\\" else 1
+        return i
+    if line[i] == "'" and i + 2 < n:
+        if line[i + 1] == "\\":
+            end = line.find("'", i + 2)
+            return end if end != -1 else i
+        if line[i + 2] == "'":
+            return i + 2
+    return i
+
+
 def _code_braces(line):
     """Net `{` minus `}` outside string/char literals and `//` comments."""
-    net, i, n = 0, 0, len(line)
-    while i < n:
-        c = line[i]
-        if line.startswith("//", i):
-            break
-        if c == '"':
-            i += 1
-            while i < n and line[i] != '"':
-                i += 2 if line[i] == "\\" else 1
-        elif c == "'" and i + 2 < n and (line[i + 2] == "'" or line[i + 1] == "\\"):
-            i = line.index("'", i + 2) if line[i + 1] == "\\" else i + 2
-        elif c == "{":
-            net += 1
-        elif c == "}":
-            net -= 1
-        i += 1
+    net, i = 0, 0
+    while i < len(line) and not line.startswith("//", i):
+        j = _skip_literal(line, i)
+        if j == i:
+            net += {"{": 1, "}": -1}.get(line[i], 0)
+        i = j + 1
     return net
 
 
@@ -214,21 +222,23 @@ def _block(lines, start):
     return lines[start:]
 
 
+def _scopes(lines, impl):
+    """The line lists to search: the whole file for a free fn, else each
+    column-0 `impl` block whose header matches."""
+    if impl == "-":
+        return [lines]
+    return [_block(lines, j) for j, line in enumerate(lines)
+            if line.startswith("impl") and _impl_header(lines, j) == impl]
+
+
 def fn_body(text, impl, name):
     """The text of `fn name` inside `impl` (or at top level), or None; raises if ambiguous."""
-    lines = text.splitlines()
-    scopes = []
-    if impl == "-":
-        scopes = [(0, lines)]
-    else:
-        for j, line in enumerate(lines):
-            if line.startswith("impl") and _impl_header(lines, j) == impl:
-                scopes.append((j, _block(lines, j)))
+    top_level = impl == "-"
     hits = []
-    for base, scope in scopes:
+    for scope in _scopes(text.splitlines(), impl):
         for k, line in enumerate(scope):
             m = FN_RE.match(line)
-            if m and m.group(2) == name and (impl != "-" or not m.group(1)):
+            if m and m.group(2) == name and not (top_level and m.group(1)):
                 hits.append("\n".join(_block(scope, k)))
     if len(hits) > 1:
         raise ValueError(f"{impl} :: {name} is ambiguous ({len(hits)} definitions)")
@@ -279,31 +289,36 @@ def read_list():
     return entries
 
 
+def property_problems(files):
+    """Every inlined guard of the three classes still present."""
+    return [f"{path}:{idx + 1}: inlined {cls} guard"
+            for path, text in sorted(files.items())
+            for idx, cls in gap326_sites(text)]
+
+
+def _entry_problems(files, path, impl, name, classes):
+    """Why one recorded function fails MEMBERSHIP (empty if it passes)."""
+    text = files.get(path)
+    if text is None:
+        return [f"{path}: file is gone; re-point {impl} :: {name} with a reason"]
+    try:
+        body = fn_body(text, impl, name)
+    except ValueError as e:
+        return [f"{path}: {e}"]
+    if body is None:
+        return [f"{path}: {impl} :: {name} is gone; re-point it with a reason"]
+    return [f"{path}: {impl} :: {name} held a {cls} guard and calls none of "
+            f"{' / '.join(GAP326_REQUIRED[cls])}; a deleted guard is not a fix"
+            for cls in classes
+            if not any(op in body for op in GAP326_REQUIRED[cls])]
+
+
 def gap326_check(files, entries):
     """(property problems, membership problems) for `files` against `entries`."""
-    prop = []
-    for path, text in sorted(files.items()):
-        for idx, cls in gap326_sites(text):
-            prop.append(f"{path}:{idx + 1}: inlined {cls} guard")
     memb = []
     for (path, impl, name), classes in sorted(entries.items()):
-        text = files.get(path)
-        if text is None:
-            memb.append(f"{path}: file is gone; re-point {impl} :: {name} with a reason")
-            continue
-        try:
-            body = fn_body(text, impl, name)
-        except ValueError as e:
-            memb.append(f"{path}: {e}")
-            continue
-        if body is None:
-            memb.append(f"{path}: {impl} :: {name} is gone; re-point it with a reason")
-            continue
-        for cls in classes:
-            if not any(op in body for op in GAP326_REQUIRED[cls]):
-                memb.append(f"{path}: {impl} :: {name} held a {cls} guard and calls none of "
-                            f"{' / '.join(GAP326_REQUIRED[cls])}; a deleted guard is not a fix")
-    return prop, memb
+        memb += _entry_problems(files, path, impl, name, classes)
+    return property_problems(files), memb
 
 
 def gap326_gate():
@@ -324,18 +339,22 @@ def gap326_gate():
     return 0
 
 
+def all_locatable(files, entries, ref):
+    """Every recorded function must be LOCATABLE at the ref it was derived
+    from, or the gate would later report it "gone" for a reason that is the
+    locator's, not the code's."""
+    _, memb = gap326_check(files, entries)
+    lost = [m for m in memb if "is gone" in m or "ambiguous" in m]
+    for m in lost:
+        print(f"  NOT LOCATABLE AT {ref}: {m}", file=sys.stderr)
+    return not lost
+
+
 def gap326_derive(ref, write):
     files = blobs_at(ref, GAP326_DIR)
     entries = gap326_membership(files)
     sites = sum(len(gap326_sites(t)) for t in files.values())
-    # Every recorded function must be LOCATABLE at the ref it was derived from,
-    # or the gate would later report it "gone" for a reason that is the
-    # locator's, not the code's.
-    _, memb = gap326_check(files, entries)
-    lost = [m for m in memb if "is gone" in m or "ambiguous" in m]
-    if lost:
-        for m in lost:
-            print(f"  NOT LOCATABLE AT {ref}: {m}", file=sys.stderr)
+    if not all_locatable(files, entries, ref):
         return 1
     rows = [f"{p}\t{i}\t{n}\t{','.join(c)}" for (p, i, n), c in sorted(entries.items())]
     header = [
