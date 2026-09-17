@@ -65,20 +65,31 @@ impl<T: GgmlType + Send + Sync> QuantizedType for Vec<T> {
     }
 }
 
-pub fn as_t_slice<T>(data: Cow<'_, [u8]>) -> &[T] {
+/// GAP-336: copies `data` into owned blocks, one `read_unaligned` per block.
+///
+/// This replaces `as_t_slice`, which took the `Cow` by value and returned a
+/// slice into it. For `Cow::Owned` that slice outlived the buffer it pointed
+/// into (a use-after-free, even with valid input), and it also panicked on a
+/// byte buffer that was not aligned for `T`. Nothing is borrowed here, so the
+/// result depends on neither the input's lifetime nor its alignment.
+fn blocks_from_bytes<T: GgmlType>(data: &[u8]) -> Result<Vec<T>> {
     let size = std::mem::size_of::<T>();
-    assert_eq!(
-        data.len() % size,
-        0,
-        "Data length must be a multiple of T's size"
-    );
-    let ptr = data.as_ptr();
-    assert_eq!(
-        (ptr as usize) % std::mem::align_of::<T>(),
-        0,
-        "Data pointer must be aligned to T's alignment"
-    );
-    unsafe { std::slice::from_raw_parts(ptr as *const T, data.len() / size) }
+    if !data.len().is_multiple_of(size) {
+        return Err(fuel_ir::Error::Msg(format!(
+            "cpu_from_data: {} bytes is not a whole number of {:?} blocks ({size} bytes each)",
+            data.len(),
+            T::DTYPE,
+        ))
+        .bt());
+    }
+    Ok(data
+        .chunks_exact(size)
+        // SAFETY: each chunk is exactly `size_of::<T>()` bytes, and every `T`
+        // this is called with (in `cpu_from_data`) is plain data: `f32`,
+        // `f16`, `bf16`, or a block of `f16`/`f32` and integer arrays, so any
+        // byte pattern is a valid `T`.
+        .map(|c| unsafe { std::ptr::read_unaligned(c.as_ptr().cast::<T>()) })
+        .collect())
 }
 
 pub fn cpu_zeros(dtype: GgmlDType, elem_count: usize) -> Box<dyn QuantizedType> {
@@ -101,22 +112,93 @@ pub fn cpu_zeros(dtype: GgmlDType, elem_count: usize) -> Box<dyn QuantizedType> 
     }
 }
 
-pub fn cpu_from_data(dtype: GgmlDType, data: Cow<'_, [u8]>) -> Box<dyn QuantizedType> {
-    match dtype {
-        GgmlDType::F32 => Box::new(as_t_slice::<f32>(data).to_vec()),
-        GgmlDType::F16 => Box::new(as_t_slice::<f16>(data).to_vec()),
-        GgmlDType::BF16 => Box::new(as_t_slice::<bf16>(data).to_vec()),
-        GgmlDType::Q4_0 => Box::new(as_t_slice::<BlockQ4_0>(data).to_vec()),
-        GgmlDType::Q4_1 => Box::new(as_t_slice::<BlockQ4_1>(data).to_vec()),
-        GgmlDType::Q5_0 => Box::new(as_t_slice::<BlockQ5_0>(data).to_vec()),
-        GgmlDType::Q5_1 => Box::new(as_t_slice::<BlockQ5_1>(data).to_vec()),
-        GgmlDType::Q8_0 => Box::new(as_t_slice::<BlockQ8_0>(data).to_vec()),
-        GgmlDType::Q8_1 => Box::new(as_t_slice::<BlockQ8_1>(data).to_vec()),
-        GgmlDType::Q2K => Box::new(as_t_slice::<BlockQ2K>(data).to_vec()),
-        GgmlDType::Q3K => Box::new(as_t_slice::<BlockQ3K>(data).to_vec()),
-        GgmlDType::Q4K => Box::new(as_t_slice::<BlockQ4K>(data).to_vec()),
-        GgmlDType::Q5K => Box::new(as_t_slice::<BlockQ5K>(data).to_vec()),
-        GgmlDType::Q6K => Box::new(as_t_slice::<BlockQ6K>(data).to_vec()),
-        GgmlDType::Q8K => Box::new(as_t_slice::<BlockQ8K>(data).to_vec()),
+/// Builds CPU quantized storage from raw block bytes. The bytes are copied,
+/// so `data` may be owned or borrowed and need not be aligned for `dtype`.
+/// Returns `Err` if `data` is not a whole number of blocks.
+pub fn cpu_from_data(dtype: GgmlDType, data: Cow<'_, [u8]>) -> Result<Box<dyn QuantizedType>> {
+    let data: &[u8] = &data;
+    Ok(match dtype {
+        GgmlDType::F32 => Box::new(blocks_from_bytes::<f32>(data)?),
+        GgmlDType::F16 => Box::new(blocks_from_bytes::<f16>(data)?),
+        GgmlDType::BF16 => Box::new(blocks_from_bytes::<bf16>(data)?),
+        GgmlDType::Q4_0 => Box::new(blocks_from_bytes::<BlockQ4_0>(data)?),
+        GgmlDType::Q4_1 => Box::new(blocks_from_bytes::<BlockQ4_1>(data)?),
+        GgmlDType::Q5_0 => Box::new(blocks_from_bytes::<BlockQ5_0>(data)?),
+        GgmlDType::Q5_1 => Box::new(blocks_from_bytes::<BlockQ5_1>(data)?),
+        GgmlDType::Q8_0 => Box::new(blocks_from_bytes::<BlockQ8_0>(data)?),
+        GgmlDType::Q8_1 => Box::new(blocks_from_bytes::<BlockQ8_1>(data)?),
+        GgmlDType::Q2K => Box::new(blocks_from_bytes::<BlockQ2K>(data)?),
+        GgmlDType::Q3K => Box::new(blocks_from_bytes::<BlockQ3K>(data)?),
+        GgmlDType::Q4K => Box::new(blocks_from_bytes::<BlockQ4K>(data)?),
+        GgmlDType::Q5K => Box::new(blocks_from_bytes::<BlockQ5K>(data)?),
+        GgmlDType::Q6K => Box::new(blocks_from_bytes::<BlockQ6K>(data)?),
+        GgmlDType::Q8K => Box::new(blocks_from_bytes::<BlockQ8K>(data)?),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f32_bytes(xs: &[f32]) -> Vec<u8> {
+        xs.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    fn dequant(q: &dyn QuantizedType, n: usize) -> Vec<f32> {
+        q.dequantize(n).unwrap().as_slice::<f32>().unwrap().to_vec()
+    }
+
+    /// `Cow::Owned` is the input `as_t_slice` turned into a dangling slice.
+    /// This pins the values; the use-after-free itself is not observable from
+    /// a plain test (it needs Miri), so the evidence for it is the lifetime
+    /// argument in `blocks_from_bytes`'s doc.
+    #[test]
+    fn owned_f32_bytes_round_trip() {
+        let xs = [1.5_f32, -2.0, 3.25];
+        let q = cpu_from_data(GgmlDType::F32, Cow::Owned(f32_bytes(&xs))).unwrap();
+        assert_eq!(dequant(q.as_ref(), 3), xs);
+    }
+
+    #[test]
+    fn owned_q4_0_blocks_round_trip() {
+        let xs: Vec<f32> = (0..64).map(|i| (i as f32 * 0.37).sin()).collect();
+        let mut q = cpu_zeros(GgmlDType::Q4_0, 64);
+        q.from_float(&xs);
+        let want = dequant(q.as_ref(), 64);
+        // SAFETY: `as_ptr` points at the storage's `storage_size_in_bytes`
+        // initialised bytes, and `q` outlives this borrow.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(q.as_ptr(), q.storage_size_in_bytes()) }.to_vec();
+        assert_eq!(bytes.len(), 2 * 18);
+        let back = cpu_from_data(GgmlDType::Q4_0, Cow::Owned(bytes)).unwrap();
+        assert_eq!(dequant(back.as_ref(), 64), want);
+    }
+
+    #[test]
+    fn a_partial_trailing_block_is_declined() {
+        let err = cpu_from_data(GgmlDType::Q4_0, Cow::Owned(vec![0_u8; 18 + 5]))
+            .err()
+            .expect("a partial block must be declined")
+            .to_string();
+        assert!(
+            err.contains("23 bytes is not a whole number of Q4_0 blocks (18 bytes each)"),
+            "wrong decline: {err}"
+        );
+    }
+
+    /// `as_t_slice` panicked on this input ("Data pointer must be aligned").
+    #[test]
+    fn misaligned_bytes_are_accepted() {
+        let xs = [0.5_f32, 7.0, -1.25, 2.0];
+        let body = f32_bytes(&xs);
+        let mut buf = vec![0_u8; 3 + body.len()];
+        let off = (0..3)
+            .find(|o| (buf.as_ptr() as usize + o) % std::mem::align_of::<f32>() != 0)
+            .expect("one of three offsets is misaligned for f32");
+        buf[off..off + body.len()].copy_from_slice(&body);
+        let bytes = &buf[off..off + body.len()];
+        assert_ne!(bytes.as_ptr() as usize % std::mem::align_of::<f32>(), 0);
+        let q = cpu_from_data(GgmlDType::F32, Cow::Borrowed(bytes)).unwrap();
+        assert_eq!(dequant(q.as_ref(), 4), xs);
     }
 }
