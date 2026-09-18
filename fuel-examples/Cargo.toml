@@ -34,7 +34,7 @@ rayon = { workspace = true }
 safetensors = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-symphonia = { version = "0.5.3", features = ["all"], optional = true }
+symphonia = { version = "0.6.1", features = ["all"], optional = true }
 tokenizers = { workspace = true, features = ["fancy-regex"] }
 pdf2image = { version = "0.1.2", optional = true }
 
