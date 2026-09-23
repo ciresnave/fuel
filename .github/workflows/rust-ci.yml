@@ -470,6 +470,24 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-examples --features onnx --all-targets
 
+      # GAP-338: `symphonia` is `optional = true` in fuel-examples/Cargo.toml
+      # and its only consumer (`src/audio.rs::pcm_decode`) is
+      # `#[cfg(feature = "symphonia")]`. No job in this file ever named the
+      # feature, so dependabot's symphonia 0.5.5 -> 0.6.1 bump (a release
+      # upstream itself calls "significant breaking changes") went green on
+      # every leg while `pcm_decode` failed to compile against the new API —
+      # a local build was the only thing that caught it. `pdf2image` and
+      # `depth_anything_v2` (palette+enterpolation) are the same shape (a
+      # host-buildable, non-default feature with no CI leg) and are added
+      # here too so a future bump of THOSE doesn't repeat this. The
+      # example-only `fuel-datasets` feature is included for the same
+      # reason. `buildtime-download` is deliberately excluded: its build
+      # script errors without `FUEL_BUILDTIME_MODEL_REVISION` set, an
+      # external-input requirement, not a coverage hole of this shape.
+      - name: Check symphonia/pdf2image/depth_anything_v2/fuel-datasets-gated examples (GAP-338)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-examples --features symphonia,pdf2image,depth_anything_v2,fuel-datasets --all-targets
+
       # ⚠️ UNPROVEN ON A CLEAN RUNNER — THIS STEP EXISTS TO BE OBSERVED.
       # `fuel-cpu-backend --features mkl` had NINETEEN errors and had not
       # compiled since the edition-2024 migration; fixed in 5617a617. It is a
