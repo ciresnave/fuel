@@ -156,12 +156,11 @@ mod tests {
     #[test]
     fn pcm_decode_round_trips_a_synthetic_wav() {
         let samples: Vec<i16> = vec![0, 16384, -16384, 32767, -32768, 100, -100, 0];
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("fuel-pcm-decode-test-{}.wav", std::process::id()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fuel-pcm-decode-test.wav");
         write_wav_i16(&path, 16_000, &samples);
 
         let (pcm, sample_rate) = pcm_decode(&path).unwrap();
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(sample_rate, 16_000);
         assert_eq!(pcm.len(), samples.len());
