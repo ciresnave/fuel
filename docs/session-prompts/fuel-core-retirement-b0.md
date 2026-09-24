@@ -56,7 +56,13 @@ of other programs (eager-dispatch retirement B6), not B0.
 > it is nobody's build step. This one was dead for weeks inside a document that
 > reads as authoritative.
 >
-> **First separable piece, measured 2026-08-19: `fuel-nn`.** The NN surface is
+> **First separable piece, measured 2026-08-19: `fuel-nn`. ⚠️ DONE — SHIPPED
+> 2026-09-02, and this amendment sat here unmarked for three weeks after it
+> landed, which is the exact failure mode it itself was written to warn about.
+> Re-verified 2026-09-24 at `origin/main`: `fuel-nn` is a top-level crate, 22
+> files / 9,002 lines, its own `Cargo.toml` states "the fuel-core dissolution
+> repoint has run (2026-09-02)." See `fuel-core-dissolution-b1.md` for what is
+> scoped next.** The NN surface was
 > 22 files / ~8,855 lines (`lazy_nn_*.rs` + `lazy_nn/`) with **zero** eager-
 > `Tensor` dependency — the one apparent exception, `lazy_nn_optim.rs`'s `NodeHandle` import, is
 > `fuel_graph::NodeHandle`, the graph handle from a crate already BELOW `fuel-core`.
