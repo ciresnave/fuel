@@ -46,19 +46,29 @@ for tensor wire formats... No item in this crate references `Tensor`, `Device`, 
 or any other backend-frontend type."* It covers `safetensors`, `pickle`, `gguf`, `ggml`,
 `imatrix`.
 
-`fuel-core` already depends on it and three of its own modules are already thin delegation
+`fuel-core` already depends on it and two of its own modules are genuinely thin delegation
 shims, not original implementations:
 
 - `fuel-core/src/quantized/gguf_file.rs` — re-exports + delegates to `fuel_formats::gguf`.
 - `fuel-core/src/quantized/imatrix_file.rs` — delegates to `fuel_formats::imatrix::load_path`.
-- `fuel-core/src/safetensors.rs` — its `MmapedFile` type re-exports `fuel_formats::safetensors::MmapedFile`;
-  its own ~230 remaining lines are raw-bytes mmap/file access returning the `safetensors`
-  crate's own `TensorView`, not `fuel_core::lazy::Tensor` — confirmed by grep, zero references
-  to `crate::lazy`.
 
-**So the byte counts below are gross sizes, not "originally-fuel-core content" sizes** — a
-meaningful fraction of this cluster is already a re-export shim over work already done
-elsewhere. The task on this cluster is smaller than its file sizes suggest.
+**`fuel-core/src/safetensors.rs` is NOT a thin shim, and an earlier draft of this doc
+overstated it as one — corrected on review, not by me catching it.** Only its `MmapedFile`
+type re-exports `fuel_formats::safetensors::MmapedFile`. The rest of the file —
+`MmapedSafetensors` and `BufferedSafetensors`, real wrapper types with their own
+implementations — is original, and has a broad public consumer surface: `git grep -c` for
+those two type names returns nonzero hits in over 110 files across `fuel-transformers/src/models/`
+and `fuel-nn/src/`. What IS still true and checked independently: neither wrapper touches
+`crate::lazy::Tensor` (confirmed by grep, zero references to `crate::lazy` in the file) —
+their `get`/`tensors` methods return the `safetensors` crate's own `TensorView`, which is why
+this file still belongs in the zero-`Tensor`-coupling slice below. It is just not a small or
+"already done" part of that slice — moving it means moving real, heavily-depended-upon
+implementation, not deleting a shim.
+
+**So the byte counts below are gross sizes, and only PARTIALLY overstate the remaining
+work** — `gguf_file.rs`/`imatrix_file.rs` are already-done shims (make the task smaller
+than their bytes suggest), but `safetensors.rs`'s bytes are close to the real migration
+cost (large public API surface to re-point, not a shim to delete).
 
 ### The pattern across both corrections, worth naming once rather than twice
 
@@ -82,7 +92,7 @@ Re-measured directly (not carried from any prior doc), at `origin/main` (`a732c4
     fuel-core/                84 files, 2,430,392 bytes
     fuel-core/src/lazy.rs     1 file,   1,109,731 bytes  (46% of the crate, alone)
 
-Five real (non-dev) dependents: `fuel` (facade), `fuel-nn`, `fuel-datasets`,
+Four real (non-dev) dependents: `fuel` (facade), `fuel-nn`, `fuel-datasets`,
 `fuel-transformers` — all `[dependencies]`. `fuel-vulkan-backend` depends on it too, but
 only under `[dev-dependencies]` (test-only, not a production coupling).
 
@@ -133,7 +143,7 @@ assumed):
     fuel-core/src/quantized/imatrix_file.rs       711 B   (shim over fuel_formats::imatrix)
     fuel-core/src/quantized/mod.rs              2,059 B   (imports: none)
     fuel-core/src/quantized/tokenizer.rs       12,058 B   (imports: crate::quantized::gguf_file, crate::{Context, Error, Result})
-    fuel-core/src/safetensors.rs                 9,258 B   (imports: crate::{Error, Result}; shim + raw TensorView access)
+    fuel-core/src/safetensors.rs                 9,258 B   (imports: crate::{Error, Result}; real MmapedSafetensors/BufferedSafetensors impl, NOT a shim, 110+ consumer files, returns TensorView not Tensor)
     ----------------------------------------------------------------
     TOTAL                                      55,949 B   (9 files)
 
