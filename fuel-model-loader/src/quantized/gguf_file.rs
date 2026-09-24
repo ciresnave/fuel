@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
-use crate::Result;
+use fuel_ir::error::Result;
 
 pub use fuel_formats::gguf::{
     DEFAULT_ALIGNMENT, TensorInfo, Value, ValueType, VersionedMagic, read_string, write_string,

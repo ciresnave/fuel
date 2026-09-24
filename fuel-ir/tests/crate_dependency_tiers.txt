@@ -135,6 +135,8 @@ fuel-graph	40	foundation
 fuel-quantized	40	foundation
 fuel-kiss-ref-backend	40	reference backend
 
+fuel-model-loader	45	IO / formats
+
 fuel-cpu-backend	50	backends
 fuel-vulkan-backend	50	backends
 
