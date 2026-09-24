@@ -22,6 +22,70 @@ blocker) is complete; nobody wrote the steps for what remains.
 
 This doc is those steps — as far as they can be written without moving code.
 
+> **Update (2026-09-24, after Slice 2 executed in #240):** the line above was true when this
+> doc was drafted; Slice 2 has since moved real code (`fuel-model-loader`, PR #240). Left
+> unedited above as the historical record of the doc's own starting state — see the
+> definition-of-done section immediately below, which #240's shims made necessary.
+
+## Definition of done, and the shim-debt ledger — added 2026-09-24, before Slice 3
+
+**This section did not exist when Slice 2 executed, and its absence was itself a finding.**
+Slice 2 (#240) moved 8 files into `fuel-model-loader` and left `fuel-core`'s originals as
+re-export shims — the same pattern already used for `dtype.rs`/`layout.rs`/`shape.rs`/
+`backend.rs`/`storage.rs` from the earlier B0 extraction. Reporting that precedent as
+justification surfaced the actual problem: **those B0-era shims are still in place, months
+later. The shim-removal step has never once been taken in this project.** If every slice
+of this dissolution leaves a shim behind and no slice ever removes one, the code moves and
+`fuel-core` does not dissolve — it becomes a permanent facade of re-exports, five
+dependents deep, which is a different and never-decided outcome from *"fuel-core dissolved
+and all code within it distributed to other crates."*
+
+**Answer, grounded in CireSnave's own words quoted above, not invented here:** he said
+*dissolved*, not *reduced to re-exports*. A crate of shims does not meet that bar. **The
+target is deletion of `fuel-core`, not an indefinite facade** — every shim recorded below
+is deferred work with an owner and a trigger, not a resting state.
+
+⚠️ **This is my answer, not a ruling — it is grounded in a quote already on record, but if
+CireSnave means something looser by "dissolved" (e.g., the `fuel` facade crate is fine to
+keep as the one deliberate public-API layer, so long as `fuel-core` itself stops being a
+second, redundant one), that changes what "done" means and this section should be
+corrected the same way Correction 1 and 2 above were.**
+
+### What deletion requires, stated once so every slice can point at it
+
+`fuel-core` deletes only when both are true:
+1. **Every real implementation has moved** to its target crate (the slice work).
+2. **Every external consumer imports the target crate directly** — no `fuel_core::` /
+   `fuel::` path resolves through a re-export shim anymore. This is the step no prior
+   slice has taken.
+
+(2) is the expensive, mechanical, low-risk-per-edit / large-count part — the ~200-call-site
+repoint flagged as "large but mechanical, not a semantic risk" for Slice 2's cluster is a
+preview of what this looks like at full scale, times however many slices land shim-first.
+**Sequencing choice for this program: land slices shim-first (lower risk per slice, matches
+what #240 already did) and do consumer repoints as a separate, later sweep per shim — not
+one repoint per slice.** This means the shim-debt ledger below is the thing that prevents
+the sweep from being forgotten, the way the fuel-nn amendment was.
+
+### Shim-debt ledger
+
+| Shim (in `fuel-core`) | From slice | Real home | Consumers to repoint | Repoint requires |
+|---|---|---|---|---|
+| `src/hf_config.rs` | Slice 2 (#240) | `fuel_model_loader::hf_config` | 30 files, all `fuel-transformers/src/models/*.rs` + 1 internal (`fuel-core/src/lazy.rs`) | `fuel_core::hf_config::` → `fuel_model_loader::hf_config::` import rewrite; `assert count==1` per anchor per the standing enumeration discipline |
+| `src/model_progress.rs` | Slice 2 (#240) | `fuel_model_loader::model_progress` | **0 external** — purely internal to the moved cluster | Delete the shim outright once nothing references it; no repoint needed, easiest item on this list |
+| `src/quantized/mod.rs` (+ its re-exported `arch`/`gguf_file`/`gguf_mmap`/`imatrix_file`/`tokenizer` submodules) | Slice 2 (#240) | `fuel_model_loader::quantized::*` | ~24 files: `fuel-transformers` quantized model variants, `fuel-tensor-tools`, `fuel-examples` quantized examples, `fuel-lazy-examples` | Same import-rewrite pattern; note 3 grep hits on `crate::quantized` in `fuel-backend-contract`/`fuel-ir` are FALSE POSITIVES (their own unrelated `quantized` modules) — re-verify this at repoint time, don't carry the exclusion forward from memory |
+| `src/dtype.rs`, `src/layout.rs`, `src/shape.rs`, `src/strided_index.rs`, `src/dyn_backend.rs`, `src/backend.rs`, `src/storage.rs` | B0 (2026-06 era, predates this doc) | `fuel_ir::*` / `fuel_backend_contract::*` | **Not counted here** — out of this pass's budget; re-measuring B0-era consumer counts is its own small task, flagged so it isn't silently dropped rather than done wrong |
+| `src/safetensors.rs` | Not yet moved | `fuel_model_loader::safetensors` (proposed) | 110+ files across `fuel-transformers/src/models/` and `fuel-nn/src/` (measured in #239/#240's review) | The Slice-2-follow-up PR itself; largest single repoint on this list by consumer count |
+
+**Trigger for acting on this ledger:** none, yet — that omission is deliberate, not an
+oversight, and stated so the omission itself doesn't quietly become the next stale record.
+The repoint sweep is real, mechanical work that should be scheduled once the shape of the
+FINAL crate boundary is known (i.e., once the Llama/Phi placement question on CireSnave's
+board is answered — that answer determines whether `fuel-core` ends up empty enough that a
+full sweep is worth doing in one pass, or whether it happens per-shim as each one's slice
+lands). **Do not let "no trigger yet" become "no trigger ever" — this row set is the thing
+to re-read before this doc is next touched.**
+
 ## Correction 1: the amendment's "first slice" has already shipped
 
 The 2026-08-19 amendment named `fuel-nn` (22 files / ~8,855 lines, zero eager-`Tensor`
@@ -310,16 +374,28 @@ from file names here would repeat exactly the mistake this doc is correcting for
 
 ## Summary for the gate
 
-- Slice 1 (fuel-nn): **already done**, mark it so in the B0 doc.
-- Slice 2 (this doc's proposal): the hf_config/model_progress/quantized-file-format/
-  safetensors cluster, 9 files, ~56 KB, zero measured coupling to `Tensor`/`Device`/`lazy`,
-  large but mechanical consumer fan-out. **Authorized (2026-09-24) — proceeds as its own PR
-  after this doc, independent of the Llama/Phi question below.**
+- Slice 1 (fuel-nn): **already done**, marked so in the B0 doc.
+- Slice 2: **executed in #240** — `hf_config.rs`, `model_progress.rs`, and
+  `quantized/{arch,gguf_file,gguf_mmap,imatrix_file,mod,tokenizer}.rs` (8 of the 9 originally
+  scoped files) moved to the new `fuel-model-loader` crate. `safetensors.rs` deliberately
+  held out — not a shim (110+ real consumers), sized as its own follow-up.
+  `fuel-core`'s copies of the 8 moved files are now re-export shims. **See the shim-debt
+  ledger above — this slice's shims are recorded there with owners, not left implicit.**
+- **Definition of done, added after Slice 2 surfaced the gap: `fuel-core` deletes, it does
+  not become a permanent re-export facade.** Every shim left by a slice is deferred
+  consumer-repoint work, tracked in the ledger above, not a resting state. This is my answer
+  grounded in CireSnave's own "dissolved... distributed to other crates" quote, not a ruling —
+  correct it the way Correction 1/2 were corrected if he means something looser.
+- The `safetensors.rs` follow-up: scoped (110+ consumers, real implementation, not a shim),
+  not yet executed.
 - The `lazy.rs` Llama/Phi split: **not a slice** until the architect rules on where a
   canonical wrapped-by-`fuel-transformers` base model belongs. Filed on CireSnave's board
   (2026-09-24) as the one part of this dissolution needing a human; not urgent, does not
-  block Slice 2.
+  block Slice 2 or the safetensors.rs follow-up.
 - Everything else in `fuel-core` (~2.3 MB): unscoped. **Do not scope it until CireSnave
   answers the Llama/Phi placement question** — that answer changes what those remaining
   files (`inference_context.rs`, `pipelined_bridge.rs`, `judge/`, etc.) are coupled to, so
   scoping them first would risk sizing slices against a boundary that is about to move.
+- **The consumer-repoint sweep (turning shims into deletions) is intentionally not
+  scheduled yet** — see the shim-debt ledger's own note on why "no trigger yet" must not
+  become "no trigger ever."
