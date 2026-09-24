@@ -1,0 +1,17 @@
+[package]
+    categories.workspace = true
+    description          = "Model-loading support for the fuel ML framework — HF config.json resolution rules, load-progress reporting, and GGUF/imatrix/tokenizer glue over fuel-formats' wire parsers. Knows nothing about Tensor, Storage, or Device."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-model-loader"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-backend-contract = { workspace = true }
+    fuel-formats          = { workspace = true }
+    fuel-ir               = { workspace = true }
+    fuel-quantized        = { workspace = true }
+    memmap2                = { workspace = true }
+    tokenizers              = { workspace = true, features = ["fancy-regex"] }
