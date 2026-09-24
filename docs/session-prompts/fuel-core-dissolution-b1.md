@@ -60,6 +60,21 @@ shims, not original implementations:
 meaningful fraction of this cluster is already a re-export shim over work already done
 elsewhere. The task on this cluster is smaller than its file sizes suggest.
 
+### The pattern across both corrections, worth naming once rather than twice
+
+Correction 1 (`fuel-nn`) and Correction 2 (`fuel-formats`) are the same defect from two
+directions, and a third instance of it landed on CireSnave's own board within an hour of
+this doc's first draft (a board item citing `fuel-nn` as the pending first slice, written
+after the extraction had already shipped — corrected the same day it was written). **A
+stale record does not just fail to tell you work is now possible; it can send you to
+redo work already done, or to size a task by a byte count that measures the wrong
+object** (a file's total size, when part of that file is already a shim over a crate
+built after the count was last taken). Neither failure announces itself — both read as
+authoritative right up until someone re-measures. The fix in both directions is the same
+one this doc tries to model throughout: **re-derive the fact from the current tree before
+citing it, and print the ref it came from**, rather than trusting a doc's own account of
+its subject's state — including this doc, the day someone next reads it.
+
 ## What is genuinely re-measured and still unscoped: `fuel-core`'s current shape
 
 Re-measured directly (not carried from any prior doc), at `origin/main` (`a732c431`):
@@ -193,9 +208,13 @@ from file names here would repeat exactly the mistake this doc is correcting for
 - Slice 1 (fuel-nn): **already done**, mark it so in the B0 doc.
 - Slice 2 (this doc's proposal): the hf_config/model_progress/quantized-file-format/
   safetensors cluster, 9 files, ~56 KB, zero measured coupling to `Tensor`/`Device`/`lazy`,
-  large but mechanical consumer fan-out. Ready to size as a real PR once the architect signs
-  off on the target crate name and the per-module consumer counts are re-verified.
+  large but mechanical consumer fan-out. **Authorized (2026-09-24) — proceeds as its own PR
+  after this doc, independent of the Llama/Phi question below.**
 - The `lazy.rs` Llama/Phi split: **not a slice** until the architect rules on where a
-  canonical wrapped-by-`fuel-transformers` base model belongs. Flagged, not solved.
-- Everything else in `fuel-core` (~2.3 MB): unscoped, needs its own evidence pass, not
-  guessed here.
+  canonical wrapped-by-`fuel-transformers` base model belongs. Filed on CireSnave's board
+  (2026-09-24) as the one part of this dissolution needing a human; not urgent, does not
+  block Slice 2.
+- Everything else in `fuel-core` (~2.3 MB): unscoped. **Do not scope it until CireSnave
+  answers the Llama/Phi placement question** — that answer changes what those remaining
+  files (`inference_context.rs`, `pipelined_bridge.rs`, `judge/`, etc.) are coupled to, so
+  scoping them first would risk sizing slices against a boundary that is about to move.
