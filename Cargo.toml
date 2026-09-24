@@ -19,6 +19,7 @@ members = [
     "fuel-datasets",
     "fuel-examples",
     "fuel-formats",
+    "fuel-model-loader",
     "fuel-model-core",
     "fuel-model-fixture",
     "fuel-model-umbrella-fixture",
@@ -60,6 +61,7 @@ default-members = [
     "fuel-cpu-backend",
     "fuel-dispatch",
     "fuel-formats",
+    "fuel-model-loader",
     "fuel-graph",
     "fuel-kernel-seam-announce",
     "fuel-kernel-seam-types",
@@ -137,6 +139,7 @@ fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.11.0" }
 fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.11.0" }
 fuel-datasets = { path = "./fuel-datasets", version = "0.11.0" }
 fuel-formats = { path = "./fuel-formats", version = "0.11.0" }
+fuel-model-loader = { path = "./fuel-model-loader", version = "0.11.0" }
 fuel-inference = { path = "./fuel-inference", version = "0.11.0" }
 fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.11.0" }
 fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.11.0" }

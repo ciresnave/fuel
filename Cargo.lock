@@ -1805,6 +1805,7 @@ dependencies = [
  "fuel-metal-backend",
  "fuel-metal-kernels",
  "fuel-mkl-cpu-backend",
+ "fuel-model-loader",
  "fuel-quantized",
  "fuel-test-support",
  "fuel-vulkan-backend",
@@ -2002,6 +2003,7 @@ dependencies = [
  "serde",
  "serde_json",
  "symphonia",
+ "tempfile",
  "tokenizers",
  "tokio",
  "tracing",
@@ -2229,6 +2231,18 @@ version = "0.11.0"
 dependencies = [
  "fuel-model-core",
  "inventory",
+]
+
+[[package]]
+name = "fuel-model-loader"
+version = "0.11.0"
+dependencies = [
+ "fuel-backend-contract",
+ "fuel-formats",
+ "fuel-ir",
+ "fuel-quantized",
+ "memmap2",
+ "tokenizers",
 ]
 
 [[package]]
