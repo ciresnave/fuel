@@ -13,5 +13,13 @@
     fuel-formats          = { workspace = true }
     fuel-ir               = { workspace = true }
     fuel-quantized        = { workspace = true }
-    memmap2                = { workspace = true }
-    tokenizers              = { workspace = true, features = ["fancy-regex"] }
+
+# `gguf_mmap` and `tokenizer` are both `#[cfg(not(target_arch = "wasm32"))]`
+# (fuel-core/src/quantized/mod.rs's original gating, preserved on the move) --
+# so their two dependencies are gated the same way. memmap2 was NOT gated in
+# fuel-core, but that crate also uses it from safetensors.rs, which is not part
+# of this crate; here gguf_mmap.rs is the only consumer, so gating follows this
+# crate's actual composition rather than copying fuel-core's reason verbatim.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+    memmap2    = { workspace = true }
+    tokenizers = { workspace = true, features = ["fancy-regex"] }
