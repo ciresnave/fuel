@@ -12,10 +12,9 @@
 //! [`Llama2cConfig`] to [`fuel_core::lazy::LlamaConfig`].
 
 use fuel_core::inference_context::{InferenceContext, KvCache};
-use fuel_core::lazy::{
-    LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, SamplingStrategy, Tensor, WeightStorage,
-};
+use fuel_core::lazy::{LayerWeights, SamplingStrategy, Tensor, WeightStorage};
 use fuel_core::{DType, Device, Result};
+use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
 use serde::Deserialize;
 use std::sync::Arc;
 

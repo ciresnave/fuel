@@ -26,8 +26,9 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::Result;
-use fuel_core::lazy::{LayerWeights, LlamaWeights, Tensor};
+use fuel_core::lazy::{LayerWeights, Tensor};
 use fuel_ir::{Shape, probe::BackendId};
+use fuel_model_llama::LlamaWeights;
 use fuel_transformers::models::lazy_bert::{BertConfig, BertLayerWeights, BertModel, BertWeights};
 use fuel_transformers::models::lazy_convnext::ConvNextModel;
 use fuel_transformers::models::lazy_llama2c::{Llama2cConfig, Llama2cModel};

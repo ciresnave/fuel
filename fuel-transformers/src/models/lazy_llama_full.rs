@@ -44,9 +44,10 @@
 //! Generation loops (Lightbulb) consult
 //! [`LlamaEosToks::is_eos`](LlamaEosToks::is_eos) per token.
 
-use fuel_core::lazy::{LlamaConfig, LlamaModel, LlamaWeights, Tensor};
+use fuel_core::lazy::Tensor;
 use fuel_core::{Error, Result};
 use fuel_ir::Shape;
+use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
 use serde::Deserialize;
 use std::f64::consts::PI;
 use std::sync::Arc;

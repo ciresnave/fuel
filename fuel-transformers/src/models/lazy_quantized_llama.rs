@@ -48,7 +48,8 @@
 
 use crate::models::lazy_llama_full::{Llama3Model, LlamaFullConfig};
 use fuel_core::Result;
-use fuel_core::lazy::{LayerWeights, LlamaModel, LlamaWeights, Tensor, WeightStorage};
+use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
+use fuel_model_llama::{LlamaModel, LlamaWeights};
 use std::sync::Arc;
 
 /// GGUF-quantized LLaMA-family causal language model with optional
@@ -581,8 +582,8 @@ mod tests {
     use super::*;
     use crate::models::lazy_llama_full::{Llama3RopeConfig, Llama3RopeType, LlamaEosToks};
     use fuel_core::Device;
-    use fuel_core::lazy::LlamaConfig;
     use fuel_ir::Shape;
+    use fuel_model_llama::LlamaConfig;
 
     fn test_cfg() -> LlamaFullConfig {
         LlamaFullConfig {

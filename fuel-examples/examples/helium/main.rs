@@ -8,8 +8,8 @@ extern crate accelerate_src;
 use anyhow::{Error as E, Result};
 use clap::Parser;
 
-use fuel::lazy::{LlamaConfig, LlamaWeights};
 use fuel::lazy_helium::{HeliumConfig, HeliumModel, HeliumWeights};
+use fuel_model_llama::{LlamaConfig, LlamaWeights};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 use tokenizers::Tokenizer;

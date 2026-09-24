@@ -23,9 +23,10 @@ fn main() {
 
 #[cfg(feature = "vulkan")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+    use fuel::lazy::SamplingStrategy;
     use fuel::lazy_llama2c::Llama2cModel;
     use fuel::{DType, Device};
+    use fuel_model_llama::LlamaTokenizer;
     use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     use std::io::Write;
     use std::time::Instant;

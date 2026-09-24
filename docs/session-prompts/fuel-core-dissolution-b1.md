@@ -1,8 +1,11 @@
 # fuel-core dissolution — B1 scoping (2026-09-24)
 
-> This is a SCOPING document, not an execution log. No code has moved. It supersedes the
-> "remains downstream of B6" framing at the end of `fuel-core-retirement-b0.md` and the
-> 2026-08-19 amendment beneath it — both are now stale in ways this doc corrects with
+> Started as a SCOPING document with no code moved. That premise is now partly stale by
+> design: Slice 2 (`fuel-loaders`, #240), the `fuel-model-llama`/`fuel-model-phi` extraction,
+> and both crates' shim-debt ledger entries below are executed, not proposed. Slice 3
+> (`safetensors.rs`) is scoped and held pending a separate MLMF architectural question. It
+> supersedes the "remains downstream of B6" framing at the end of `fuel-core-retirement-b0.md`
+> and the 2026-08-19 amendment beneath it — both are now stale in ways this doc corrects with
 > evidence, not just a date stamp.
 
 ## Why this doc exists
@@ -129,6 +132,98 @@ supposed to live relative to `fuel-transformers`' own model zoo (which already h
 architectural question, not a scoping one. **Flagging this here rather than producing a
 plan that quietly assumes it splits cleanly**, per the stop condition on this task. This
 needs the architect's ruling before anyone sizes it as a slice.
+
+## `fuel-model-llama` / `fuel-model-phi`: executed, ratified by `02-layers.md`
+
+The stop condition above is resolved: `docs/architecture/02-layers.md` already ratifies
+`fuel-model-llama`† and `fuel-model-phi`† (dagger-marked, one architecture per crate), and
+CireSnave authorized starting the extraction. Executed as PR (this change).
+
+**An ordering law this extraction discovered, generalizing past this one slice:** a
+deferred re-export shim (the pattern every other slice in this doc uses) is only available
+when extracting DOWNWARD in the tier file. Slices 2/3 worked because `fuel-loaders` depends
+only on crates strictly BELOW `fuel-core` and never back up to it, so `fuel-core` could
+`pub use fuel_loaders::*;` without a cycle. `fuel-model-llama`/`fuel-model-phi` sit ABOVE
+`fuel-core` (tier 110 > 100) and their own consumers reach them THROUGH `fuel-core`'s path
+today — so `fuel-core` re-exporting them back would be `fuel-core → fuel-model-llama →
+fuel-core`, a hard cargo cycle, not a style choice. **Any future slice whose consumers
+currently reach it via `fuel_core::X` must check this before assuming a shim is available.**
+
+**Consequence: no shim. Every real consumer was repointed in this same PR**, not deferred.
+Measured via a multiline-aware scan (a single-line grep undercounted twice in a row before
+converging — 9 → 22 → 24 files, the middle count wrong because `rustfmt` wraps long import
+lists across lines, invisible to a same-line pattern): **24 files** — 15 `fuel-examples`/
+`fuel-lazy-examples` binaries (low-risk), 4 `fuel-transformers` model files, 1
+`fuel-inference/src/multi_session.rs` (real: `impl DecodeModel for LlamaModel` /
+`impl PagedDecodeModel for LlamaModel`, orphan-rule-legal since the traits are local to
+`fuel-inference`), and 2 test-only sites in `fuel-core` itself (see below). 4 more files
+carried doc-comment-only mentions (stale intra-doc links, fixed for hygiene, no compile
+impact). One false positive worth recording: `fuel::lazy_phi::PhiModel` in
+`fuel-examples/examples/phi/main.rs` is `fuel-transformers`' OWN, separately-defined
+`PhiModel` (declared in `lazy_phi.rs`) — a name collision with `fuel-core`'s `PhiModel`, not
+a reference to it. Same shape as the `quantized` module collisions Slice 2 caught.
+
+**A second finding, inside `lazy.rs` itself: textual adjacency to `LlamaModel`/`PhiModel`
+was not evidence of ownership.** Several types/functions positioned in the file's "LLaMA
+section" — `WeightStorage`, `LayerWeights`, `SamplingStrategy`, `LayerNormPair`,
+`ConvWeightBias`, `load_tensor_as_f32`, `load_transposed_matrix(_preserve_dtype)`,
+`apply_affine_rms_norm`, `sample_logits` (+ its private `spec_*`/`sample_multinomial`
+helpers), `build_decode_causal_mask(_windowed)`, `offer_flash_decode_arm_for_region`,
+`invalidate_decode_pair_if_stale`, `refresh_decode_session` — are GENERIC, with consumer
+counts from a handful up to **~120 files** across the whole `fuel-transformers` model zoo,
+and two (`build_decode_causal_mask*`, `refresh_decode_session`) are called by `fuel-core`'s
+own `persistent_decode.rs`. **Moving the "LLaMA section" wholesale would have made
+`fuel-model-llama` a de facto shared-utilities dependency for the entire model zoo — the
+exact inverse of "one architecture per crate."** All of it stayed in `fuel-core`; the two
+new crates call back into `fuel_core::lazy::X` for it (several items' visibility widened
+from `pub(crate)`/private to `pub` to make that legal — no behavior change, `cargo check`
+catches every miss). `TokenDataHost`/`TokenDataBytes`/`captured_output_to_f32` are the
+narrower case: shared between `LlamaModel` and `PhiModel` specifically (not the wider zoo),
+same treatment.
+
+**A third finding: two fuel-core tests couldn't dev-depend their way around the cycle
+either.** `fuel-core/src/decode_shape.rs`'s own `#[cfg(test)]` module and
+`fuel-core/tests/paged_decode_parity.rs` construct a real `LlamaModel` to test
+`fuel-core`-internal predicates against it. A `[dev-dependencies]` entry on
+`fuel-model-llama` compiles (Cargo permits dev-dependency cycles — they sit outside the
+normal library build graph) but hits a DIFFERENT wall at the type level: the test binary
+ends up with two non-unifying copies of `fuel_core` in its dependency graph (the one being
+tested, and the one `fuel-model-llama` depends on), so a `fuel_core::decode_shape::
+ModelInstanceId` constructed in the test and one expected by `fuel_model_llama::
+LlamaWeights` are reported as different types. **Fix: moved both tests out of `fuel-core`
+into `fuel-model-llama`'s own `tests/`** (`decode_shape_geometry.rs`,
+`paged_decode_parity.rs` — `git mv`, zero content change needed for the latter since it had
+no `crate::` references). There `fuel_core` is an ordinary single dependency; no diamond.
+Correctly re-scoped as integration tests of "does `LlamaModel` integrate with `fuel-core`'s
+decode machinery", which is what they actually test now that `LlamaModel` lives elsewhere.
+**No `[dev-dependencies]` entry on `fuel-model-llama` was needed in the end.**
+
+**Measured, not estimated, per the gate's own request — three numbers, this PR's diff:**
+
+    fuel-model-llama/src/lib.rs   12,317 lines  (structs/impls/tests moved from lazy.rs)
+    fuel-model-phi/src/lib.rs      3,107 lines  (structs/impls/tests moved from lazy.rs)
+    fuel-core/src/lazy.rs         11,231 lines  (Tensor bridge + shared utilities, retained)
+    ------------------------------------------------------------------------------
+    original fuel-core/src/lazy.rs: 26,580 lines
+
+Roughly 58% of the file's lines moved — smaller than the naive "everything after the Tensor
+bridge" estimate this doc's own earlier analysis implied, because the shared-utility carve-out
+turned out to be substantial, not a rounding error.
+
+**Shim-debt ledger entries, recorded at creation as this section requires:**
+
+| Crate | Depends on | Why (stepping-stone, not end state) | Removal condition |
+|---|---|---|---|
+| `fuel-model-llama` | `fuel-core` | Needs `Tensor` bridge + `inference_context`/`kv_block_pool`/`kv_block_pool_device`/`persistent_decode`/`pipelined_bridge`/`decode_shape`/`safetensors`, none rehomed | `fuel-core`'s retained machinery finds a real home |
+| `fuel-model-phi` | `fuel-core` | Same as above | Same as above |
+
+**Open finding, NOT acted on here, flagged for CireSnave per the architect's instruction:**
+the ~9-function shared-utility layer inside `lazy.rs` (generic tensor-loading/sampling/
+decode-mask helpers, used by ~120 files, currently living in `fuel-core` by accident of
+history) has no ratified home. `02-layers.md` says generic building blocks (RoPE, RMSNorm,
+GQA attention, SwiGLU MLP) belong in `fuel-nn` — these look like the same class, and are
+plausibly the single largest remaining piece of this dissolution. Not scoped or sized here;
+recorded so it is not silently re-discovered later.
 
 ## The one genuinely-scoped, zero-Tensor-coupling next slice
 

@@ -154,6 +154,8 @@ fuel-mkl-cpu-backend	90	vendor backends
 fuel-core	100	aggregate
 
 fuel-model-core	110	models / libraries
+fuel-model-llama	110	models / libraries
+fuel-model-phi	110	models / libraries
 fuel-nn	110	models / libraries
 fuel-onnx	110	models / libraries
 fuel-transformers	110	models / libraries
