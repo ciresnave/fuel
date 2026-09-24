@@ -8,8 +8,8 @@
 //! names differ (`dim` ↔ `hidden_size`, `n_layers` ↔ `num_hidden_layers`,
 //! etc.).
 //!
-//! Thin wrapper over [`fuel_core::lazy::LlamaModel`] + adapter from
-//! [`Llama2cConfig`] to [`fuel_core::lazy::LlamaConfig`].
+//! Thin wrapper over [`fuel_model_llama::LlamaModel`] + adapter from
+//! [`Llama2cConfig`] to [`fuel_model_llama::LlamaConfig`].
 
 use fuel_core::inference_context::{InferenceContext, KvCache};
 use fuel_core::lazy::{LayerWeights, SamplingStrategy, Tensor, WeightStorage};
@@ -374,7 +374,7 @@ impl Llama2cModel {
     ///
     /// Parses `config.json` via [`Llama2cConfig::from_hf_json_str`]
     /// and loads weights via the shared
-    /// [`fuel_core::lazy::LlamaWeights::load_from_mmapped`] path. Works
+    /// [`fuel_model_llama::LlamaWeights::load_from_mmapped`] path. Works
     /// with single-file and sharded checkpoints (uses
     /// `model.safetensors.index.json` when present).
     pub fn from_hub(repo_id: &str) -> Result<Self> {

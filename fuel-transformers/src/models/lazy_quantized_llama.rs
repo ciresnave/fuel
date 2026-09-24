@@ -17,7 +17,7 @@
 //! Construction paths:
 //! - [`QuantizedLlama3Model::from_f32_bake`] — take f32 source weights
 //!   (same `[in, out]` layout as
-//!   [`fuel_core::lazy::LlamaWeights`](fuel_core::lazy::LlamaWeights)) and
+//!   [`fuel_model_llama::LlamaWeights`](fuel_model_llama::LlamaWeights)) and
 //!   quantize on the fly. Used by tests and by callers that already
 //!   have unquantized weights in memory.
 //! - [`QuantizedLlama3Model::load_from_mmapped`] — convenience that

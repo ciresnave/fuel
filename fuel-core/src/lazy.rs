@@ -8303,7 +8303,7 @@ impl From<Vec<half::bf16>> for WeightStorage {
 /// Per-layer weights of a LLaMA transformer block. All tensors are
 /// stored as `Arc<[f32]>` so they can be loaded once and shared across
 /// every forward pass with zero copy — each call to
-/// [`LlamaModel::forward`] clones the `Arc` (a refcount bump) when it
+/// `LlamaModel::forward` clones the `Arc` (a refcount bump) when it
 /// builds fresh const nodes for this layer.
 ///
 /// LLaMA proper has no biases anywhere in the attention block, so the
@@ -8680,7 +8680,7 @@ mod decode_mask_tests {
 /// attention region's tensor handles and offer the optimizer-owned CUDA
 /// flash-decode arm on the shared graph.
 ///
-/// This is the model-layer WIRING for [`offer_decode_flash_arm`]: it supplies
+/// This is the model-layer WIRING for [`fuel_dispatch::decode_flash::offer_decode_flash_arm`]: it supplies
 /// the region's tensor handles + the live attended-prefix `k_len` (as
 /// `Sym(attended_len_sym)`, resolved per-token via the `SymEnv`) — data the
 /// model alone knows — while every strategic decision (the shape/dtype/config

@@ -5,14 +5,14 @@
 //! Runs **K independent decode sessions concurrently on one `LlamaModel`,
 //! correctly** — each session generating its own token stream from its own
 //! prompt, reusing the existing single-session persistent decode machinery
-//! ([`fuel::inference_context`] + [`fuel::lazy::LlamaModel`]). It adds **no
+//! ([`fuel::inference_context`] + [`fuel_model_llama::LlamaModel`]). It adds **no
 //! IR op** and **no kernel** — this is pure host orchestration.
 //!
 //! ## Components
 //!
 //! - [`SessionState`] (C1) — a faithful bundle of the four per-generation
 //!   loop locals that already exist in
-//!   [`fuel::lazy::LlamaModel::generate_streaming_with_kv_context`]: one
+//!   [`fuel_model_llama::LlamaModel::generate_streaming_with_kv_context`]: one
 //!   [`fuel::inference_context::KvCache`], one
 //!   [`fuel::inference_context::InferenceContext`], the plan-once
 //!   [`fuel::inference_context::DecodeSession`] (lazily built on the first
@@ -455,7 +455,7 @@ impl ModelDims {
 
 /// One decode session's mutable state — a faithful bundle of the four
 /// per-generation loop locals from
-/// [`fuel::lazy::LlamaModel::generate_streaming_with_kv_context`]
+/// [`fuel_model_llama::LlamaModel::generate_streaming_with_kv_context`]
 /// (`KvCache` + `InferenceContext` + `Option<DecodeSession>` +
 /// sampler/RNG/token state) plus scheduling bookkeeping. Owns **nothing
 /// shared**: the independent `KvCache` allocations and the independent

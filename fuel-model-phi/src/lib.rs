@@ -228,7 +228,7 @@ pub struct PhiLayerWeights {
 
 #[derive(Debug, Clone)]
 pub struct PhiWeights {
-    /// See [`LlamaWeights::instance`].
+    /// See `LlamaWeights::instance`.
     pub instance: fuel_core::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>, // [vocab_size, dim]
     pub layers: Vec<PhiLayerWeights>,
@@ -245,7 +245,7 @@ pub struct PhiModel {
 }
 
 impl PhiModel {
-    /// See [`LlamaModel::decode_shape_key`].
+    /// See `LlamaModel::decode_shape_key`.
     pub fn decode_shape_key(&self) -> u64 {
         let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
         h.mix_str("phi")
@@ -429,7 +429,7 @@ impl PhiModel {
 
     /// Forward pass using pre-allocated KV-cache buffers and
     /// `Op::WriteSlice`; returns last-position logits. Mirrors
-    /// [`LlamaModel::forward_with_kv_context`] — see its docs for the
+    /// `LlamaModel::forward_with_kv_context` — see its docs for the
     /// architectural notes. The cache must have been constructed via
     /// [`KvCache::with_capacity`] with `n_kv_heads == n_heads` (Phi-2
     /// has no GQA).
@@ -608,7 +608,7 @@ impl PhiModel {
     }
 
     /// Phase D · D4 — plan-once persistent decode (the Phi mirror of
-    /// [`LlamaModel::forward_with_kv_context_persistent`]). Sibling of
+    /// `LlamaModel::forward_with_kv_context_persistent`). Sibling of
     /// [`Self::forward_with_kv_context`] that HOLDS the optimized
     /// decode-step graph in `session` and, on every token after the
     /// first, re-realizes the SAME graph with the D2a prebuilt seam —
@@ -1182,7 +1182,7 @@ impl PhiModel {
     /// Allocates a pre-allocated [`KvCache`] of capacity
     /// `prompt_tokens.len() + max_new_tokens` on `device`, then loops
     /// prefill + decode, calling `on_token` for each generated token.
-    /// Mirrors [`LlamaModel::generate_streaming_with_kv_context`].
+    /// Mirrors `LlamaModel::generate_streaming_with_kv_context`.
     pub fn generate_streaming_with_kv_context(
         &self,
         prompt_tokens: &[u32],

@@ -6,7 +6,7 @@
 //! combines a CLIP vision encoder with a LLaMA language model
 //! via a Multi-Modal projector. Like PaliGemma, this is a
 //! composition port — reuses [`crate::models::lazy_clip::ClipVisionModel`]
-//! and [`fuel_core::lazy::LlamaModel`] with a thin projection +
+//! and [`fuel_model_llama::LlamaModel`] with a thin projection +
 //! interleaving layer:
 //!
 //!   ```text
