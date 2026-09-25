@@ -16,8 +16,8 @@ extern crate intel_mkl_src;
 use anyhow::{Error as E, Result, bail};
 use clap::{Parser, ValueEnum};
 
-use fuel::lazy::{LlamaConfig, LlamaModel, LlamaWeights};
 use fuel::lazy_llama_full::{Llama3Model, LlamaEosToks, LlamaFullConfig, build_llama3_model};
+use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 

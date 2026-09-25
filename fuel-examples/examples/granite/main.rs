@@ -10,8 +10,8 @@ extern crate intel_mkl_src;
 use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 
-use fuel::lazy::{LlamaConfig, LlamaWeights};
 use fuel::lazy_granite::{GraniteConfig, GraniteModel, GraniteWeights};
+use fuel_model_llama::{LlamaConfig, LlamaWeights};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 

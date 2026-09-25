@@ -1,0 +1,33 @@
+[package]
+    categories.workspace = true
+    description          = "The LLaMA-family lazy-graph decoder for the fuel ML framework — the canonical base every downstream LLaMA-family model (LLaMA-2/3, LLaVA, Mistral, DeepSeek-2) builds on."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-model-llama"
+    repository.workspace = true
+    version.workspace    = true
+
+# Stepping-stone dependency, not the end state -- see the crate's own doc comment
+# and docs/session-prompts/fuel-core-dissolution-b1.md's shim-debt ledger. LlamaModel
+# is built on fuel-core's Tensor bridge and its paged/persistent-decode machinery,
+# neither of which has a rehomed destination yet.
+[features]
+    # Forwards to fuel-core's cuda feature -- TokenDataBytes/captured_output_to_f32
+    # are cuda-only in fuel-core, and LlamaModel's own cuda-gated capture-replay
+    # path needs them under the same gate.
+    cuda = ["fuel-core/cuda"]
+    # Forwards to fuel-core's vulkan feature -- LlamaModel has its own
+    # vulkan-gated decode arms.
+    vulkan = ["fuel-core/vulkan"]
+
+[dependencies]
+    fuel-core     = { workspace = true }
+    fuel-dispatch = { workspace = true }
+    fuel-graph    = { workspace = true }
+    fuel-ir       = { workspace = true }
+    half          = { workspace = true }
+    hf-hub        = { workspace = true }
+    serde         = { workspace = true }
+    serde_json    = { workspace = true }
+    tokenizers    = { workspace = true, features = ["fancy-regex"] }

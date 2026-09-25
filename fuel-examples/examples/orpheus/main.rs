@@ -9,9 +9,10 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 
 use fuel::Shape;
-use fuel::lazy::{LlamaConfig, LlamaModel, LlamaWeights, Tensor};
+use fuel::lazy::Tensor;
 use fuel::lazy_llama_full::{Llama3Model, LlamaFullConfig, build_llama3_model};
 use fuel::lazy_snac::{SnacConfig, SnacModel, SnacWeights};
+use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
 use serde::Deserialize;
 use tokenizers::Tokenizer;
 

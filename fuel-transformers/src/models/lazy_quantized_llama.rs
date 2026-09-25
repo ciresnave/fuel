@@ -17,7 +17,7 @@
 //! Construction paths:
 //! - [`QuantizedLlama3Model::from_f32_bake`] — take f32 source weights
 //!   (same `[in, out]` layout as
-//!   [`fuel_core::lazy::LlamaWeights`](fuel_core::lazy::LlamaWeights)) and
+//!   [`fuel_model_llama::LlamaWeights`](fuel_model_llama::LlamaWeights)) and
 //!   quantize on the fly. Used by tests and by callers that already
 //!   have unquantized weights in memory.
 //! - [`QuantizedLlama3Model::load_from_mmapped`] — convenience that
@@ -48,7 +48,8 @@
 
 use crate::models::lazy_llama_full::{Llama3Model, LlamaFullConfig};
 use fuel_core::Result;
-use fuel_core::lazy::{LayerWeights, LlamaModel, LlamaWeights, Tensor, WeightStorage};
+use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
+use fuel_model_llama::{LlamaModel, LlamaWeights};
 use std::sync::Arc;
 
 /// GGUF-quantized LLaMA-family causal language model with optional
@@ -581,8 +582,8 @@ mod tests {
     use super::*;
     use crate::models::lazy_llama_full::{Llama3RopeConfig, Llama3RopeType, LlamaEosToks};
     use fuel_core::Device;
-    use fuel_core::lazy::LlamaConfig;
     use fuel_ir::Shape;
+    use fuel_model_llama::LlamaConfig;
 
     fn test_cfg() -> LlamaFullConfig {
         LlamaFullConfig {

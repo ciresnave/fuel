@@ -15,6 +15,7 @@ fuel = { workspace = true }
 fuel-cpu-backend = { workspace = true }
 fuel-cuda-backend = { workspace = true, optional = true }
 fuel-datasets = { workspace = true, optional = true }
+fuel-model-llama = { workspace = true }
 fuel-transformers = { workspace = true }
 fuel-onnx = { workspace = true, optional = true }
 

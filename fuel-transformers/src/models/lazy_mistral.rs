@@ -18,7 +18,7 @@
 //! With `sliding_window = None`, this reduces to a strict lower-
 //! triangular causal mask (LLaMA semantics). The lazy port mirrors
 //! this — every other piece of `apply_layer` matches the LLaMA path
-//! (`fuel_core::lazy::LlamaModel::apply_layer`).
+//! (`fuel_model_llama::LlamaModel::apply_layer`).
 //!
 //! # KV cache
 //!
@@ -386,7 +386,7 @@ impl MistralModel {
     }
 
     /// Single transformer layer. Mirrors
-    /// `fuel_core::lazy::LlamaModel::apply_layer` except the attention
+    /// `fuel_model_llama::LlamaModel::apply_layer` except the attention
     /// mask is injected by the caller — usually a sliding-window
     /// causal mask from `build_sliding_window_mask` but can be any
     /// additive `(1, 1, seq, seq)` shape (e.g. bidirectional

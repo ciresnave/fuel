@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! LLaMA-3 long-context RoPE scaling on top of the lazy
-//! [`LlamaModel`](fuel_core::lazy::LlamaModel).
+//! [`LlamaModel`](fuel_model_llama::LlamaModel).
 //!
 //! `lazy::LlamaModel` is the canonical lazy-graph LLaMA decoder used
 //! by LLaVA, anchor-oracle tests, and the rest of the LLaMA-family
@@ -44,9 +44,10 @@
 //! Generation loops (Lightbulb) consult
 //! [`LlamaEosToks::is_eos`](LlamaEosToks::is_eos) per token.
 
-use fuel_core::lazy::{LlamaConfig, LlamaModel, LlamaWeights, Tensor};
+use fuel_core::lazy::Tensor;
 use fuel_core::{Error, Result};
 use fuel_ir::Shape;
+use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
 use serde::Deserialize;
 use std::f64::consts::PI;
 use std::sync::Arc;
@@ -375,7 +376,7 @@ fn compute_llama3_inv_freq(
 
 /// LLaMA model with optional LLaMA-3.1 long-context RoPE scaling.
 ///
-/// Wraps [`fuel_core::lazy::LlamaModel`] and injects scaled RoPE tables
+/// Wraps [`fuel_model_llama::LlamaModel`] and injects scaled RoPE tables
 /// into the standard backbone via
 /// [`LlamaModel::run_backbone_with_rope_tables`]. When
 /// `rope_scaling.is_none()` the forward path produces bit-for-bit
