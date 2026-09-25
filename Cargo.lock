@@ -1801,11 +1801,11 @@ dependencies = [
  "fuel-graph",
  "fuel-hardware",
  "fuel-ir",
+ "fuel-loaders",
  "fuel-memory",
  "fuel-metal-backend",
  "fuel-metal-kernels",
  "fuel-mkl-cpu-backend",
- "fuel-model-loader",
  "fuel-quantized",
  "fuel-test-support",
  "fuel-vulkan-backend",
@@ -2155,6 +2155,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuel-loaders"
+version = "0.11.0"
+dependencies = [
+ "fuel-backend-contract",
+ "fuel-formats",
+ "fuel-ir",
+ "fuel-quantized",
+ "memmap2",
+ "tokenizers",
+]
+
+[[package]]
 name = "fuel-memory"
 version = "0.11.0"
 dependencies = [
@@ -2249,18 +2261,6 @@ dependencies = [
  "hf-hub",
  "serde",
  "serde_json",
- "tokenizers",
-]
-
-[[package]]
-name = "fuel-model-loader"
-version = "0.11.0"
-dependencies = [
- "fuel-backend-contract",
- "fuel-formats",
- "fuel-ir",
- "fuel-quantized",
- "memmap2",
  "tokenizers",
 ]
 

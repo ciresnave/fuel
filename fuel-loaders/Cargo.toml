@@ -4,7 +4,7 @@
     edition.workspace    = true
     keywords.workspace   = true
     license.workspace    = true
-    name                 = "fuel-model-loader"
+    name                 = "fuel-loaders"
     repository.workspace = true
     version.workspace    = true
 
