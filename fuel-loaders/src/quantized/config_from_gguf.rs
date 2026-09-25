@@ -138,53 +138,77 @@ impl std::fmt::Display for GgufConfigError {
 
 impl std::error::Error for GgufConfigError {}
 
-/// Extract [`GgufDerivedConfig`] from `content`'s metadata and tensor table, reading every key
-/// under `arch.as_str()`'s prefix. Never defaults a missing field; every failure names the
-/// exact key or tensor that was absent or malformed.
-pub fn derive_config(content: &Content, arch: Architecture) -> Result<GgufDerivedConfig> {
-    let prefix = arch.as_str();
+/// A metadata reader bound to one `content` and one architecture `prefix`, constructed ONCE
+/// per [`derive_config`] call. The prefix is captured at construction, not passed at each call
+/// site — this is the property that matters: with an explicit `prefix: &str` parameter on
+/// every read, each of the nine call sites would be an independent chance to pass the wrong
+/// architecture's prefix, producing a config that mixes two architectures' fields, is
+/// internally inconsistent, and is still green on every test that only checks an error
+/// MESSAGE names the right prefix rather than checking that every FIELD used it. Binding the
+/// prefix once removes that class of mistake at the type level: there is no `prefix` argument
+/// to get wrong at a call site because there is no call-site prefix argument at all.
+struct GgufMeta<'a> {
+    content: &'a Content,
+    // 'static, not 'a: every real caller gets this from `Architecture::as_str()`, which
+    // returns a literal, and `GgufConfigError::{MissingMetadata,WrongMetadataType}` need a
+    // 'static `architecture` field to stay simple `Debug`/`Eq`-derivable error data rather
+    // than an owned `String` for a value that is always one of a small fixed set of literals.
+    prefix: &'static str,
+}
 
-    let get_u32 = |suffix: &str| -> Result<u32> {
-        let key = format!("{prefix}.{suffix}");
-        let value = content.metadata.get(&key).ok_or_else(|| {
+impl<'a> GgufMeta<'a> {
+    fn u32(&self, suffix: &str) -> Result<u32> {
+        let key = format!("{}.{suffix}", self.prefix);
+        let value = self.content.metadata.get(&key).ok_or_else(|| {
             Error::msg(GgufConfigError::MissingMetadata {
-                architecture: prefix,
+                architecture: self.prefix,
                 key: suffix.to_string(),
             })
         })?;
         value.to_u32().map_err(|e| {
             Error::msg(GgufConfigError::WrongMetadataType {
-                architecture: prefix,
+                architecture: self.prefix,
                 key: suffix.to_string(),
                 reason: e.to_string(),
             })
         })
-    };
-    let get_f32 = |suffix: &str| -> Result<f32> {
-        let key = format!("{prefix}.{suffix}");
-        let value = content.metadata.get(&key).ok_or_else(|| {
+    }
+
+    fn f32(&self, suffix: &str) -> Result<f32> {
+        let key = format!("{}.{suffix}", self.prefix);
+        let value = self.content.metadata.get(&key).ok_or_else(|| {
             Error::msg(GgufConfigError::MissingMetadata {
-                architecture: prefix,
+                architecture: self.prefix,
                 key: suffix.to_string(),
             })
         })?;
         value.to_f32().map_err(|e| {
             Error::msg(GgufConfigError::WrongMetadataType {
-                architecture: prefix,
+                architecture: self.prefix,
                 key: suffix.to_string(),
                 reason: e.to_string(),
             })
         })
+    }
+}
+
+/// Extract [`GgufDerivedConfig`] from `content`'s metadata and tensor table, reading every key
+/// under `arch.as_str()`'s prefix. Never defaults a missing field; every failure names the
+/// exact key or tensor that was absent or malformed.
+pub fn derive_config(content: &Content, arch: Architecture) -> Result<GgufDerivedConfig> {
+    let m = GgufMeta {
+        content,
+        prefix: arch.as_str(),
     };
 
-    let hidden_size = get_u32("embedding_length")? as usize;
-    let intermediate_size = get_u32("feed_forward_length")? as usize;
-    let n_layers = get_u32("block_count")? as usize;
-    let n_heads = get_u32("attention.head_count")? as usize;
-    let n_kv_heads = get_u32("attention.head_count_kv")? as usize;
-    let rms_norm_eps = get_f32("attention.layer_norm_rms_epsilon")? as f64;
-    let rope_theta = get_f32("rope.freq_base")? as f64;
-    let max_position_embeddings = get_u32("context_length")? as usize;
+    let hidden_size = m.u32("embedding_length")? as usize;
+    let intermediate_size = m.u32("feed_forward_length")? as usize;
+    let n_layers = m.u32("block_count")? as usize;
+    let n_heads = m.u32("attention.head_count")? as usize;
+    let n_kv_heads = m.u32("attention.head_count_kv")? as usize;
+    let rms_norm_eps = m.f32("attention.layer_norm_rms_epsilon")? as f64;
+    let rope_theta = m.f32("rope.freq_base")? as f64;
+    let max_position_embeddings = m.u32("context_length")? as usize;
 
     let vocab_size = infer_vocab_size(&content.tensor_infos, hidden_size)?;
 
@@ -266,6 +290,58 @@ mod tests {
         let err = derive_config(&content, Architecture::Qwen2).unwrap_err();
         assert!(err.to_string().contains("qwen2.embedding_length"));
         assert!(!err.to_string().contains("llama."));
+    }
+
+    /// The hazard `GgufMeta` binding the prefix once (rather than passing it at each call
+    /// site) exists to close: a complete `qwen2.*` metadata set, PLUS a conflicting
+    /// `llama.block_count` under the wrong prefix. If any field's read leaked the wrong
+    /// prefix, `n_layers` would come back as the Llama value and this would still return
+    /// `Ok` — every other test in this file would still pass, because none of them checks
+    /// that ALL NINE fields came from the SAME prefix, only that error messages name the
+    /// right one.
+    #[test]
+    fn every_field_comes_from_the_same_prefix_not_just_the_error_messages() {
+        let mut metadata = std::collections::HashMap::new();
+        for (k, v) in [
+            ("embedding_length", Value::U32(64)),
+            ("feed_forward_length", Value::U32(128)),
+            ("block_count", Value::U32(7)), // the value this test checks for
+            ("attention.head_count", Value::U32(4)),
+            ("attention.head_count_kv", Value::U32(4)),
+            ("context_length", Value::U32(2048)),
+        ] {
+            metadata.insert(format!("qwen2.{k}"), v);
+        }
+        metadata.insert(
+            "qwen2.attention.layer_norm_rms_epsilon".to_string(),
+            Value::F32(1e-5),
+        );
+        metadata.insert("qwen2.rope.freq_base".to_string(), Value::F32(10000.0));
+        // Conflicting value under the WRONG prefix -- if this leaks in, n_layers reads 999.
+        metadata.insert("llama.block_count".to_string(), Value::U32(999));
+
+        let mut tensor_infos = std::collections::HashMap::new();
+        tensor_infos.insert(
+            "token_embd.weight".to_string(),
+            TensorInfo {
+                ggml_dtype: fuel_ir::quantized::GgmlDType::F32,
+                shape: fuel_ir::Shape::from_dims(&[64, 100]),
+                offset: 0,
+            },
+        );
+        let content = Content {
+            magic: VersionedMagic::GgufV3,
+            metadata,
+            tensor_infos,
+            tensor_data_offset: 0,
+        };
+
+        let cfg = derive_config(&content, Architecture::Qwen2).unwrap();
+        assert_eq!(
+            cfg.n_layers, 7,
+            "n_layers must come from qwen2.block_count (7), not the conflicting \
+             llama.block_count (999) -- a leaked prefix would return 999 here"
+        );
     }
 
     #[test]
