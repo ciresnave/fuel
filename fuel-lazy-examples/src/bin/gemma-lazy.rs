@@ -13,8 +13,9 @@
 // This model is gated — accept the license at
 // https://huggingface.co/google/gemma-2-2b-it and set HF_TOKEN first.
 
-use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+use fuel::lazy::SamplingStrategy;
 use fuel::lazy_gemma2::Gemma2Model;
+use fuel_model_llama::LlamaTokenizer;
 use std::io::Write;
 use std::time::Instant;
 

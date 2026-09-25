@@ -169,7 +169,7 @@ pub struct DeepSeek2LayerWeights {
 
 #[derive(Debug, Clone)]
 pub struct DeepSeek2Weights {
-    /// See [`fuel_core::lazy::LlamaWeights::instance`].
+    /// See [`fuel_model_llama::LlamaWeights::instance`].
     pub instance: fuel_core::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<DeepSeek2LayerWeights>,
@@ -535,7 +535,7 @@ fn absorb_split_kv_b(
 }
 
 impl DeepSeek2Model {
-    /// See [`fuel_core::lazy::LlamaModel::decode_shape_key`].
+    /// See [`fuel_model_llama::LlamaModel::decode_shape_key`].
     pub fn decode_shape_key(&self) -> u64 {
         let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
         h.mix_str("deepseek2")
@@ -739,7 +739,7 @@ impl DeepSeek2Model {
     /// host `f32` and re-uploads it as fresh Consts every call. Those two
     /// remain the right choice for single-graph / prefill-only use (no
     /// `InferenceContext` bookkeeping); a decode loop should use this
-    /// entry point instead. Mirrors [`fuel_core::lazy::LlamaModel::
+    /// entry point instead. Mirrors [`fuel_model_llama::LlamaModel::
     /// forward_with_kv_context_impl`]'s D1 shape: per-layer `Const`
     /// placeholders bound to the cache's persistent Storage Arcs via
     /// [`fuel_core::inference_context::InferenceContext::insert`], written in
@@ -755,7 +755,7 @@ impl DeepSeek2Model {
     /// and pays no such cost.
     ///
     /// Returns the **last-position** logits, `[vocab_size]` — same shape
-    /// choice as [`fuel_core::lazy::LlamaModel::forward_with_kv_context`].
+    /// choice as [`fuel_model_llama::LlamaModel::forward_with_kv_context`].
     pub fn forward_with_latent_kv_context(
         &self,
         tokens: &[u32],
@@ -1131,7 +1131,7 @@ impl DeepSeek2Model {
 
     // =========================================================================
     // MLA D2 — plan-once persistent decode (Phase D). The
-    // `LatentKvCache`-threaded sibling of [`fuel_core::lazy::LlamaModel::
+    // `LatentKvCache`-threaded sibling of [`fuel_model_llama::LlamaModel::
     // forward_with_kv_context_persistent`] — see that function's doc for the
     // canonical write-up of the 5-branch ladder / held-session design; this
     // block mirrors it function-for-function, calling out MLA divergences
@@ -1140,7 +1140,7 @@ impl DeepSeek2Model {
 
     /// Phase D · MLA D2 — plan-once persistent decode entry point, the
     /// [`fuel_core::inference_context::LatentKvCache`] sibling of
-    /// [`fuel_core::lazy::LlamaModel::forward_with_kv_context_persistent`].
+    /// [`fuel_model_llama::LlamaModel::forward_with_kv_context_persistent`].
     /// Mirrors that function's 5-branch ladder exactly:
     ///
     /// 1. **`seq != 1`** (prefill / spec-decode verification): shape-distinct
@@ -1578,7 +1578,7 @@ impl DeepSeek2Model {
 
     /// Streaming generation through the plan-once persistent MLA decode
     /// path ([`Self::forward_with_latent_kv_context_persistent`]), mirroring
-    /// [`fuel_core::lazy::LlamaModel::generate_streaming_with_kv_context`]'s
+    /// [`fuel_model_llama::LlamaModel::generate_streaming_with_kv_context`]'s
     /// shape. Allocates a [`fuel_core::inference_context::LatentKvCache`] of
     /// capacity `prompt_tokens.len() + max_new_tokens` (2 slots — compressed
     /// latent `[kv_lora_rank]` + k_pe `[qk_rope_head_dim]` — F32, CPU: MLA

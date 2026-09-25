@@ -593,7 +593,7 @@ fn build_rope_variants(
 /// recomputes it through this same function. Two mask formulas — one for the
 /// held graph and one for the rebind — is precisely the divergence that would
 /// go unnoticed until a windowed family decoded its second token.
-pub(crate) fn build_decode_mask_variants(
+pub fn build_decode_mask_variants(
     plan: &MaskPlan,
     cached_len: usize,
     seq: usize,

@@ -5,14 +5,14 @@
 //! Runs **K independent decode sessions concurrently on one `LlamaModel`,
 //! correctly** — each session generating its own token stream from its own
 //! prompt, reusing the existing single-session persistent decode machinery
-//! ([`fuel::inference_context`] + [`fuel::lazy::LlamaModel`]). It adds **no
+//! ([`fuel::inference_context`] + [`fuel_model_llama::LlamaModel`]). It adds **no
 //! IR op** and **no kernel** — this is pure host orchestration.
 //!
 //! ## Components
 //!
 //! - [`SessionState`] (C1) — a faithful bundle of the four per-generation
 //!   loop locals that already exist in
-//!   [`fuel::lazy::LlamaModel::generate_streaming_with_kv_context`]: one
+//!   [`fuel_model_llama::LlamaModel::generate_streaming_with_kv_context`]: one
 //!   [`fuel::inference_context::KvCache`], one
 //!   [`fuel::inference_context::InferenceContext`], the plan-once
 //!   [`fuel::inference_context::DecodeSession`] (lazily built on the first
@@ -59,7 +59,8 @@ use fuel::inference_context::{
 };
 use fuel::kv_block_pool::{KvBlockPool, KvGeometry, PoolCapacity, PrefixId, SessionHandle};
 use fuel::kv_block_pool_device::{DeviceEvicted, DeviceKvPool};
-use fuel::lazy::{LlamaModel, SamplingStrategy, sample_logits};
+use fuel::lazy::{SamplingStrategy, sample_logits};
+use fuel_model_llama::LlamaModel;
 
 /// The KV memory budget a [`SessionScheduler`] admits sessions against — the
 /// C-1 capacity mechanism (from [15-consumer-contract]). `num_blocks` physical
@@ -454,7 +455,7 @@ impl ModelDims {
 
 /// One decode session's mutable state — a faithful bundle of the four
 /// per-generation loop locals from
-/// [`fuel::lazy::LlamaModel::generate_streaming_with_kv_context`]
+/// [`fuel_model_llama::LlamaModel::generate_streaming_with_kv_context`]
 /// (`KvCache` + `InferenceContext` + `Option<DecodeSession>` +
 /// sampler/RNG/token state) plus scheduling bookkeeping. Owns **nothing
 /// shared**: the independent `KvCache` allocations and the independent
@@ -1877,7 +1878,8 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::lazy::{LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, SamplingStrategy};
+    use fuel::lazy::{LayerWeights, SamplingStrategy};
+    use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
     // NOTE: `fuel_ir::Device` does not exist — the device type is `fuel::Device`
     // (fuel_core::Device), which is what `KvCache::with_capacity` takes. `DType`
     // is `fuel_ir::DType`. This mirrors the `use` lines at the top of
@@ -3572,7 +3574,8 @@ mod tests {
         // actually PICKED (temporary eprintln of the chosen arm) and that a
         // KV-perturbation sabotage makes the test FAIL (a passing sabotage run
         // is invalid without confirmed recompilation).
-        use fuel::lazy::{LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, WeightStorage};
+        use fuel::lazy::{LayerWeights, WeightStorage};
+        use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
 
         fn bf16_weights(cfg: &LlamaConfig) -> LlamaWeights {
             // f32 tiny weights → BF16 for every WeightStorage matrix (embedding

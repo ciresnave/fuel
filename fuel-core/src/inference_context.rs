@@ -481,7 +481,7 @@ type KvStoragePair = (Arc<RwLock<Storage>>, Arc<RwLock<Storage>>);
 /// decode graph.
 ///
 /// Returns `Err` if any allocation fails (fail-on-OOM, spec #6).
-pub(crate) fn alloc_batched_kv(
+pub fn alloc_batched_kv(
     k: usize,
     n_layers: usize,
     n_kv_heads: usize,
@@ -1524,7 +1524,7 @@ impl DecodeSession {
 }
 
 /// Runtime policy for the paged persistent decode path
-/// ([`LlamaModel::forward_paged_step_persistent`](crate::lazy::LlamaModel::forward_paged_step_persistent)):
+/// (`LlamaModel::forward_paged_step_persistent`):
 /// whether to build the plan
 /// ONCE and reuse it across tokens, or re-plan every token (the pre-plan-once
 /// behavior). The paged driver holds this per config and passes it each step;
@@ -1545,14 +1545,14 @@ impl DecodeSession {
 /// and because `Replan` is the parity reference the plan-once path is checked
 /// against. On [`Replan`](Self::Replan) the persistent forward drops any held
 /// session (so nothing stale lingers) and delegates to the re-planning
-/// [`LlamaModel::forward_paged_step`](crate::lazy::LlamaModel::forward_paged_step);
+/// `LlamaModel::forward_paged_step`;
 /// on [`PlanOnce`](Self::PlanOnce) it
 /// builds-once / rebinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PagedDecodePlan {
     /// Re-plan (build + optimize the graph) every token — the pre-plan-once
     /// path. Drops any held [`PagedDecodeSession`] and routes to
-    /// [`LlamaModel::forward_paged_step`](crate::lazy::LlamaModel::forward_paged_step).
+    /// `LlamaModel::forward_paged_step`.
     Replan,
     /// Build + optimize the graph ONCE (into a [`PagedDecodeSession`]) and reuse
     /// it (rebinding only the per-token data) for every subsequent token.
@@ -1908,7 +1908,7 @@ impl PagedDecodeSession {
 pub struct InferenceContext {
     device: Device,
     persistent: HashMap<NodeId, Arc<RwLock<Storage>>>,
-    /// Held plan-once decode plan for [`crate::lazy::LlamaModel::forward_decode_step`]
+    /// Held plan-once decode plan for `LlamaModel::forward_decode_step`
     /// — the carrier that lets a caller-driven decode loop get plan reuse
     /// WITHOUT threading an `Option<DecodeSession>` of its own.
     ///
@@ -1957,7 +1957,7 @@ impl InferenceContext {
 
     /// Whether a decode plan is currently held. Observability hook — a caller
     /// that has decoded at least one token through
-    /// [`crate::lazy::LlamaModel::forward_decode_step`] holds one.
+    /// `LlamaModel::forward_decode_step` holds one.
     pub fn has_decode_session(&self) -> bool {
         self.decode_session.is_some()
     }
