@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Safetensors file reading — the mmap/view surface.
 //!
-//! Moved to [`fuel_model_loader::safetensors`] (fuel-core dissolution Slice 3,
+//! Moved here from `fuel-core` (fuel-core dissolution Slice 3,
 //! `docs/session-prompts/fuel-core-dissolution-b1.md`). `fuel-core` keeps a re-export shim so
 //! existing `fuel_core::safetensors` / `fuel::safetensors` call sites keep compiling.
 //!
