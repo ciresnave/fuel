@@ -32,6 +32,7 @@ pub use fuel_quantized::{
 };
 
 pub mod arch;
+pub mod config_from_gguf;
 pub mod gguf_file;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gguf_mmap;
