@@ -17,6 +17,13 @@
 //! a typed error citing GAP-125, because `BlockQ8_1::to_float` is `unimplemented!()` upstream
 //! (a real numerics gap in this crate, not a dispatch-layer one — wiring it here would only
 //! trade an `Err` for a panic).
+//!
+//! ⚠️ This centralization is not purely subtractive. The ten hand-rolled implementations it
+//! replaces were each numerically incomplete but memory-safe; the first version of the single
+//! function replacing them introduced a real soundness bug (an unaligned `&[u8]` cast to
+//! `&[T]` for a `T` needing alignment 2+ — see [`cast_and_dequant`]'s doc), caught before merge
+//! by review, not by any test in the original diff. Fixed with an alignment check, an
+//! alternate copy-to-`Vec<T>` path for the misaligned case, and a Miri-verified born-red.
 
 use crate::k_quants::{
     BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K, BlockQ6K,
@@ -29,20 +36,51 @@ use half::{bf16, f16};
 /// Reinterpret `bytes` as a dense `[T]` array (GGUF's on-disk block layout) and dequantize via
 /// [`GgmlType::to_float`] — the tested implementation, not a re-derivation of its math.
 ///
-/// # Safety invariant this relies on
-/// Every `BlockQX` in this crate is `#[repr(C)]` with no padding relied upon, and GGUF's wire
-/// format is exactly that packed layout (this is the same invariant `k_quants.rs`'s own
-/// dequantization already assumes when parsing a `.gguf` file). `bytes.len()` need not be an
-/// exact multiple of `size_of::<T>()`; the remainder is silently dropped, matching every
-/// pre-existing per-model `cpu_dequant_*_bytes` this replaces.
+/// `bytes.len()` need not be an exact multiple of `size_of::<T>()`; the remainder is silently
+/// dropped, matching every pre-existing per-model `cpu_dequant_*_bytes` this replaces.
+///
+/// # Alignment
+/// `bytes: &[u8]` guarantees only 1-byte alignment, while every `BlockQX` here contains an
+/// `f16`/`bf16`/`f32` field and so needs alignment 2 or 4. GGUF's *file* offsets being
+/// block-aligned says nothing about the *in-memory* address of a `Vec<u8>` a reader loaded
+/// those bytes into, or of a sub-slice taken at a byte offset within it — those two are
+/// different objects, and only the second is what `from_raw_parts` requires. When the pointer
+/// isn't aligned for `T`, this copies into a `Vec<T>` (whose allocator-provided memory *is*
+/// aligned for `T`) instead of casting the borrowed bytes directly.
 fn cast_and_dequant<T: GgmlType>(bytes: &[u8]) -> Vec<f32> {
     let block_size = std::mem::size_of::<T>();
     let n_blocks = bytes.len() / block_size;
-    // SAFETY: T is #[repr(C)] (every GgmlType impl in this crate); GGUF bytes are laid out as
-    // a dense array of T structs, and n_blocks is computed from bytes.len() so the slice never
-    // reads past the end of `bytes`. Alignment: GGUF tensor data is 32-byte aligned per the
-    // format spec, which satisfies every block struct's alignment (<= 8 in practice).
-    let blocks: &[T] = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const T, n_blocks) };
+    let owned_blocks;
+    let blocks: &[T] = if bytes.as_ptr().align_offset(std::mem::align_of::<T>()) == 0 {
+        // SAFETY: T is #[repr(C)] (every GgmlType impl in this crate); GGUF bytes are laid out
+        // as a dense array of T structs; n_blocks is computed from bytes.len() so the slice
+        // never reads past the end of `bytes`; and this branch is guarded by `align_offset ==
+        // 0`, so `bytes.as_ptr()` is confirmed aligned for `T` right here, not assumed from the
+        // file format.
+        unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<T>(), n_blocks) }
+    } else {
+        // Misaligned: copy block-by-block into a `Vec<T>`, whose allocation IS aligned for `T`
+        // (the allocator guarantees this for any `Vec<T>`), then read through that instead of
+        // the original unaligned bytes.
+        let mut v: Vec<T> = Vec::with_capacity(n_blocks);
+        // SAFETY: `v`'s buffer holds `n_blocks` uninitialized `T`s at this point (from
+        // `with_capacity`, correctly aligned for `T` by the allocator); `bytes` has at least
+        // `n_blocks * block_size` bytes (n_blocks was computed as the floor of that division);
+        // `T` has no padding assumption here beyond what `copy_nonoverlapping` needs (a raw
+        // byte copy, not a typed one), and every field of every `BlockQX` is bit-pattern-valid
+        // for arbitrary bytes (integer/float fields, no enums or references). `set_len` follows
+        // the copy that actually initializes those bytes, so no uninitialized memory is read.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                v.as_mut_ptr().cast::<u8>(),
+                n_blocks * block_size,
+            );
+            v.set_len(n_blocks);
+        }
+        owned_blocks = v;
+        &owned_blocks
+    };
     let mut out = vec![0.0_f32; n_blocks * T::BLCK_SIZE];
     T::to_float(blocks, &mut out);
     out
@@ -177,6 +215,75 @@ mod tests {
                 "{dtype:?}: 4096 zeroed bytes must yield at least one dequantized block",
             );
         }
+    }
+
+    /// Alignment born-red: `Vec<u8>` allocations are only guaranteed 1-byte aligned, and every
+    /// `BlockQX` needs alignment >= 2 (an `f16`/`bf16`/`f32` field). A raw
+    /// `from_raw_parts(bytes.as_ptr() as *const T, ...)` on a misaligned slice is immediate UB
+    /// under the stdlib's contract, not "unlikely in practice" -- and it is reachable: any
+    /// tensor sub-slice at an odd byte offset from a `Vec<u8>` base produces exactly this.
+    ///
+    /// This constructs a slice at a DELIBERATELY misaligned offset and checks the dequantized
+    /// VALUES against an aligned copy of the same bytes, not just that the call returns `Ok` --
+    /// a misaligned read that "happens to work" on this platform would still pass an Ok-only
+    /// check. `Q4_0` is used because its alignment requirement (2, from `d: f16`) is exactly
+    /// the boundary the fix must clear.
+    ///
+    /// `Vec<u8>`'s allocator-provided base address parity is NOT specified by the language --
+    /// it can come back even or odd -- so "index 1 into a fresh `Vec<u8>`" is not reliably
+    /// misaligned (this was measured under Miri: the first version of this test asserted that
+    /// and Miri's allocator handed back an odd base, making offset 1 the ALIGNED one). This
+    /// probes both offset 0 and offset 1 at runtime and picks whichever one `align_offset`
+    /// actually reports as misaligned for `T`, rather than assuming a parity.
+    #[test]
+    fn cast_and_dequant_handles_a_misaligned_byte_slice() {
+        let align = std::mem::align_of::<crate::k_quants::BlockQ4_0>();
+        let block_size = std::mem::size_of::<crate::k_quants::BlockQ4_0>();
+        let n_blocks = 3;
+        let total = n_blocks * block_size;
+
+        // One buffer 1 byte larger than needed so BOTH offset 0 and offset 1 are valid
+        // in-bounds `total`-byte windows into it, deterministically filled.
+        let mut buf = vec![0_u8; total + 1];
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(37).wrapping_add(11);
+        }
+        let offset0_aligned = buf[0..total].as_ptr().align_offset(align) == 0;
+        let (aligned_slice, misaligned_slice) = if offset0_aligned {
+            (&buf[0..total], &buf[1..1 + total])
+        } else {
+            (&buf[1..1 + total], &buf[0..total])
+        };
+        assert_eq!(
+            aligned_slice.as_ptr().align_offset(align),
+            0,
+            "test setup bug"
+        );
+        assert_ne!(
+            misaligned_slice.as_ptr().align_offset(align),
+            0,
+            "test setup bug: this slice must actually BE misaligned for the test to mean \
+             anything -- the two offsets in a 1-byte-larger buffer must have opposite parity \
+             relative to `align`, so exactly one of them is always misaligned",
+        );
+
+        let aligned_out = dequant_ggml_bytes(aligned_slice, GgmlDType::Q4_0, "t").unwrap();
+        let misaligned_out = dequant_ggml_bytes(misaligned_slice, GgmlDType::Q4_0, "t").unwrap();
+
+        // The two slices overlap by `total - 1` bytes rather than being byte-identical, so
+        // compare against a THIRD, independently-constructed aligned copy of exactly the
+        // misaligned slice's own bytes -- the actual claim under test.
+        let misaligned_bytes_copy: Vec<u8> = misaligned_slice.to_vec();
+        let reference_out =
+            dequant_ggml_bytes(&misaligned_bytes_copy, GgmlDType::Q4_0, "t").unwrap();
+        assert_eq!(
+            reference_out, misaligned_out,
+            "dequantizing a byte slice from a misaligned pointer must produce identical values \
+             to dequantizing the same bytes from an aligned one",
+        );
+        // Sanity: the aligned_out computed above is exercised too (not dead), confirming this
+        // path also runs through the same function without panicking.
+        assert_eq!(aligned_out.len(), misaligned_out.len());
     }
 
     /// Q8_1 must decline typed, never panic -- `BlockQ8_1::to_float` is `unimplemented!()`
