@@ -4,8 +4,8 @@
 //!
 //! Extracted from `fuel-core/src/lazy.rs` (fuel-core dissolution, per
 //! `docs/architecture/02-layers.md`'s ratified `fuel-model-llama`† — one architecture per
-//! crate). `fuel_core::lazy::LlamaModel` is the canonical base every downstream LLaMA-family
-//! model in `fuel-transformers` builds on, and `fuel-inference/src/multi_session.rs`
+//! crate). `fuel_model_llama::LlamaModel` (this crate) is the canonical base every downstream
+//! LLaMA-family model in `fuel-transformers` builds on, and `fuel-inference/src/multi_session.rs`
 //! references it directly.
 //!
 //! ⚠️ **Depends on `fuel-core` itself, and this crate does NOT contain everything that was
