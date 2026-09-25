@@ -422,81 +422,7 @@ fn dequant_bytes_to_f32(
     dt: fuel_core::quantized::GgmlDType,
     name: &str,
 ) -> Result<Vec<f32>> {
-    use fuel_core::quantized::GgmlDType;
-    use half::{bf16, f16};
-    match dt {
-        GgmlDType::F32 => {
-            if !bytes.len().is_multiple_of(4) {
-                return Err(fuel_core::Error::Msg(format!(
-                    "gguf {name}: F32 byte count {} not multiple of 4",
-                    bytes.len(),
-                ))
-                .bt());
-            }
-            Ok(bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect())
-        }
-        GgmlDType::F16 => {
-            if !bytes.len().is_multiple_of(2) {
-                return Err(fuel_core::Error::Msg(format!(
-                    "gguf {name}: F16 byte count {} not multiple of 2",
-                    bytes.len(),
-                ))
-                .bt());
-            }
-            Ok(bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
-                .collect())
-        }
-        GgmlDType::BF16 => {
-            if !bytes.len().is_multiple_of(2) {
-                return Err(fuel_core::Error::Msg(format!(
-                    "gguf {name}: BF16 byte count {} not multiple of 2",
-                    bytes.len(),
-                ))
-                .bt());
-            }
-            Ok(bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32())
-                .collect())
-        }
-        GgmlDType::Q4_0 => Ok(cpu_dequant_q4_0_bytes(bytes)),
-        other => Err(fuel_core::Error::Msg(format!(
-            "gguf {name}: dequant of {other:?} is not supported by lazy_quantized_smollm3",
-        ))
-        .bt()),
-    }
-}
-
-fn cpu_dequant_q4_0_bytes(bytes: &[u8]) -> Vec<f32> {
-    use half::f16;
-    let bpb = 18usize;
-    let epb = 32usize;
-    let n_blocks = bytes.len() / bpb;
-    let mut out = vec![0.0_f32; n_blocks * epb];
-    for b in 0..n_blocks {
-        let off = b * bpb;
-        let d = f16::from_le_bytes([bytes[off], bytes[off + 1]]).to_f32();
-        let base = b * epb;
-        for kk in 0..16 {
-            let packed = bytes[off + 2 + kk];
-            let lo = (packed & 0x0F) as i32 - 8;
-            let hi = ((packed >> 4) & 0x0F) as i32 - 8;
-            out[base + kk] = lo as f32 * d;
-            out[base + 16 + kk] = hi as f32 * d;
-        }
-    }
-    out
+    fuel_quantized::dequant_ggml_bytes(bytes, dt, name)
 }
 
 #[cfg(test)]
@@ -590,7 +516,7 @@ mod tests {
     fn q4_0_round_trip_via_dequantize() {
         // Verify the f32 → Q4_0 → dequant round-trip stays close to the
         // original — confirms the quantize_in_out_to_q4_0 helper matches
-        // the dequant convention used by `cpu_dequant_q4_0_bytes` and
+        // the dequant convention used by `fuel_quantized::dequant_ggml_bytes` and
         // by the apply_linear Q4_0 path.
         let in_features = 32;
         let out_features = 16;
@@ -609,7 +535,9 @@ mod tests {
             bytes[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
         }
         let bytes = &bytes[..bytes_len];
-        let dq_out_in = cpu_dequant_q4_0_bytes(bytes);
+        let dq_out_in =
+            fuel_quantized::dequant_ggml_bytes(bytes, fuel_core::quantized::GgmlDType::Q4_0, "t")
+                .unwrap();
         assert_eq!(dq_out_in.len(), n);
 
         // Compare per-element after transposing original [in, out] to
