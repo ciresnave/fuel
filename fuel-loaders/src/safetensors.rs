@@ -42,7 +42,7 @@ struct SafeTensors_<'a>(SafeTensors<'a>);
 /// # Example
 ///
 /// ```no_run
-/// use fuel_model_loader::safetensors::MmapedSafetensors;
+/// use fuel_loaders::safetensors::MmapedSafetensors;
 /// // SAFETY: the file must not be modified while the mapping is alive.
 /// let st = unsafe { MmapedSafetensors::new("weights.safetensors")? };
 /// let view = st.get("weight")?;   // raw TensorView; caller decodes the bytes
@@ -157,7 +157,7 @@ impl MmapedSafetensors {
 /// # Example
 ///
 /// ```no_run
-/// use fuel_model_loader::safetensors::BufferedSafetensors;
+/// use fuel_loaders::safetensors::BufferedSafetensors;
 /// let bytes: Vec<u8> = std::fs::read("weights.safetensors")?;
 /// let st = BufferedSafetensors::new(bytes)?;
 /// let view = st.get("weight")?;   // raw TensorView; caller decodes the bytes
@@ -201,7 +201,7 @@ impl BufferedSafetensors {
 /// # Example
 ///
 /// ```no_run
-/// use fuel_model_loader::safetensors::MmapedFile;
+/// use fuel_loaders::safetensors::MmapedFile;
 /// // SAFETY: the file must not be modified while the mapping is alive.
 /// let file = unsafe { MmapedFile::new("weights.safetensors")? };
 /// let st = file.deserialize()?;
