@@ -22,12 +22,14 @@
 #[cfg(target_feature = "avx2")]
 pub mod avx;
 pub mod cpu;
+pub mod dequant;
 pub mod k_quants;
 #[cfg(target_feature = "neon")]
 pub mod neon;
 pub mod utils;
 
 pub use cpu::{QuantizedType, cpu_from_data, cpu_zeros};
+pub use dequant::dequant_ggml_bytes;
 pub use k_quants::{
     BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K, BlockQ6K,
     BlockQ8_0, BlockQ8_1, BlockQ8K, GgmlType, K_SCALE_SIZE, QK_K, QK4_0, QK4_1, QK5_0, QK5_1,
