@@ -133,7 +133,16 @@ tracked here, not silently accepted.
 | `src/dtype.rs`, `src/shape.rs` (root re-exports `DType`, `Shape`, `D`) | B0 (2026-06 era) | `fuel_ir::dtype`, `fuel_ir::shape` | **Re-measured 2026-09-24, LOWER BOUND, not exact**: qualified-path grep (`fuel_core::DType`/`fuel::DType`) finds 6+8=14 files; import-line grep (`use fuel(_core)?::{...DType...}`) finds 20. `Shape`: 1+13 qualified, 50 via import line. ⚠️ **Both instruments undercount**: a grouped multi-line import (`use fuel::{\n DType,\n Shape,\n};`) defeats a single-line regex, and once imported, most call sites use the bare name — which this row cannot distinguish from an unrelated same-named symbol in another crate. **Reliable count needs a compiler-based census** (CLAUDE.md's own standing rule: "use the compiler as the caller census, not a grep") — e.g. temporarily delete the shim and read the resulting `E0432`/unresolved-import list, which cannot false-positive on a same-named symbol elsewhere. Not done in this pass. |
 | `src/layout.rs`, `src/storage.rs`, `src/strided_index.rs` (root re-exports `Layout`, `Storage`, `StridedIndex`, `StridedBlocks`) | B0 | `fuel_ir::layout`, `fuel_backend_contract::Storage`, `fuel_ir::strided_index` | **0 by both instruments above** — genuinely low or zero real usage, OR the same undercount applies and these are simply rarer symbol names with less collision risk (both readings are consistent with a 0; the compiler census would disambiguate). Not claimed as verified-zero. |
 | `src/dyn_backend.rs`, `src/backend.rs` (no root re-export; module-path only) | B0 | `fuel_backend_contract::{dyn_backend, backend}` | `dyn_backend`: 1 file (module-qualified grep, no root-export ambiguity so this one IS reliable). `backend`: 0 files. | These two are the one part of the B0-era row that qualified-path grep CAN answer reliably, because nothing re-exports them at the crate root to create a bare-name ambiguity. |
-| `src/safetensors.rs` | Slice 3 (open PR) | `fuel_model_loader::safetensors` | 110+ files across `fuel-transformers/src/models/` and `fuel-nn/src/` (measured in #239/#240's review; not yet re-verified per-module the way Slice 2's cluster was) | Largest single repoint on this ledger by consumer count; `MmapedSafetensors`/`BufferedSafetensors` have their own real implementation (not a shim over `fuel-formats`, unlike its sibling `gguf_file.rs`/`imatrix_file.rs`) |
+| `src/safetensors.rs` | Slice 3 (executed) | `fuel_model_loader::safetensors` | LOWER BOUND 34 files by a real-`use`-line grep (`use fuel_core::safetensors`/`use fuel::safetensors`/`use crate::safetensors::`); the true count is higher (this pattern misses multi-line grouped imports and fully-qualified inline paths, the same undercount class the B0 rows above already name) — not yet re-measured by compiler census | Largest single repoint remaining on this ledger by consumer count; `MmapedSafetensors`/`BufferedSafetensors` have their own real implementation (not a shim over `fuel-formats`, unlike its sibling `gguf_file.rs`/`imatrix_file.rs`, confirmed again at move time: `fuel-formats/src/safetensors.rs` is 3,623 B and only re-exports the upstream `safetensors` crate + `MmapedFile`; `fuel-core/src/safetensors.rs` was 9,258 B of original `MmapedSafetensors`/`BufferedSafetensors` code). Shim landed clean — unlike `fuel-model-llama`/`fuel-model-phi`, this module needs nothing back from `fuel-core` (only `fuel_ir::{Error, Result}` + the upstream `safetensors`/`memmap2`/`yoke` crates), so the re-export shim works with no cycle and no consumer repoint was required for this PR to compile. |
+
+**MLMF note (2026-09-25):** CireSnave ruled fuel migrates to depending on the `mlmf-*` crates
+directly (never the root `mlmf` package). This move deliberately does NOT redirect
+`safetensors.rs` to consume `mlmf-safetensors` — that crate has only a 2-file differential
+corpus so far (vs. GGUF/GGML's 28), and this file has 34+ consumers; repointing that many
+consumers at a parser verified on two files is not what the migration ruling approved. The
+PM's sequencing call: move the file unchanged now (this PR), consumer migration to
+`mlmf-safetensors` is a separate, later, larger job gated on that crate's own differential
+coverage growing first.
 
 **Trigger for acting on this ledger:** none, yet — that omission is deliberate, not an
 oversight, and stated so the omission itself doesn't quietly become the next stale record.
@@ -447,11 +456,16 @@ from file names here would repeat exactly the mistake this doc is correcting for
   lower-bound size 190+ files across Slice 2 + Slice 3 + the reliably-measured part of the
   B0-era shims, done incrementally shim-by-shim, triggered per-shim by the PM against the
   Lightbulb port's timing — not automatically when a slice lands, and not all at once.
-- Slice 3 (`safetensors.rs`): scoped, PR open. 110+ consumers, real implementation (not a
-  shim like its Slice-2 siblings) — flagged in the ledger as the largest single repoint item.
-- ⚠️ **Board item 52 (`lazy.rs`'s Llama/Phi split) is now BLOCKING for the dissolution's
-  completion, not optional** — under DELETE, that ~16,000 lines must go somewhere, and
-  nobody has said where. Still not blocking Slice 3 or the repoint programme.
+- Slice 3 (`safetensors.rs`): **executed.** LOWER BOUND 34 consumers by real-`use`-line grep
+  (true count higher, not yet compiler-census-measured), real implementation (not a shim like
+  its Slice-2 siblings) — flagged in the ledger as the largest single repoint item still
+  outstanding, though the shim landed with zero repoint required to compile.
+- Board item 52 (`lazy.rs`'s Llama/Phi split): **executed** (`fuel-model-llama`/
+  `fuel-model-phi`, ratified by `docs/architecture/02-layers.md`). Unlike Slices 2/3, this one
+  required an immediate 24-file consumer repoint — no shim was possible, because the new
+  crates sit ABOVE `fuel-core` in the tier file and depend on it, so a re-export back would be
+  a cargo cycle. See that section above for the full accounting and the general ordering law
+  it established (deferred shims only work extracting downward in the tier file).
 - Everything else in `fuel-core` (~2.3 MB): unscoped. **Do not scope it until CireSnave
   answers the Llama/Phi placement question** — that answer changes what those remaining
   files (`inference_context.rs`, `pipelined_bridge.rs`, `judge/`, etc.) are coupled to, so
