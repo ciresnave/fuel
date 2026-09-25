@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Model-loading support for the fuel ML framework.
 //!
+//! Named `fuel-loaders` to match the crate `docs/architecture/02-layers.md` already
+//! ratifies for this scope (diagrammed with the `†` unbuilt-but-ratified marker; also
+//! named in `fuel-formats`' own doc comment as its downstream consumer). Originally cut
+//! as `fuel-model-loader`, an unnoticed drift from the constitution rather than a
+//! deliberate rename — corrected within hours, before any consumer outside `fuel-core`'s
+//! own shims existed.
+//!
 //! Slice 2 of the fuel-core dissolution (`docs/session-prompts/fuel-core-dissolution-b1.md`):
 //! HF `config.json` resolution rules, load-progress reporting, and GGUF/imatrix/tokenizer
 //! glue that sits on top of `fuel-formats`' transport-independent wire parsers. Like
