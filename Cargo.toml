@@ -296,7 +296,7 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.81" }
 # above was measured on kernelgen and is a property of the synthesizer, not proven
 # a version boundary; it is UNVERIFIED on cuda-emit .79 and the investigation
 # continues there. See docs/gaps.md GAP-001.
-baracuda-cuda-emit     = { version = "=0.0.1-alpha.79" }
+baracuda-cuda-emit     = { version = "=0.11.0" }
 baracuda-nccl-sys      = { version = "0.0.1-alpha.81" }
 baracuda-nccl          = { version = "0.0.1-alpha.81", features = ["half-crate"] }
 baracuda-cutlass       = { version = "0.0.1-alpha.81" }
