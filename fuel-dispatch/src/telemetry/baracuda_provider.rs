@@ -40,8 +40,14 @@
 //! | `dtype`            | `dtype`            | via [`map_element_kind`]          |
 //! | `align_bytes`      | `align_bytes`      | Fuel's alignment estimate         |
 //! | (shape.len())      | `rank`             | ≤ [`MAX_RANK`], else decline      |
-//! | —                  | `quant`            | `None` (v1: key ignores quant)    |
 //! | —                  | `symbolic`         | `None` (v1: key ignores symbolic) |
+//!
+//! `OperandDesc` no longer has a `quant` field as of alpha.81's vocabulary
+//! bump — REMOVED, not renamed (`QuantFacts` is absent from `unpopped-vocab
+//! 0.11.0` entirely). It used to map from `—` to `None` (v1 never populated
+//! it) on the same terms as `symbolic` above; that row is deleted rather than
+//! kept and marked stale, since there is no field left for it to describe.
+//! See board item 70.
 //!
 //! The derived `contiguity` / `broadcast` / `flipped` booleans on
 //! `FdxOperandDesc` are DELIBERATELY not read here — Baracuda re-derives those
