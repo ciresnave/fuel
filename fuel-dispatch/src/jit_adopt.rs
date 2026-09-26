@@ -182,10 +182,20 @@ pub(crate) fn dtype_to_element_kind(dt: DType) -> Option<ElementKind> {
 
 /// The per-operand Fuel dtypes from the request operands (the binding-key
 /// metadata `adopt` stamps on the runtime op).
-fn operand_dtypes(operands: &[OperandDesc]) -> Vec<DType> {
+///
+/// Returns `None` if ANY operand's dtype has no Fuel spelling, rather than
+/// silently dropping that operand from the vector — a shorter-than-expected
+/// `Vec<DType>` would misalign index correspondence in the `(id, dtypes,
+/// backend)` binding key `adopt_runtime_fused` keys dispatch on. Not reached
+/// today: the one real caller (`jit_carrier.rs`'s `JitRequest` construction)
+/// already declines the whole region via `operand_desc(..)?` if any operand
+/// is unspellable, so this never runs on a declined dtype in practice — but
+/// that invariant lives in the CALLER, and a `filter_map` here would silently
+/// inherit it wrong for any future second call site that doesn't uphold it.
+fn operand_dtypes(operands: &[OperandDesc]) -> Option<Vec<DType>> {
     operands
         .iter()
-        .filter_map(|o| element_kind_to_dtype(o.dtype))
+        .map(|o| element_kind_to_dtype(o.dtype))
         .collect()
 }
 
@@ -252,7 +262,13 @@ pub fn adopt_from_response(
         ))
     })?;
     let kernel = load_kernel(&art)?;
-    let dtypes = operand_dtypes(&req.operands);
+    // Not expected to fire today (see operand_dtypes's doc), but declines
+    // rather than errors if it ever does -- same posture as the
+    // `JitResponse::Declined` arm above: an unspellable operand means this
+    // region cannot be adopted, not that adoption failed.
+    let Some(dtypes) = operand_dtypes(&req.operands) else {
+        return Ok(None);
+    };
     // req.region IS the recipe's decompose (fuel_graph::jit::PatternNode re-exports
     // the envelope's PatternNode), so adopt registers it as the runtime op's recipe.
     Ok(
