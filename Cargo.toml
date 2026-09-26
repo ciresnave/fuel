@@ -254,12 +254,14 @@ baracuda-curand        = { version = "0.0.1-alpha.81" }
 baracuda-nvrtc-sys     = { version = "0.0.1-alpha.81" }
 baracuda-nvrtc         = { version = "0.0.1-alpha.81" }
 # The live JIT synthesizer (BaracudaSynthesizer, the fuel-kernel-seam Synthesizer
-# impl). EXACT pin: only the `seam` module surface is supported/stable — the
-# generator internals are alpha-fluid, so never AUTO-upgrade. Deliberately bumped
-# to alpha.77 in LOCKSTEP with the rest of the baracuda workspace (2026-07-09):
-# baracuda-kernels-sys is a shared extern-C dep, so leaving kernelgen at alpha.76
-# while the rest is alpha.77 would pull two kernels-sys versions and duplicate the
-# FFI symbols. Pulled only under fuel-dispatch's `jit-synth` feature.
+# impl). Was an EXACT pin (only the `seam` module surface deemed
+# supported/stable, generator internals treated as alpha-fluid) — retired
+# 2026-09-26 per CireSnave's ruling below; no longer held to that discipline.
+# Was deliberately bumped to alpha.77 in LOCKSTEP with the rest of the
+# baracuda workspace (2026-07-09): baracuda-kernels-sys is a shared extern-C
+# dep, so leaving kernelgen at alpha.76 while the rest is alpha.77 would pull
+# two kernels-sys versions and duplicate the FFI symbols. Pulled only under
+# fuel-dispatch's `jit-synth` feature.
 # ⚠️ THE REASON THIS PIN CARRIED FOR ELEVEN DAYS WAS A FALSE ACCUSATION AGAINST
 # A SIBLING PROJECT, RETRACTED 2026-08-19. It read: "alpha.78 has an all-zero-
 # output regression (bisected 77->78); revert when fixed."
@@ -287,16 +289,29 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.81" }
 # with the contract's declared `count_unit: elements`, so it is not a contract
 # mismatch either.
 #
-# SUPERSEDED 2026-08-20 — MIGRATED to `baracuda-cuda-emit` .79 (this change).
-# kernelgen was RETIRED at .78 with no .79; cuda-emit is its renamed successor
-# (same `BaracudaSynthesizer`, now `cuda_emit::seam::` — no longer `jit::seam::`).
-# So "hold at .77 vs move to .78" is moot: the pin below is a forward move, not a
-# hold. Same EXACT pin, same reason (seam-surface-only stability; never auto-
-# upgrade the alpha-fluid generator internals). The GAP-001 ~25% flake documented
-# above was measured on kernelgen and is a property of the synthesizer, not proven
-# a version boundary; it is UNVERIFIED on cuda-emit .79 and the investigation
-# continues there. See docs/gaps.md GAP-001.
-baracuda-cuda-emit     = { version = "=0.0.1-alpha.79" }
+# SUPERSEDED 2026-08-20 — MIGRATED to `baracuda-cuda-emit` .79 (kernelgen was
+# RETIRED at .78 with no .79; cuda-emit is its renamed successor, same
+# `BaracudaSynthesizer`, now `cuda_emit::seam::` — no longer `jit::seam::`).
+# The GAP-001 ~25% flake documented above was measured on kernelgen and is a
+# property of the synthesizer, not proven a version boundary; it was
+# UNVERIFIED on cuda-emit .79 and the investigation continued there. See
+# docs/gaps.md GAP-001.
+#
+# UNPINNED 2026-09-26 — CireSnave, verbatim: "the pin was not done by me, nor
+# do I want it to remain pinned. Update it." The exact pin's stability
+# rationale (never auto-upgrade the alpha-fluid generator internals) is
+# retired along with the `=`; this dependency now follows the workspace's
+# normal update discipline.
+#
+# STILL TRUE AND STILL USEFUL, kept because it explains why this version
+# number looks like a discontinuous jump from alpha.79: `baracuda-cuda-emit`
+# is on baracuda's exception line, where the crate's MAJOR.MINOR tracks
+# Unpopped's own version rather than baracuda's alpha counter (the "one
+# version number per project, except a crate designed to work with another
+# project's version" carve-out). `0.11.0` answers "which Unpopped does this
+# work with", not "which baracuda snapshot is this" — it is not comparable to
+# the other `baracuda-*` pins' alpha numbers in the same way.
+baracuda-cuda-emit     = { version = "0.11.0" }
 baracuda-nccl-sys      = { version = "0.0.1-alpha.81" }
 baracuda-nccl          = { version = "0.0.1-alpha.81", features = ["half-crate"] }
 baracuda-cutlass       = { version = "0.0.1-alpha.81" }
