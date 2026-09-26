@@ -117,14 +117,14 @@ fn map_operand(od: &FdxOperandDesc) -> Option<OperandDesc> {
 fn map_element_kind(dt: DType) -> Option<ElementKind> {
     Some(match dt {
         DType::U8 => ElementKind::U8,
-        DType::I8 => ElementKind::S8,
+        DType::I8 => ElementKind::I8,
         DType::I32 => ElementKind::I32,
         DType::I64 => ElementKind::I64,
         DType::BF16 => ElementKind::Bf16,
         DType::F16 => ElementKind::F16,
         DType::F32 => ElementKind::F32,
         DType::F64 => ElementKind::F64,
-        DType::F8E4M3 => ElementKind::Fp8E4M3,
+        DType::F8E4M3 => ElementKind::Fp8E4M3FN,
         // Baracuda ships the matching kind with its own FP8 tensor-core operand
         // tag (`.e5m2.e5m2.f32`), and `dtype_token` already emits `f8e5m2`, so a
         // decline here would suppress structure-key derivation for a whole FP8
@@ -196,9 +196,14 @@ fn map_arch_sku(arch: &str) -> Option<ArchSku> {
     Some(match digits {
         "80" => ArchSku::Sm80,
         "89" => ArchSku::Sm89,
-        // NOT splittable today — see `arch_sku_digits`. `"90"` is the ALIAS;
-        // `"90a"` is this SKU's canonical spelling.
-        "90" | "90a" => ArchSku::Sm90a,
+        // SPLIT per GAP-179's own instructions (step 3 of "what to do when
+        // this breaks", below): alpha.81's vocab bump added `ArchSku::Sm90`,
+        // the portable Hopper baseline distinct from `Sm90a`'s specialized
+        // build. Collapsing them further would now be a WRONG answer, not
+        // just a lossy one — `sm_90` would claim Hopper-specialized kernels
+        // a portable-baseline target was never built for.
+        "90" => ArchSku::Sm90,
+        "90a" => ArchSku::Sm90a,
         _ => return None,
     })
 }
@@ -246,7 +251,9 @@ fn arch_sku_digits(sku: ArchSku) -> &'static str {
     match sku {
         ArchSku::Sm80 => "80",
         ArchSku::Sm89 => "89",
-        // `Sm90a`, NOT `Sm90` — see the split note above.
+        // The trap fired: alpha.81 added `Sm90`, and `map_arch_sku`'s
+        // "90" | "90a" collapse has been split accordingly.
+        ArchSku::Sm90 => "90",
         ArchSku::Sm90a => "90a",
     }
 }
@@ -421,8 +428,11 @@ mod tests {
     fn element_kind_mapping() {
         assert_eq!(map_element_kind(DType::F16), Some(ElementKind::F16));
         assert_eq!(map_element_kind(DType::BF16), Some(ElementKind::Bf16));
-        assert_eq!(map_element_kind(DType::I8), Some(ElementKind::S8));
-        assert_eq!(map_element_kind(DType::F8E4M3), Some(ElementKind::Fp8E4M3));
+        assert_eq!(map_element_kind(DType::I8), Some(ElementKind::I8));
+        assert_eq!(
+            map_element_kind(DType::F8E4M3),
+            Some(ElementKind::Fp8E4M3FN)
+        );
         // GAP-097 residual: this arm was missing entirely, which was a hard
         // E0004 that only `--features telemetry,cuda` could ever surface.
         // Asserted as a MAPPING, not a decline — Baracuda ships the kind, so

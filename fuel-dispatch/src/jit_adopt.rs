@@ -61,7 +61,7 @@ use crate::runtime_fused_kernels::adopt_runtime_fused;
 pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
     Some(match ek {
         ElementKind::U8 => DType::U8,
-        ElementKind::S8 => DType::I8,
+        ElementKind::I8 => DType::I8,
         ElementKind::I32 => DType::I32,
         ElementKind::I64 => DType::I64,
         ElementKind::Bf16 => DType::BF16,
@@ -80,7 +80,7 @@ pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
         // FP8 (GAP-177 (ii)). OCP finite E4M3 / E5M2 — the same format Fuel's
         // `DType` names (GAP-169); the telemetry structure-key path asserts the
         // identical pair. See `fp8_maps_to_baracuda_ocp_element_kinds`.
-        ElementKind::Fp8E4M3 => DType::F8E4M3,
+        ElementKind::Fp8E4M3FN => DType::F8E4M3,
         ElementKind::Fp8E5M2 => DType::F8E5M2,
         // `Bool` (GAP-193). This sat in the decline list below until
         // `DType::Bool` landed with the GAP-168(c) comparison cut — at which
@@ -103,11 +103,34 @@ pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
         // `#[non_exhaustive]` at the locked vocab, so this exhaustive match is
         // legal across the crate boundary. GAP-177 (i).
         ElementKind::F32Strict
-        | ElementKind::S4
+        | ElementKind::I4
         | ElementKind::U4
-        | ElementKind::Bin
-        | ElementKind::Complex32
-        | ElementKind::Complex64 => return None,
+        | ElementKind::B1
+        | ElementKind::Complex64
+        | ElementKind::Complex128 => return None,
+        // alpha.81 vocab bump: no Fuel `DType` counterpart exists at all for
+        // these four — mechanically forced, nothing to decide.
+        ElementKind::U16
+        | ElementKind::U64
+        | ElementKind::Fp8E4M3FNUZ
+        | ElementKind::Fp8E5M2FNUZ => {
+            return None;
+        }
+        // alpha.81 vocab bump: a same-NAMED Fuel `DType` exists for each of
+        // these three (`I16`, `F8E8M0`, `F8E6M2`), but declined anyway rather
+        // than mapped on that name match. Board item 70 established that
+        // `ElementKind::Complex64` exists in BOTH the old and new baracuda
+        // vocab and denotes DIFFERENT types (component-width vs. total-width
+        // complex) — so "a same-named variant exists on both sides" is not
+        // evidence the semantics agree, it is the exact shape of the last
+        // silent-corruption risk this file caught. Mapping these three
+        // honestly requires reading both `ElementKind` and `DType`'s
+        // definitions and confirming the bit layouts/semantics actually
+        // match, which is capability-addition work with its own
+        // verification — not part of a rename fix. Tracked as a follow-up
+        // (fuel#255) rather than in this
+        // comment, so the deferral has an owner instead of just a note.
+        ElementKind::I16 | ElementKind::F8E8M0 | ElementKind::F8E6M2 => return None,
     })
 }
 
@@ -125,7 +148,7 @@ pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
 pub(crate) fn dtype_to_element_kind(dt: DType) -> Option<ElementKind> {
     Some(match dt {
         DType::U8 => ElementKind::U8,
-        DType::I8 => ElementKind::S8,
+        DType::I8 => ElementKind::I8,
         DType::I32 => ElementKind::I32,
         DType::I64 => ElementKind::I64,
         DType::BF16 => ElementKind::Bf16,
@@ -138,7 +161,7 @@ pub(crate) fn dtype_to_element_kind(dt: DType) -> Option<ElementKind> {
         // telemetry structure-key path already ships and tests. Behaviour change:
         // FP8-operand regions become adoptable on the JIT path where they used to
         // decline. See `fp8_maps_to_baracuda_ocp_element_kinds`.
-        DType::F8E4M3 => ElementKind::Fp8E4M3,
+        DType::F8E4M3 => ElementKind::Fp8E4M3FN,
         DType::F8E5M2 => ElementKind::Fp8E5M2,
         // `Bool` (GAP-193). The GAP-168(c) comparison cut added `DType::Bool`
         // and did not gate `--features jit`, so this match went non-exhaustive
@@ -304,7 +327,7 @@ mod tests {
     /// - Fuel `DType::F8E4M3` is OCP finite E4M3 (bias 7, max ±448, no infinities,
     ///   single NaN) — GAP-169; the sibling `F8E5M2` doc names E4M3 as "the
     ///   OCP-standard FP8 pair's other half".
-    /// - baracuda `ElementKind::Fp8E4M3` is documented bias 7 / max-finite 448 /
+    /// - baracuda `ElementKind::Fp8E4M3FN` is documented bias 7 / max-finite 448 /
     ///   no infinities — the same OCP finite E4M3. `Fp8E5M2` is bias 15 / IEEE
     ///   inf-nan — the same OCP E5M2, which Fuel's `F8E5M2` already matches.
     /// - The telemetry structure-key path already ships AND tests this exact pair
@@ -340,7 +363,7 @@ mod tests {
         // round-trip-consistent).
         assert_eq!(
             dtype_to_element_kind(DType::F8E4M3),
-            Some(ElementKind::Fp8E4M3)
+            Some(ElementKind::Fp8E4M3FN)
         );
         assert_eq!(
             dtype_to_element_kind(DType::F8E5M2),
@@ -349,7 +372,7 @@ mod tests {
         // Inbound: required by the round-trip invariant and by the caller that
         // reads a returned contract's FP8 operands back into Fuel dtypes.
         assert_eq!(
-            element_kind_to_dtype(ElementKind::Fp8E4M3),
+            element_kind_to_dtype(ElementKind::Fp8E4M3FN),
             Some(DType::F8E4M3)
         );
         assert_eq!(
