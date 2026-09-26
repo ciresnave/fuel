@@ -240,19 +240,19 @@ criterion = { version = "0.8", default-features = false }
 # 173/173 live CUDA parity). The whole workspace moved to alpha.77 in lockstep
 # (also carries kernelgen breadth: base_offset/where-select/hetero-dropout/
 # argsort/topk/im2col — all off-key, no STRUCTURE_KEY_VERSION bump).
-baracuda-types         = { version = "0.0.1-alpha.78", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.78" }
-baracuda-cuda-sys      = { version = "0.0.1-alpha.78" }
-baracuda-driver        = { version = "0.0.1-alpha.78" }
-baracuda-runtime       = { version = "0.0.1-alpha.78" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.78" }
-baracuda-cublas        = { version = "0.0.1-alpha.78" }
-baracuda-cudnn-sys     = { version = "0.0.1-alpha.78" }
-baracuda-cudnn         = { version = "0.0.1-alpha.78", features = ["half-crate"] }
-baracuda-curand-sys    = { version = "0.0.1-alpha.78" }
-baracuda-curand        = { version = "0.0.1-alpha.78" }
-baracuda-nvrtc-sys     = { version = "0.0.1-alpha.78" }
-baracuda-nvrtc         = { version = "0.0.1-alpha.78" }
+baracuda-types         = { version = "0.0.1-alpha.81", features = ["half-crate", "f8-crate"] }
+baracuda-core          = { version = "0.0.1-alpha.81" }
+baracuda-cuda-sys      = { version = "0.0.1-alpha.81" }
+baracuda-driver        = { version = "0.0.1-alpha.81" }
+baracuda-runtime       = { version = "0.0.1-alpha.81" }
+baracuda-cublas-sys    = { version = "0.0.1-alpha.81" }
+baracuda-cublas        = { version = "0.0.1-alpha.81" }
+baracuda-cudnn-sys     = { version = "0.0.1-alpha.81" }
+baracuda-cudnn         = { version = "0.0.1-alpha.81", features = ["half-crate"] }
+baracuda-curand-sys    = { version = "0.0.1-alpha.81" }
+baracuda-curand        = { version = "0.0.1-alpha.81" }
+baracuda-nvrtc-sys     = { version = "0.0.1-alpha.81" }
+baracuda-nvrtc         = { version = "0.0.1-alpha.81" }
 # The live JIT synthesizer (BaracudaSynthesizer, the fuel-kernel-seam Synthesizer
 # impl). EXACT pin: only the `seam` module surface is supported/stable — the
 # generator internals are alpha-fluid, so never AUTO-upgrade. Deliberately bumped
@@ -297,16 +297,16 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.78" }
 # a version boundary; it is UNVERIFIED on cuda-emit .79 and the investigation
 # continues there. See docs/gaps.md GAP-001.
 baracuda-cuda-emit     = { version = "=0.0.1-alpha.79" }
-baracuda-nccl-sys      = { version = "0.0.1-alpha.78" }
-baracuda-nccl          = { version = "0.0.1-alpha.78", features = ["half-crate"] }
-baracuda-cutlass       = { version = "0.0.1-alpha.78" }
+baracuda-nccl-sys      = { version = "0.0.1-alpha.81" }
+baracuda-nccl          = { version = "0.0.1-alpha.81", features = ["half-crate"] }
+baracuda-cutlass       = { version = "0.0.1-alpha.81" }
 # baracuda alpha.26 — new ML kernel facade. Fuel uses `baracuda-kernels-sys`
 # (raw extern "C") rather than the safe `baracuda-kernels` Plan-based wrapper
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
-baracuda-kernels-types = { version = "0.0.1-alpha.78" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.78", features = [
+baracuda-kernels-types = { version = "0.0.1-alpha.81" }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.81", features = [
     "cudnn",
     "sm89",
     # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.
