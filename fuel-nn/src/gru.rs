@@ -223,7 +223,7 @@ impl GruCellWeights {
     /// `prefix` is typically empty (`""`) or a module prefix
     /// ending in `.` (e.g. `"encoder.rnn."`).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         layer: usize,
         input_dim: usize,
@@ -278,7 +278,7 @@ impl GruStack {
     /// num_layers]` and the on-disk keys are
     /// `{prefix}weight_ih_l{idx}` etc. for each layer's index.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         layer_dims: &[(usize, usize)],
     ) -> Result<Self> {

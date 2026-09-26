@@ -18,6 +18,7 @@ license.workspace = true
 fuel-core = { workspace = true }
 fuel-ir = { workspace = true }
 fuel-graph = { workspace = true }
+fuel-loaders = { workspace = true }
 safetensors = { workspace = true }
 half = { workspace = true }
 rand = { workspace = true }
