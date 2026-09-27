@@ -302,6 +302,17 @@ pub fn derive_structure_key_token_with_acc_mp(
     {
         return None; // MAX_RANK cap (§6.4-0001) / malformed descriptor
     }
+    // KISS-CLASSIFY §3.2: F8E8M0/F8E6M2 are ratified MX **scales**, valid only
+    // as a sibling operand, never as the dense/primary dtype this generic path
+    // reads from operand 0. `sk4_token`/`dtype_token` cannot enforce this --
+    // they are the position-agnostic "is this dtype spellable at all" table,
+    // shared with call sites where these ARE valid (e.g. `contraction_field`'s
+    // `<wdt>` field, which reads a caller-supplied role hint, never operand 0
+    // positionally). This decline is scoped to `first.dtype` specifically, not
+    // to the dtype itself, so it does not narrow anything KISS ratifies.
+    if matches!(first.dtype, DType::F8E8M0 | DType::F8E6M2) {
+        return None;
+    }
     let dtype = dtype_token(first.dtype)?;
     if !target.contains(':') {
         return None; // namespaced target required (§6.8-0001)
@@ -469,10 +480,22 @@ fn size_class(extent: i64) -> Option<char> {
 /// diagnostics on Fuel's own ingest surfaces, NOT §6.1-0001 conformance.
 ///
 /// The two 8-bit MX **scales** (`F8E8M0`/`F8E6M2`) entered the closed set at
-/// sk4 and are emitted. Note they are dtype-bearing here only via
-/// `operands.first()` or a `gem` precision coordinate: a scale riding as a
-/// *sibling* operand never reaches a dtype position at all, because non-first
-/// operands contribute layout only.
+/// sk4 and ARE spellable here — this function does not decline them, and
+/// must not: `contraction_field`'s `<wdt>` role hint (KISS-CLASSIFY
+/// §6.6-0019) legitimately reads one via `GemCell::weight_dtype`, which is a
+/// caller-supplied field, never a positional operand read. **The positional
+/// restriction — a scale is valid only as a sibling operand, never as the
+/// generic path's dense/primary dtype (KISS-CLASSIFY §3.2) — is NOT enforced
+/// here and cannot be:** this function is the position-agnostic "is this
+/// dtype spellable at all" table, shared by call sites where the same dtype
+/// is legitimately read from different roles. The enforcement lives at
+/// `derive_structure_key_token_with_acc_mp`'s call site, which declines
+/// before ever calling this function if `first.dtype` (operand 0, the
+/// generic path's dense position) is one of these two scales. A previous
+/// version of this comment claimed sibling operands "never reach a dtype
+/// position at all" as if that were a property of this function or of the
+/// data shape; it was neither — it was an unenforced assumption. It is now
+/// true only because the caller enforces it.
 ///
 /// The block-scoped sub-byte **element** formats (`F6E2M3`/`F6E3M2`/`F4`) are
 /// still outside the set and typed-decline (`None`), never a guessed token.
@@ -663,6 +686,16 @@ mod tests {
     /// The assertion is `spelled ⇒ derivable`, and it is deliberately exhaustive over
     /// `DType::ALL`: a future dtype that can be spelled but not built at operand 0
     /// fails **here**, with its name, instead of being discovered by a peer.
+    ///
+    /// **Amended 2026-09-26 to exempt `F8E8M0`/`F8E6M2` — this is a NAMED
+    /// exemption, not a weakening of the invariant.** These two are spelled
+    /// (`sk4_token` recognizes them) but are DELIBERATELY not derivable at
+    /// operand 0: KISS-CLASSIFY §3.2 ratifies them as MX scales, valid only as
+    /// a sibling operand, and `derive_structure_key_token_with_acc_mp` now
+    /// declines them there on purpose. `not_derivable` containing exactly
+    /// these two is the CORRECT state, not a capability gap — the assertion
+    /// below checks the exemption set is EXACTLY these two, so a future
+    /// dtype landing in `not_derivable` unexpectedly still fails loudly.
     #[test]
     fn every_spelled_dtype_is_also_derivable_at_operand_zero() {
         let mut spelled = 0usize;
@@ -697,10 +730,28 @@ mod tests {
             "expected 15 spelled dtypes (token_kind.rs pins this); got {spelled} — \
              this test would be vacuous at 0",
         );
+        let known_positional_exemptions = [DType::F8E8M0, DType::F8E6M2];
+        let unexpected_gaps: Vec<(DType, &'static str)> = not_derivable
+            .iter()
+            .copied()
+            .filter(|(dt, _)| !known_positional_exemptions.contains(dt))
+            .collect();
         assert!(
-            not_derivable.is_empty(),
-            "spelled but NOT derivable at operand 0: {not_derivable:?} — \
-             a dtype with a seam token that no cell can carry is a real capability gap",
+            unexpected_gaps.is_empty(),
+            "spelled but NOT derivable at operand 0, and NOT a known positional \
+             exemption: {unexpected_gaps:?} — a dtype with a seam token that no \
+             cell can carry is a real capability gap",
+        );
+        let exempted_but_derivable: Vec<DType> = known_positional_exemptions
+            .iter()
+            .copied()
+            .filter(|dt| !not_derivable.iter().any(|(nd, _)| nd == dt))
+            .collect();
+        assert!(
+            exempted_but_derivable.is_empty(),
+            "{exempted_but_derivable:?} are expected to DECLINE at operand 0 \
+             (KISS-CLASSIFY §3.2 positional restriction) but derived a token — \
+             the positional decline regressed",
         );
         assert!(
             mismatched.is_empty(),
@@ -1193,50 +1244,60 @@ mod tests {
         assert!(token.starts_with("sk4|bin|f8e4m3fn|"), "got {token}");
     }
 
-    /// **The behavioural half of the sk3→sk4 regen**, and the reason a
-    /// spelling-only test is not sufficient.
+    /// **Corrected 2026-09-26.** This test used to be named
+    /// `sk4_mx_scales_go_from_silent_to_emitting` and asserted that a plain
+    /// `BinaryElementwise` cell with an `F8E8M0`/`F8E6M2` operand at position 0
+    /// must derive a key. That assertion was wrong: KISS-CLASSIFY §3.2 ratifies
+    /// these two as MX **scales**, valid only as a sibling operand, never as
+    /// the dense/primary dtype a generic (non-role-hinted) cell reads from
+    /// operand 0. The old test enshrined the bug it should have caught.
     ///
-    /// `dtype_token`'s `None` is consumed by a `?` on the WHOLE derivation, not
-    /// as a per-field fallback. So moving the two 8-bit MX scales from the
-    /// declined set into the emitted set does not merely change a token in an
-    /// existing key — it changes cells that previously produced **no structure
-    /// key at all** into cells that produce one. Downstream, telemetry rows
-    /// that never existed begin existing.
+    /// **What this test now proves, in two DISTINCT senses of "declines" that
+    /// must not be collapsed into one:**
+    /// - `F8E8M0`/`F8E6M2` ARE in the closed sk4 §6.1 vocabulary (`sk4_token`
+    ///   spells them) — declining a generic cell that carries one at operand 0
+    ///   is a POSITIONAL decline, not a "this dtype doesn't exist" decline.
+    /// - `F6E2M3`/`F6E3M2`/`F4` are NOT in the closed set at all — same `None`
+    ///   result, structurally different reason. Collapsing these two failure
+    ///   modes into one assertion would hide a future regression where a scale
+    ///   becomes spellable-and-emitting again at operand 0 (this is exactly
+    ///   how the bug this test now guards against was introduced: the two
+    ///   reasons were never told apart at the call site).
     ///
-    /// A test that only checked the new spellings appear where old ones did
-    /// would pass without ever exercising that, because those cells emit
-    /// nothing to inspect before the change.
-    ///
-    /// Asserted in BOTH directions: the scales now emit a well-formed key, and
-    /// the block-scoped sub-byte ELEMENTS still decline. Without the second
-    /// half this would also pass if the decline set had been emptied entirely.
+    /// The legitimate case — a scale read via a caller-supplied role hint,
+    /// never via a positional operand read — is `sk4_gem_mixed_precision_fp8_golden`
+    /// (elsewhere in this module) and the vendored corpus's
+    /// `gem_weight_role_discriminator` vector, both unaffected by this decline
+    /// because neither ever calls `dtype_token` on an MX scale via `first.dtype`.
     #[test]
-    fn sk4_mx_scales_go_from_silent_to_emitting() {
-        // Previously silent (whole-derivation decline), now emitting.
-        for (dt, expected) in [(DType::F8E8M0, "f8e8m0"), (DType::F8E6M2, "f8e6m2")] {
-            let token = derive_structure_key_token(
-                FuelOpCategory::BinaryElementwise,
-                &[co(&[4096], dt)],
-                "cuda:sm89",
-            )
-            .unwrap_or_else(|| {
-                panic!("{dt:?} is in the sk4 §6.1 set and must now derive a key, not decline")
-            });
-
-            let parts: Vec<&str> = token.split('|').collect();
+    fn sk4_mx_scales_decline_at_operand_zero_but_remain_in_the_closed_set() {
+        for dt in [DType::F8E8M0, DType::F8E6M2] {
             assert_eq!(
-                parts.len(),
-                9,
-                "non-gem sk4 key must have 9 `|`-fields, got {} in {token}",
-                parts.len(),
+                derive_structure_key_token(
+                    FuelOpCategory::BinaryElementwise,
+                    &[co(&[4096], dt)],
+                    "cuda:sm89",
+                ),
+                None,
+                "{dt:?} at operand 0 (the dense position) must typed-decline — \
+                 it is a ratified MX scale, valid only as a sibling operand \
+                 (KISS-CLASSIFY §3.2), never as the generic path's primary dtype",
             );
-            assert_eq!(parts[0], "sk4", "wrong schema prefix in {token}");
-            assert_eq!(parts[2], expected, "wrong §6.1 dtype token in {token}");
+            // The positional distinction: unlike a truly unspellable dtype,
+            // this one IS in the closed sk4 vocabulary. If sk4_token ever
+            // stopped spelling it, THIS assertion (not the one above) would be
+            // the one to fail, and the two must be told apart at the call
+            // site rather than both reading as "None".
+            assert!(
+                dtype_token(dt).is_some(),
+                "{dt:?} must remain a spellable sk4 token — the decline above \
+                 is positional (operand-0 usage), not a vocabulary exclusion",
+            );
         }
 
-        // Negative control: the block-scoped sub-byte ELEMENT formats are still
-        // outside the closed set and must still decline. If this half is ever
-        // removed, the test above passes for a deriver that emits everything.
+        // Negative control, same shape as before: the block-scoped sub-byte
+        // ELEMENT formats are outside the closed set entirely (not a
+        // positional decline — dtype_token returns None for these too).
         for dt in [DType::F6E2M3, DType::F6E3M2, DType::F4] {
             assert_eq!(
                 derive_structure_key_token(
@@ -1246,6 +1307,11 @@ mod tests {
                 ),
                 None,
                 "{dt:?} is NOT in the sk4 §6.1 set and must still typed-decline",
+            );
+            assert!(
+                dtype_token(dt).is_none(),
+                "{dt:?} is a vocabulary exclusion, not a positional one — \
+                 unlike the MX scales above, it has no sk4 spelling at all",
             );
         }
     }
