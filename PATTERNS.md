@@ -362,6 +362,5 @@ the mode.
 | Goal                    | Where to look                        |
 | ----------------------- | ------------------------------------ |
 | Routing by use case     | [GUIDE.md](GUIDE.md)                 |
-| Ecosystem compatibility | [COMPATIBILITY.md](COMPATIBILITY.md) |
 | Architecture vision     | [ROADMAP.md](ROADMAP.md)             |
 | Backend plugin system   | [ROADMAP.md Phase 5](ROADMAP.md)     |
