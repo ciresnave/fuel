@@ -7,7 +7,6 @@
 //! - [`safetensors`] — HuggingFace's tensor container format
 //! - [`pickle`] — Python pickle (`.pth` / `.bin` PyTorch checkpoints)
 //! - [`gguf`] — llama.cpp's quantized tensor file format (file + mmap)
-//! - [`ggml`] — legacy GGML tensor format
 //! - [`imatrix`] — llama.cpp activation-importance matrix format
 //!
 //! # Design contract
@@ -36,7 +35,6 @@
 //! module; the public surface here is the single source of truth for
 //! the post-extraction API.
 
-pub mod ggml;
 pub mod gguf;
 pub mod imatrix;
 pub mod pickle;
