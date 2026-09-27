@@ -29,34 +29,6 @@ fn imatrix_parses_from_in_memory_cursor() {
 }
 
 #[test]
-fn ggml_header_parses_from_in_memory_cursor() {
-    use fuel_formats::ggml::{Header, VersionedMagic};
-
-    // Magic + (no version, GgmlUnversioned) + HParams + empty Vocab.
-    let mut buf = Vec::new();
-    buf.write_u32::<LittleEndian>(0x67676d6c).unwrap(); // 'l','m','g','g' → Magic::Ggml → GgmlUnversioned
-    // HParams: 7 × u32
-    for v in [32_000u32, 4096, 256, 32, 32, 128, 0] {
-        buf.write_u32::<LittleEndian>(v).unwrap();
-    }
-    // Vocab: zero entries because we set n_vocab=32_000... that would loop. Use a smaller value.
-
-    // Rewrite with n_vocab=0 so the test can finish.
-    let mut buf = Vec::new();
-    buf.write_u32::<LittleEndian>(0x67676d6c).unwrap();
-    for v in [0u32, 4096, 256, 32, 32, 128, 0] {
-        buf.write_u32::<LittleEndian>(v).unwrap();
-    }
-    // Vocab is empty (n_vocab=0).
-
-    let mut cursor = Cursor::new(buf);
-    let header = Header::read(&mut cursor).unwrap();
-    assert_eq!(header.magic, VersionedMagic::GgmlUnversioned);
-    assert_eq!(header.hparams.n_embd, 4096);
-    assert_eq!(header.vocab.token_score_pairs.len(), 0);
-}
-
-#[test]
 fn gguf_minimal_header_parses_from_in_memory_cursor() {
     use fuel_formats::gguf::{Content, VersionedMagic};
 

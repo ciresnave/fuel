@@ -5,7 +5,6 @@ Transport-independent parsers for tensor wire formats:
 - [`safetensors`](src/safetensors.rs) — re-exports from upstream `safetensors` crate + `MmapedFile` convenience
 - [`pickle`](src/pickle.rs) — minimal PyTorch `.pth` reader (subset of Python pickle protocol 2)
 - [`gguf`](src/gguf.rs) — llama.cpp's GGUF v1/v2/v3 container
-- [`ggml`](src/ggml.rs) — legacy GGML tensor format
 - [`imatrix`](src/imatrix.rs) — llama.cpp activation-importance matrix
 
 Every parser operates on `impl Read` / `impl Seek` / `&[u8]` / `Cow<'_, [u8]>` and returns
@@ -47,8 +46,6 @@ A new transport adapter (HTTP, S3, IPC, etc.) follows the same shape as `fuel-lo
 2. Hand them to the appropriate `fuel-formats` parser:
    - `fuel_formats::safetensors::SafeTensors::deserialize(&bytes)`
    - `fuel_formats::gguf::Content::read(&mut cursor)`
-   - `fuel_formats::ggml::Header::read(&mut cursor)` followed by
-     `fuel_formats::ggml::read_one_raw_tensor(&mut cursor, magic)` in a loop
    - `fuel_formats::pickle::read_pth_tensor_info(path, false, key)` (currently file-bound;
      a stream variant is straightforward to add)
    - `fuel_formats::imatrix::parse(&mut reader)`
