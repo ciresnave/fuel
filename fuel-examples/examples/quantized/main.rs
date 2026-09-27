@@ -258,7 +258,9 @@ struct Args {
     which: Which,
 
     /// Group-Query Attention override. Unused: GGUF carries `head_count_kv`
-    /// directly, so this flag is accepted for CLI compatibility and ignored.
+    /// directly, so there is nothing to override. Accepted for CLI
+    /// compatibility; passing it prints a warning rather than doing nothing
+    /// silently.
     #[arg(long)]
     gqa: Option<usize>,
 
@@ -496,7 +498,15 @@ fn main() -> anyhow::Result<()> {
     // are eager-Tensor-side knobs; the lazy graph executor configures them
     // separately. We accept the flag for CLI compatibility but ignore it.
     let _ = args.force_dmmv;
-    let _ = args.gqa; // GGUF carries head_count_kv directly; no override needed.
+    // Unlike the other accepted-and-ignored flags in this block, `--gqa`
+    // is not a no-op by construction: passing it looks like a request the
+    // binary silently declines. Warn rather than stay quiet.
+    if args.gqa.is_some() {
+        eprintln!(
+            "warning: --gqa is ignored -- GGUF carries `head_count_kv` directly, so there is \
+             nothing to override. The flag is accepted for CLI compatibility only."
+        );
+    }
 
     let _guard = if args.tracing {
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
