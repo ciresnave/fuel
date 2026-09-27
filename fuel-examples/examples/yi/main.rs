@@ -27,6 +27,7 @@ enum Which {
 struct Args {
     #[arg(long)]
     cpu: bool,
+    /// Enable tracing (generates a trace-timestamp.json file).
     #[arg(long)]
     tracing: bool,
     #[arg(long)]
@@ -60,8 +61,19 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    use tracing_chrome::ChromeLayerBuilder;
+    use tracing_subscriber::prelude::*;
+
     let args = Args::parse();
-    let _ = args.tracing;
+
+    let _guard = if args.tracing {
+        let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
+        tracing_subscriber::registry().with(chrome_layer).init();
+        Some(guard)
+    } else {
+        None
+    };
+
     let _device = fuel_examples::device(args.cpu)?;
     let api = Api::new()?;
     let repo = api.repo(Repo::with_revision(
