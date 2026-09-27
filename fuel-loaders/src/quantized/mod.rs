@@ -16,8 +16,11 @@
 //! `check_shape`, `impl Device`, `impl CustomOp1 for QTensor` and
 //! `impl Module for QMatMul` were all built on the eager `Tensor` — as was
 //! `ggml_file` in its entirety, which existed only to promote a
-//! [`fuel_formats::ggml::RawTensor`] into a `QTensor`. Raw GGML wire-format
-//! parsing is unaffected and still lives in [`fuel_formats::ggml`].
+//! `fuel_formats::ggml::RawTensor` into a `QTensor`. That legacy GGJT reader
+//! (`fuel_formats::ggml`) was itself removed later (CireSnave ruling, board
+//! item 63a) — llama.cpp has zero surviving code paths for the container as
+//! of a fresh HEAD clone. This paragraph is history: the module it names no
+//! longer exists.
 //!
 //! What survives is what the lazy stack actually uses: [`GgmlDType`],
 //! [`gguf_mmap::MmapedContent`], and `gguf_file::{Content, Value, TensorInfo}`.
