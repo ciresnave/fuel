@@ -60,7 +60,7 @@ struct Args {
     #[arg(long)]
     prompt: Option<String>,
 
-    /// Use different dtype than f16
+    /// Use different dtype than f16 (ignored in lazy port — always f32).
     #[arg(long)]
     dtype: Option<String>,
 
