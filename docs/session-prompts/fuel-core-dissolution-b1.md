@@ -436,8 +436,18 @@ from file names here would repeat exactly the mistake this doc is correcting for
 - The `Storage`-unification (`fuel_backend_contract::Storage` vs `fuel_memory::Storage`) —
   `fuel-core-retirement-b0.md` already carves this out as its own item.
 - Any version bump — the PM allocates at gate time.
-- Publishing anything. **`fuel` 0.11.0 must not be published, under any circumstances,
-  regardless of anything in this document.**
+- Publishing anything without the PM's gate — see below for the correction to this line.
+
+⚠️ **CORRECTED 2026-09-27: the line that stood here — "`fuel` 0.11.0 must not be published,
+under any circumstances, regardless of anything in this document" — was FICTIONAL, not a
+CireSnave ruling.** It was written in this doc's own imperative voice, uncited, by the lane
+that authored this plan (`84fb77bd`/#239); no CireSnave quote, PR comment, or other record
+ever supported it, and asked directly on 2026-09-26 he said *"I don't remember stating Fuel
+must not be published."* A prohibition written in his voice and never attributed to him is a
+governance defect regardless of whether the underlying caution was reasonable at the time —
+the portfolio's own standing rule is **"quote CireSnave verbatim and say so, or send the
+lane to him"** (`C:\Projects\CLAUDE.md` §8). Publishing decisions remain the PM's/CireSnave's
+to make at gate time; nothing here forbids it in advance.
 
 ## Summary for the gate
 
