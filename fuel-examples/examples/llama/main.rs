@@ -81,7 +81,9 @@ struct Args {
     #[arg(short = 'n', long, default_value_t = 10000)]
     sample_len: usize,
 
-    /// Disable the key-value cache.
+    /// Unused in the lazy port: KV caching is selected from the graph by
+    /// the optimizer, not overridable here. Retained for CLI compatibility
+    /// with the eager binary.
     #[arg(long)]
     no_kv_cache: bool,
 
@@ -107,6 +109,9 @@ struct Args {
     #[arg(long, default_value = "v3")]
     which: Which,
 
+    /// Unused in the lazy port: the optimizer selects the attention
+    /// kernel from the graph, not from a CLI flag. Retained for CLI
+    /// compatibility with the eager binary.
     #[arg(long)]
     use_flash_attn: bool,
 
