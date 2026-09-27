@@ -77,6 +77,9 @@ struct Args {
     #[arg(long, default_value = "tara")]
     voice: Voice,
 
+    /// Unused in the lazy port: the optimizer selects the attention
+    /// kernel from the graph, not from a CLI flag. Retained for CLI
+    /// compatibility with the eager binary.
     #[arg(long)]
     use_flash_attn: bool,
 }
