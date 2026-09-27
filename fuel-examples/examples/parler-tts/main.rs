@@ -409,9 +409,24 @@ fn main() -> anyhow::Result<()> {
     let _ = args.cpu;
     let _ = args.f16;
     let _ = args.quantized;
-    let _ = args.repeat_penalty;
-    let _ = args.repeat_last_n;
-    let _ = args.sample_len;
+    // Unlike the flags above, these three are not no-ops by construction:
+    // repeat_penalty/repeat_last_n look like sampling knobs but no
+    // repetition penalty is implemented in this port (temperature/top_p/seed
+    // ARE wired, in `sample()` below), and sample_len is superseded by
+    // `--max-steps` (default 512), which actually bounds the generation
+    // loop -- passing --sample-len alone changes nothing.
+    if args.repeat_penalty != 1.0 || args.repeat_last_n != 64 {
+        eprintln!(
+            "warning: --repeat-penalty/--repeat-last-n are accepted but not implemented in \
+             this port -- no repetition penalty is applied to generated tokens."
+        );
+    }
+    if args.sample_len != 5000 {
+        eprintln!(
+            "warning: --sample-len is ignored -- generation length is controlled by \
+             --max-steps (default 512), not this flag."
+        );
+    }
 
     let start = std::time::Instant::now();
     let api = hf_hub::api::sync::Api::new()?;

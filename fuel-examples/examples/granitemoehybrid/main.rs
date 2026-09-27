@@ -88,7 +88,9 @@ struct Args {
     #[arg(long)]
     revision: Option<String>,
 
-    /// Enable Flash-Attention kernels when compiled with the feature.
+    /// Unused in the lazy port: the optimizer picks the attention kernel
+    /// from the graph, not from a CLI flag. Retained for CLI compatibility
+    /// with the eager binary.
     #[arg(long)]
     use_flash_attn: bool,
 
