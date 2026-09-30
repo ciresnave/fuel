@@ -31,17 +31,19 @@ out of scope for this amendment). `fuel-formats/` and `fuel-loaders/` were
 enumerated with `git ls-tree -r --name-only origin/main`, not from
 `lib.rs`'s `pub mod` list, so nothing private is missed.
 
-**Not duplicating mlmf's own inventory work:** the mlmf lane is producing
-`docs/fuel-migration-inventory.md` (the API surface MLMF will expose) in
-its own fresh session, in parallel. As of this writing it is **not** on
-`origin/main` in `ciresnave/mlmf`, not on any open PR, and not on any
-branch (`gh pr list --repo ciresnave/mlmf` empty for it; `gh api
-repos/ciresnave/mlmf/branches` checked directly — no branch holds it).
-This amendment therefore names *what* moves to MLMF and *why*, not the
-exact target module path inside MLMF's `crates/mlmf-*` layout — that
-belongs to their inventory doc. Re-check for it
-(`git -C <mlmf-checkout> show origin/main:docs/fuel-migration-inventory.md`)
-before scheduling any of the moves below.
+**Not duplicating mlmf's own inventory work — and it landed mid-write.**
+When this amendment was started, the mlmf lane's
+`docs/fuel-migration-inventory.md` was not yet on any ref in
+`ciresnave/mlmf` (`gh pr list` empty, `gh api .../branches` checked
+directly — no branch held it). It has since landed as `ciresnave/mlmf#101`
+(`fuel-migration-inventory` branch, open, not yet merged, 384 lines) —
+re-checked before finalizing this amendment, per instruction. **Part E
+below reconciles this document against it rather than leaving the "not
+pushed yet" framing stale.** This amendment still names *what* moves and
+*why* from fuel's side of the boundary; #101 is the authoritative source
+for *which mlmf module/crate* each capability lands in and *in what
+order* — this document does not restate or re-derive that, it points at
+it.
 
 ---
 
@@ -107,18 +109,84 @@ part of this amendment — no code changes here, per instruction.
 
 ---
 
+## Part E — Reconciled against MLMF's published inventory (`ciresnave/mlmf#101`)
+
+Read in full (384 lines) after this amendment's Parts A–C were drafted, to
+check for disagreement rather than to source the amendment. None of the
+per-file destinations above needed to change; three things are worth
+recording because #101 either corroborates, sharpens, or exposes a gap
+this document's grep-only method could not have found on its own.
+
+- **Independent corroboration, not restatement.** #101 was produced in a
+  separate session, against the mlmf repo, using its own method (reading
+  mlmf's crate contents against fuel's `docs/gaps.md`), and reaches the
+  same three calls this amendment reaches by a different route: the
+  `imatrix.rs` raw-positional format stays Fuel's (#101 §1.4: "two
+  different file formats that happen to share a name... should stay
+  Fuel's for now" — same conclusion, same reasoning, no shared source
+  beyond the item-63a ruling both documents cite); fuel's `arch.rs` is not
+  a name-mapping module and nothing generic exists to relocate (#101 §5
+  reaches this independently, by reading `arch.rs` directly rather than
+  grepping for a name-mapping module that isn't there); saving has no
+  live fuel-side implementation to migrate (#101 §2/§8 item 6 corroborates
+  from the mlmf side — write capability exists only in mlmf's own legacy
+  crate, scheduled for a rewrite, so there is nothing for fuel to adopt
+  yet regardless). Per [`evidence-that-is-not-independent`](../method-rules.md#evidence-that-is-not-independent),
+  agreement is only worth noting when the two artifacts were derived
+  separately — these were, so it is recorded rather than assumed.
+- **#101 is more granular where this document could only flag.** Part B's
+  four unread `quantized/` files get partial answers from #101's capability
+  tables: `gguf_file.rs`/`gguf_mmap.rs`'s content maps onto §1.1/§1.2's
+  "container parse" and "mmap-backed zero-copy" rows (§1.2 explicitly
+  names Fuel's mmap-drop-after-decode as GAP-204, separate from this
+  amendment's flag); `tokenizer.rs` maps onto §4's `tokenizer.json`/
+  `tokenizer_config.json` rows (mlmf **HAS** both, via `mlmf-meta`).
+  `config_from_gguf.rs` is the one Part B flagged as sitting "right at the
+  fuel/MLMF boundary" — #101 §4 resolves that boundary question directly:
+  it reads `rope_theta` at `config_from_gguf.rs:210` and finds it already
+  propagates absence via `?` rather than fabricating `10000.0` (the two
+  `10000.0` literals nearby are test fixtures, not production fallbacks) —
+  i.e. this file already meets the §6-fence discipline #101 holds mlmf
+  itself to, which is a point in favor of migrating it rather than a
+  reason to hold it back. `imatrix_file.rs` is not directly addressed by
+  #101; still flagged, unread, in Part B.
+- **A gap #101 does not cover: `fuel-formats/src/pickle.rs` (PyTorch
+  `.pth`/pickle).** #101's format inventory (§1) covers GGUF, safetensors,
+  ONNX, and imatrix — pickle does not appear anywhere in its 384 lines.
+  This amendment's Part A still proposes MLMF as the destination (no
+  backend-type reference, same transport-independent contract as the
+  other three `fuel-formats` modules), but unlike `gguf.rs`/`safetensors.rs`
+  that proposal now has **no corroborating capability entry on the mlmf
+  side to point at** — mlmf may not read PyTorch checkpoints at all today.
+  Flagged as a genuine open question for the mlmf lane, not asserted as
+  covered.
+- **#101's ordered migration plan (§8) supersedes any sequencing implied
+  by this document.** This amendment does not propose an order — Part A is
+  a per-file "does this move" table, not a schedule. Where the two need to
+  be read together: #101 §8 item 1 (GGUF metadata + dtype table) has no
+  fuel-side gating; item 5 (config.json/tokenizer readers) is gated on
+  mlmf's own `#48` (`ModelConfig`'s `Option<T>` representation); items 6–7
+  (saving, name-mapping) are gated on mlmf promoting `src/saver.rs`/
+  `src/name_mapping.rs` out of its legacy crate first. Anyone scheduling
+  work off this amendment should read #101 §8, not infer an order from
+  Part A's table order (which is read-order, not priority-order).
+
+---
+
 ## Part D — What this amendment does not do
 
 - Does not execute any move. No code changed, no `Cargo.toml` touched, no
   version bump.
 - Does not resolve the four flagged-unread files in Part B
   (`gguf_mmap.rs`, `tokenizer.rs`, `config_from_gguf.rs`,
-  `imatrix_file.rs`), or the `model_progress.rs` weight-dependency
-  question, or the `fuel-formats`-as-a-crate question in Part C.
+  `imatrix_file.rs` — three of four now partially addressed by #101, see
+  Part E), or the `model_progress.rs` weight-dependency question (#101
+  does not cover progress reporting either), or the `fuel-formats`-as-a-crate
+  question in Part C.
 - Does not invent MLMF-side module names. Every destination above says
-  "MLMF," not `mlmf_gguf::...` or similar — that mapping is MLMF's
-  inventory doc's job, and it does not exist on any ref yet (checked
-  directly, not assumed from silence).
+  "MLMF," not `mlmf_gguf::...` or similar — #101 §7 is the place that
+  names exact target modules/crates; this document points at it (Part E)
+  rather than restating it.
 - Does not touch the original plan's Parts 2 and 4 (the `Device`/`Tensor`
   orphan-rule cycle and the `Tensor`-destination decision) — neither is a
   model-file-loading concern, and CireSnave's mlmf rule does not bear on
