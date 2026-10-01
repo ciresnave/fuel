@@ -353,8 +353,8 @@ impl PaddleOcrVlVisionModel {
             .apply_linear(&h1_norm, h, cfg.intermediate_size)?
             .add_trailing_bias(Arc::clone(&block.fc1_bias))?;
         let activated = match cfg.hidden_activation {
-            PaddleOcrVlVisionActivation::Gelu => fc1.gelu_erf(),
-            PaddleOcrVlVisionActivation::GeluPytorchTanh => fc1.gelu(),
+            PaddleOcrVlVisionActivation::Gelu => fc1.gelu(),
+            PaddleOcrVlVisionActivation::GeluPytorchTanh => fc1.gelu_tanh(),
             PaddleOcrVlVisionActivation::Silu => fc1.silu(),
             PaddleOcrVlVisionActivation::Relu => fc1.relu(),
         };
@@ -401,7 +401,7 @@ impl PaddleOcrVlVisionModel {
             .apply_linear(&merged, merged_hidden, merged_hidden)?
             .add_trailing_bias(Arc::clone(&weights.linear_1_bias))?;
         // Projector activation is gelu_pytorch_tanh per eager.
-        let activated = l1.gelu();
+        let activated = l1.gelu_tanh();
         let l2 = weights
             .linear_2
             .apply_linear(&activated, merged_hidden, self.text_hidden_size)?
@@ -1156,8 +1156,8 @@ impl PaddleOcrVlNaVitModel {
             .apply_linear(&h1_norm, h, cfg.intermediate_size)?
             .add_trailing_bias(Arc::clone(&block.fc1_bias))?;
         let activated = match cfg.hidden_activation {
-            PaddleOcrVlVisionActivation::Gelu => fc1.gelu_erf(),
-            PaddleOcrVlVisionActivation::GeluPytorchTanh => fc1.gelu(),
+            PaddleOcrVlVisionActivation::Gelu => fc1.gelu(),
+            PaddleOcrVlVisionActivation::GeluPytorchTanh => fc1.gelu_tanh(),
             PaddleOcrVlVisionActivation::Silu => fc1.silu(),
             PaddleOcrVlVisionActivation::Relu => fc1.relu(),
         };
@@ -1200,7 +1200,7 @@ impl PaddleOcrVlNaVitModel {
             .linear_1
             .apply_linear(&merged, merged_hidden, merged_hidden)?
             .add_trailing_bias(Arc::clone(&weights.linear_1_bias))?;
-        let activated = l1.gelu();
+        let activated = l1.gelu_tanh();
         let l2 = weights
             .linear_2
             .apply_linear(&activated, merged_hidden, self.text_hidden_size)?

@@ -776,9 +776,9 @@ impl Tensor {
     }
 
     /// GELU activation (tanh approximation).
-    pub fn gelu(&self) -> Self {
+    pub fn gelu_tanh(&self) -> Self {
         Self {
-            inner: self.inner.gelu(),
+            inner: self.inner.gelu_tanh(),
         }
     }
 
@@ -876,11 +876,11 @@ impl Tensor {
     }
 
     /// GELU activation, **exact erf form** (`0.5 * x * (1 + erf(x/√2))`).
-    /// Distinct from [`Self::gelu`] (tanh approximation). Same dtype
+    /// Distinct from [`Self::gelu_tanh`] (tanh approximation). Same dtype
     /// as input. Differentiable.
-    pub fn gelu_erf(&self) -> Self {
+    pub fn gelu(&self) -> Self {
         Self {
-            inner: self.inner.gelu_erf(),
+            inner: self.inner.gelu(),
         }
     }
 
@@ -5901,11 +5901,11 @@ impl Tensor {
         }
     }
 
-    /// In-place tanh-approximation GELU. See [`Self::gelu`] for the
+    /// In-place tanh-approximation GELU. See [`Self::gelu_tanh`] for the
     /// functional variant.
-    pub fn gelu_inplace(&self) -> Self {
+    pub fn gelu_tanh_inplace(&self) -> Self {
         Self {
-            inner: self.inner.gelu_inplace(),
+            inner: self.inner.gelu_tanh_inplace(),
         }
     }
 
@@ -9635,7 +9635,7 @@ mod phase_a1_wrapper_tests {
         // Each in-place op is destructive, so chain through fresh tensors.
         let r = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).relu_inplace();
         let _ = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).silu_inplace();
-        let _ = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).gelu_inplace();
+        let _ = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).gelu_tanh_inplace();
         let _ = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).tanh_inplace();
         let _ = cpu_f32(vec![-1.0, 0.5, -3.0, 2.0], &[4]).sigmoid_inplace();
         let _ = t.affine_inplace(2.0, 1.0);

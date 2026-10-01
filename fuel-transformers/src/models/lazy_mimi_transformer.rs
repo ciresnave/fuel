@@ -267,7 +267,7 @@ fn apply_attention(
 fn apply_mlp(x: &Tensor, w: &MimiMlpWeights, cfg: &MimiTransformerConfig) -> Result<Tensor> {
     let hidden = cfg.dim_feedforward;
     let d = cfg.d_model;
-    let h = w.fc1.apply_linear(x, d, hidden)?.gelu_erf();
+    let h = w.fc1.apply_linear(x, d, hidden)?.gelu();
     w.fc2.apply_linear(&h, hidden, d)
 }
 

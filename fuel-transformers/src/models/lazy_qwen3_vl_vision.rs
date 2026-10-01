@@ -354,7 +354,7 @@ impl Qwen3VlVisionModel {
             .fc1
             .apply_linear(&x_attn_norm, h, cfg.intermediate_size)?
             .add_trailing_bias(Arc::clone(&layer.fc1_bias))?;
-        let activated = fc1.gelu();
+        let activated = fc1.gelu_tanh();
         let fc2 = layer
             .fc2
             .apply_linear(&activated, cfg.intermediate_size, h)?

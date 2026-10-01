@@ -27,7 +27,7 @@
 //!          sequential, used by T5-v1 (`relu`).
 //!        - `T5DenseGatedActDense`: `wo(act(wi_0(x)) * wi_1(x))`
 //!          — gated SwiGLU-shape, used by Flan-T5 / UL2 /
-//!          MADLAD-400 (`gated-gelu` or `gated-silu`).
+//!          MADLAD-400 (`gated-gelu_tanh` or `gated-silu`).
 //!   6. **`d_kv` is independently configurable** — `n_heads *
 //!      d_kv` may not equal `d_model`. T5-small uses
 //!      `8 * 64 = 512 == d_model` but larger models decouple.
@@ -552,8 +552,8 @@ impl T5Model {
         match self.config.activation {
             T5Activation::Relu => x.relu(),
             T5Activation::Silu => x.silu(),
-            T5Activation::Gelu => x.gelu_erf(),
-            T5Activation::GeluPytorchTanh => x.gelu(),
+            T5Activation::Gelu => x.gelu(),
+            T5Activation::GeluPytorchTanh => x.gelu_tanh(),
         }
     }
 }

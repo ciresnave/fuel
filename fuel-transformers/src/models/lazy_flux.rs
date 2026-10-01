@@ -179,7 +179,7 @@ pub struct FluxMlp {
 impl FluxMlp {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let h = self.fc1.apply(x)?;
-        let h = h.gelu();
+        let h = h.gelu_tanh();
         self.fc2.apply(&h)
     }
 }
@@ -607,7 +607,7 @@ fn apply_single_stream(
     let (q, k, v) =
         split_qkv_with_qknorm(&qkv, blk.num_heads, blk.head_dim, &blk.qk_norm, cfg.qk_norm)?;
     let attn = attention(&q, &k, &v, pe, blk.head_dim)?;
-    let mlp = mlp_part.gelu();
+    let mlp = mlp_part.gelu_tanh();
     let merged = attn.concat(&mlp, 2_usize)?;
     let out = blk.linear2.apply(&merged)?;
     xs.add(&m.gate_apply(&out)?)

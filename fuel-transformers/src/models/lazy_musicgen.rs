@@ -403,8 +403,8 @@ impl MusicGenModel {
             .apply_linear(&h2_norm, cfg.hidden_size, cfg.ffn_dim)?;
         let activated = match cfg.activation_function {
             MusicGenActivation::Relu => fc1.relu(),
-            MusicGenActivation::Gelu => fc1.gelu_erf(),
-            MusicGenActivation::GeluPytorchTanh => fc1.gelu(),
+            MusicGenActivation::Gelu => fc1.gelu(),
+            MusicGenActivation::GeluPytorchTanh => fc1.gelu_tanh(),
             MusicGenActivation::Silu => fc1.silu(),
         };
         let fc2 = layer

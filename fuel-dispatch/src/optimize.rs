@@ -1470,7 +1470,7 @@ mod tests {
         let pre = f32_node(&mut g, Op::Const, vec![]);
         let diverge = f32_node(&mut g, Op::Relu, vec![pre]);
         let arm0 = f32_node(&mut g, Op::Silu, vec![diverge]);
-        let arm1 = f32_node(&mut g, Op::Gelu, vec![diverge]);
+        let arm1 = f32_node(&mut g, Op::GeluTanh, vec![diverge]);
         let reconverge = f32_node(&mut g, Op::Relu, vec![arm0]);
         let mut b = g.open_branch(diverge);
         b.add_arm(arm0);

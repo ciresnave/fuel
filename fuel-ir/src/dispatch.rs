@@ -140,7 +140,7 @@ pub enum OpKind {
     SiluElementwise,
     /// GELU activation, tanh approximation
     /// (`0.5*x*(1 + tanh(√(2/π) * (x + 0.044715*x³)))`).
-    GeluElementwise,
+    GeluTanhElementwise,
     /// Heaviside step function (`1` where `x > 0`, `0` otherwise) —
     /// the derivative of [`OpKind::ReluElementwise`].
     StepElementwise,
@@ -286,10 +286,10 @@ pub enum OpKind {
     ErfElementwise,
     /// Element-wise GELU activation, **exact erf formulation**:
     /// `0.5 * x * (1 + erf(x/√2))`. Distinct from
-    /// [`OpKind::GeluElementwise`] (tanh approximation). Same dtype as input.
+    /// [`OpKind::GeluTanhElementwise`] (tanh approximation). Same dtype as input.
     /// Backward decomposes into the standard-normal CDF + `x * φ(x)`
     /// (PDF) chain via existing primitives.
-    GeluErfElementwise,
+    GeluElementwise,
     /// Element-wise binary power: `out[i] = pow(a[i], b[i])`. Both
     /// inputs share dtype `T` and shape; output is `T` with the same
     /// shape. Distinct from [`OpKind::PowIElementwise`] (scalar `i32`
@@ -461,9 +461,9 @@ pub enum OpKind {
     ReluInplace,
     /// In-place [`OpKind::SiluElementwise`] — `x = x · sigmoid(x)`.
     SiluInplace,
-    /// In-place [`OpKind::GeluElementwise`] (tanh approximation) —
+    /// In-place [`OpKind::GeluTanhElementwise`] (tanh approximation) —
     /// `x = 0.5 · x · (1 + tanh(√(2/π) · (x + 0.044715·x³)))`.
-    GeluInplace,
+    GeluTanhInplace,
     /// In-place [`OpKind::TanhElementwise`] — `x = tanh(x)`.
     TanhInplace,
     /// In-place [`OpKind::SigmoidElementwise`] — `x = 1 / (1 + exp(-x))`.
@@ -498,9 +498,9 @@ pub enum OpKind {
     RoundInplace,
     /// In-place [`OpKind::ErfElementwise`] — `x = erf(x)`.
     ErfInplace,
-    /// In-place [`OpKind::GeluErfElementwise`] — exact-GeLU
+    /// In-place [`OpKind::GeluElementwise`] — exact-GeLU
     /// `x = 0.5 · x · (1 + erf(x/√2))`.
-    GeluErfInplace,
+    GeluInplace,
     /// In-place [`OpKind::ClampElementwise`] — `x = clamp(x, min, max)`.
     /// Scalar `(min, max)` flow through `OpParams::Clamp`.
     ClampInplace,
@@ -588,7 +588,7 @@ impl OpKind {
             OpKind::CosElementwise => "cos",
             OpKind::SigmoidElementwise => "sigmoid",
             OpKind::SiluElementwise => "silu",
-            OpKind::GeluElementwise => "gelu",
+            OpKind::GeluTanhElementwise => "gelu_tanh",
             OpKind::StepElementwise => "step",
             OpKind::SumReduce => "sum_reduce",
             OpKind::MaxReduce => "max_reduce",
@@ -623,7 +623,7 @@ impl OpKind {
             OpKind::RoundElementwise => "round",
             OpKind::SignElementwise => "sign",
             OpKind::ErfElementwise => "erf",
-            OpKind::GeluErfElementwise => "gelu_erf",
+            OpKind::GeluElementwise => "gelu",
             OpKind::PowElementwise => "pow",
             OpKind::RsqrtElementwise => "rsqrt",
             OpKind::RemElementwise => "rem",
@@ -659,7 +659,7 @@ impl OpKind {
             OpKind::Copy => "copy",
             OpKind::ReluInplace => "relu_inplace",
             OpKind::SiluInplace => "silu_inplace",
-            OpKind::GeluInplace => "gelu_inplace",
+            OpKind::GeluTanhInplace => "gelu_tanh_inplace",
             OpKind::TanhInplace => "tanh_inplace",
             OpKind::SigmoidInplace => "sigmoid_inplace",
             OpKind::NegInplace => "neg_inplace",
@@ -677,7 +677,7 @@ impl OpKind {
             OpKind::CeilInplace => "ceil_inplace",
             OpKind::RoundInplace => "round_inplace",
             OpKind::ErfInplace => "erf_inplace",
-            OpKind::GeluErfInplace => "gelu_erf_inplace",
+            OpKind::GeluInplace => "gelu_inplace",
             OpKind::ClampInplace => "clamp_inplace",
             OpKind::PowIInplace => "powi_inplace",
             OpKind::InplaceAffine => "inplace_affine",

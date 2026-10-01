@@ -9,7 +9,7 @@ use crate::{
 use objc2_metal::{MTLResourceUsage, MTLSize};
 
 ops!(
-    cos, sin, exp, sqr, sqrt, neg, log, gelu, abs, ceil, floor, relu, round, erf, gelu_erf, tanh,
+    cos, sin, exp, sqr, sqrt, neg, log, gelu_tanh, abs, ceil, floor, relu, round, erf, gelu, tanh,
     recip, silu, sign, sigmoid, const_set
 );
 

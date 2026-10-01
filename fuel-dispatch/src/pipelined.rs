@@ -306,8 +306,8 @@ fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
             | OpKind::RmsNormLastDim
             // Unary activations (write-into + workspace-free).
             | OpKind::SiluElementwise
+            | OpKind::GeluTanhElementwise
             | OpKind::GeluElementwise
-            | OpKind::GeluErfElementwise
             // Negation (write-into + workspace-free) — the rope rotate-half
             // decomposition's `neg_second` half (CapturedRun 4b-resume: rope
             // runs decomposed on CUDA since there's no rotate-half fused kernel).
@@ -3260,7 +3260,7 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Cos => Some(OpKind::CosElementwise),
         Op::Sigmoid => Some(OpKind::SigmoidElementwise),
         Op::Silu => Some(OpKind::SiluElementwise),
-        Op::Gelu => Some(OpKind::GeluElementwise),
+        Op::GeluTanh => Some(OpKind::GeluTanhElementwise),
         Op::Step => Some(OpKind::StepElementwise),
         Op::Recip => Some(OpKind::RecipElementwise),
         Op::Abs => Some(OpKind::AbsElementwise),
@@ -3276,7 +3276,7 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Round => Some(OpKind::RoundElementwise),
         Op::Sign => Some(OpKind::SignElementwise),
         Op::Erf => Some(OpKind::ErfElementwise),
-        Op::GeluErf => Some(OpKind::GeluErfElementwise),
+        Op::Gelu => Some(OpKind::GeluElementwise),
         Op::Pow => Some(OpKind::PowElementwise),
         Op::Rsqrt => Some(OpKind::RsqrtElementwise),
         Op::Rem => Some(OpKind::RemElementwise),
@@ -3394,7 +3394,7 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         // arms (added alongside) handle the storage-Arc adoption.
         Op::ReluInplace => Some(OpKind::ReluInplace),
         Op::SiluInplace => Some(OpKind::SiluInplace),
-        Op::GeluInplace => Some(OpKind::GeluInplace),
+        Op::GeluTanhInplace => Some(OpKind::GeluTanhInplace),
         Op::TanhInplace => Some(OpKind::TanhInplace),
         Op::SigmoidInplace => Some(OpKind::SigmoidInplace),
         Op::NegInplace => Some(OpKind::NegInplace),
@@ -3412,7 +3412,7 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::CeilInplace => Some(OpKind::CeilInplace),
         Op::RoundInplace => Some(OpKind::RoundInplace),
         Op::ErfInplace => Some(OpKind::ErfInplace),
-        Op::GeluErfInplace => Some(OpKind::GeluErfInplace),
+        Op::GeluInplace => Some(OpKind::GeluInplace),
         Op::ClampInplace { .. } => Some(OpKind::ClampInplace),
         Op::PowIInplace(_) => Some(OpKind::PowIInplace),
         // In-place binary variants (Add/Sub/Mul/Div/MaskedFill) and
@@ -9280,7 +9280,7 @@ mod tests {
         let pre = node(&mut g, Op::Const, vec![]);
         let diverge = node(&mut g, Op::Relu, vec![pre]);
         let arm0 = node(&mut g, Op::Silu, vec![diverge]);
-        let arm1 = node(&mut g, Op::Gelu, vec![diverge]);
+        let arm1 = node(&mut g, Op::GeluTanh, vec![diverge]);
         g.set_target_backend(arm0, BackendId::Cuda);
         g.set_target_backend(arm1, BackendId::Cpu);
         let reconverge = node(&mut g, Op::Relu, vec![arm0]);

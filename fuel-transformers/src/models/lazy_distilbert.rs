@@ -289,7 +289,7 @@ impl DistilBertModel {
         let fc1 = layer.lin1.apply_linear(&h1, d, cfg.hidden_dim)?;
         let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&layer.lin1_bias))?;
         let act = match cfg.activation {
-            DistilBertActivation::Gelu => fc1.gelu_erf(),
+            DistilBertActivation::Gelu => fc1.gelu(),
             DistilBertActivation::Relu => fc1.relu(),
         };
         let fc2 = layer.lin2.apply_linear(&act, cfg.hidden_dim, d)?;

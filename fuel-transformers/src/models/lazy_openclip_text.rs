@@ -258,7 +258,7 @@ fn apply_mlp(
     let h1 =
         m.fc1
             .apply_linear_with_bias(x, in_dim, hidden_dim, std::sync::Arc::clone(&m.fc1_bias))?;
-    let h1 = h1.gelu_erf();
+    let h1 = h1.gelu();
     m.fc2
         .apply_linear_with_bias(&h1, hidden_dim, in_dim, std::sync::Arc::clone(&m.fc2_bias))
 }

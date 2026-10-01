@@ -418,8 +418,8 @@ impl VitModel {
         )?;
         let inter = inter_proj.broadcast_add(&inter_bias_t)?;
         let activated = match cfg.hidden_activation {
-            VitActivation::Gelu => inter.gelu_erf(),
-            VitActivation::GeluPytorchTanh => inter.gelu(),
+            VitActivation::Gelu => inter.gelu(),
+            VitActivation::GeluPytorchTanh => inter.gelu_tanh(),
             VitActivation::Relu => inter.relu(),
             VitActivation::Silu => inter.silu(),
         };

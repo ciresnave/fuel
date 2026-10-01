@@ -50,8 +50,8 @@ pub fn op_to_tag(op: &Op) -> Option<OpTag> {
         Op::Tanh => OpTag::Tanh,
         Op::Sigmoid => OpTag::Sigmoid,
         Op::Silu => OpTag::Silu,
+        Op::GeluTanh => OpTag::GeluTanh,
         Op::Gelu => OpTag::Gelu,
-        Op::GeluErf => OpTag::GeluErf,
         Op::Relu => OpTag::Relu,
         Op::Erf => OpTag::Erf,
         Op::Step => OpTag::Step,
@@ -407,11 +407,11 @@ mod tests {
 
     #[test]
     fn op_to_tag_projects_functional_ops_and_skips_structural() {
-        // Functional ops project; the GeluErf/Gelu distinction is preserved.
+        // Functional ops project; the GeluTanh/Gelu distinction is preserved.
         assert_eq!(op_to_tag(&Op::Add), Some(OpTag::Add));
-        assert_eq!(op_to_tag(&Op::GeluErf), Some(OpTag::GeluErf));
-        assert_eq!(op_to_tag(&Op::Gelu), Some(OpTag::Gelu)); // tanh-approx, distinct
-        assert_ne!(op_to_tag(&Op::Gelu), op_to_tag(&Op::GeluErf));
+        assert_eq!(op_to_tag(&Op::Gelu), Some(OpTag::Gelu));
+        assert_eq!(op_to_tag(&Op::GeluTanh), Some(OpTag::GeluTanh)); // tanh-approx, distinct
+        assert_ne!(op_to_tag(&Op::GeluTanh), op_to_tag(&Op::Gelu));
         assert_eq!(op_to_tag(&Op::AddScalar(1.0)), Some(OpTag::AddScalar));
         assert_eq!(op_to_tag(&Op::MatMul), Some(OpTag::MatMul));
         // In-place + structural ops are not region nodes.

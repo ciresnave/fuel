@@ -111,14 +111,14 @@ fn op_kind(op: &Op) -> Option<OpKind> {
         Op::Cos => Some(OpKind::CosElementwise),
         Op::Sigmoid => Some(OpKind::SigmoidElementwise),
         Op::Silu => Some(OpKind::SiluElementwise),
-        Op::Gelu => Some(OpKind::GeluElementwise),
+        Op::GeluTanh => Some(OpKind::GeluTanhElementwise),
         Op::Step => Some(OpKind::StepElementwise),
         Op::Floor => Some(OpKind::FloorElementwise),
         Op::Ceil => Some(OpKind::CeilElementwise),
         Op::Round => Some(OpKind::RoundElementwise),
         Op::Sign => Some(OpKind::SignElementwise),
         Op::Erf => Some(OpKind::ErfElementwise),
-        Op::GeluErf => Some(OpKind::GeluErfElementwise),
+        Op::Gelu => Some(OpKind::GeluElementwise),
         Op::Rsqrt => Some(OpKind::RsqrtElementwise),
 
         // --- compares (T → U8) ---

@@ -367,7 +367,7 @@ fn vulkan_dispatch_unary_f32_registered() {
         OpKind::TanhElementwise,
         OpKind::SigmoidElementwise,
         OpKind::SiluElementwise,
-        OpKind::GeluElementwise,
+        OpKind::GeluTanhElementwise,
         OpKind::ReluElementwise,
         OpKind::StepElementwise,
     ] {
@@ -548,8 +548,8 @@ fn vulkan_dispatch_unary_gelu_f32() {
     let Some(backend) = backend_or_skip() else {
         return;
     };
-    // gelu_tanh approximation: gelu(0)=0, gelu(1)≈0.8413, gelu(-1)≈-0.1587
-    let got = run_unary_f32(&backend, OpKind::GeluElementwise, &[0.0, 1.0, -1.0]);
+    // gelu_tanh approximation: gelu_tanh(0)=0, gelu_tanh(1)≈0.8413, gelu_tanh(-1)≈-0.1587
+    let got = run_unary_f32(&backend, OpKind::GeluTanhElementwise, &[0.0, 1.0, -1.0]);
     assert_close(&got, &[0.0, 0.8413, -0.1587], 1e-3, 1e-3);
 }
 
@@ -913,7 +913,7 @@ fn vulkan_dispatch_unary_f16_registered() {
         OpKind::ReluElementwise,
         OpKind::TanhElementwise,
         OpKind::SiluElementwise,
-        OpKind::GeluElementwise,
+        OpKind::GeluTanhElementwise,
     ] {
         let alts = table.lookup_alternatives(op, &key, BackendId::Vulkan);
         assert_eq!(
@@ -1100,7 +1100,7 @@ fn vulkan_dispatch_unary_neg_f64() {
 // Target precision: 1e-12 relative error (matches the kernel's
 // design target; far below libm's ULP-correct standard but
 // adequate for inference / training workloads at f64). For
-// composites (sigmoid / silu / gelu) we expect ~1e-11 because
+// composites (sigmoid / silu / gelu_tanh) we expect ~1e-11 because
 // errors accumulate across the composed exp / tanh calls.
 
 fn run_unary_f64(backend: &Arc<VulkanBackend>, op: OpKind, data: &[f64]) -> Vec<f64> {
@@ -1414,7 +1414,7 @@ fn vulkan_dispatch_unary_gelu_f64() {
         return;
     };
     let host = vec![-3.0, -1.0, -0.5, 0.0, 0.5, 1.0, 3.0];
-    let got = run_unary_f64(&backend, OpKind::GeluElementwise, &host);
+    let got = run_unary_f64(&backend, OpKind::GeluTanhElementwise, &host);
     // Reference matches the kernel's tanh-approx form exactly.
     let expected: Vec<f64> = host
         .iter()
@@ -1424,8 +1424,8 @@ fn vulkan_dispatch_unary_gelu_f64() {
         })
         .collect();
     // Gelu composes tanh which composes exp — error budget around 1e-11.
-    let worst = check_f64("gelu f64", &got, &expected, 1e-11);
-    eprintln!("gelu f64: worst rel err = {worst:e}");
+    let worst = check_f64("gelu_tanh f64", &got, &expected, 1e-11);
+    eprintln!("gelu_tanh f64: worst rel err = {worst:e}");
 }
 
 #[test]

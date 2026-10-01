@@ -434,7 +434,7 @@ fn encoder_layer(
 
     // --- FFN ---------------------------------------------------------------
     let h_ff = cfg.intermediate_size;
-    let mid = linear(&x, &lw.ffn_in_w, &lw.ffn_in_b, h, h_ff, seq)?.gelu();
+    let mid = linear(&x, &lw.ffn_in_w, &lw.ffn_in_b, h, h_ff, seq)?.gelu_tanh();
     let ffn_out = linear(&mid, &lw.ffn_out_w, &lw.ffn_out_b, h_ff, h, seq)?;
 
     // Residual + LayerNorm.

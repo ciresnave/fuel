@@ -391,7 +391,7 @@ fn convnext_block(
     let flat = dw_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let normed = layer_norm_affine(&flat, &bw.ln_g, &bw.ln_b, eps, c, h * w)?;
     // MLP: C → 4C → [V2 GRN] → C with GELU. Linear already wants [1, seq, C].
-    let hidden = linear(&normed, &bw.fc1_w, Some(&bw.fc1_b), c, 4 * c, h * w)?.gelu();
+    let hidden = linear(&normed, &bw.fc1_w, Some(&bw.fc1_b), c, 4 * c, h * w)?.gelu_tanh();
     let hidden = if let Some(grn) = &bw.grn {
         apply_grn(&hidden, &grn.gamma, &grn.beta, 4 * c, h * w)?
     } else {

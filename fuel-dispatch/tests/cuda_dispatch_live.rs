@@ -41,7 +41,7 @@ fn build_storage_cuda(dev: &CudaDevice, src_f32: &[f32]) -> Storage {
 }
 
 /// Element-wise approximate equality for transcendental unary tests.
-/// CUDA's PTX intrinsics for tanh/exp/log/sin/cos/sigmoid/silu/gelu
+/// CUDA's PTX intrinsics for tanh/exp/log/sin/cos/sigmoid/silu/gelu_tanh
 /// are not bit-exact with the host `f32::tanh` etc., so the tests
 /// compare against a small epsilon (1e-5 is comfortable for these
 /// kernels at the magnitudes tested).
@@ -1014,7 +1014,7 @@ fn silu_elementwise_f32_through_binding_table() {
 }
 
 /// End-to-end: GeluElementwise F32 through the binding table
-/// (tanh approximation, matching `OpKind::GeluElementwise` semantics
+/// (tanh approximation, matching `OpKind::GeluTanhElementwise` semantics
 /// and CPU `gelu_f32`).
 #[test]
 #[ignore]
@@ -1036,7 +1036,7 @@ fn gelu_elementwise_f32_through_binding_table() {
 
     let kernel = table
         .lookup(
-            OpKind::GeluElementwise,
+            OpKind::GeluTanhElementwise,
             &[DType::F32, DType::F32],
             BackendId::Cuda,
         )
@@ -2832,7 +2832,7 @@ fn round_elementwise_f32_halfway_through_binding_table() {
 
 /// End-to-end: ErfElementwise F32 through the binding table. Value
 /// check against reference Gauss-error-function values — these
-/// distinguish plain `erf(x)` from both gelu flavors (gelu_erf(1) ≈
+/// distinguish plain `erf(x)` from both gelu_tanh flavors (gelu(1) ≈
 /// 0.84134 vs erf(1) ≈ 0.84270; the 1e-6 epsilon catches a flavor
 /// mix-up like the one fixed in 9b53da38).
 #[test]

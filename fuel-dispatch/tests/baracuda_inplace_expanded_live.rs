@@ -3,7 +3,7 @@
 //!
 //! - **A — 16 new unary in-place activations** (`Neg`, `Abs`, `Sqr`,
 //!   `Sqrt`, `Rsqrt`, `Recip`, `Exp`, `Log`, `Sin`, `Cos`, `Sign`,
-//!   `Floor`, `Ceil`, `Round`, `Erf`, `GeluErf`) registered at
+//!   `Floor`, `Ceil`, `Round`, `Erf`, `Gelu`) registered at
 //!   `(OpKind::*Inplace, [T, T], Cuda)` for T ∈ {F32, F64, BF16, F16}.
 //!   Each reuses the matching baracuda forward symbol with
 //!   same-pointer dispatch.

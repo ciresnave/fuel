@@ -394,7 +394,7 @@ impl Dinov2Model {
         let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_hidden)?;
         let fc1_b_t =
             x.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_hidden]))?;
-        let fc1 = fc1.broadcast_add(&fc1_b_t)?.gelu_erf();
+        let fc1 = fc1.broadcast_add(&fc1_b_t)?.gelu();
         let fc2 = block.fc2.apply_linear(&fc1, mlp_hidden, h)?;
         let fc2_b_t = x.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]))?;
         let mlp_out = fc2.broadcast_add(&fc2_b_t)?;

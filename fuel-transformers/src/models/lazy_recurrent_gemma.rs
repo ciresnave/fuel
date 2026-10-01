@@ -198,7 +198,7 @@ fn recurrent_gemma_activation_from_str(s: &str) -> fuel_core::Result<GemmaActiva
         "gelu" => Ok(GemmaActivation::Gelu),
         other => Err(fuel_core::Error::Msg(format!(
             "unsupported RecurrentGemma hidden_activation {other:?} \
-             (expected gelu/gelu_pytorch_tanh)"
+             (expected gelu_tanh/gelu_pytorch_tanh)"
         ))),
     }
 }
@@ -592,8 +592,8 @@ impl RecurrentGemmaModel {
             std::sync::Arc::clone(&r.linear_y_b),
         )?;
         let y_act = match cfg.hidden_activation {
-            GemmaActivation::Gelu => y.gelu_erf(),
-            GemmaActivation::GeluPytorchTanh => y.gelu(),
+            GemmaActivation::Gelu => y.gelu(),
+            GemmaActivation::GeluPytorchTanh => y.gelu_tanh(),
         };
 
         // Recurrence input.
@@ -759,8 +759,8 @@ impl RecurrentGemmaModel {
             std::sync::Arc::clone(&layer.mlp_up_b),
         )?;
         let activated = match cfg.hidden_activation {
-            GemmaActivation::Gelu => gate.gelu_erf(),
-            GemmaActivation::GeluPytorchTanh => gate.gelu(),
+            GemmaActivation::Gelu => gate.gelu(),
+            GemmaActivation::GeluPytorchTanh => gate.gelu_tanh(),
         };
         let inner = activated.mul(&up)?;
         let down = layer.mlp_down_w.apply_linear(&inner, inter, h)?;
