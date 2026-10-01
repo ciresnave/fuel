@@ -714,8 +714,8 @@ impl OpAttrs {
             | T::Tanh
             | T::Sigmoid
             | T::Silu
+            | T::GeluTanh
             | T::Gelu
-            | T::GeluErf
             | T::Relu
             | T::Erf
             | T::Step

@@ -388,7 +388,7 @@ fn apply_conv_bn(x: &Tensor, c: &Conv2dBnWeights, anchor: &Tensor) -> Result<Ten
 fn apply_act(x: Tensor, act: Mv4Activation) -> Tensor {
     match act {
         Mv4Activation::Relu => x.relu(),
-        Mv4Activation::Gelu => x.gelu(),
+        Mv4Activation::Gelu => x.gelu_tanh(),
     }
 }
 

@@ -19,7 +19,7 @@
 //!      Activation is config-driven (the reference Phi-2 uses
 //!      "new-GELU"; we expose both Gelu and GeluPytorchTanh
 //!      variants and treat them as the same approximation
-//!      family — the underlying `Tensor::gelu()` is the
+//!      family — the underlying `Tensor::gelu_tanh()` is the
 //!      tanh-approximation, matching `Activation::NewGelu`).
 //!   5. **All linear layers carry biases** — Q/K/V/dense and
 //!      fc1/fc2 and lm_head all include bias terms.
@@ -433,8 +433,8 @@ impl PhiModel {
             std::sync::Arc::clone(&layer.fc1_bias),
         )?;
         let activated = match cfg.hidden_activation {
-            PhiActivation::Gelu => fc1_out.gelu_erf(),
-            PhiActivation::GeluPytorchTanh => fc1_out.gelu(),
+            PhiActivation::Gelu => fc1_out.gelu(),
+            PhiActivation::GeluPytorchTanh => fc1_out.gelu_tanh(),
         };
         let mlp_out = layer.fc2.apply_linear_with_bias(
             &activated,

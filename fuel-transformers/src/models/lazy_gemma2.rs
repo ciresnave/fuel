@@ -431,7 +431,7 @@ impl Gemma2Model {
         // in the config), but the original Gemma uses Silu. The eager config
         // carries the activation as a field; we follow gemma-2 default which
         // is GELU-tanh (used by the public release).
-        let swi = gate.gelu().mul(&up)?;
+        let swi = gate.gelu_tanh().mul(&up)?;
         let ffn_out = layer
             .down
             .apply_linear(&swi, cfg.intermediate_size, cfg.hidden_size)?;

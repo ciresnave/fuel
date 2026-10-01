@@ -22,7 +22,7 @@
 //!   each has (self-attn + cross-attn + GEGLU FFN) each pre-LN'd,
 //!   reshape back. The cross-attention K/V source is the text
 //!   embedding from the CLIP encoder.
-//! - **GEGLU** activation: `x * gelu(gate)` with `(x, gate) =
+//! - **GEGLU** activation: `x * gelu_tanh(gate)` with `(x, gate) =
 //!   split(proj(input), dim=-1)`. Doubles the FFN's input projection
 //!   width.
 //! - **Strided 3×3 Conv2d** (`conv2d_k3_s2_p1`): the stride-2 case
@@ -507,11 +507,11 @@ fn transformer_block(
     // --- GEGLU FFN (pre-LN) ---------------------------------------
     let x_ln = layer_norm_affine(&x, &tb.n3_g, &tb.n3_b, 1e-5, c, n)?;
     let mid = linear(&x_ln, &tb.ff_in_w, Some(&tb.ff_in_b), c, 2 * 4 * c, n)?;
-    // GEGLU: split mid along last dim into [x, gate], compute x * gelu(gate).
+    // GEGLU: split mid along last dim into [x, gate], compute x * gelu_tanh(gate).
     let half = 4 * c;
     let xv = mid.slice(2, 0, half)?;
     let gate = mid.slice(2, half, half)?;
-    let gated = xv.mul(&gate.gelu())?;
+    let gated = xv.mul(&gate.gelu_tanh())?;
     let ffn_out = linear(&gated, &tb.ff_out_w, Some(&tb.ff_out_b), 4 * c, c, n)?;
     x.add(&ffn_out)
 }

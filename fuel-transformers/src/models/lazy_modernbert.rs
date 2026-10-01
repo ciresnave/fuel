@@ -19,7 +19,7 @@
 //!      has no attn_norm (the input is already pre-normalized by
 //!      the embedding LayerNorm); subsequent layers always have it.
 //!      mlp_norm is always present.
-//!   4. **GeGLU FFN**: `wi(x).chunk(2)` → `wo(gelu(x0) * x1)`.
+//!   4. **GeGLU FFN**: `wi(x).chunk(2)` → `wo(gelu_tanh(x0) * x1)`.
 //!      `x0` is the gate path; `x1` is the value path. The
 //!      `intermediate_size * 2` width is fused into a single
 //!      projection.
@@ -424,7 +424,7 @@ impl ModernBertModel {
         let up = layer.mlp_wi.apply_linear(x, h, 2 * i)?;
         let gate = up.slice(2_usize, 0, i)?;
         let value = up.slice(2_usize, i, i)?;
-        let inner = gate.gelu_erf().mul(&value)?;
+        let inner = gate.gelu().mul(&value)?;
         layer.mlp_wo.apply_linear(&inner, i, h)
     }
 }

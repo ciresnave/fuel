@@ -68,8 +68,8 @@ pub fn primitive_shape(
         | Tanh
         | Sigmoid
         | Silu
+        | GeluTanh
         | Gelu
-        | GeluErf
         | Relu
         | Erf
         | Step

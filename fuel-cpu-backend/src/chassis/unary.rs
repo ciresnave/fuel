@@ -464,7 +464,7 @@ impl UnaryOpCore for Rsqrt {
 }
 
 /// GELU (tanh approximation): `0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x³)))`.
-/// Matches `Op::Gelu`'s tanh-approximation semantics in fuel-graph.
+/// Matches `Op::GeluTanh`'s tanh-approximation semantics in fuel-graph.
 /// f32 uses a 7-digit constant for √(2/π); f64 uses a 16-digit
 /// constant — both match the pre-chassis `gelu_*` functions
 /// bit-for-bit. bf16 / f16 route through the f32 path via the
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn unary_op_gelu_tanh_f32_at_one() {
-        // gelu(1) ≈ 0.8412 (tanh approx) per the existing
+        // gelu_tanh(1) ≈ 0.8412 (tanh approx) per the existing
         // `gelu_at_known_points` test.
         let got = <GeluTanh as UnaryOp<f32>>::apply(1.0);
         assert!((got - 0.841_192).abs() < 1e-3, "got {got}");

@@ -326,8 +326,8 @@ impl XlmrModel {
         let fc1 = layer.fc1.apply_linear(&h1, d, cfg.intermediate_size)?;
         let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
         let act = match cfg.hidden_activation {
-            XlmrActivation::Gelu => fc1.gelu_erf(),
-            XlmrActivation::GeluPytorchTanh => fc1.gelu(),
+            XlmrActivation::Gelu => fc1.gelu(),
+            XlmrActivation::GeluPytorchTanh => fc1.gelu_tanh(),
             XlmrActivation::Relu => fc1.relu(),
             XlmrActivation::Silu => fc1.silu(),
         };
@@ -512,14 +512,14 @@ impl XlmrForMaskedLM {
         let cfg = &self.base.config;
         let h = self.base.forward(tokens, attention_mask)?;
 
-        // lm_head: dense -> gelu -> layer_norm -> decoder.
+        // lm_head: dense -> gelu_tanh -> layer_norm -> decoder.
         // `apply_linear` matmuls a `(1, seq, hidden)` activation by a
         // `(hidden, hidden)` weight to give `(1, seq, hidden)`.
         let dense = self
             .lm_head_dense_weight
             .apply_linear(&h, cfg.hidden_size, cfg.hidden_size)?;
         let dense = dense.add_trailing_bias(Arc::clone(&self.lm_head_dense_bias))?;
-        let act = dense.gelu_erf();
+        let act = dense.gelu();
         let normed = act.layer_norm_affine(
             Arc::clone(&self.lm_head_ln_gain),
             Arc::clone(&self.lm_head_ln_bias),

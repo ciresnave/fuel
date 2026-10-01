@@ -500,8 +500,8 @@ impl Gemma3Model {
             .ffn_up
             .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
-            GemmaActivation::Gelu => gate.gelu_erf(),
-            GemmaActivation::GeluPytorchTanh => gate.gelu(),
+            GemmaActivation::Gelu => gate.gelu(),
+            GemmaActivation::GeluPytorchTanh => gate.gelu_tanh(),
         };
         let ffn_in = activated.mul(&up)?;
         let ffn_out =
@@ -777,8 +777,8 @@ impl Gemma3Model {
             .ffn_up
             .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
-            GemmaActivation::Gelu => gate.gelu_erf(),
-            GemmaActivation::GeluPytorchTanh => gate.gelu(),
+            GemmaActivation::Gelu => gate.gelu(),
+            GemmaActivation::GeluPytorchTanh => gate.gelu_tanh(),
         };
         let ffn_in = activated.mul(&up)?;
         let ffn_out =

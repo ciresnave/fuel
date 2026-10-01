@@ -378,7 +378,7 @@ impl SamImageEncoderVit {
                 embed_dim * 4,
                 Arc::clone(&blk.mlp.fc1_bias),
             )?
-            .gelu();
+            .gelu_tanh();
         let mlp_out = blk.mlp.fc2.apply_linear_with_bias(
             &mlp_hidden,
             embed_dim * 4,
@@ -958,7 +958,7 @@ impl SamPromptEncoder {
         let conv1_b = masks.const_f32_like(Arc::clone(&w.mask_conv1_b), Shape::from_dims(&[q]))?;
         let x = masks.conv2d(&conv1_w, Some(&conv1_b), (2, 2), (0, 0), 1)?;
         let x = layer_norm_2d(&x, &w.mask_ln1, q, 1e-6)?;
-        let x = x.gelu();
+        let x = x.gelu_tanh();
         // Conv2: mi/4 → mi, k=2, s=2.
         let conv2_w = masks.const_f32_like(
             Arc::clone(&w.mask_conv2_w),
@@ -967,7 +967,7 @@ impl SamPromptEncoder {
         let conv2_b = masks.const_f32_like(Arc::clone(&w.mask_conv2_b), Shape::from_dims(&[mi]))?;
         let x = x.conv2d(&conv2_w, Some(&conv2_b), (2, 2), (0, 0), 1)?;
         let x = layer_norm_2d(&x, &w.mask_ln2, mi, 1e-6)?;
-        let x = x.gelu();
+        let x = x.gelu_tanh();
         // Conv3: mi → embed_dim, k=1.
         let conv3_w = masks.const_f32_like(
             Arc::clone(&w.mask_conv3_w),
@@ -1138,7 +1138,7 @@ fn apply_sam_mlp(x: &Tensor, w: &SamMlpBlockWeights) -> Result<Tensor> {
             .apply_linear_with_bias(x, w.embedding_dim, w.mlp_dim, Arc::clone(&w.lin1_bias))?;
     let h = match w.activation {
         SamMlpActivation::Relu => h.relu(),
-        SamMlpActivation::Gelu => h.gelu(),
+        SamMlpActivation::Gelu => h.gelu_tanh(),
     };
     w.lin2
         .apply_linear_with_bias(&h, w.mlp_dim, w.embedding_dim, Arc::clone(&w.lin2_bias))
@@ -1484,7 +1484,7 @@ impl SamMaskDecoder {
         // Add bias (broadcast across spatial dims).
         let up1 = up1.broadcast_add(&ct1_b.reshape(Shape::from_dims(&[1, td / 4, 1, 1]))?)?;
         let up1 = layer_norm_2d(&up1, &w.upsample_ln, td / 4, 1e-6)?;
-        let up1 = up1.gelu();
+        let up1 = up1.gelu_tanh();
         let ct2_w = src_grid.const_f32_like(
             Arc::clone(&w.upsample_conv2_w),
             Shape::from_dims(&[td / 4, td / 8, 2, 2]),
@@ -1494,7 +1494,7 @@ impl SamMaskDecoder {
         let upscaled = up1.conv_transpose2d(&ct2_w, (2, 2), (0, 0), (0, 0), (1, 1), 1)?;
         let upscaled =
             upscaled.broadcast_add(&ct2_b.reshape(Shape::from_dims(&[1, td / 8, 1, 1]))?)?;
-        let upscaled = upscaled.gelu();
+        let upscaled = upscaled.gelu_tanh();
 
         // Run each mask-token's hypernetwork MLP. Stack to
         // (b, nmt, td/8). Multiplying by the upscaled feature map

@@ -60,12 +60,12 @@ pub enum OpTag {
     Log,
     Sin,
     Cos,
-    // activations (Gelu = tanh-approx; GeluErf = exact erf — distinct, §3 note)
+    // activations (GeluTanh = tanh-approx; Gelu = exact erf — distinct, §3 note)
     Tanh,
     Sigmoid,
     Silu,
+    GeluTanh,
     Gelu,
-    GeluErf,
     Relu,
     Erf,
     Step,
@@ -739,7 +739,7 @@ impl PatternNode {
 ///
 /// Baked-in ceilings mirror the two formulas' shared rule: transcendental ops
 /// contribute their kiss §6.8 ceiling (Exp/Erf declare 4; kiss non-primitives
-/// Tanh/Sigmoid/Silu/Gelu/Rsqrt fall back to 4); IEEE-correctly-rounded
+/// Tanh/Sigmoid/Silu/GeluTanh/Rsqrt fall back to 4); IEEE-correctly-rounded
 /// Sqrt/Recip are exact-class (no ceiling); an exact-only region of `n` ops
 /// bands at `n - 1`; a transcendental region bands at `Σ ceilings +
 /// (n_exact - 1)` with the exact term saturating at 0.

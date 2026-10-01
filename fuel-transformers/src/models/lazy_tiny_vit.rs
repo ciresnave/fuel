@@ -260,17 +260,17 @@ fn layer_norm_2d(x: &Tensor, w: &LayerNorm2dWeights, c: usize, eps: f64) -> Resu
 
 fn apply_patch_embed(x: &Tensor, w: &PatchEmbedWeights) -> Result<Tensor> {
     let x = apply_conv2d_bn(x, &w.conv1)?;
-    let x = x.gelu();
+    let x = x.gelu_tanh();
     apply_conv2d_bn(&x, &w.conv2)
 }
 
 fn apply_mbconv(x: &Tensor, w: &MbConvWeights) -> Result<Tensor> {
     let h = apply_conv2d_bn(x, &w.conv1)?;
-    let h = h.gelu();
+    let h = h.gelu_tanh();
     let h = apply_conv2d_bn(&h, &w.conv2)?;
-    let h = h.gelu();
+    let h = h.gelu_tanh();
     let h = apply_conv2d_bn(&h, &w.conv3)?;
-    Ok(h.add(x)?.gelu())
+    Ok(h.add(x)?.gelu_tanh())
 }
 
 /// Patch merging — operates on `(B, L=H*W, C)` token sequence (or 4-D
@@ -295,9 +295,9 @@ fn apply_patch_merging(x: &Tensor, w: &PatchMergingWeights) -> Result<Tensor> {
         x.clone()
     };
     let h = apply_conv2d_bn(&x_nchw, &w.conv1)?;
-    let h = h.gelu();
+    let h = h.gelu_tanh();
     let h = apply_conv2d_bn(&h, &w.conv2)?;
-    let h = h.gelu();
+    let h = h.gelu_tanh();
     let h = apply_conv2d_bn(&h, &w.conv3)?;
     // Flatten (B, C, H, W) → (B, L, C).
     let h_dims = h.shape();
@@ -312,7 +312,7 @@ fn apply_mlp(x: &Tensor, w: &MlpWeights, in_dim: usize) -> Result<Tensor> {
     let h =
         w.fc1
             .apply_linear_with_bias(&x_norm, in_dim, w.fc1_bias.len(), Arc::clone(&w.fc1_bias))?;
-    let h = h.gelu();
+    let h = h.gelu_tanh();
     w.fc2
         .apply_linear_with_bias(&h, w.fc1_bias.len(), in_dim, Arc::clone(&w.fc2_bias))
 }

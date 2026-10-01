@@ -405,8 +405,8 @@ fn advisory_op_ulp_ceiling(op: fuel_graph::jit::OpTag) -> Option<u64> {
         T::Tanh => Some(K::Tanh),
         T::Sigmoid => Some(K::Sigmoid),
         T::Silu => Some(K::Silu),
-        T::Gelu => Some(K::GeluTanh), // Fuel Gelu = tanh-approx
-        T::GeluErf => Some(K::Gelu),  // Fuel GeluErf = exact erf
+        T::GeluTanh => Some(K::GeluTanh),
+        T::Gelu => Some(K::Gelu),
         T::Rsqrt => Some(K::Rsqrt),
         // A transcendental tag with no kiss mapping (none today — the match is
         // total over `is_transcendental`'s set) takes the fallback ceiling.

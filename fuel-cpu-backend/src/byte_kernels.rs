@@ -11230,7 +11230,7 @@ mod tests {
         let v = vec![half::bf16::from_f32(0.0_f32)];
         let input = CpuStorageBytes::from_slice(&v);
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
-        gelu_bf16(&input, &mut out).expect("gelu bf16");
+        gelu_bf16(&input, &mut out).expect("gelu_tanh bf16");
         let r: &[half::bf16] = out.as_slice().unwrap();
         assert!(r[0].to_f32().abs() < 0.001);
     }
@@ -11335,11 +11335,11 @@ mod tests {
     fn gelu_f64_at_known_points() {
         let input = CpuStorageBytes::from_slice(&[0.0_f64, 1.0, -1.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
-        gelu_f64(&input, &mut out).expect("gelu f64");
+        gelu_f64(&input, &mut out).expect("gelu_tanh f64");
         let r: &[f64] = out.as_slice().unwrap();
-        // gelu(0) = 0
+        // gelu_tanh(0) = 0
         assert!(r[0].abs() < 1e-12);
-        // gelu(1) ≈ 0.8412 (tanh approx); f64 should be ~12 digits accurate
+        // gelu_tanh(1) ≈ 0.8412 (tanh approx); f64 should be ~12 digits accurate
         assert!((r[1] - 0.841_192).abs() < 1e-3);
         assert!((r[2] - (-0.158_808)).abs() < 1e-3);
     }
@@ -12397,13 +12397,13 @@ mod tests {
     fn gelu_at_known_points() {
         let input = CpuStorageBytes::from_slice(&[0.0_f32, 1.0, -1.0]);
         let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
-        gelu_f32(&input, &mut out).expect("gelu");
+        gelu_f32(&input, &mut out).expect("gelu_tanh");
         let r: &[f32] = out.as_slice().unwrap();
-        // gelu(0) = 0
+        // gelu_tanh(0) = 0
         assert!(r[0].abs() < 1e-6);
-        // gelu(1) ≈ 0.8412 (tanh approx)
+        // gelu_tanh(1) ≈ 0.8412 (tanh approx)
         assert!((r[1] - 0.841_192).abs() < 1e-3);
-        // gelu(-1) ≈ -0.1588 (tanh approx)
+        // gelu_tanh(-1) ≈ -0.1588 (tanh approx)
         assert!((r[2] - (-0.158_808)).abs() < 1e-3);
     }
 

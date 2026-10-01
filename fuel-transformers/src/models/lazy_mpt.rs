@@ -312,7 +312,7 @@ impl MptModel {
         let mid = layer
             .mlp_up
             .apply_linear(&h1_norm, cfg.d_model, cfg.ffn_dim())?;
-        let mid_act = mid.gelu_erf();
+        let mid_act = mid.gelu();
         let ffn_out = layer
             .mlp_down
             .apply_linear(&mid_act, cfg.ffn_dim(), cfg.d_model)?;

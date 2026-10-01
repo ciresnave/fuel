@@ -397,7 +397,7 @@ fn apply_res_block(
     // Channelwise MLP. Permute to NHWC for the linears.
     let nhwc = norm.permute([0, 2, 3, 1_usize])?; // [1, H, W, C]
     let flat = nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
-    let fc1 = linear(&flat, &rw.fc1_w, Some(&rw.fc1_b), c, 4 * c, 1, h * w)?.gelu();
+    let fc1 = linear(&flat, &rw.fc1_w, Some(&rw.fc1_b), c, 4 * c, 1, h * w)?.gelu_tanh();
     // GRN expects [1, C, H, W]; bridge: reshape fc1 to that.
     let fc1_chw = fc1
         .reshape(Shape::from_dims(&[1, h, w, 4 * c]))?
@@ -448,7 +448,7 @@ fn apply_res_block_stage_b(
         1,
         h * w,
     )?
-    .gelu();
+    .gelu_tanh();
     let fc1_chw = fc1
         .reshape(Shape::from_dims(&[1, h, w, 4 * c]))?
         .permute([0, 3, 1, 2_usize])?;
@@ -976,7 +976,7 @@ fn apply_paella_mixing_res(
     let nhwc = temp.permute([0, 2, 3, 1_usize])?;
     let flat = nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let embed_dim = bw.fc1_b.len();
-    let mid = linear(&flat, &bw.fc1_w, Some(&bw.fc1_b), c, embed_dim, 1, h * w)?.gelu();
+    let mid = linear(&flat, &bw.fc1_w, Some(&bw.fc1_b), c, embed_dim, 1, h * w)?.gelu_tanh();
     let out = linear(&mid, &bw.fc2_w, Some(&bw.fc2_b), embed_dim, c, 1, h * w)?;
     let out_chw = out
         .reshape(Shape::from_dims(&[1, h, w, c]))?

@@ -290,8 +290,8 @@ fn apply_mlp(
         std::sync::Arc::clone(&m.fc1_bias),
     )?;
     let h1 = match cfg.hidden_activation {
-        BlipVisionActivation::Gelu => h1.gelu(),
-        BlipVisionActivation::GeluPytorchTanh => h1.gelu_erf(),
+        BlipVisionActivation::Gelu => h1.gelu_tanh(),
+        BlipVisionActivation::GeluPytorchTanh => h1.gelu(),
         BlipVisionActivation::Relu => h1.relu(),
     };
     m.fc2.apply_linear_with_bias(

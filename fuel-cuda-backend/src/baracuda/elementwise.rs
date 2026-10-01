@@ -379,7 +379,7 @@ unary_kernel!(unary_step_f32, unary_step_f32, 4, "unary_step_f32");
 //   Fuel's `RoundElementwise` contract (banker's rounding, CPU uses
 //   `round_ties_even`).
 // - `unary_erf_*` is the plain Gauss error function (`erff`/`erf`),
-//   NOT a gelu flavor.
+//   NOT a gelu_tanh flavor.
 unary_kernel!(unary_floor_f32, unary_floor_f32, 4, "unary_floor_f32");
 unary_kernel!(unary_ceil_f32, unary_ceil_f32, 4, "unary_ceil_f32");
 unary_kernel!(unary_round_f32, unary_round_f32, 4, "unary_round_f32");
@@ -414,11 +414,11 @@ macro_rules! unary_inplace_kernel {
 // `unary_*_run` family which the `unary_inplace_kernel!` macro
 // reuses with same-pointer dispatch.
 //
-// The `gelu` entries bind baracuda's `unary_gelu_tanh_*` stems:
-// Fuel's `OpKind::GeluInplace` is contractually the tanh
+// The `gelu_tanh` entries bind baracuda's `unary_gelu_tanh_*` stems:
+// Fuel's `OpKind::GeluTanhInplace` is contractually the tanh
 // approximation, while baracuda's plain `unary_gelu_*` is
-// erf-flavored (that family backs `GeluErfElementwise` /
-// `GeluErfInplace` instead).
+// erf-flavored (that family backs `OpKind::GeluElementwise` /
+// `OpKind::GeluInplace` instead, since S13 — bare `Gelu` means erf).
 //
 // NaN convention (2026-07-08): `OpKind::ReluInplace` binds the
 // NaN-PROPAGATING `unary_relu_propagating_*` family (torch parity),

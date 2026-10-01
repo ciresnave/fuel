@@ -262,7 +262,7 @@ impl WhisperModel {
             d,
             mel_time,
         )?
-        .gelu();
+        .gelu_tanh();
         // conv2: kernel=3, stride=2, padding=1 → [1, d, T/2]
         assert!(
             mel_time.is_multiple_of(2),
@@ -277,7 +277,7 @@ impl WhisperModel {
             d,
             mel_time,
         )?
-        .gelu();
+        .gelu_tanh();
 
         // --- transpose to [1, T/2, d] and add positional ------------------
         let x = x.permute([0, 2, 1_usize])?; // [1, T/2, d]
@@ -674,7 +674,7 @@ fn encoder_layer(
 
     let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, seq)?;
     let h_ff = cfg.encoder_ffn_dim;
-    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, seq)?.gelu();
+    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, seq)?.gelu_tanh();
     let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, seq)?;
     x.add(&ffn)
 }
@@ -748,7 +748,7 @@ fn decoder_layer(
     // --- FFN ----------------------
     let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, q_seq)?;
     let h_ff = cfg.decoder_ffn_dim;
-    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, q_seq)?.gelu();
+    let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, q_seq)?.gelu_tanh();
     let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, q_seq)?;
     x.add(&ffn)
 }
