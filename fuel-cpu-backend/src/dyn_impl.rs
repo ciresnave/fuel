@@ -246,9 +246,19 @@ fn all_unary_neg(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
         HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| -v))),
         HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| -v))),
         HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| -v))),
-        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| -v))),
-        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| -v))),
-        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| -v))),
+        // KISS-Ops §6.4-0005: negating the signed minimum wraps to itself
+        // (INT_MIN has no positive counterpart in two's complement). `-v`
+        // panics under overflow-checks and is UB-adjacent without them;
+        // `wrapping_neg` gives the spec-mandated INT_MIN result unconditionally.
+        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| {
+            v.wrapping_neg()
+        }))),
+        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| {
+            v.wrapping_neg()
+        }))),
+        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| {
+            v.wrapping_neg()
+        }))),
         HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| -v))),
         other => Err(Error::UnsupportedDTypeForOp(other.dtype(), "neg").bt()),
     }
@@ -295,9 +305,18 @@ fn all_unary_abs(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
         HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| v.abs()))),
         HostBuffer::U8(d) => Ok(HostBuffer::U8(unary_map(d, layout, |v: u8| v))),
         HostBuffer::U32(d) => Ok(HostBuffer::U32(unary_map(d, layout, |v: u32| v))),
-        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| v.abs()))),
-        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| v.abs()))),
-        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| v.abs()))),
+        // KISS-Ops §6.4-0005: same INT_MIN rule as `all_unary_neg` above --
+        // `v.abs()` panics under overflow-checks on INT_MIN; `wrapping_abs`
+        // gives the spec-mandated INT_MIN result unconditionally.
+        HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| {
+            v.wrapping_abs()
+        }))),
+        HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| {
+            v.wrapping_abs()
+        }))),
+        HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| {
+            v.wrapping_abs()
+        }))),
         // `float8` has the IDENTICAL two-trait split (`num_traits.rs` :960 raw-bit
         // vs :1125 promoting), so this call also binds to the promoting one -- but
         // it is NOT the same defect and is deliberately left alone. E4M3 encodes
@@ -379,10 +398,52 @@ fn cpu_binary_op(
 ) -> Result<HostBuffer> {
     use BinaryOp::*;
     match op {
-        Add => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| a + b, "add"),
-        Sub => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| a - b, "sub"),
-        Mul => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| a * b, "mul"),
-        Div => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| a / b, "div"),
+        // KISS-Ops §6.2-0002: integer Add/Sub/Mul wrap mod 2^n. Each gets its
+        // own `wrapping_*` i64 closure (`fi`) alongside the existing float
+        // closure (`f`) -- see `all_binary`'s `G` bound for why a shared
+        // float-only closure cannot express this.
+        Add => all_binary(
+            lhs,
+            rhs,
+            lhs_l,
+            rhs_l,
+            |a, b| a + b,
+            |a: i64, b: i64| a.wrapping_add(b),
+            "add",
+        ),
+        Sub => all_binary(
+            lhs,
+            rhs,
+            lhs_l,
+            rhs_l,
+            |a, b| a - b,
+            |a: i64, b: i64| a.wrapping_sub(b),
+            "sub",
+        ),
+        Mul => all_binary(
+            lhs,
+            rhs,
+            lhs_l,
+            rhs_l,
+            |a, b| a * b,
+            |a: i64, b: i64| a.wrapping_mul(b),
+            "mul",
+        ),
+        // Div is unchanged by this fix (KISS's finding was scoped to
+        // Add/Sub/Mul) -- the integer closure reproduces exactly the prior
+        // f64-mediated division (including its float->int saturating
+        // behavior on divide-by-zero), not wrapping div, since Rust's own
+        // integer division panics on divide-by-zero and changing that
+        // behavior is a separate, unasked-for decision.
+        Div => all_binary(
+            lhs,
+            rhs,
+            lhs_l,
+            rhs_l,
+            |a, b| a / b,
+            |a: i64, b: i64| (a as f64 / b as f64) as i64,
+            "div",
+        ),
         // NaN-propagating (torch parity), pinned 2026-07-08
         // (`docs/architecture/10-decisions-log.md`). `all_binary` computes
         // in f64 for every dtype (including integers, which never produce
@@ -407,6 +468,10 @@ fn cpu_binary_op(
                     a
                 }
             },
+            // Integers never produce NaN, so the native i64 comparison is
+            // exactly the float path's non-NaN branch, with no overflow
+            // concern (max/min never leaves the input range).
+            |a: i64, b: i64| a.max(b),
             "maximum",
         ),
         Minimum => all_binary(
@@ -426,21 +491,33 @@ fn cpu_binary_op(
                     a
                 }
             },
+            |a: i64, b: i64| a.min(b),
             "minimum",
         ),
     }
 }
 
-fn all_binary<F>(
+fn all_binary<F, G>(
     lhs: &HostBuffer,
     rhs: &HostBuffer,
     lhs_l: &Layout,
     rhs_l: &Layout,
     f: F,
+    fi: G,
     op_name: &'static str,
 ) -> Result<HostBuffer>
 where
     F: Fn(f64, f64) -> f64 + Copy,
+    // KISS-Ops §6.2-0002: integer arithmetic wraps mod 2^n. The float path
+    // `f` cannot express this (a float intermediate saturates on the final
+    // float->int cast rather than wrapping, and loses precision above 2^53
+    // for i64), so every integer dtype routes through its OWN i64-native
+    // closure instead. `fi` computes in i64 (wide enough to hold any U8/
+    // U32/I16/I32 value exactly, and is I64's own native type), and the
+    // final `as <narrower>` is an INT-to-int cast, which Rust truncates/
+    // wraps rather than saturates -- unlike the float-to-int cast this
+    // replaces.
+    G: Fn(i64, i64) -> i64 + Copy,
 {
     // Dispatch on matching dtype pairs.  Uses binary_map from utils.
     macro_rules! dispatch_pair {
@@ -469,23 +546,23 @@ where
             Ok(HostBuffer::F64(out))
         }
         (HostBuffer::U8(a), HostBuffer::U8(b)) => {
-            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as u8);
+            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| fi(a as i64, b as i64) as u8);
             Ok(HostBuffer::U8(out))
         }
         (HostBuffer::U32(a), HostBuffer::U32(b)) => {
-            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as u32);
+            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| fi(a as i64, b as i64) as u32);
             Ok(HostBuffer::U32(out))
         }
         (HostBuffer::I16(a), HostBuffer::I16(b)) => {
-            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as i16);
+            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| fi(a as i64, b as i64) as i16);
             Ok(HostBuffer::I16(out))
         }
         (HostBuffer::I32(a), HostBuffer::I32(b)) => {
-            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as i32);
+            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| fi(a as i64, b as i64) as i32);
             Ok(HostBuffer::I32(out))
         }
         (HostBuffer::I64(a), HostBuffer::I64(b)) => {
-            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a as f64, b as f64) as i64);
+            let out = binary_map(lhs_l, rhs_l, a, b, fi);
             Ok(HostBuffer::I64(out))
         }
         (HostBuffer::F8E4M3(a), HostBuffer::F8E4M3(b)) => {
@@ -2035,5 +2112,119 @@ mod binary_op_nan_tests {
             panic!("expected F32");
         };
         assert_eq!(min, vec![1.0, 3.0]);
+    }
+
+    /// KISS-Ops §6.2-0002 finding #3: integer Add/Sub/Mul used to compute in
+    /// f64 then cast back with a float->int cast, which SATURATES on overflow
+    /// rather than wrapping mod 2^n. `200u8 + 100u8` is the textbook case:
+    /// the true wrapped result is `44` (`300 mod 256`); the old code produced
+    /// `255` (`300.0 as u8` saturates).
+    #[test]
+    fn cpu_binary_op_integer_add_sub_mul_wrap_mod_2n() {
+        let l = Layout::contiguous(Shape::from_dims(&[1]));
+
+        let a = HostBuffer::U8(vec![200]);
+        let b = HostBuffer::U8(vec![100]);
+        let HostBuffer::U8(sum) = cpu_binary_op(&a, &b, &l, &l, BinaryOp::Add).expect("add") else {
+            panic!("expected U8");
+        };
+        assert_eq!(
+            sum,
+            vec![44],
+            "200u8 + 100u8 must wrap to 44 (300 mod 256), not saturate"
+        );
+
+        let a = HostBuffer::U8(vec![10]);
+        let b = HostBuffer::U8(vec![20]);
+        let HostBuffer::U8(diff) = cpu_binary_op(&a, &b, &l, &l, BinaryOp::Sub).expect("sub")
+        else {
+            panic!("expected U8");
+        };
+        assert_eq!(
+            diff,
+            vec![246],
+            "10u8 - 20u8 must wrap to 246, not saturate to 0"
+        );
+
+        let a = HostBuffer::I32(vec![i32::MAX]);
+        let b = HostBuffer::I32(vec![1]);
+        let HostBuffer::I32(sum) = cpu_binary_op(&a, &b, &l, &l, BinaryOp::Add).expect("add")
+        else {
+            panic!("expected I32");
+        };
+        assert_eq!(
+            sum,
+            vec![i32::MIN],
+            "i32::MAX + 1 must wrap to i32::MIN, not saturate to i32::MAX"
+        );
+
+        let a = HostBuffer::I32(vec![100_000]);
+        let b = HostBuffer::I32(vec![100_000]);
+        let HostBuffer::I32(prod) = cpu_binary_op(&a, &b, &l, &l, BinaryOp::Mul).expect("mul")
+        else {
+            panic!("expected I32");
+        };
+        assert_eq!(
+            prod,
+            vec![100_000i32.wrapping_mul(100_000)],
+            "100_000 * 100_000 (exceeds i32 range) must wrap, not saturate"
+        );
+
+        // Positive control: Maximum/Minimum (unchanged by this fix) still
+        // behave correctly on integers after the signature change.
+        let a = HostBuffer::I32(vec![5]);
+        let b = HostBuffer::I32(vec![9]);
+        let HostBuffer::I32(max) = cpu_binary_op(&a, &b, &l, &l, BinaryOp::Maximum).expect("max")
+        else {
+            panic!("expected I32");
+        };
+        assert_eq!(
+            max,
+            vec![9],
+            "positive control: Maximum still correct on integers"
+        );
+    }
+
+    /// KISS-Ops §6.4-0005 finding #4: negating or taking the absolute value
+    /// of the signed minimum has no positive counterpart in two's complement
+    /// (`-i32::MIN` doesn't fit in `i32`) -- the spec-mandated result is
+    /// `INT_MIN` itself, unconditionally. The un-fixed code used plain `-v`/
+    /// `v.abs()`, which panics under overflow-checks (debug builds) and is a
+    /// silent trap otherwise.
+    #[test]
+    fn cpu_unary_neg_abs_on_int_min_wraps_to_int_min_without_panicking() {
+        let l = Layout::contiguous(Shape::from_dims(&[1]));
+
+        for dtype_buf in [
+            HostBuffer::I16(vec![i16::MIN]),
+            HostBuffer::I32(vec![i32::MIN]),
+            HostBuffer::I64(vec![i64::MIN]),
+        ] {
+            let neg = cpu_unary_op(&dtype_buf, &l, UnaryOp::Neg).expect("neg must not panic");
+            let abs = cpu_unary_op(&dtype_buf, &l, UnaryOp::Abs).expect("abs must not panic");
+            match (&dtype_buf, &neg, &abs) {
+                (HostBuffer::I16(_), HostBuffer::I16(n), HostBuffer::I16(a)) => {
+                    assert_eq!(n[0], i16::MIN, "neg(i16::MIN) must wrap to i16::MIN");
+                    assert_eq!(a[0], i16::MIN, "abs(i16::MIN) must wrap to i16::MIN");
+                }
+                (HostBuffer::I32(_), HostBuffer::I32(n), HostBuffer::I32(a)) => {
+                    assert_eq!(n[0], i32::MIN, "neg(i32::MIN) must wrap to i32::MIN");
+                    assert_eq!(a[0], i32::MIN, "abs(i32::MIN) must wrap to i32::MIN");
+                }
+                (HostBuffer::I64(_), HostBuffer::I64(n), HostBuffer::I64(a)) => {
+                    assert_eq!(n[0], i64::MIN, "neg(i64::MIN) must wrap to i64::MIN");
+                    assert_eq!(a[0], i64::MIN, "abs(i64::MIN) must wrap to i64::MIN");
+                }
+                _ => panic!("dtype mismatch in neg/abs output"),
+            }
+        }
+
+        // Positive control: a normal negative value still negates correctly,
+        // so the wrapping behavior above is specific to the MIN edge case.
+        let buf = HostBuffer::I32(vec![-5]);
+        let HostBuffer::I32(n) = cpu_unary_op(&buf, &l, UnaryOp::Neg).expect("neg") else {
+            panic!("expected I32");
+        };
+        assert_eq!(n, vec![5], "positive control: neg(-5) is still 5");
     }
 }
