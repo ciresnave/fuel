@@ -7450,6 +7450,26 @@ impl Tensor {
         // divisor is the per-position COUNT of valid (non-padded) taps, which
         // varies by output position — sum-pool (an all-ones depthwise kernel)
         // then divide by that count map instead of a constant.
+        //
+        // A window can have ZERO valid taps (e.g. a 1x1 input with padding
+        // >= kernel size): every tap it covers is padding. The count map
+        // would then be zero at that position and `broadcast_div` would
+        // silently emit NaN/inf instead of a defined average. Refuse up
+        // front rather than let that propagate -- computed host-side from
+        // (H, W, kernel, stride, padding) alone, no graph ops needed.
+        if let Some((axis, out_idx)) = first_zero_tap_output_index(h, kh, stride.0, padding.0)
+            .map(|i| ("H", i))
+            .or_else(|| first_zero_tap_output_index(w, kw, stride.1, padding.1).map(|i| ("W", i)))
+        {
+            return Err(fuel_ir::Error::Msg(format!(
+                "avg_pool2d: count_include_pad=false has no valid (non-padded) \
+                 taps for output position {out_idx} on the {axis} axis \
+                 (kernel={kernel:?}, stride={stride:?}, padding={padding:?}, \
+                 input H×W={h}×{w}) — the average would divide by zero",
+            ))
+            .bt());
+        }
+
         let sum_weight = self.const_f32_like(
             vec![1.0_f32; c * kh * kw],
             Shape::from_dims(&[c, 1, kh, kw]),
@@ -7881,6 +7901,30 @@ impl Tensor {
         }
         Ok(work)
     }
+}
+
+/// For a single pooling axis, the first output index (if any) whose window
+/// has zero valid (non-padded) taps — every tap it covers lies outside
+/// `[0, dim)`. Used by [`Tensor::avg_pool2d`]'s `count_include_pad = false`
+/// path to refuse a divide-by-zero divisor instead of emitting NaN/inf.
+///
+/// Pure host-side arithmetic over the pooling shape parameters; computes no
+/// tensor, builds no graph. `out_dim` matches the formula in
+/// [`Tensor::avg_pool2d`]'s doc comment: `(dim + 2*pad - kernel) / stride + 1`.
+fn first_zero_tap_output_index(
+    dim: usize,
+    kernel: usize,
+    stride: usize,
+    pad: usize,
+) -> Option<usize> {
+    let out_dim = (dim + 2 * pad).saturating_sub(kernel) / stride + 1;
+    (0..out_dim).find(|&o| {
+        let start = o as isize * stride as isize - pad as isize;
+        let end = start + kernel as isize;
+        let valid_start = start.max(0);
+        let valid_end = end.min(dim as isize);
+        valid_end <= valid_start
+    })
 }
 
 // ---- safetensors integration -----------------------------------------------
@@ -11147,6 +11191,33 @@ mod phase_a5_factory_tests {
             (ve[0] - 10.0).abs() < 1e-5,
             "count_include_pad=false: top-left = 10/1 (ONE real tap) = 10.0, got {}",
             ve[0]
+        );
+    }
+
+    /// A 1x1 input with padding >= kernel size: EVERY output window is
+    /// entirely padding, so the count-include-pad=false divisor would be
+    /// zero everywhere. Must refuse with a descriptive error rather than
+    /// let `broadcast_div` emit NaN/inf.
+    #[test]
+    fn avg_pool2d_rejects_zero_valid_tap_window() {
+        let x = cpu_f32(vec![5.0], &[1, 1, 1, 1]);
+        let err = x
+            .avg_pool2d((1, 1), (1, 1), (2, 2), false)
+            .expect_err("a window with zero real taps must be rejected, not silently NaN");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("divide by zero") || msg.contains("no valid"),
+            "error should explain the zero-valid-tap cause, got: {msg}"
+        );
+
+        // Positive control: count_include_pad=true has no notion of "valid
+        // taps" (it always divides by kh*kw), so the SAME shape must still
+        // succeed under that mode -- proving the rejection is specific to
+        // the zero-valid-tap case, not a blanket refusal of this shape.
+        let ok = x.avg_pool2d((1, 1), (1, 1), (2, 2), true);
+        assert!(
+            ok.is_ok(),
+            "count_include_pad=true must still accept this shape (uniform divisor, never zero)"
         );
     }
 
