@@ -366,8 +366,8 @@ impl MoondreamModel {
 
 fn activate(x: &Tensor, kind: MoondreamActivation) -> Tensor {
     match kind {
-        MoondreamActivation::GeluPytorchTanh => x.gelu(),
-        MoondreamActivation::Gelu => x.gelu_erf(),
+        MoondreamActivation::GeluPytorchTanh => x.gelu_tanh(),
+        MoondreamActivation::Gelu => x.gelu(),
     }
 }
 

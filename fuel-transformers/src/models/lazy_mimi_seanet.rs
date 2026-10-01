@@ -183,7 +183,7 @@ pub struct SeaNetDecoderWeights {
 fn apply_activation(x: &Tensor, act: SeaNetActivation) -> Tensor {
     match act {
         SeaNetActivation::Elu1 => x.elu(1.0),
-        SeaNetActivation::Gelu => x.gelu(),
+        SeaNetActivation::Gelu => x.gelu_tanh(),
         SeaNetActivation::Relu => x.relu(),
         SeaNetActivation::Silu => x.silu(),
     }

@@ -283,8 +283,8 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         | OpKind::CosElementwise
         | OpKind::SigmoidElementwise
         | OpKind::SiluElementwise
+        | OpKind::GeluTanhElementwise
         | OpKind::GeluElementwise
-        | OpKind::GeluErfElementwise
         | OpKind::ErfElementwise
         | OpKind::StepElementwise
         | OpKind::SignElementwise
@@ -823,8 +823,8 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         | OpKind::ErfInplace
         | OpKind::ExpInplace
         | OpKind::FloorInplace
-        | OpKind::GeluErfInplace
         | OpKind::GeluInplace
+        | OpKind::GeluTanhInplace
         | OpKind::LogInplace
         | OpKind::NegInplace
         | OpKind::RecipInplace

@@ -225,14 +225,24 @@ define_unary_op(utanh, precise::tanh(x));
     init_kernel("const_set_" #tname "_strided", const_set_strided, t)
 
 // Initialize all unary kernels for floating point types
-init_unary_float(gelu_erf, ugelu_erf);
+//
+// S13 KISS-Ops reconciliation (2026-10-01): the bare `gelu` host-name is the
+// EXACT erf formulation (`ugelu_erf` -> `gelu_erf(x)` below), matching the
+// Rust-side `ops!(..., gelu_tanh, ..., gelu, ...)` list in
+// `kernels/unary.rs`, whose macro generates the lookup string from the
+// IDENTIFIER, not from which math it happens to compute. `gelu_tanh` is the
+// tanh approximation (`ugelu` -> `gelu(x)` below) -- note the function NAMES
+// `gelu_erf`/`gelu`/`ugelu_erf`/`ugelu` are internal Metal symbols, kept
+// as-is; only the HOST-VISIBLE name passed to `init_unary_float` (its first
+// argument) carries the cross-language lookup contract and had to swap.
+init_unary_float(gelu, ugelu_erf);
 init_unary_float(sqrt, usqrt);
 init_unary_float(sqr, usqr);
 init_unary_float(neg, uneg);
 init_unary_float(recip, urecip);
 init_unary_float(copy, uid);
 init_unary_float(silu, usilu);
-init_unary_float(gelu, ugelu);
+init_unary_float(gelu_tanh, ugelu);
 init_unary_float(relu, urelu);
 init_unary_float(cos, ucos);
 init_unary_float(sin, usin);

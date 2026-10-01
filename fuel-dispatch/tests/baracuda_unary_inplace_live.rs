@@ -123,7 +123,7 @@ fn baracuda_gelu_inplace_f32() {
     let input = [0.0_f32, 1.0, -1.0];
     let out = run_unary_inplace(
         &table,
-        OpKind::GeluInplace,
+        OpKind::GeluTanhInplace,
         DType::F32,
         fuel_dispatch::baracuda_dispatch::unary::gelu_inplace_f32,
         &input,

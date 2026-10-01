@@ -10,9 +10,9 @@
 //!      `apply_offset_rms_norm`.
 //!   2. **Embedding scaling** — the token embedding is scaled by
 //!      `sqrt(hidden_size)` after lookup (matches reference Gemma).
-//!   3. **GELU FFN** — `down(gelu(gate) * up)` instead of LLaMA's
+//!   3. **GELU FFN** — `down(gelu_tanh(gate) * up)` instead of LLaMA's
 //!      SwiGLU. The activation choice is config-driven; the
-//!      `hidden_activation` field carries either `gelu` or
+//!      `hidden_activation` field carries either `gelu_tanh` or
 //!      `gelu_pytorch_tanh`.
 //!   4. **Optional Q/K/V/O biases** — `attention_bias: bool` switches
 //!      the biases on. Gemma 2B-it leaves them off; some forks turn
@@ -89,7 +89,7 @@ impl GemmaConfig {
 ///
 /// The correction is scoped to the Gemma architecture and lives HERE, at the
 /// resolution site — never in `GemmaActivation` or a global default — because
-/// `gelu → GeluPytorchTanh` is TRUE for Gemma and FALSE for every other
+/// `gelu_tanh → GeluPytorchTanh` is TRUE for Gemma and FALSE for every other
 /// architecture; encoding it more widely would be a guard asserting a false
 /// claim. Overriding an EXPLICIT artifact value (unlike glm4, which filled an
 /// ABSENT one) is the stronger act, and this arch-scoped truth is its licence.
@@ -396,7 +396,7 @@ impl GemmaModel {
         let h1_norm =
             h1.rms_norm_affine_with_offset(&layer.ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
-        // GELU gated FFN: `down(gelu(gate) * up)`.
+        // GELU gated FFN: `down(gelu_tanh(gate) * up)`.
         let gate = layer
             .ffn_gate
             .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
@@ -404,8 +404,8 @@ impl GemmaModel {
             .ffn_up
             .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated_gate = match cfg.hidden_activation {
-            GemmaActivation::Gelu => gate.gelu_erf(),
-            GemmaActivation::GeluPytorchTanh => gate.gelu(),
+            GemmaActivation::Gelu => gate.gelu(),
+            GemmaActivation::GeluPytorchTanh => gate.gelu_tanh(),
         };
         let ffn_in = activated_gate.mul(&up)?;
         let ffn_out =

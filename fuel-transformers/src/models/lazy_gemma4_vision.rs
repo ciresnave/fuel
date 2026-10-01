@@ -302,8 +302,8 @@ impl Gemma4VisionModel {
             .ffn_up
             .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
-            Gemma4VisionActivation::Gelu => gate.gelu_erf(),
-            Gemma4VisionActivation::GeluPytorchTanh => gate.gelu(),
+            Gemma4VisionActivation::Gelu => gate.gelu(),
+            Gemma4VisionActivation::GeluPytorchTanh => gate.gelu_tanh(),
         };
         let ffn_inner = activated.mul(&up)?;
         let ffn_out =

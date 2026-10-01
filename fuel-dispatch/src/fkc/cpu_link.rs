@@ -139,9 +139,11 @@ pub static CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `dtypes: [F32,F64,BF16,F16]`; the importer's §3.4 multi-dtype fan-out then
 /// resolves `<base>_<dtype>` (e.g. `relu_f32`) against this table — so the
 /// `$op` literals below are the byte-kernel BASES, NOT the OpKind names. The
-/// two GELU flavors stay distinct: `gelu_tanh` (`OpKind::GeluElementwise`) has
-/// base `gelu` (wrapper `gelu_elementwise_<dt>`), while `gelu_erf`
-/// (`OpKind::GeluErfElementwise`) has base `gelu_erf`. The `unary` chassis
+/// two GELU flavors stay distinct, and since S13 their OpKind names no
+/// longer match their (unrenamed) byte-kernel bases: `OpKind::GeluTanhElementwise`
+/// (the canonical tanh GELU) has base `gelu` (wrapper `gelu_elementwise_<dt>`),
+/// while `OpKind::GeluElementwise` (bare `Gelu` means erf since S13) has base
+/// `gelu_erf` (wrapper `gelu_erf_elementwise_<dt>`). The `unary` chassis
 /// umbrella is `registrable: false` (§3.10 describe-only) and never resolves,
 /// so it is absent here.
 pub static CPU_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
@@ -201,7 +203,9 @@ pub static CPU_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("step", "f64", step_elementwise_f64_cpu_wrapper),
     ep!("step", "bf16", step_elementwise_bf16_cpu_wrapper),
     ep!("step", "f16", step_elementwise_f16_cpu_wrapper),
-    // gelu_tanh (the canonical Gelu): base `gelu`, wrapper `gelu_elementwise_*`.
+    // gelu_tanh (OpKind::GeluTanhElementwise, tanh approx): base `gelu`
+    // (matches the real byte_kernels::gelu_* symbol -- NOT renamed by S13,
+    // only the Op-level vocabulary was), wrapper `gelu_elementwise_*`.
     ep!("gelu", "f32", gelu_elementwise_f32_cpu_wrapper),
     ep!("gelu", "f64", gelu_elementwise_f64_cpu_wrapper),
     ep!("gelu", "bf16", gelu_elementwise_bf16_cpu_wrapper),
@@ -226,7 +230,9 @@ pub static CPU_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("erf", "f64", erf_elementwise_f64_cpu_wrapper),
     ep!("erf", "bf16", erf_elementwise_bf16_cpu_wrapper),
     ep!("erf", "f16", erf_elementwise_f16_cpu_wrapper),
-    // gelu_erf (exact-erf GELU): base `gelu_erf`, DISTINCT from `gelu` above.
+    // gelu (OpKind::GeluElementwise, exact erf): base `gelu_erf` (matches the
+    // real byte_kernels::gelu_erf_* symbol, unrenamed), DISTINCT from the
+    // tanh block above.
     ep!("gelu_erf", "f32", gelu_erf_elementwise_f32_cpu_wrapper),
     ep!("gelu_erf", "f64", gelu_erf_elementwise_f64_cpu_wrapper),
     ep!("gelu_erf", "bf16", gelu_erf_elementwise_bf16_cpu_wrapper),
@@ -997,9 +1003,11 @@ pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ///   `dtypes: [F32,F64,BF16,F16]`, so the importer's §3.4 multi-dtype fan-out
 ///   resolves `<base>_<dtype>` (`relu_inplace_f32`) against this table — the
 ///   `$op` literals below are the byte-kernel BASES (`<op>_inplace`), NOT the
-///   OpKind names. The two GELU flavors stay distinct: `gelu_inplace`
-///   (`OpKind::GeluInplace`, the canonical tanh GELU) vs `gelu_erf_inplace`
-///   (`OpKind::GeluErfInplace`).
+///   OpKind names -- and since S13 the two no longer share a root spelling at
+///   all. The two GELU flavors stay distinct: base `gelu_inplace` (the real
+///   byte_kernels symbol, unrenamed) now binds `OpKind::GeluTanhInplace` (the
+///   canonical tanh GELU) vs base `gelu_erf_inplace` (also unrenamed) now
+///   binding `OpKind::GeluInplace` (bare `Gelu` means erf since S13).
 /// - **InplaceAffine / ClampInplace / PowIInplace** are per-dtype SINGLE
 ///   sections (one enumerated dtype each), so they do NOT fan — the importer
 ///   resolves their specific `<op>_inplace_<dt>` symbol AS-IS. The affine rows

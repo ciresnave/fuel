@@ -289,7 +289,7 @@ impl FastVitModel {
             None => Ok(feats),
             Some(head) => {
                 let h = apply_conv2d_bias(&feats, &head.conv, image)?;
-                let h = h.gelu_erf();
+                let h = h.gelu();
                 let pooled = h.global_avg_pool_2d()?;
                 let dims = pooled.shape();
                 let dims = dims.dims();
@@ -380,7 +380,7 @@ fn apply_reparam_mobileone(
         y = apply_se(&y, se, anchor)?;
     }
     if m.use_act {
-        y = y.gelu_erf();
+        y = y.gelu();
     }
     Ok(y)
 }
@@ -388,7 +388,7 @@ fn apply_reparam_mobileone(
 fn apply_conv_mlp(x: &Tensor, m: &ConvMlpWeights, anchor: &Tensor) -> Result<Tensor> {
     let x = apply_conv2d_bias(x, &m.conv_norm, anchor)?;
     let x = apply_conv2d_bias(&x, &m.fc1, anchor)?;
-    let x = x.gelu_erf();
+    let x = x.gelu();
     apply_conv2d_bias(&x, &m.fc2, anchor)
 }
 
@@ -490,7 +490,7 @@ fn apply_patch_embed(x: &Tensor, p: &PatchEmbedWeights, anchor: &Tensor) -> Resu
     // The eager port unconditionally absorbs the SE block; the GELU
     // gating is controlled by `lkc_use_act` at the model level —
     // here we always apply it since the timm reference does.
-    x = x.gelu_erf();
+    x = x.gelu();
     apply_reparam_mobileone(&x, &p.mobileone_1x1, anchor)
 }
 

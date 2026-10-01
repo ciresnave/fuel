@@ -4,8 +4,12 @@
 //! Maps Fuel's [`OpTag`] and [`DType`] onto kiss-ref's `Op` / `Dtype`. Only the
 //! floor subset kiss-ref covers is mapped; everything else declines (`None`), so
 //! [`supports`] gates every adapter call. NaN-propagating `Maximum`/`Minimum`
-//! (Fuel's pinned convention) map to kiss `MaxProp`/`MinProp`; Fuel's `Gelu`
-//! (tanh-approx) maps to kiss `GeluTanh` and `GeluErf` (exact) to kiss `Gelu`.
+//! (Fuel's pinned convention) map to kiss `MaxProp`/`MinProp`. Since S13
+//! (the Fuel gelu-naming swap to match KISS-Ops §6.15-0004), Fuel's `Gelu`
+//! (exact erf) and `GeluTanh` (tanh approx) map identically to kiss `Gelu`
+//! and `GeluTanh` — this crossing used to be a deliberate swap and is now
+//! the identity, which is the point: Fuel's naming used to be the odd one
+//! out, and this file was the only place that silently absorbed it.
 
 use fuel_ir::DType;
 use fuel_kernel_seam_types::OpTag;
@@ -42,8 +46,8 @@ pub fn op_to_kiss(op: OpTag) -> Option<Op> {
         T::Relu => Op::Relu,
         T::Sigmoid => Op::Sigmoid,
         T::Silu => Op::Silu,
-        T::Gelu => Op::GeluTanh, // Fuel Gelu = tanh-approx
-        T::GeluErf => Op::Gelu,  // Fuel GeluErf = exact erf
+        T::GeluTanh => Op::GeluTanh,
+        T::Gelu => Op::Gelu,
         T::Step => Op::Step,
         // rounding
         T::Floor => Op::Floor,
@@ -101,8 +105,8 @@ mod tests {
     fn maps_the_floor() {
         assert!(matches!(op_to_kiss(OpTag::Add), Some(Op::Add)));
         assert!(matches!(op_to_kiss(OpTag::Maximum), Some(Op::MaxProp)));
-        assert!(matches!(op_to_kiss(OpTag::Gelu), Some(Op::GeluTanh)));
-        assert!(matches!(op_to_kiss(OpTag::GeluErf), Some(Op::Gelu)));
+        assert!(matches!(op_to_kiss(OpTag::GeluTanh), Some(Op::GeluTanh)));
+        assert!(matches!(op_to_kiss(OpTag::Gelu), Some(Op::Gelu)));
         assert!(matches!(dtype_to_kiss(DType::F32), Some(Dtype::F32)));
         assert!(matches!(dtype_to_kiss(DType::I8), Some(Dtype::I8)));
         assert!(matches!(dtype_to_kiss(DType::BF16), Some(Dtype::Bf16)));

@@ -427,8 +427,8 @@ impl Glm4Model {
         let up = gate_up.slice(2_usize, cfg.intermediate_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
             Glm4Activation::Silu => gate.silu(),
-            Glm4Activation::Gelu => gate.gelu_erf(),
-            Glm4Activation::GeluPytorchTanh => gate.gelu(),
+            Glm4Activation::Gelu => gate.gelu(),
+            Glm4Activation::GeluPytorchTanh => gate.gelu_tanh(),
         };
         let ffn_in = activated.mul(&up)?;
         let ffn_out =
@@ -655,8 +655,8 @@ impl Glm4Model {
         let up = gate_up.slice(2_usize, cfg.intermediate_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
             Glm4Activation::Silu => gate.silu(),
-            Glm4Activation::Gelu => gate.gelu_erf(),
-            Glm4Activation::GeluPytorchTanh => gate.gelu(),
+            Glm4Activation::Gelu => gate.gelu(),
+            Glm4Activation::GeluPytorchTanh => gate.gelu_tanh(),
         };
         let ffn_in = activated.mul(&up)?;
         let ffn_out =

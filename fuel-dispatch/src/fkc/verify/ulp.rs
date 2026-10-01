@@ -461,7 +461,7 @@ pub fn verify_precision_bound(
 /// A transcendental unary atom — one whose hardware value can differ from the
 /// wide-precision (§6.5-0007) truth by more than a correctly-rounded op. IEEE
 /// requires `Sqrt`/`Recip` to be correctly-rounded, so they are NOT here;
-/// `Exp`/`Log`/`Sin`/`Cos`/`Tanh`/`Sigmoid`/`Silu`/`Gelu`/`GeluErf`/`Erf`/
+/// `Exp`/`Log`/`Sin`/`Cos`/`Tanh`/`Sigmoid`/`Silu`/`GeluTanh`/`Gelu`/`Erf`/
 /// `Rsqrt` are. Mirrors `cost.rs`'s `cost_elementwise_unary_transcendental_cpu`
 /// classification so the two never drift.
 #[allow(
@@ -472,7 +472,7 @@ pub(crate) fn is_transcendental(tag: OpTag) -> bool {
     use OpTag::*;
     matches!(
         tag,
-        Exp | Log | Sin | Cos | Tanh | Sigmoid | Silu | Gelu | GeluErf | Erf | Rsqrt
+        Exp | Log | Sin | Cos | Tanh | Sigmoid | Silu | GeluTanh | Gelu | Erf | Rsqrt
     )
 }
 
@@ -815,8 +815,8 @@ mod tests {
             OpTag::Tanh,
             OpTag::Sigmoid,
             OpTag::Silu,
+            OpTag::GeluTanh,
             OpTag::Gelu,
-            OpTag::GeluErf,
             OpTag::Erf,
             OpTag::Rsqrt,
         ] {

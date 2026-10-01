@@ -201,7 +201,7 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::TanhElementwise,
     OpKind::SigmoidElementwise,
     OpKind::SiluElementwise,
-    OpKind::GeluElementwise,
+    OpKind::GeluTanhElementwise,
     OpKind::ReluElementwise,
     OpKind::StepElementwise,
     OpKind::RecipElementwise,
@@ -211,7 +211,7 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::RoundElementwise,
     OpKind::SignElementwise,
     OpKind::ErfElementwise,
-    OpKind::GeluErfElementwise,
+    OpKind::GeluElementwise,
     OpKind::RsqrtElementwise,
     // --- elementwise binary additions ---
     OpKind::PowElementwise,
@@ -609,7 +609,7 @@ impl Judge {
             | OpKind::TanhElementwise
             | OpKind::SigmoidElementwise
             | OpKind::SiluElementwise
-            | OpKind::GeluElementwise
+            | OpKind::GeluTanhElementwise
             | OpKind::ReluElementwise
             | OpKind::StepElementwise
             | OpKind::RecipElementwise
@@ -619,7 +619,7 @@ impl Judge {
             | OpKind::RoundElementwise
             | OpKind::SignElementwise
             | OpKind::ErfElementwise
-            | OpKind::GeluErfElementwise
+            | OpKind::GeluElementwise
             | OpKind::RsqrtElementwise
             | OpKind::Affine
             | OpKind::ClampElementwise
@@ -633,7 +633,7 @@ impl Judge {
                 // components (sub/exp/div over the `[Hq, k_len]` score
                 // tensor). Only these three ops appear on the decomposed
                 // decode-attention softmax path — the rest of the
-                // fanout (sin/cos/tanh/gelu/…) keeps the general ladder.
+                // fanout (sin/cos/tanh/gelu_tanh/…) keeps the general ladder.
                 // Element counts 4096 (sc12) / 131072 (sc17) are both
                 // free in this family's occupied buckets {10,16,20}.
                 if is_decode_softmax_elementwise(op) {
@@ -1471,7 +1471,7 @@ fn canonical_binding_dtypes_for(op: OpKind, dtype: DType) -> Option<Vec<DType>> 
         | OpKind::TanhElementwise
         | OpKind::SigmoidElementwise
         | OpKind::SiluElementwise
-        | OpKind::GeluElementwise
+        | OpKind::GeluTanhElementwise
         | OpKind::ReluElementwise
         | OpKind::StepElementwise
         | OpKind::RecipElementwise
@@ -1481,7 +1481,7 @@ fn canonical_binding_dtypes_for(op: OpKind, dtype: DType) -> Option<Vec<DType>> 
         | OpKind::RoundElementwise
         | OpKind::SignElementwise
         | OpKind::ErfElementwise
-        | OpKind::GeluErfElementwise
+        | OpKind::GeluElementwise
         | OpKind::RsqrtElementwise
         | OpKind::Affine
         | OpKind::ClampElementwise
@@ -1858,7 +1858,7 @@ fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::Te
         //   `[-1, 1]` (sin output) so exp stays in `[0.36, 2.72]` and
         //   sigmoid stays away from saturation (more measurable
         //   precision differences across backends).
-        // - silu/gelu/relu/tanh/neg/sqr/step/sin/cos all accept any f32.
+        // - silu/gelu_tanh/relu/tanh/neg/sqr/step/sin/cos all accept any f32.
         // -------- per-axis reductions --------
         //
         // Reduce along the last dim of `[rows, cols]`, producing
@@ -2114,7 +2114,7 @@ fn is_unary_elementwise(op: OpKind) -> bool {
             | OpKind::TanhElementwise
             | OpKind::SigmoidElementwise
             | OpKind::SiluElementwise
-            | OpKind::GeluElementwise
+            | OpKind::GeluTanhElementwise
             | OpKind::ReluElementwise
             | OpKind::StepElementwise
             | OpKind::RecipElementwise
@@ -2124,7 +2124,7 @@ fn is_unary_elementwise(op: OpKind) -> bool {
             | OpKind::RoundElementwise
             | OpKind::SignElementwise
             | OpKind::ErfElementwise
-            | OpKind::GeluErfElementwise
+            | OpKind::GeluElementwise
             | OpKind::RsqrtElementwise,
     )
 }
@@ -2147,7 +2147,7 @@ fn apply_unary(op: OpKind, a: &crate::lazy::Tensor) -> crate::lazy::Tensor {
         OpKind::TanhElementwise => a.tanh(),
         OpKind::SigmoidElementwise => a.sigmoid(),
         OpKind::SiluElementwise => a.silu(),
-        OpKind::GeluElementwise => a.gelu(),
+        OpKind::GeluTanhElementwise => a.gelu_tanh(),
         OpKind::ReluElementwise => a.relu(),
         OpKind::SinElementwise => a.sin(),
         OpKind::CosElementwise => a.cos(),
@@ -2159,7 +2159,7 @@ fn apply_unary(op: OpKind, a: &crate::lazy::Tensor) -> crate::lazy::Tensor {
         OpKind::RoundElementwise => a.round(),
         OpKind::SignElementwise => a.sign(),
         OpKind::ErfElementwise => a.erf(),
-        OpKind::GeluErfElementwise => a.gelu_erf(),
+        OpKind::GeluElementwise => a.gelu(),
         OpKind::RsqrtElementwise => a.rsqrt(),
         _ => unreachable!("apply_unary called on non-unary OpKind {op:?}"),
     }
@@ -2668,7 +2668,7 @@ mod tests {
             OpKind::TanhElementwise,
             OpKind::SigmoidElementwise,
             OpKind::SiluElementwise,
-            OpKind::GeluElementwise,
+            OpKind::GeluTanhElementwise,
             OpKind::ReluElementwise,
             OpKind::StepElementwise,
             OpKind::RecipElementwise,
@@ -2678,7 +2678,7 @@ mod tests {
             OpKind::RoundElementwise,
             OpKind::SignElementwise,
             OpKind::ErfElementwise,
-            OpKind::GeluErfElementwise,
+            OpKind::GeluElementwise,
             OpKind::RsqrtElementwise,
         ];
         let plan: Vec<_> = unary
@@ -2711,7 +2711,7 @@ mod tests {
             // Elementwise unary ops are bit-stable on cpu vs reference
             // (no accumulation order to worry about). Allow a
             // generous bound so transcendental approximations
-            // (tanh/sigmoid/silu/gelu) on different math libs still
+            // (tanh/sigmoid/silu/gelu_tanh) on different math libs still
             // pass — but a runaway divergence (>1e-3) flags a bug.
             assert!(
                 e.max_rel_error < 1e-3,
