@@ -19,8 +19,8 @@
 
 use super::arch::{Architecture, detect_from_gguf};
 use super::gguf_file::{Content, Value};
-use crate::Result;
 use crate::model_progress::{ProgressEvent, ProgressReporter};
+use fuel_ir::error::Result;
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::fs::File;

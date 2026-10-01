@@ -10,8 +10,8 @@ extern crate intel_mkl_src;
 use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 
-use fuel::lazy::{LlamaConfig, LlamaWeights};
 use fuel::lazy_granite::{GraniteConfig, GraniteModel, GraniteWeights};
+use fuel_model_llama::{LlamaConfig, LlamaWeights};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 
@@ -50,7 +50,9 @@ struct Args {
     #[arg(short = 'n', long, default_value_t = 10000)]
     sample_len: usize,
 
-    /// Disable the key-value cache.
+    /// Unused in the lazy port: KV caching is selected from the graph by
+    /// the optimizer, not overridable here. Retained for CLI compatibility
+    /// with the eager binary.
     #[arg(long)]
     no_kv_cache: bool,
 
@@ -58,7 +60,7 @@ struct Args {
     #[arg(long)]
     prompt: Option<String>,
 
-    /// Use different dtype than f16
+    /// Use different dtype than f16 (ignored in lazy port — always f32).
     #[arg(long)]
     dtype: Option<String>,
 
@@ -75,6 +77,9 @@ struct Args {
     #[arg(long, default_value = "granite7b-instruct")]
     model_type: GraniteModelKind,
 
+    /// Unused in the lazy port: the optimizer selects the attention
+    /// kernel from the graph, not from a CLI flag. Retained for CLI
+    /// compatibility with the eager binary.
     #[arg(long)]
     use_flash_attn: bool,
 

@@ -104,7 +104,8 @@ impl AccuracyClass {
 /// on the target machine — a fast-but-VRAM-heavy path and a slow-but-
 /// host-light path are both legitimately Pareto-optimal. Disk is
 /// reserved for when the Layer-1 cost model grows a disk-footprint
-/// axis; today's [`CostEstimate`] has none, so it stays zero.
+/// axis; today's [`CostEstimate`](crate::fused::CostEstimate) has none, so
+/// it stays zero.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemoryTiers {
     /// Host-RAM footprint (bytes) attributed to a CPU-tier placement.

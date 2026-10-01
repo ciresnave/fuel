@@ -26,9 +26,10 @@
 // Qwen2 0.5B is ~1GB on disk and runs in roughly the same
 // time-per-token range as TinyLlama on a modern desktop CPU.
 
-use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+use fuel::lazy::SamplingStrategy;
 use fuel::lazy_llama2c::Llama2cModel;
 use fuel::{DType, Device};
+use fuel_model_llama::LlamaTokenizer;
 use std::io::Write;
 use std::time::Instant;
 

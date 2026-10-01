@@ -92,13 +92,16 @@ fn dequantize_f32(
     elem_count: usize,
     dev: &CudaDevice,
 ) -> Result<CudaStorage> {
+    dtype.check_dequant_count("dequantize_f32", elem_count, data.len)?;
     let run = pick_dequant(dtype)?;
     let dst = unsafe { dev.alloc::<f32>(elem_count)? };
     let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
     let x_ptr = data.inner.as_raw().0 as *const std::ffi::c_void;
     let y_ptr = dst.as_raw().0 as *mut std::ffi::c_void;
     // SAFETY: device-resident pointers + live stream; workspace null/0
-    // (baracuda dequant kernels don't need scratch).
+    // (baracuda dequant kernels don't need scratch). GAP-333:
+    // `check_dequant_count` has checked that `elem_count` is a whole number
+    // of blocks and that those blocks fit in the `data.len` bytes loaded.
     let status = unsafe {
         run(
             elem_count as i64,
@@ -178,11 +181,48 @@ fn pick_mmvq_batched(dtype: GgmlDType) -> Result<MmvqBatchedRun> {
     })
 }
 
-fn requires_min_ncols_64(dtype: GgmlDType) -> bool {
-    matches!(
-        dtype,
-        GgmlDType::Q4_0 | GgmlDType::Q4_1 | GgmlDType::Q5_0 | GgmlDType::Q5_1 | GgmlDType::Q8_0,
-    )
+/// GAP-334: the batched MMVQ `-sys` runner checks no extent either, and its
+/// type-0/1 kernels read columns in chunks of 64 (baracuda#128). So this path
+/// runs the same shared checks as `gguf::mmvq_run` (with no W offset, stride 1,
+/// and an activation read from the base), plus the one it adds: the
+/// activation holds `m_total` rows of `n_cols`.
+fn validate_batched_mmvq(
+    w_len_bytes: usize,
+    act_len: usize,
+    dtype: GgmlDType,
+    n_cols: usize,
+    n_rows: usize,
+    m_total: usize,
+) -> Result<()> {
+    use crate::baracuda::gguf::{MmvqCall, mmvq_format, validate_mmvq_extent};
+    let op = "baracuda batched MMVQ";
+    // With no rows nothing is read from the activation, so its length is not
+    // checked; the extent check below covers every other case.
+    let act_len_bytes = if m_total == 0 {
+        usize::MAX
+    } else {
+        act_len.saturating_mul(std::mem::size_of::<f32>())
+    };
+    validate_mmvq_extent(
+        op,
+        mmvq_format(dtype)?,
+        MmvqCall {
+            w_len_bytes,
+            w_start_byte_offset: 0,
+            act_len_bytes,
+            act_start_offset: 0,
+            stride_y: 1,
+            ncols: n_cols,
+            nrows: n_rows,
+        },
+    )?;
+    match m_total.checked_mul(n_cols) {
+        Some(need) if need <= act_len => Ok(()),
+        _ => fuel_ir::bail!(
+            "{op}: {m_total} activation rows of {n_cols} need more than the {act_len} \
+             elements supplied"
+        ),
+    }
 }
 
 fn baracuda_batched_mmvq(
@@ -194,11 +234,14 @@ fn baracuda_batched_mmvq(
     m_total: usize,
     dev: &CudaDevice,
 ) -> Result<CudaStorage> {
-    if requires_min_ncols_64(dtype) && n_cols < 64 {
-        fuel_ir::bail!(
-            "baracuda batched MMVQ: dtype {dtype:?} requires n_cols ≥ 64 (got {n_cols}); type-0/1 quants have implicit ncols min in batched mode"
-        )
-    }
+    validate_batched_mmvq(
+        weights.len,
+        activations.len(),
+        dtype,
+        n_cols,
+        n_rows,
+        m_total,
+    )?;
     let run = pick_mmvq_batched(dtype)?;
 
     // Identity routing: 1 expert, top_k = 1, sorted_token_ids = [0..m_total).
@@ -349,11 +392,26 @@ impl QCudaStorage {
     }
 
     pub fn dequantize(&self, elem_count: usize) -> Result<CudaStorage> {
+        /// GAP-333: `buffer` is a `Vec<u8>`, which promises no alignment for
+        /// `T`, so the blocks are read by value rather than borrowed as a
+        /// `&[T]`. Borrowing them in place was undefined behaviour even at a
+        /// correct length.
         fn deq<T: GgmlType>(buffer: &[u8], n: usize, dst: &mut [f32]) {
-            let slice = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const T, n) };
-            let vec = slice.to_vec();
-            T::to_float(&vec, dst)
+            let size = std::mem::size_of::<T>();
+            let blocks: Vec<T> = buffer
+                .chunks_exact(size)
+                .take(n)
+                // SAFETY: each chunk is exactly `size_of::<T>()` bytes, and
+                // every `T` this is called with below is plain data (`f32`,
+                // `f16`, `bf16`, or a block of `f16`/`f32` and integer
+                // arrays), so any byte pattern is a valid `T`.
+                .map(|c| unsafe { std::ptr::read_unaligned(c.as_ptr().cast::<T>()) })
+                .collect();
+            T::to_float(&blocks, dst)
         }
+
+        self.dtype
+            .check_dequant_count("QCudaStorage::dequantize", elem_count, self.data.len)?;
 
         let fast_kernel = matches!(
             self.dtype,
@@ -865,5 +923,93 @@ mod test {
         let vs = cuda_storage.as_cuda_slice::<f32>()?;
         let _vs = dev.clone_dtoh(&vs.as_slice())?;
         Ok(())
+    }
+}
+
+/// GAP-334: the batched path's argument checks, without a device.
+#[cfg(test)]
+mod gap334_batched_tests {
+    use super::*;
+
+    #[track_caller]
+    fn declined(r: Result<()>, needle: &str) {
+        let msg = r.expect_err("expected a decline").to_string();
+        assert!(msg.contains(needle), "wrong decline: {msg}");
+    }
+
+    /// Q4_0, 2 rows of 64 cols (4 blocks, 72 bytes) and 3 tokens of 64.
+    #[test]
+    fn a_full_batched_call_is_accepted() {
+        validate_batched_mmvq(72, 192, GgmlDType::Q4_0, 64, 2, 3).unwrap();
+        validate_batched_mmvq(2 * 144, 256, GgmlDType::Q4K, 256, 2, 1).unwrap();
+    }
+
+    /// The 64-column over-read (baracuda#128). The old check refused only
+    /// `n_cols < 64`, so 96 got through.
+    #[test]
+    fn type01_ncols_not_a_multiple_of_64_is_declined() {
+        declined(
+            validate_batched_mmvq(2 * 3 * 18, 96, GgmlDType::Q4_0, 96, 2, 1),
+            "ncols (96) is not a multiple of 64",
+        );
+        declined(
+            validate_batched_mmvq(18, 32, GgmlDType::Q4_0, 32, 1, 1),
+            "ncols (32) is not a multiple of 64",
+        );
+    }
+
+    #[test]
+    fn weights_one_byte_short_are_declined() {
+        declined(
+            validate_batched_mmvq(71, 192, GgmlDType::Q4_0, 64, 2, 3),
+            "W read needs 72 bytes",
+        );
+    }
+
+    #[test]
+    fn activations_short_of_m_total_rows_are_declined() {
+        declined(
+            validate_batched_mmvq(72, 191, GgmlDType::Q4_0, 64, 2, 3),
+            "3 activation rows of 64 need more than the 191 elements supplied",
+        );
+        declined(
+            validate_batched_mmvq(72, 63, GgmlDType::Q4_0, 64, 2, 1),
+            "activation read needs 256 bytes",
+        );
+    }
+
+    /// With no rows nothing is read from the activation.
+    #[test]
+    fn zero_rows_accept_an_empty_activation() {
+        validate_batched_mmvq(72, 0, GgmlDType::Q4_0, 64, 2, 0).unwrap();
+    }
+
+    #[test]
+    fn a_dtype_without_an_mmvq_kernel_is_declined() {
+        declined(
+            validate_batched_mmvq(4, 4, GgmlDType::F32, 1, 1, 1),
+            "has no baracuda MMVQ kernel",
+        );
+    }
+
+    /// Wiring: `baracuda_batched_mmvq` runs the checks before it launches. An
+    /// F32 "quantized" storage has no batched kernel. With the checks wired,
+    /// the shared format check declines it; without them, `pick_mmvq_batched`
+    /// declines it with a different message. No kernel launches either way.
+    #[test]
+    #[ignore = "live GPU: run via scripts/gpu-run.ps1"]
+    fn batched_mmvq_runs_its_checks_before_launch() {
+        fuel_test_support::require_gpu_run_lock();
+        let dev = fuel_test_support::required_ok("CUDA device 0", CudaDevice::new(0));
+        let w = QCudaStorage::zeros(&dev, 64, GgmlDType::F32).unwrap();
+        let a = dev
+            .storage_from_cpu_storage(&fuel_ir::HostBuffer::F32(vec![0.0; 64]))
+            .unwrap();
+        let layout = crate::Layout::contiguous((1, 64));
+        let err = w
+            .fwd(&crate::Shape::from((1, 64)), &a, &layout)
+            .expect_err("F32 has no batched MMVQ kernel")
+            .to_string();
+        assert!(err.contains("F32 has no baracuda MMVQ kernel"), "{err}");
     }
 }

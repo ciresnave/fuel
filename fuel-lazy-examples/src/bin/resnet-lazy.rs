@@ -29,7 +29,7 @@ use fuel_ir::Shape;
 use std::io::Write;
 use std::time::Instant;
 
-const DEFAULT_MODEL: &str = "lmz/fuel-resnet";
+const DEFAULT_MODEL: &str = "lmz/candle-resnet";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();

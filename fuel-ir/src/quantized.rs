@@ -118,4 +118,98 @@ impl GgmlDType {
             Self::Q2K | Self::Q3K | Self::Q4K | Self::Q5K | Self::Q6K | Self::Q8K => 256,
         }
     }
+
+    /// GAP-333: `numel` dequantized elements are read from `numel / block_size`
+    /// whole blocks of `type_size` bytes. Declines a count that is not a whole
+    /// number of blocks, or whose blocks do not fit in `byte_len`.
+    ///
+    /// The one copy every backend's dequantize calls before it reads, so the
+    /// predicate cannot drift between them.
+    pub fn check_dequant_count(self, op_label: &str, numel: usize, byte_len: usize) -> Result<()> {
+        let block = self.block_size();
+        if !numel.is_multiple_of(block) {
+            return Err(crate::Error::Msg(format!(
+                "{op_label}: element count {numel} is not a multiple of {self:?}'s block size {block}",
+            ))
+            .bt());
+        }
+        match (numel / block).checked_mul(self.type_size()) {
+            Some(need) if need <= byte_len => Ok(()),
+            Some(need) => Err(crate::Error::Msg(format!(
+                "{op_label}: {numel} elements need {need} bytes of {self:?} blocks, but the \
+                 buffer holds {byte_len}",
+            ))
+            .bt()),
+            None => Err(crate::Error::Msg(format!(
+                "{op_label}: {numel} {self:?} elements overflow a byte count"
+            ))
+            .bt()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GgmlDType;
+
+    #[track_caller]
+    fn declined(dtype: GgmlDType, numel: usize, byte_len: usize, needle: &str) {
+        let msg = dtype
+            .check_dequant_count("t", numel, byte_len)
+            .expect_err("expected a decline")
+            .to_string();
+        assert!(msg.contains(needle), "wrong decline: {msg}");
+    }
+
+    #[test]
+    fn whole_blocks_that_fit_are_accepted() {
+        // 2 Q4_0 blocks = 64 elements = 36 bytes; 1 Q4_K block = 256 = 144 bytes.
+        GgmlDType::Q4_0.check_dequant_count("t", 64, 36).unwrap();
+        GgmlDType::Q4K.check_dequant_count("t", 256, 144).unwrap();
+        GgmlDType::F32.check_dequant_count("t", 3, 12).unwrap();
+        GgmlDType::Q4_0.check_dequant_count("t", 0, 0).unwrap();
+    }
+
+    #[test]
+    fn a_partial_block_is_declined() {
+        declined(
+            GgmlDType::Q4_0,
+            65,
+            1_000,
+            "element count 65 is not a multiple of Q4_0's block size 32",
+        );
+        declined(
+            GgmlDType::Q4K,
+            128,
+            1_000,
+            "element count 128 is not a multiple of Q4K's block size 256",
+        );
+    }
+
+    #[test]
+    fn blocks_one_byte_past_the_buffer_are_declined() {
+        declined(
+            GgmlDType::Q4_0,
+            64,
+            35,
+            "64 elements need 36 bytes of Q4_0 blocks, but the buffer holds 35",
+        );
+        declined(
+            GgmlDType::F16,
+            3,
+            5,
+            "3 elements need 6 bytes of F16 blocks",
+        );
+        GgmlDType::F16.check_dequant_count("t", 3, 6).unwrap();
+    }
+
+    #[test]
+    fn an_overflowing_count_is_a_typed_error() {
+        declined(
+            GgmlDType::F32,
+            usize::MAX,
+            usize::MAX,
+            "overflow a byte count",
+        );
+    }
 }

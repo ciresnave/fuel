@@ -69,7 +69,8 @@ pub const SK4_DTYPE_TOKENS: [&str; 24] = [
 /// sk4 tokens that are **active in the standard** but for which Fuel has no
 /// [`DType`] at all.
 ///
-/// Distinct from [`RESERVED_DTYPE_TOKENS`]: these have real computation
+/// Distinct from [`RESERVED_DTYPE_TOKENS`](crate::dtype::RESERVED_DTYPE_TOKENS):
+/// these have real computation
 /// semantics and Fuel simply has not implemented them, so they are a Fuel
 /// omission (GAP-097). Reserved tokens have *no* semantics at this schema
 /// version, so implementing them would be non-conformant rather than helpful.

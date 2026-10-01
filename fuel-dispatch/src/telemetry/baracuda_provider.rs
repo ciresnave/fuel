@@ -40,8 +40,14 @@
 //! | `dtype`            | `dtype`            | via [`map_element_kind`]          |
 //! | `align_bytes`      | `align_bytes`      | Fuel's alignment estimate         |
 //! | (shape.len())      | `rank`             | ≤ [`MAX_RANK`], else decline      |
-//! | —                  | `quant`            | `None` (v1: key ignores quant)    |
 //! | —                  | `symbolic`         | `None` (v1: key ignores symbolic) |
+//!
+//! `OperandDesc` no longer has a `quant` field as of alpha.81's vocabulary
+//! bump — REMOVED, not renamed (`QuantFacts` is absent from `unpopped-vocab
+//! 0.11.0` entirely). It used to map from `—` to `None` (v1 never populated
+//! it) on the same terms as `symbolic` above; that row is deleted rather than
+//! kept and marked stale, since there is no field left for it to describe.
+//! See board item 70.
 //!
 //! The derived `contiguity` / `broadcast` / `flipped` booleans on
 //! `FdxOperandDesc` are DELIBERATELY not read here — Baracuda re-derives those
@@ -117,14 +123,14 @@ fn map_operand(od: &FdxOperandDesc) -> Option<OperandDesc> {
 fn map_element_kind(dt: DType) -> Option<ElementKind> {
     Some(match dt {
         DType::U8 => ElementKind::U8,
-        DType::I8 => ElementKind::S8,
+        DType::I8 => ElementKind::I8,
         DType::I32 => ElementKind::I32,
         DType::I64 => ElementKind::I64,
         DType::BF16 => ElementKind::Bf16,
         DType::F16 => ElementKind::F16,
         DType::F32 => ElementKind::F32,
         DType::F64 => ElementKind::F64,
-        DType::F8E4M3 => ElementKind::Fp8E4M3,
+        DType::F8E4M3 => ElementKind::Fp8E4M3FN,
         // Baracuda ships the matching kind with its own FP8 tensor-core operand
         // tag (`.e5m2.e5m2.f32`), and `dtype_token` already emits `f8e5m2`, so a
         // decline here would suppress structure-key derivation for a whole FP8
@@ -196,9 +202,14 @@ fn map_arch_sku(arch: &str) -> Option<ArchSku> {
     Some(match digits {
         "80" => ArchSku::Sm80,
         "89" => ArchSku::Sm89,
-        // NOT splittable today — see `arch_sku_digits`. `"90"` is the ALIAS;
-        // `"90a"` is this SKU's canonical spelling.
-        "90" | "90a" => ArchSku::Sm90a,
+        // SPLIT per GAP-179's own instructions (step 3 of "what to do when
+        // this breaks", below): alpha.81's vocab bump added `ArchSku::Sm90`,
+        // the portable Hopper baseline distinct from `Sm90a`'s specialized
+        // build. Collapsing them further would now be a WRONG answer, not
+        // just a lossy one — `sm_90` would claim Hopper-specialized kernels
+        // a portable-baseline target was never built for.
+        "90" => ArchSku::Sm90,
+        "90a" => ArchSku::Sm90a,
         _ => return None,
     })
 }
@@ -246,7 +257,9 @@ fn arch_sku_digits(sku: ArchSku) -> &'static str {
     match sku {
         ArchSku::Sm80 => "80",
         ArchSku::Sm89 => "89",
-        // `Sm90a`, NOT `Sm90` — see the split note above.
+        // The trap fired: alpha.81 added `Sm90`, and `map_arch_sku`'s
+        // "90" | "90a" collapse has been split accordingly.
+        ArchSku::Sm90 => "90",
         ArchSku::Sm90a => "90a",
     }
 }
@@ -362,7 +375,14 @@ mod tests {
         assert_eq!(&mapped.strides[..2], &[16i64, 1]);
         assert_eq!(mapped.dtype, ElementKind::F16);
         assert_eq!(mapped.align_bytes, od.align_bytes);
-        assert!(mapped.quant.is_none(), "v1 does not fabricate quant facts");
+        // `quant: Option<QuantFacts>` was REMOVED (not renamed) from
+        // `OperandDesc` in alpha.81's vocabulary bump -- `QuantFacts` is
+        // absent from `unpopped-vocab 0.11.0` entirely, confirmed by reading
+        // its source. This assertion used to pin "v1 does not fabricate
+        // quant facts"; there is no field left to assert that of. The loss
+        // is latent, not a live regression -- fuel's v1 never populated
+        // `quant` -- but the shared wire vocabulary can no longer express it
+        // at all if a future version wanted to. See board item 70.
         assert!(
             mapped.symbolic.is_none(),
             "v1 does not fabricate symbolic facts"
@@ -421,8 +441,11 @@ mod tests {
     fn element_kind_mapping() {
         assert_eq!(map_element_kind(DType::F16), Some(ElementKind::F16));
         assert_eq!(map_element_kind(DType::BF16), Some(ElementKind::Bf16));
-        assert_eq!(map_element_kind(DType::I8), Some(ElementKind::S8));
-        assert_eq!(map_element_kind(DType::F8E4M3), Some(ElementKind::Fp8E4M3));
+        assert_eq!(map_element_kind(DType::I8), Some(ElementKind::I8));
+        assert_eq!(
+            map_element_kind(DType::F8E4M3),
+            Some(ElementKind::Fp8E4M3FN)
+        );
         // GAP-097 residual: this arm was missing entirely, which was a hard
         // E0004 that only `--features telemetry,cuda` could ever surface.
         // Asserted as a MAPPING, not a decline — Baracuda ships the kind, so
@@ -481,37 +504,28 @@ mod tests {
         assert_eq!(seen.len(), 3, "non-vacuity: the known-SKU set is not empty");
     }
 
-    // ⚠️ THIS TEST AND `the_bare_90_alias_...` ARE NOT REDUNDANT, and the
-    // reason is not visible by reading them. MEASURED by sabotage: setting
-    // `arch_sku_digits(Sm90a)` to the ALIAS `"90"` leaves the round-trip above
-    // GREEN — because `map_arch_sku` accepts `"90"` too, so a wrong canonical
-    // spelling still round-trips. Only the explicit
+    // ⚠️ THIS TEST AND `sm90a_canonical_digits_are_90a_not_90` ARE NOT
+    // REDUNDANT, and the reason is not visible by reading them. MEASURED by
+    // sabotage: setting `arch_sku_digits(Sm90a)` to `"90"` leaves the
+    // round-trip above GREEN — because `map_arch_sku` used to accept `"90"`
+    // for `Sm90a` too (before the GAP-179 split below), so a wrong canonical
+    // spelling still round-tripped. Only the explicit
     // `arch_sku_digits(Sm90a) == "90a"` assertion catches it. Do not delete
     // that one on the grounds that this one covers it; it does not.
 
-    /// The one NON-INJECTIVE arm, pinned together with its reason and expiry.
+    /// `Sm90a`'s canonical digits are `"90a"`, not `"90"` — the bare form now
+    /// belongs to `Sm90` since the GAP-179 split (alpha.81 added `ArchSku::Sm90`).
     ///
-    /// `"90"` and `"90a"` are two distinct targets sharing one internal value.
-    /// By Fuel's own cut — injectivity is *mandatory* where the output is an
-    /// IDENTITY, optional where it is a CLASSIFICATION — a capability token
-    /// names a target, so injectivity is required and this arm violates it.
-    ///
-    /// It is nevertheless **correct today**, because there is nothing else to
-    /// map `"90"` onto. That is the distinction this test exists to record:
-    /// LATENT, not live-wrong. [`arch_sku_digits`] is what converts it from a
-    /// fact someone has to remember into a build failure.
+    /// This USED TO be `the_bare_90_alias_is_a_forced_collapse_not_a_mapping`,
+    /// documenting a deliberate non-injective arm (`"90"` and `"90a"` both
+    /// landing on `Sm90a`, because there was nothing else for `"90"` to map
+    /// onto). That arm no longer exists — `map_arch_sku` now injectively maps
+    /// `"90"` -> `Sm90` and `"90a"` -> `Sm90a` — so the collapse-specific
+    /// assertions were removed. This ONE assertion survives because it is
+    /// sabotage-verified as non-redundant with the round-trip test above (see
+    /// the comment there).
     #[test]
-    fn the_bare_90_alias_is_a_forced_collapse_not_a_mapping() {
-        assert_eq!(
-            map_arch_sku("sm_90"),
-            map_arch_sku("sm_90a"),
-            "the collapse is the documented state; if this now FAILS, the arm \
-             was split and this test should be deleted, not repaired"
-        );
-        assert_eq!(map_arch_sku("sm_90"), Some(ArchSku::Sm90a));
-        // `"90a"` is the CANONICAL spelling of that SKU, so `"90"` is the extra
-        // one. That asymmetry is what makes the eventual split mechanical:
-        // `Sm90` takes `"90"` and this arm keeps `"90a"`.
+    fn sm90a_canonical_digits_are_90a_not_90() {
         assert_eq!(arch_sku_digits(ArchSku::Sm90a), "90a");
     }
 
@@ -521,13 +535,11 @@ mod tests {
     fn arch_and_op_class_mapping() {
         assert_eq!(map_arch_sku("sm_80"), Some(ArchSku::Sm80));
         assert_eq!(map_arch_sku("sm_89"), Some(ArchSku::Sm89));
-        // ⚠️ This asserts what the code DOES, not what is RIGHT — the same
-        // shape as the `map_element_kind(U32)` line above before GAP-171 fixed
-        // it. `sm_90` landing on the Hopper-SPECIALIZED SKU is a forced
-        // collapse, not a mapping; see `the_bare_90_alias_is_a_forced_collapse`
-        // for the reason and the expiry. Kept because it pins today's
-        // behaviour, and it MUST change when `ArchSku::Sm90` lands (GAP-179).
-        assert_eq!(map_arch_sku("sm_90"), Some(ArchSku::Sm90a));
+        // GAP-179 fired: alpha.81 added `ArchSku::Sm90`, and `sm_90` now maps
+        // to it rather than colliding with the Hopper-SPECIALIZED `Sm90a` —
+        // this assertion changed accordingly (it used to pin `Some(Sm90a)`
+        // as the forced-collapse behaviour that predated the split).
+        assert_eq!(map_arch_sku("sm_90"), Some(ArchSku::Sm90));
         assert_eq!(map_arch_sku("sm89"), Some(ArchSku::Sm89));
         assert_eq!(map_arch_sku("cpu"), None);
         assert!(matches!(

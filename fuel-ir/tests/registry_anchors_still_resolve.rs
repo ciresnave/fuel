@@ -106,11 +106,6 @@ const DEAD_ANCHOR_BASELINE: &[(&str, &str)] = &[
         "GAP-275",
         "REPLACE WITH `F8E5M2` — 15 hits in the cited file",
     ),
-    // The SUBJECT MOVED FILE: lib.rs -> canonical.rs.
-    (
-        "GAP-287",
-        "REPLACE WITH `unwrap_or` scoped to `canonical.rs` — 10 hits there",
-    ),
     // A PHRASE lost a word: the concept is present, the anchor's " ops" suffix is not.
     (
         "GAP-290",

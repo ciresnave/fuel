@@ -9,9 +9,10 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 
 use fuel::Shape;
-use fuel::lazy::{LlamaConfig, LlamaModel, LlamaWeights, Tensor};
+use fuel::lazy::Tensor;
 use fuel::lazy_llama_full::{Llama3Model, LlamaFullConfig, build_llama3_model};
 use fuel::lazy_snac::{SnacConfig, SnacModel, SnacWeights};
+use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
 use serde::Deserialize;
 use tokenizers::Tokenizer;
 
@@ -76,6 +77,9 @@ struct Args {
     #[arg(long, default_value = "tara")]
     voice: Voice,
 
+    /// Unused in the lazy port: the optimizer selects the attention
+    /// kernel from the graph, not from a CLI flag. Retained for CLI
+    /// compatibility with the eager binary.
     #[arg(long)]
     use_flash_attn: bool,
 }
@@ -206,7 +210,7 @@ fn load_snac() -> Result<(SnacModel, SnacConfig)> {
     let config_path = m.get("config.json")?;
     let cfg_json: HfSnacConfig = serde_json::from_reader(std::fs::File::open(config_path)?)?;
     let cfg: SnacConfig = cfg_json.into();
-    let m = api.model("lmz/fuel-snac".to_string());
+    let m = api.model("lmz/candle-snac".to_string());
     let model_path = m.get("snac_24khz.safetensors")?;
     let st = unsafe { fuel::safetensors::MmapedSafetensors::new(&model_path) }
         .map_err(|e| E::msg(format!("mmap snac safetensors: {e}")))?;

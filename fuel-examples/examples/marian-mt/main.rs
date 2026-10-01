@@ -114,12 +114,12 @@ pub fn main() -> anyhow::Result<()> {
 
     let (config, specials) = config_and_specials(args.which, args.language_pair)?;
     let tokenizer_default_repo = match args.language_pair {
-        LanguagePair::FrEn => "lmz/fuel-marian",
+        LanguagePair::FrEn => "lmz/candle-marian",
         LanguagePair::EnZh
         | LanguagePair::EnHi
         | LanguagePair::EnEs
         | LanguagePair::EnFr
-        | LanguagePair::EnRu => "KeighBee/fuel-marian",
+        | LanguagePair::EnRu => "KeighBee/candle-marian",
     };
     let tokenizer = {
         let tokenizer = match args.tokenizer {

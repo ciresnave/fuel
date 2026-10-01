@@ -88,7 +88,8 @@ pub use crate::models::lazy_mimi_conv::LazyPadMode as TransposePadMode;
 /// non-WN checkpoint.
 ///
 /// Shape note: this is in-axis-first by design (different from
-/// [`bake_weight_norm`], which is out-axis-first for [`Op::Conv1D`]).
+/// [`bake_weight_norm`], which is out-axis-first, `[Cout, Cin/groups, K]`,
+/// for [`Tensor::conv1d`]).
 pub fn bake_weight_norm_transpose(
     weight_g: &[f32],
     weight_v: &[f32],

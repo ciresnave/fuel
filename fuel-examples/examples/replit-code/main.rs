@@ -273,7 +273,7 @@ fn main() -> Result<()> {
     let model_id = args
         .model_id
         .clone()
-        .unwrap_or_else(|| "lmz/fuel-replit-code".to_string());
+        .unwrap_or_else(|| "lmz/candle-replit-code".to_string());
     let revision = args.revision.clone().unwrap_or_else(|| "main".to_string());
     let repo = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
     let tokenizer_filename = match args.tokenizer.clone() {

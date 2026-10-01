@@ -6,7 +6,7 @@
 //! combines a CLIP vision encoder with a LLaMA language model
 //! via a Multi-Modal projector. Like PaliGemma, this is a
 //! composition port — reuses [`crate::models::lazy_clip::ClipVisionModel`]
-//! and [`fuel_core::lazy::LlamaModel`] with a thin projection +
+//! and [`fuel_model_llama::LlamaModel`] with a thin projection +
 //! interleaving layer:
 //!
 //!   ```text
@@ -43,10 +43,10 @@ use crate::models::lazy_clip::{ClipEncoderLayerWeights, ClipVisionConfig, ClipVi
 use fuel_core::Device;
 use fuel_core::Result;
 use fuel_core::lazy::{
-    LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, Tensor, WeightStorage, load_tensor_as_f32,
-    load_transposed_matrix_preserve_dtype,
+    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use fuel_ir::Shape;
+use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
 use serde::Deserialize;
 use std::sync::Arc;
 

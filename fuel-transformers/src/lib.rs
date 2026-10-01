@@ -50,10 +50,10 @@
 //!
 //! ## Ecosystem crates
 //!
-//! - [`fuel-core`](https://docs.rs/fuel-core): tensor primitives.
-//! - [`fuel-nn`](https://docs.rs/fuel-nn): layers, optimizers, VarBuilder.
-//! - [`fuel-datasets`](https://docs.rs/fuel-datasets): training datasets.
-//! - [`fuel-onnx`](https://docs.rs/fuel-onnx): ONNX import.
+//! - [`fuel-core`](https://github.com/ciresnave/fuel/tree/main/fuel-core): tensor primitives.
+//! - [`fuel-nn`](https://github.com/ciresnave/fuel/tree/main/fuel-nn): layers, optimizers, VarBuilder.
+//! - [`fuel-datasets`](https://github.com/ciresnave/fuel/tree/main/fuel-datasets): training datasets.
+//! - [`fuel-onnx`](https://github.com/ciresnave/fuel/tree/main/fuel-onnx): ONNX import.
 
 // GAP-229, extended to this crate by Stage 2's 146-file move (see
 // docs/restructure-migration-design.md): moving the model zoo out from under

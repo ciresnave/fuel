@@ -36,6 +36,9 @@ struct Args {
     #[arg(long)]
     tracing: bool,
 
+    /// Unused in the lazy port: the optimizer selects the attention
+    /// kernel from the graph, not from a CLI flag. Retained for CLI
+    /// compatibility with the eager binary.
     #[arg(long)]
     use_flash_attn: bool,
 
@@ -115,7 +118,7 @@ fn main() -> Result<()> {
     let _device = fuel_examples::device(args.cpu)?;
     let api = Api::new()?;
     let model_id = args.model_id.clone().unwrap_or_else(|| match args.which {
-        Which::V1Orig => "lmz/fuel-stablelm-3b-4e1t".to_string(),
+        Which::V1Orig => "lmz/candle-stablelm-3b-4e1t".to_string(),
         Which::V1 => "stabilityai/stablelm-3b-4e1t".to_string(),
         Which::V1Zephyr => "stabilityai/stablelm-zephyr-3b".to_string(),
         Which::Code => "stabilityai/stable-code-3b".to_string(),

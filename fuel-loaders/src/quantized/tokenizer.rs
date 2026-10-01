@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::quantized::gguf_file;
-use crate::{Context, Error, Result};
+use fuel_ir::error::{Context, Error, Result};
 use std::collections::HashSet;
 use tokenizers::{
     AddedToken, Tokenizer,
@@ -39,7 +39,7 @@ fn gguf_value_to_u32(v: &gguf_file::Value) -> Result<u32> {
         I32(v) => Ok(*v as u32),
         U64(v) => Ok(*v as u32),
         I64(v) => Ok(*v as u32),
-        _ => crate::bail!("expected numeric value for token type/id, got {v:?}"),
+        _ => fuel_ir::bail!("expected numeric value for token type/id, got {v:?}"),
     }
 }
 
@@ -209,7 +209,7 @@ impl TokenizerFromGguf for Tokenizer {
             .to_string()?
             .to_lowercase();
         if model_kind != "gpt2" {
-            crate::bail!("unsupported tokenizer model `{model_kind}`");
+            fuel_ir::bail!("unsupported tokenizer model `{model_kind}`");
         }
 
         let tokens = value_to_string_array(

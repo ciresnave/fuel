@@ -9,8 +9,8 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 use std::io::Write;
 
-use fuel::lazy::{LlamaConfig, LlamaWeights};
 use fuel::lazy_smollm3::{SmolLm3Config, SmolLm3Model, SmolLm3Weights};
+use fuel_model_llama::{LlamaConfig, LlamaWeights};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 

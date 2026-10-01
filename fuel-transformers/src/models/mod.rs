@@ -8,6 +8,19 @@
 //! NOT move: fuel-nn (at/below the Models tier) references it, so moving it would
 //! create an upward edge and cycle. See docs/restructure-migration-design.md §Stage 2.
 
+// GAP-326: the validated-entry helper for model inputs. Crate-private; the
+// `fuel` facade's glob re-export does not reach it.
+// The `expect` retires itself: once a model calls `image_nchw`, the non-test
+// build is no longer dead and clippy reports the expectation unfulfilled.
+// It is scoped to non-test builds because the helper's own tests use it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "GAP-326 PR1 lands the helper; PR2 routes the vision models through it"
+    )
+)]
+pub(crate) mod input_guard;
 pub mod lazy_based;
 pub mod lazy_beit;
 pub mod lazy_bert;

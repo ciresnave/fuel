@@ -1,0 +1,61 @@
+# GAP-326 membership: functions that held an inlined rank/channel guard at 9756a1ae.
+# 69 guard sites in 55 functions. DERIVED, do not edit by hand:
+#   python scripts/sharedop_assert_census.py --gap326-derive 9756a1ae --write
+# A recorded function that moves or is renamed fails the gate until it is
+# re-pointed here, with the reason in the commit.
+# path<TAB>impl header (- for a free fn)<TAB>fn<TAB>classes
+fuel-transformers/src/models/lazy_beit.rs	impl BeitModel	forward	rank4
+fuel-transformers/src/models/lazy_beit.rs	impl BeitModel	forward_intermediate_layers	rank4
+fuel-transformers/src/models/lazy_blip_vision.rs	impl BlipVisionModel	forward	chan3,rank4
+fuel-transformers/src/models/lazy_clip.rs	impl ClipVisionModel	forward	rank4
+fuel-transformers/src/models/lazy_clip.rs	impl ClipVisionModel	forward_intermediate_layers	rank4
+fuel-transformers/src/models/lazy_convmixer.rs	impl ConvMixerModel	run_backbone	chan3,rank4
+fuel-transformers/src/models/lazy_dac.rs	impl DacModel	decode_codes	rank3
+fuel-transformers/src/models/lazy_dinov2.rs	impl Dinov2Model	forward	rank4
+fuel-transformers/src/models/lazy_dinov2.rs	impl Dinov2Model	forward_intermediate_layers	rank4
+fuel-transformers/src/models/lazy_dinov2reg4.rs	impl Dinov2Reg4Model	forward	rank4
+fuel-transformers/src/models/lazy_dinov2reg4.rs	impl Dinov2Reg4Model	forward_intermediate_layers	rank4
+fuel-transformers/src/models/lazy_efficientnet.rs	impl EfficientNetModel	run_backbone	chan3,rank4
+fuel-transformers/src/models/lazy_efficientvit.rs	impl EfficientVitModel	forward	chan3,rank4
+fuel-transformers/src/models/lazy_efficientvit.rs	impl EfficientVitModel	forward_features	chan3,rank4
+fuel-transformers/src/models/lazy_encodec.rs	impl EncodecModel	decode_codes	rank3
+fuel-transformers/src/models/lazy_eva2.rs	impl EvaModel	forward	chan3,rank4
+fuel-transformers/src/models/lazy_fastvit.rs	impl FastVitModel	forward_features	chan3,rank4
+fuel-transformers/src/models/lazy_gemma.rs	impl GemmaModel	forward_embeds	rank3
+fuel-transformers/src/models/lazy_gemma.rs	impl GemmaModel	forward_hidden_embeds	rank3
+fuel-transformers/src/models/lazy_gemma4_vision.rs	impl Gemma4VisionModel	forward	rank4
+fuel-transformers/src/models/lazy_glm4.rs	-	apply_interleaved_partial_rope	rank4
+fuel-transformers/src/models/lazy_hiera.rs	impl HieraModel	forward	chan3,rank4
+fuel-transformers/src/models/lazy_llama_full.rs	impl Llama3Model	run_backbone_embeds	rank3
+fuel-transformers/src/models/lazy_lstm.rs	-	lstm_layer_forward	rank3
+fuel-transformers/src/models/lazy_metavoice.rs	impl MetaVoiceModel	forward_embeds	rank3
+fuel-transformers/src/models/lazy_metavoice_speaker_encoder.rs	impl SpeakerEncoderModel	forward	rank3
+fuel-transformers/src/models/lazy_mimi_transformer.rs	impl ProjectedTransformerModel	forward	rank3
+fuel-transformers/src/models/lazy_mistral.rs	impl MistralModel	forward_embeds	rank3
+fuel-transformers/src/models/lazy_mistral.rs	impl MistralModel	forward_hidden_embeds	rank3
+fuel-transformers/src/models/lazy_mistral.rs	impl MistralModel	forward_hidden_embeds_with_mask_impl	rank3
+fuel-transformers/src/models/lazy_mixformer.rs	impl MixFormerModel	forward_embeds	rank3
+fuel-transformers/src/models/lazy_mixformer.rs	impl MixFormerModel	forward_hidden_embeds	rank3
+fuel-transformers/src/models/lazy_mobilenetv4.rs	impl Mv4Model	forward	chan3,rank4
+fuel-transformers/src/models/lazy_mobilenetv4.rs	impl Mv4Model	forward_features	chan3,rank4
+fuel-transformers/src/models/lazy_mobileone.rs	impl MobileOneModel	run_backbone	chan3,rank4
+fuel-transformers/src/models/lazy_moondream.rs	impl MoondreamModel	vision_encode	rank4
+fuel-transformers/src/models/lazy_nomic_bert.rs	-	apply_rope	rank4
+fuel-transformers/src/models/lazy_paddleocr_vl_vision.rs	impl PaddleOcrVlNaVitModel	forward	rank4
+fuel-transformers/src/models/lazy_paddleocr_vl_vision.rs	impl PaddleOcrVlVisionModel	forward	rank4
+fuel-transformers/src/models/lazy_parler_tts.rs	impl ParlerDecoderModel	forward	rank3
+fuel-transformers/src/models/lazy_pixtral.rs	impl PixtralModel	encode_vision	rank4
+fuel-transformers/src/models/lazy_qwen2.rs	impl Qwen2Model	forward_hidden_embeds_with_mask	rank3
+fuel-transformers/src/models/lazy_qwen2.rs	impl Qwen2Model	run_backbone_embeds	rank3
+fuel-transformers/src/models/lazy_repvgg.rs	impl RepVggModel	run_backbone	chan3,rank4
+fuel-transformers/src/models/lazy_resnet.rs	impl ResNetModel	run_backbone	chan3,rank4
+fuel-transformers/src/models/lazy_sam.rs	-	apply_attention	rank4
+fuel-transformers/src/models/lazy_sam.rs	-	apply_two_way_transformer	rank4
+fuel-transformers/src/models/lazy_sam.rs	-	layer_norm_2d	rank4
+fuel-transformers/src/models/lazy_siglip.rs	impl SiglipVisionModel	forward	rank4
+fuel-transformers/src/models/lazy_siglip.rs	impl SiglipVisionModel	forward_intermediate_layers	rank4
+fuel-transformers/src/models/lazy_vgg.rs	impl VggModel	run_backbone	chan3,rank4
+fuel-transformers/src/models/lazy_vit.rs	impl VitModel	forward	rank4
+fuel-transformers/src/models/lazy_vit.rs	impl VitModel	forward_intermediate_layers	rank4
+fuel-transformers/src/models/lazy_voxtral.rs	impl VoxtralTextModel	forward_embeds	rank3
+fuel-transformers/src/models/lazy_whisper.rs	-	decoder_layer	rank3

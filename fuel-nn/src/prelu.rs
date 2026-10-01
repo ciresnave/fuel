@@ -160,7 +160,7 @@ impl PReLU {
     /// `None` for the shared-scalar form (matching the eager
     /// `prelu(num_channels, vb)` factory).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         num_parameters: Option<usize>,
     ) -> Result<Self> {

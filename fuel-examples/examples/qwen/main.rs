@@ -8,9 +8,10 @@ extern crate accelerate_src;
 use anyhow::{Error as E, Result};
 use clap::Parser;
 
-use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+use fuel::lazy::SamplingStrategy;
 use fuel::lazy_llama2c::Llama2cModel;
 use fuel::{DType, Device};
+use fuel_model_llama::LlamaTokenizer;
 use std::io::Write;
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum, PartialEq, Eq)]

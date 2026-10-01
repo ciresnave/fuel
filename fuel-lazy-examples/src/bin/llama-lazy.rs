@@ -39,9 +39,10 @@
 // later, vendor-tuned BLAS through future `fuel-intelcpu-backend`
 // / `fuel-amdcpu-backend` crates.
 
-use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+use fuel::lazy::SamplingStrategy;
 use fuel::lazy_llama2c::Llama2cModel;
 use fuel::{DType, Device};
+use fuel_model_llama::LlamaTokenizer;
 use std::io::Write;
 use std::time::Instant;
 

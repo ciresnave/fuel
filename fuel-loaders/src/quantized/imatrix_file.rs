@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::Result;
+use fuel_ir::error::Result;
 
 /// Load an imatrix file and return `name -> normalized activations`.
 ///

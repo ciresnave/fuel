@@ -13,19 +13,11 @@
 //! `byte_storage_live`, which share a process and would race the global counter.
 
 use fuel_vulkan_backend::{
-    DeviceSelection, VulkanBackend, mapped_host_visible_bytes, mapped_host_visible_peak_bytes,
-    reset_host_mapped_peak,
+    mapped_host_visible_bytes, mapped_host_visible_peak_bytes, reset_host_mapped_peak,
 };
 
-fn backend_or_skip() -> Option<VulkanBackend> {
-    match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
-        Ok(b) => Some(b),
-        Err(e) => {
-            eprintln!("no Vulkan device; skipping: {e:?}");
-            None
-        }
-    }
-}
+mod live_adapter;
+use live_adapter::backend_or_skip;
 
 /// Both transfer directions must (a) lift the process-wide mapped-byte PEAK by at
 /// least the staged size while the staging buffer is mapped, and (b) return the

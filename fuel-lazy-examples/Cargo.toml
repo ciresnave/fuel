@@ -11,6 +11,8 @@
 [dependencies]
     fuel = { workspace = true }
     fuel-ir = { workspace = true }
+    fuel-model-llama = { workspace = true }
+    fuel-model-phi = { workspace = true }
     fuel-backend-contract = { workspace = true }
     fuel-cpu-backend = { workspace = true }
     fuel-graph = { workspace = true }

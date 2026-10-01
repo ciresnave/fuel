@@ -37,8 +37,8 @@
 //!
 //! ## Ecosystem crates
 //!
-//! - [`fuel-core`](https://docs.rs/fuel-core): tensor primitives used by outputs.
-//! - [`fuel-transformers`](https://docs.rs/fuel-transformers): native model
+//! - [`fuel-core`](https://github.com/ciresnave/fuel/tree/main/fuel-core): tensor primitives used by outputs.
+//! - [`fuel-transformers`](https://github.com/ciresnave/fuel/tree/main/fuel-transformers): native model
 //!   implementations that do not require ONNX export.
 //!
 

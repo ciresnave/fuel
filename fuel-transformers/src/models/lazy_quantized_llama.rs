@@ -17,7 +17,7 @@
 //! Construction paths:
 //! - [`QuantizedLlama3Model::from_f32_bake`] — take f32 source weights
 //!   (same `[in, out]` layout as
-//!   [`fuel_core::lazy::LlamaWeights`](fuel_core::lazy::LlamaWeights)) and
+//!   [`fuel_model_llama::LlamaWeights`](fuel_model_llama::LlamaWeights)) and
 //!   quantize on the fly. Used by tests and by callers that already
 //!   have unquantized weights in memory.
 //! - [`QuantizedLlama3Model::load_from_mmapped`] — convenience that
@@ -48,7 +48,8 @@
 
 use crate::models::lazy_llama_full::{Llama3Model, LlamaFullConfig};
 use fuel_core::Result;
-use fuel_core::lazy::{LayerWeights, LlamaModel, LlamaWeights, Tensor, WeightStorage};
+use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
+use fuel_model_llama::{LlamaModel, LlamaWeights};
 use std::sync::Arc;
 
 /// GGUF-quantized LLaMA-family causal language model with optional
@@ -499,81 +500,7 @@ fn dequant_bytes_to_f32(
     dt: fuel_core::quantized::GgmlDType,
     name: &str,
 ) -> Result<Vec<f32>> {
-    use fuel_core::quantized::GgmlDType;
-    use half::{bf16, f16};
-    match dt {
-        GgmlDType::F32 => {
-            if !bytes.len().is_multiple_of(4) {
-                return Err(fuel_core::Error::Msg(format!(
-                    "gguf {name}: F32 byte count {} not multiple of 4",
-                    bytes.len(),
-                ))
-                .bt());
-            }
-            Ok(bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect())
-        }
-        GgmlDType::F16 => {
-            if !bytes.len().is_multiple_of(2) {
-                return Err(fuel_core::Error::Msg(format!(
-                    "gguf {name}: F16 byte count {} not multiple of 2",
-                    bytes.len(),
-                ))
-                .bt());
-            }
-            Ok(bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
-                .collect())
-        }
-        GgmlDType::BF16 => {
-            if !bytes.len().is_multiple_of(2) {
-                return Err(fuel_core::Error::Msg(format!(
-                    "gguf {name}: BF16 byte count {} not multiple of 2",
-                    bytes.len(),
-                ))
-                .bt());
-            }
-            Ok(bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32())
-                .collect())
-        }
-        GgmlDType::Q4_0 => Ok(cpu_dequant_q4_0_bytes(bytes)),
-        other => Err(fuel_core::Error::Msg(format!(
-            "gguf {name}: dequant of {other:?} is not supported by lazy_quantized_llama",
-        ))
-        .bt()),
-    }
-}
-
-fn cpu_dequant_q4_0_bytes(bytes: &[u8]) -> Vec<f32> {
-    use half::f16;
-    let bpb = 18usize;
-    let epb = 32usize;
-    let n_blocks = bytes.len() / bpb;
-    let mut out = vec![0.0_f32; n_blocks * epb];
-    for b in 0..n_blocks {
-        let off = b * bpb;
-        let d = f16::from_le_bytes([bytes[off], bytes[off + 1]]).to_f32();
-        let base = b * epb;
-        for kk in 0..16 {
-            let packed = bytes[off + 2 + kk];
-            let lo = (packed & 0x0F) as i32 - 8;
-            let hi = ((packed >> 4) & 0x0F) as i32 - 8;
-            out[base + kk] = lo as f32 * d;
-            out[base + 16 + kk] = hi as f32 * d;
-        }
-    }
-    out
+    fuel_quantized::dequant_ggml_bytes(bytes, dt, name)
 }
 
 #[cfg(test)]
@@ -581,8 +508,8 @@ mod tests {
     use super::*;
     use crate::models::lazy_llama_full::{Llama3RopeConfig, Llama3RopeType, LlamaEosToks};
     use fuel_core::Device;
-    use fuel_core::lazy::LlamaConfig;
     use fuel_ir::Shape;
+    use fuel_model_llama::LlamaConfig;
 
     fn test_cfg() -> LlamaFullConfig {
         LlamaFullConfig {
