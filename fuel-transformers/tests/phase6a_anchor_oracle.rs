@@ -22,8 +22,9 @@
 // the dimension decomposition and are intentional, not simplifiable.
 #![allow(clippy::identity_op)]
 
-use fuel_core::lazy::{LayerWeights, LlamaWeights, Tensor};
+use fuel_core::lazy::{LayerWeights, Tensor};
 use fuel_ir::Shape;
+use fuel_model_llama::LlamaWeights;
 use fuel_transformers::models::lazy_convnext::ConvNextModel;
 use fuel_transformers::models::lazy_llama2c::{Llama2cConfig, Llama2cModel};
 use std::sync::Arc;

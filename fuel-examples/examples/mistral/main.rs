@@ -8,8 +8,8 @@ extern crate accelerate_src;
 use anyhow::{Error as E, Result};
 use clap::Parser;
 
-use fuel::lazy::{LlamaConfig, LlamaWeights};
 use fuel::lazy_mistral::{MistralConfig, MistralModel, MistralWeights};
+use fuel_model_llama::{LlamaConfig, LlamaWeights};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 use tokenizers::Tokenizer;
@@ -43,6 +43,9 @@ struct Args {
     #[arg(long)]
     tracing: bool,
 
+    /// Unused in the lazy port: the optimizer selects the attention
+    /// kernel from the graph, not from a CLI flag. Retained for CLI
+    /// compatibility with the eager binary.
     #[arg(long)]
     use_flash_attn: bool,
 

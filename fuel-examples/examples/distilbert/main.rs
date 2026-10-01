@@ -96,7 +96,12 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let _guard = setup_tracing(&args);
     let _ = fuel_examples::device(args.cpu)?;
-    let _ = args.n;
+    if args.n != 1 {
+        eprintln!(
+            "warning: --n is ignored -- the lazy port runs the prompt exactly once regardless \
+             of this value (the eager binary's repeat-for-timing loop was not ported)."
+        );
+    }
 
     let (model_id, revision) = resolve_model_and_revision(&args);
     let (_config_path, tokenizer_path, weights_path) = download_model_files(&model_id, &revision)?;

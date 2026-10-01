@@ -33,10 +33,11 @@ fn main() {
 
 #[cfg(feature = "vulkan")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use fuel::lazy::{LlamaTokenizer, WeightStorage};
+    use fuel::lazy::WeightStorage;
     use fuel::lazy_llama2c::Llama2cModel;
     use fuel::train::{self, OptimizerConfig, Parameter, TrainState};
     use fuel::{Device, Shape};
+    use fuel_model_llama::LlamaTokenizer;
     use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     use std::io::Write;
     use std::sync::Arc;

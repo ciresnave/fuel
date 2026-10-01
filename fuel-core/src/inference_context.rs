@@ -465,6 +465,159 @@ impl KvCache {
             self.cached_len = new_len;
         }
     }
+
+    /// Write host-supplied K/V bytes into layer `layer_idx`'s `slot` buffer at
+    /// position range `[start, start+n)` — the `KvCache`-side sibling of
+    /// [`DeviceKvPool::write_block_bytes`](crate::kv_block_pool_device::DeviceKvPool::write_block_bytes).
+    ///
+    /// Builds a throwaway `Op::Const`(bytes) → `Op::WriteSlice` graph and
+    /// realizes it ONCE into the SAME buffer `Arc` this cache already holds —
+    /// it does **not** replace the Arc, so unlike [`Self::set_layer`] this
+    /// does **not** touch [`Self::alloc_id`] or [`Self::device_location`]: a
+    /// [`DecodeSession`] already welded to this cache's buffers (via
+    /// `base_cache`) sees the write transparently on its next token, with no
+    /// rebind and no rebuild — the write lands in the exact buffer the held
+    /// plan's `Op::WriteSlice` nodes already target.
+    ///
+    /// `bytes` is `n * n_kv_heads * head_dim * dtype.size_in_bytes()` raw
+    /// little-endian element bytes, row-major `[1, n_kv_heads, n, head_dim]`
+    /// — **HEAD-MAJOR** (position is axis 2). This is NOT the same layout as
+    /// [`DeviceKvPool`](crate::kv_block_pool_device::DeviceKvPool)'s
+    /// **position-major** `[block_size, Hkv, D]` block layout: a caller
+    /// moving bytes from the paged pool into a `KvCache` must transpose, a
+    /// plain memcpy silently produces wrong attention.
+    ///
+    /// `Err` (never a panic): this cache has no fixed dtype/capacity (built
+    /// via [`Self::with_dims`] rather than [`Self::with_capacity`] — this
+    /// primitive is `with_capacity`-only, since the legacy grow-by-replacement
+    /// path has no stable buffer to write into); `layer_idx` is out of range
+    /// or unpopulated; `start + n` exceeds the allocated `max_seq_len`; or
+    /// `bytes.len()` doesn't match the expected size for `n` positions.
+    pub fn write_bytes(
+        &self,
+        layer_idx: usize,
+        slot: KvSlot,
+        start: usize,
+        n: usize,
+        bytes: &[u8],
+        device: &Device,
+    ) -> Result<()> {
+        let dtype = self.dtype.ok_or_else(|| {
+            Error::Msg(
+                "KvCache::write_bytes: cache has no fixed dtype — not built via with_capacity"
+                    .into(),
+            )
+            .bt()
+        })?;
+        let max_seq_len = self.max_seq_len.ok_or_else(|| {
+            Error::Msg(
+                "KvCache::write_bytes: cache has no fixed capacity — not built via with_capacity"
+                    .into(),
+            )
+            .bt()
+        })?;
+        if start + n > max_seq_len {
+            return Err(Error::Msg(format!(
+                "KvCache::write_bytes: range [{start}, {}) exceeds max_seq_len {max_seq_len}",
+                start + n,
+            ))
+            .bt());
+        }
+        let elem_bytes = kv_cache_dtype_elem_bytes(dtype)?;
+        let want = n * self.n_kv_heads * self.head_dim * elem_bytes;
+        if bytes.len() != want {
+            return Err(Error::Msg(format!(
+                "KvCache::write_bytes: {} bytes != expected {want} \
+                 ([1, n_kv_heads {}, n {n}, head_dim {}] for {dtype:?})",
+                bytes.len(),
+                self.n_kv_heads,
+                self.head_dim,
+            ))
+            .bt());
+        }
+        let layer = self.layer(layer_idx).ok_or_else(|| {
+            Error::Msg(format!(
+                "KvCache::write_bytes: layer {layer_idx} out of range or unpopulated"
+            ))
+            .bt()
+        })?;
+        let buf = match slot {
+            KvSlot::K => Arc::clone(&layer.k),
+            KvSlot::V => Arc::clone(&layer.v),
+        };
+        let full_shape = Shape::from_dims(&[1, self.n_kv_heads, max_seq_len, self.head_dim]);
+        let src = kv_cache_const_from_bytes(
+            dtype,
+            bytes,
+            Shape::from_dims(&[1, self.n_kv_heads, n, self.head_dim]),
+            device,
+        )?;
+        let dest = src.const_placeholder_like(full_shape, dtype);
+        let ranges = vec![
+            (0, 1),
+            (0, self.n_kv_heads),
+            (start, start + n),
+            (0, self.head_dim),
+        ];
+        let post = dest.write_slice(&src, ranges)?;
+        let mut cache = StorageCache::new();
+        cache.insert(dest.node_id(), buf);
+        let _ = crate::pipelined_bridge::realize_one_bytes_with_initial(
+            post.graph_handle(),
+            post.node_id(),
+            device,
+            cache,
+        )?;
+        Ok(())
+    }
+}
+
+/// Byte width of one `KvCache` element for byte-level movement — the
+/// `KvCache`-side sibling of
+/// [`DeviceKvPool::dtype_elem_bytes`](crate::kv_block_pool_device::DeviceKvPool).
+/// F32/BF16 only, matching [`KvCache::write_bytes`]'s supported dtypes.
+fn kv_cache_dtype_elem_bytes(dtype: DType) -> Result<usize> {
+    match dtype {
+        DType::F32 => Ok(4),
+        DType::BF16 => Ok(2),
+        other => Err(Error::Msg(format!(
+            "KvCache: byte movement unsupported for dtype {other:?} (F32/BF16)",
+        ))
+        .bt()),
+    }
+}
+
+/// Build a fresh-graph `Op::Const` of `dtype` from raw little-endian element
+/// bytes — the `KvCache`-side sibling of
+/// [`DeviceKvPool::const_from_bytes`](crate::kv_block_pool_device::DeviceKvPool).
+/// Dispatches `dtype` to the matching typed graph constructor via
+/// alignment-safe `try_cast_slice` (never panics).
+fn kv_cache_const_from_bytes(
+    dtype: DType,
+    bytes: &[u8],
+    shape: Shape,
+    device: &Device,
+) -> Result<crate::lazy::Tensor> {
+    match dtype {
+        DType::F32 => {
+            let v: &[f32] = bytemuck::try_cast_slice(bytes).map_err(|e| {
+                Error::Msg(format!("kv_cache_const_from_bytes: f32 cast: {e:?}")).bt()
+            })?;
+            crate::lazy::Tensor::from_f32(v.to_vec(), shape, device)
+        }
+        DType::BF16 => {
+            let v: &[half::bf16] = bytemuck::try_cast_slice(bytes).map_err(|e| {
+                Error::Msg(format!("kv_cache_const_from_bytes: bf16 cast: {e:?}")).bt()
+            })?;
+            let anchor =
+                crate::lazy::Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), device)?;
+            crate::lazy::Tensor::from_bf16_on(anchor.graph(), v.to_vec(), shape, device)
+        }
+        other => Err(Error::Msg(format!(
+            "kv_cache_const_from_bytes: unsupported dtype {other:?} (F32/BF16)",
+        ))
+        .bt()),
+    }
 }
 
 /// One layer's `(K, V)` cache storages. A KV cache is a `Vec` of these, one
@@ -481,7 +634,7 @@ type KvStoragePair = (Arc<RwLock<Storage>>, Arc<RwLock<Storage>>);
 /// decode graph.
 ///
 /// Returns `Err` if any allocation fails (fail-on-OOM, spec #6).
-pub(crate) fn alloc_batched_kv(
+pub fn alloc_batched_kv(
     k: usize,
     n_layers: usize,
     n_kv_heads: usize,
@@ -1524,7 +1677,8 @@ impl DecodeSession {
 }
 
 /// Runtime policy for the paged persistent decode path
-/// ([`LlamaModel::forward_paged_step_persistent`]): whether to build the plan
+/// (`LlamaModel::forward_paged_step_persistent`):
+/// whether to build the plan
 /// ONCE and reuse it across tokens, or re-plan every token (the pre-plan-once
 /// behavior). The paged driver holds this per config and passes it each step;
 /// **the driver default is [`PlanOnce`](Self::PlanOnce)** (set by
@@ -1544,13 +1698,14 @@ impl DecodeSession {
 /// and because `Replan` is the parity reference the plan-once path is checked
 /// against. On [`Replan`](Self::Replan) the persistent forward drops any held
 /// session (so nothing stale lingers) and delegates to the re-planning
-/// [`LlamaModel::forward_paged_step`]; on [`PlanOnce`](Self::PlanOnce) it
+/// `LlamaModel::forward_paged_step`;
+/// on [`PlanOnce`](Self::PlanOnce) it
 /// builds-once / rebinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PagedDecodePlan {
     /// Re-plan (build + optimize the graph) every token — the pre-plan-once
     /// path. Drops any held [`PagedDecodeSession`] and routes to
-    /// [`LlamaModel::forward_paged_step`].
+    /// `LlamaModel::forward_paged_step`.
     Replan,
     /// Build + optimize the graph ONCE (into a [`PagedDecodeSession`]) and reuse
     /// it (rebinding only the per-token data) for every subsequent token.
@@ -1906,7 +2061,7 @@ impl PagedDecodeSession {
 pub struct InferenceContext {
     device: Device,
     persistent: HashMap<NodeId, Arc<RwLock<Storage>>>,
-    /// Held plan-once decode plan for [`crate::lazy::LlamaModel::forward_decode_step`]
+    /// Held plan-once decode plan for `LlamaModel::forward_decode_step`
     /// — the carrier that lets a caller-driven decode loop get plan reuse
     /// WITHOUT threading an `Option<DecodeSession>` of its own.
     ///
@@ -1955,7 +2110,7 @@ impl InferenceContext {
 
     /// Whether a decode plan is currently held. Observability hook — a caller
     /// that has decoded at least one token through
-    /// [`crate::lazy::LlamaModel::forward_decode_step`] holds one.
+    /// `LlamaModel::forward_decode_step` holds one.
     pub fn has_decode_session(&self) -> bool {
         self.decode_session.is_some()
     }
@@ -2009,7 +2164,7 @@ impl InferenceContext {
     /// that aren't already in the persistent map get uploaded fresh
     /// from `graph.storage_for(id)` per the existing pipelined-bridge
     /// pattern.
-    pub fn realize_one_as<T: bytemuck::Pod>(
+    pub fn realize_one_as<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
@@ -2023,7 +2178,7 @@ impl InferenceContext {
     /// write offset `cached_len`). The env is **per-pass** (re-supplied
     /// every forward step) while the persistent map is **per-session**;
     /// an empty env is byte-identical to [`Self::realize_one_as`].
-    pub fn realize_one_as_with_env<T: bytemuck::Pod>(
+    pub fn realize_one_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
@@ -2048,7 +2203,7 @@ impl InferenceContext {
     /// `Op::Copy` root) + the cached `OptimizedGraph` and feeds them to
     /// [`Self::realize_prebuilt_as_with_env`] on later tokens to SKIP the
     /// re-plan. See [`crate::pipelined_bridge::prebuild_optimized_env`].
-    pub fn prebuild_optimized_as_with_env<T: bytemuck::Pod>(
+    pub fn prebuild_optimized_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
@@ -2070,7 +2225,7 @@ impl InferenceContext {
     /// prebuilt realizes (which SKIP the const-cache walk) still resolve
     /// every weight Const. Returns
     /// `(effective_target, OptimizedGraph, full_cache, result)`.
-    pub fn prebuild_optimized_capturing_as_with_env<T: bytemuck::Pod>(
+    pub fn prebuild_optimized_capturing_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
@@ -2100,7 +2255,7 @@ impl InferenceContext {
     ///
     /// A `TopologyChanged` error surfaces to the caller (typed, not
     /// retried) — the cached view is stale; invalidate + rebuild the session.
-    pub fn realize_prebuilt_as_with_env<T: bytemuck::Pod>(
+    pub fn realize_prebuilt_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         effective_target: NodeId,
@@ -2118,7 +2273,7 @@ impl InferenceContext {
     }
 
     /// Multi-target counterpart of [`Self::realize_one_as`].
-    pub fn realize_many_as<T: bytemuck::Pod>(
+    pub fn realize_many_as<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         targets: &[NodeId],
@@ -2129,7 +2284,7 @@ impl InferenceContext {
     /// Env-carrying counterpart of [`Self::realize_many_as`] (Phase D
     /// symbolic extents). An empty env is byte-identical to
     /// [`Self::realize_many_as`].
-    pub fn realize_many_as_with_env<T: bytemuck::Pod>(
+    pub fn realize_many_as_with_env<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         targets: &[NodeId],
@@ -2149,7 +2304,7 @@ impl InferenceContext {
     /// rest come back as device-resident `(storage, layout)` pairs —
     /// no D2H for results that feed the next step's graph. See
     /// [`crate::pipelined_bridge::realize_split_as_with_initial`].
-    pub fn realize_split_as<T: bytemuck::Pod>(
+    pub fn realize_split_as<T: bytemuck::Pod + fuel_ir::WithDType>(
         &self,
         graph: &Arc<RwLock<Graph>>,
         targets: &[NodeId],
@@ -2273,6 +2428,186 @@ mod tests {
         assert_eq!(out2, vec![11.0, 22.0, 33.0]);
         assert_eq!(Arc::strong_count(&lhs_arc), 2);
         assert_eq!(Arc::strong_count(&rhs_arc), 2);
+    }
+
+    /// Read back layer `layer_idx`'s `slot` buffer in full, as a flat
+    /// row-major `[n_kv_heads * max_seq_len * head_dim]` f32 vec — test-only
+    /// readback counterpart to [`KvCache::write_bytes`], deliberately NOT
+    /// sliced, so a wrong write RANGE shows up as corruption anywhere in the
+    /// buffer rather than being hidden by only reading the written window.
+    fn read_kv_layer_f32(
+        cache: &KvCache,
+        layer_idx: usize,
+        slot: KvSlot,
+        device: &Device,
+    ) -> Vec<f32> {
+        let max_seq_len = cache.max_seq_len.expect("with_capacity cache");
+        let full_shape = Shape::from_dims(&[1, cache.n_kv_heads, max_seq_len, cache.head_dim]);
+        let buf = match slot {
+            KvSlot::K => Arc::clone(&cache.layer(layer_idx).unwrap().k),
+            KvSlot::V => Arc::clone(&cache.layer(layer_idx).unwrap().v),
+        };
+        let anchor =
+            crate::lazy::Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), device).unwrap();
+        let dest = anchor.const_placeholder_like(full_shape, DType::F32);
+        let mut sc = StorageCache::new();
+        sc.insert(dest.node_id(), buf);
+        let bytes = crate::pipelined_bridge::realize_one_bytes_with_initial(
+            dest.graph_handle(),
+            dest.node_id(),
+            device,
+            sc,
+        )
+        .expect("readback realize");
+        bytemuck::try_cast_slice::<u8, f32>(&bytes)
+            .expect("f32 cast")
+            .to_vec()
+    }
+
+    /// Board item 86 (OverMind self-fork / Lightbulb KV-cache handoff design):
+    /// [`KvCache::write_bytes`] must write EXACTLY the `[start, start+n)`
+    /// position range on the right axis (2, head-major) and leave every other
+    /// position untouched — a wrong range (e.g. accidentally position-major,
+    /// axis 0) would either corrupt unrelated positions or silently land on
+    /// the wrong head/position entirely, and reading back the FULL buffer
+    /// (not just the written window) is what catches either failure.
+    #[test]
+    fn write_bytes_lands_at_the_correct_position_and_nowhere_else() {
+        let device = Device::cpu();
+        let (n_layers, n_kv_heads, head_dim, max_seq_len) = (1, 2, 3, 5);
+        let cache = KvCache::with_capacity(
+            n_layers,
+            n_kv_heads,
+            head_dim,
+            max_seq_len,
+            DType::F32,
+            &device,
+        )
+        .expect("with_capacity");
+
+        let alloc_before = cache.alloc_id();
+        let loc_before = cache.device_location();
+
+        // Write positions [1, 3) (n=2) with a distinctive, non-zero pattern —
+        // zero would be indistinguishable from the buffer's own zero-init.
+        let (start, n) = (1usize, 2usize);
+        let payload: Vec<f32> = (0..(n * n_kv_heads * head_dim))
+            .map(|i| 1000.0 + i as f32)
+            .collect();
+        cache
+            .write_bytes(
+                0,
+                KvSlot::K,
+                start,
+                n,
+                bytemuck::cast_slice(&payload),
+                &device,
+            )
+            .expect("write_bytes");
+
+        // THE CORE CLAIM: no Arc replacement happened, so neither identity
+        // marker moved — this is what makes a held DecodeSession safe to
+        // keep using without a rebind or rebuild.
+        assert_eq!(
+            cache.alloc_id(),
+            alloc_before,
+            "write_bytes must not re-mint alloc_id (that would mean the Arc was replaced)",
+        );
+        assert_eq!(
+            cache.device_location(),
+            loc_before,
+            "write_bytes must not clear device_location (that would mean residency became unprovable)",
+        );
+
+        let full = read_kv_layer_f32(&cache, 0, KvSlot::K, &device);
+        for h in 0..n_kv_heads {
+            for p in 0..max_seq_len {
+                for d in 0..head_dim {
+                    let got = full[h * max_seq_len * head_dim + p * head_dim + d];
+                    if (start..start + n).contains(&p) {
+                        let local_p = p - start;
+                        let want = 1000.0 + (h * n * head_dim + local_p * head_dim + d) as f32;
+                        assert_eq!(
+                            got, want,
+                            "head {h} position {p} dim {d}: written value must land exactly here",
+                        );
+                    } else {
+                        assert_eq!(
+                            got,
+                            0.0,
+                            "head {h} position {p} dim {d}: outside [{start},{}) must stay \
+                             untouched (zero-init) — a wrong write range would corrupt this",
+                            start + n,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// `write_bytes` is `with_capacity`-only (needs a fixed dtype + a stable
+    /// buffer to write into) — a `with_dims` (grow-by-replacement) cache has
+    /// neither, and must refuse with a typed error, never panic.
+    #[test]
+    fn write_bytes_refuses_a_with_dims_cache() {
+        let device = Device::cpu();
+        let cache = KvCache::with_dims(1, 2, 3);
+        let err = cache
+            .write_bytes(0, KvSlot::K, 0, 1, &[0u8; 24], &device)
+            .expect_err("with_dims cache has no fixed dtype/capacity");
+        assert!(
+            err.to_string().contains("with_capacity"),
+            "refusal must name the real constraint, got: {err}",
+        );
+    }
+
+    /// A range exceeding `max_seq_len` must refuse before touching anything —
+    /// never silently clamp (which would write at the wrong position) and
+    /// never panic.
+    #[test]
+    fn write_bytes_refuses_an_out_of_range_position() {
+        let device = Device::cpu();
+        let cache = KvCache::with_capacity(1, 2, 3, 5, DType::F32, &device).unwrap();
+        let payload = vec![0.0f32; 2 * 2 * 3]; // n=2 positions, valid byte length
+        let err = cache
+            .write_bytes(
+                0,
+                KvSlot::K,
+                4, // start=4, n=2 -> [4,6) exceeds max_seq_len=5
+                2,
+                bytemuck::cast_slice(&payload),
+                &device,
+            )
+            .expect_err("range must be refused, not clamped");
+        assert!(
+            err.to_string().contains("max_seq_len"),
+            "refusal must name the real constraint, got: {err}",
+        );
+    }
+
+    /// A `bytes` length that doesn't match `n * n_kv_heads * head_dim *
+    /// dtype_size` must refuse — a mismatched length is the shape of exactly
+    /// the bug this check exists to catch (a caller passing position-major
+    /// pool bytes straight through without transposing to head-major).
+    #[test]
+    fn write_bytes_refuses_a_mismatched_byte_length() {
+        let device = Device::cpu();
+        let cache = KvCache::with_capacity(1, 2, 3, 5, DType::F32, &device).unwrap();
+        let wrong_payload = vec![0.0f32; 5]; // not n_kv_heads*n*head_dim for any valid n
+        let err = cache
+            .write_bytes(
+                0,
+                KvSlot::K,
+                0,
+                1,
+                bytemuck::cast_slice(&wrong_payload),
+                &device,
+            )
+            .expect_err("mismatched byte length must be refused");
+        assert!(
+            err.to_string().contains("bytes"),
+            "refusal must name the byte-length mismatch, got: {err}",
+        );
     }
 
     /// Phase D symbolic extents — the decode-shaped path: a persistent

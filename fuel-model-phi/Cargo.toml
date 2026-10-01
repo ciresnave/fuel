@@ -1,0 +1,25 @@
+[package]
+    categories.workspace = true
+    description          = "The Phi-family lazy-graph decoder for the fuel ML framework."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-model-phi"
+    repository.workspace = true
+    version.workspace    = true
+
+# Stepping-stone dependency, not the end state -- see fuel-model-llama's Cargo.toml
+# and docs/session-prompts/fuel-core-dissolution-b1.md's shim-debt ledger.
+[features]
+    # Forwards to fuel-core's cuda feature -- see fuel-model-llama's Cargo.toml.
+    cuda = ["fuel-core/cuda"]
+
+[dependencies]
+    fuel-core      = { workspace = true }
+    fuel-graph     = { workspace = true }
+    fuel-ir        = { workspace = true }
+    fuel-quantized = { workspace = true }
+    half           = { workspace = true }
+    hf-hub         = { workspace = true }
+    serde          = { workspace = true }
+    serde_json     = { workspace = true }

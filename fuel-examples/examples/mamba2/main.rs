@@ -248,7 +248,12 @@ fn main() -> Result<()> {
     };
     let _ = args.cpu;
     let _ = args.dtype;
-    let _ = args.use_prefill;
+    if args.use_prefill {
+        eprintln!(
+            "warning: --use-prefill is ignored -- the lazy Mamba2 port has no chunked-prefill \
+             path; the prompt is processed the same way regardless of this flag."
+        );
+    }
     println!(
         "avx: {}, neon: {}, f16c: {}",
         fuel::utils::with_avx(),

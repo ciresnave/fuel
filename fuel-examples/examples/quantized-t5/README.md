@@ -26,7 +26,7 @@ $ cargo run --bin tensor-tools --release -- quantize --quantization q6k PATH/TO/
 
 To use a different model, specify the `model-id`.
 
-For example, for text editing, you can use quantized [CoEdit models](https://huggingface.co/jbochi/fuel-coedit-quantized).
+For example, for text editing, you can use quantized [CoEdit models](https://huggingface.co/jbochi/candle-coedit-quantized).
 
 ```bash
 $ cargo run --example quantized-t5 --release  -- \

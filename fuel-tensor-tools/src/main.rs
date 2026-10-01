@@ -19,13 +19,18 @@
 //! | format       | ls | print | quantize |
 //! |--------------|----|-------|----------|
 //! | gguf         | y  | y     | y        |
-//! | ggml         | y  | y     |          |
 //! | safetensors  | y  | y     |          |
 //! | pth          | y  |       |          |
 //!
+//! **The legacy GGJT (`ggml` extension) reader was removed** (CireSnave
+//! ruling, board item 63a): llama.cpp itself has zero code paths reading
+//! this container as of a fresh HEAD clone, and the genuine legacy artifacts
+//! surviving on Hugging Face are 2023-era with near-zero downloads. See
+//! `fuel-formats`'s own history for the removed reader.
+//!
 //! **npz support was dropped, not ported.** `fuel-core`'s `npy.rs` was deleted
 //! in B6 and no npy reader survives anywhere in the tree — `fuel-formats` has
-//! ggml, gguf, imatrix, pickle and safetensors, and no npy. Re-adding it means
+//! gguf, imatrix, pickle and safetensors, and no npy. Re-adding it means
 //! writing a reader, which is its own change rather than part of this restore.
 //!
 //! `pth` lists tensor metadata only: `fuel_formats::pickle` exposes
@@ -44,7 +49,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 enum Format {
     Safetensors,
     Pth,
-    Ggml,
     Gguf,
 }
 
@@ -53,7 +57,6 @@ impl Format {
         match p.as_ref().extension().and_then(|e| e.to_str())? {
             "safetensors" | "safetensor" => Some(Self::Safetensors),
             "pth" | "pt" | "bin" => Some(Self::Pth),
-            "ggml" => Some(Self::Ggml),
             "gguf" => Some(Self::Gguf),
             _ => None,
         }
@@ -219,7 +222,7 @@ fn gguf_read_raw<R: Read + Seek>(
 
 /// Dequantize raw block bytes to host f32.
 fn to_f32(dtype: GgmlDType, bytes: &[u8], elem_count: usize) -> Result<Vec<f32>> {
-    let q = cpu_from_data(dtype, std::borrow::Cow::Borrowed(bytes));
+    let q = cpu_from_data(dtype, std::borrow::Cow::Borrowed(bytes))?;
     let buf = q.dequantize(elem_count)?;
     Ok(buf.as_slice::<f32>()?.to_vec())
 }
@@ -291,14 +294,6 @@ fn run_ls(file: &std::path::PathBuf, format: Option<Format>, verbose: bool) -> R
                 }
             }
         }
-        Format::Ggml => {
-            let mut f = std::fs::File::open(file)?;
-            let header = fuel_formats::ggml::Header::read(&mut f)?;
-            println!("hparams: {:?}", header.hparams);
-            while let Ok(raw) = fuel_formats::ggml::read_one_raw_tensor(&mut f, header.magic) {
-                println!("{}: {:?} {:?}", raw.name, raw.dtype, raw.dims);
-            }
-        }
         Format::Safetensors => {
             // SAFETY: the file must not be modified while the mapping is alive.
             let st = unsafe { fuel::safetensors::MmapedSafetensors::new(file)? };
@@ -361,19 +356,6 @@ fn run_print(
                     }
                     Err(e) => println!("==== {name} ====\n  {e}"),
                 }
-            }
-        }
-        Format::Ggml => {
-            let mut f = std::fs::File::open(file)?;
-            let header = fuel_formats::ggml::Header::read(&mut f)?;
-            let want: std::collections::HashSet<_> = names.iter().cloned().collect();
-            while let Ok(raw) = fuel_formats::ggml::read_one_raw_tensor(&mut f, header.magic) {
-                if !want.is_empty() && !want.contains(&raw.name) {
-                    continue;
-                }
-                let elems: usize = raw.dims.iter().product();
-                let xs = to_f32(raw.dtype, &raw.data, elems)?;
-                summarize(&raw.name, &raw.dims, raw.dtype, &xs, head);
             }
         }
         Format::Safetensors => {
@@ -618,7 +600,12 @@ mod tests {
         assert_eq!(Format::infer("m.gguf"), Some(Format::Gguf));
         assert_eq!(Format::infer("m.safetensors"), Some(Format::Safetensors));
         assert_eq!(Format::infer("m.pth"), Some(Format::Pth));
-        assert_eq!(Format::infer("m.ggml"), Some(Format::Ggml));
+        // Legacy GGJT reader removed (CireSnave ruling on board item 63a):
+        // llama.cpp itself has zero code paths reading this container as of
+        // a fresh HEAD clone, positive control llama_model_loader returns
+        // 153 hits from the same query. `.ggml` is now an unrecognized
+        // extension, same as any other unknown one.
+        assert_eq!(Format::infer("m.ggml"), None);
         assert_eq!(Format::infer("m.unknown"), None);
         // an unknown extension must be an error, not a silent default
         assert!(Format::resolve(None, std::path::Path::new("m.unknown")).is_err());
