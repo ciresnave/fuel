@@ -2824,6 +2824,165 @@ mod phi_kv_context_tests {
         );
     }
 
+    /// Board item 86 (OverMind self-fork / Lightbulb KV-cache handoff design,
+    /// `ROADMAP.md` "Research track: forked-agent KV-cache mechanics") — the
+    /// one real gap Lightbulb's prototype found: does `KvCache::write_bytes`
+    /// (host-supplied KV bytes, no Arc replacement) land where a HELD,
+    /// already-built `DecodeSession` reads from, with no rebind and no
+    /// rebuild? Confirms three things together, since any one alone would be
+    /// a weaker, possibly-vacuous claim:
+    ///
+    /// 1. `alloc_id`/`device_location` are unchanged by the write (the
+    ///    structural precondition for reuse — `write_bytes` takes `&self`, so
+    ///    this is actually compile-time guaranteed; checked here anyway as a
+    ///    regression guard).
+    /// 2. `optimize_calls_thread_local` does NOT bump across the write (no
+    ///    rebuild was triggered — a bump here would mean the write silently
+    ///    forced the expensive D1 fallback despite `write_bytes` promising
+    ///    otherwise).
+    /// 3. The NEXT decode step's logits actually reflect the overwritten
+    ///    value — the discriminating half. A primitive that satisfies (1) and
+    ///    (2) but is a silent no-op (writes somewhere the plan never reads)
+    ///    would pass both and still not deliver what Lightbulb needs; only
+    ///    comparing against an un-overwritten reference run catches that.
+    #[test]
+    fn phi_persistent_plan_reads_a_write_bytes_overwrite_without_rebuilding() {
+        let cfg = tiny_cfg();
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
+        let prompt = [1_u32, 5, 9];
+        let decode_steps_before_overwrite = 2;
+        let max_seq_len = prompt.len() + decode_steps_before_overwrite + 1;
+        let strategy = SamplingStrategy::Greedy;
+
+        // Drive the persistent loop through `decode_steps_before_overwrite`
+        // tokens, returning (cache, ctx, session, tokens, rng) so the caller
+        // can either overwrite the cache or not before the final step.
+        let run_to_overwrite_point = || {
+            let device = Device::cpu();
+            let mut cache = KvCache::with_capacity(
+                cfg.n_layers,
+                cfg.n_heads,
+                cfg.head_dim,
+                max_seq_len,
+                DType::F32,
+                &device,
+            )
+            .expect("with_capacity");
+            let mut ctx = InferenceContext::new(device);
+            let mut rng: u64 = 0;
+            let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+            let mut tokens: Vec<u32> = prompt.to_vec();
+            let mut last = model
+                .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+                .expect("prefill");
+            for _ in 0..decode_steps_before_overwrite {
+                let next = sample_logits(&last, strategy, &mut rng);
+                tokens.push(next);
+                last = model
+                    .forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut session)
+                    .expect("decode (pre-overwrite)");
+            }
+            (cache, ctx, session, tokens, rng)
+        };
+
+        // ---- Reference run: no overwrite, decode one more token normally. ----
+        let (mut ref_cache, mut ref_ctx, mut ref_session, ref_tokens, _ref_rng) =
+            run_to_overwrite_point();
+        assert!(
+            ref_session.is_some(),
+            "the held DecodeSession must exist by now (built on the first decode token)",
+        );
+        let ref_next_logits = model
+            .forward_with_kv_context_persistent(
+                &[*ref_tokens.last().unwrap()],
+                &mut ref_cache,
+                &mut ref_ctx,
+                &mut ref_session,
+            )
+            .expect("reference decode (no overwrite)");
+
+        // ---- Overwrite run: same setup, but write_bytes clobbers layer 0's
+        // K at position 0 (the first prompt token — always inside the causal
+        // window of every later token) just before the final decode step. ----
+        let (mut ow_cache, mut ow_ctx, mut ow_session, ow_tokens, _ow_rng) =
+            run_to_overwrite_point();
+        assert_eq!(
+            ow_tokens, ref_tokens,
+            "both runs must reach an identical token stream before the overwrite \
+             (same model, same seed, same prompt) — divergence must come ONLY from the write",
+        );
+
+        let alloc_before = ow_cache.alloc_id();
+        let loc_before = ow_cache.device_location();
+        let opt_before_write = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+
+        // A distinctive, non-zero payload — n=1 position, n_kv_heads*head_dim
+        // f32 values, head-major (`[1, n_kv_heads, 1, head_dim]`).
+        let payload: Vec<f32> = (0..(cfg.n_heads * cfg.head_dim))
+            .map(|i| 9000.0 + i as f32)
+            .collect();
+        let payload_bytes: Vec<u8> = payload.iter().flat_map(|f| f.to_le_bytes()).collect();
+        ow_cache
+            .write_bytes(0, KvSlot::K, 0, 1, &payload_bytes, &Device::cpu())
+            .expect("write_bytes");
+
+        assert_eq!(
+            ow_cache.alloc_id(),
+            alloc_before,
+            "write_bytes must not re-mint alloc_id",
+        );
+        assert_eq!(
+            ow_cache.device_location(),
+            loc_before,
+            "write_bytes must not clear device_location",
+        );
+
+        // `write_bytes` realizes its OWN small throwaway Const->WriteSlice
+        // graph (same shape as `DeviceKvPool::write_block_bytes`), which
+        // costs exactly one `optimize_graph` call for that tiny graph — a
+        // real, expected, cheap cost, not the thing under test. Measure the
+        // DECODE STEP's own delta separately: THAT must be zero, or the write
+        // forced the expensive held-plan rebuild.
+        let opt_after_write = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        assert_eq!(
+            opt_after_write - opt_before_write,
+            1,
+            "write_bytes's own one-off realize should cost exactly one optimize call \
+             for its throwaway graph (same shape as DeviceKvPool::write_block_bytes) — \
+             a different count means this assumption needs re-checking",
+        );
+
+        let ow_next_logits = model
+            .forward_with_kv_context_persistent(
+                &[*ow_tokens.last().unwrap()],
+                &mut ow_cache,
+                &mut ow_ctx,
+                &mut ow_session,
+            )
+            .expect("overwrite-run decode (post-overwrite)");
+
+        let opt_after_decode = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        assert_eq!(
+            opt_after_decode, opt_after_write,
+            "the decode step AFTER write_bytes must not trigger a plan rebuild — \
+             optimize_calls_thread_local must be unchanged across it specifically \
+             (write_bytes's own one-off optimize, measured above, is expected and excluded)",
+        );
+
+        // THE DISCRIMINATING ASSERTION: the overwrite must actually have been
+        // read. Equal logits here would mean write_bytes is a well-behaved
+        // no-op that satisfies every OTHER assertion in this test while
+        // delivering nothing Lightbulb's handoff design actually needs.
+        assert_ne!(
+            ow_next_logits, ref_next_logits,
+            "the decode step after write_bytes must differ from the un-overwritten \
+             reference — otherwise the held plan never read the write at all",
+        );
+    }
+
     /// **WHICH Phi decode nodes land on the host?** — diagnostic for the
     /// capture rejection (`cross-device Op::Copy ... target Cpu`).
     ///
