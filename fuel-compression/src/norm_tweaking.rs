@@ -169,10 +169,17 @@ impl NormTweaker {
         Ok(adjustments)
     }
 
-    /// Closed-form gamma/beta adjustment for a single layer: scale gamma
-    /// by the pre/post standard-deviation ratio (compensating for the
-    /// variance change quantization introduced), then shift beta so the
-    /// scaled mean matches the pre-quantization mean.
+    /// Closed-form gamma/beta adjustment for a single layer. `beta_shift`
+    /// is the standard z-score remap shift applied to the layer's INPUT
+    /// (scale by `gamma_scale`, then shift) to move it from the
+    /// post-quantization distribution to the pre-quantization one; the
+    /// adjusted layer computes
+    /// `y'_c = gamma_scale*gamma_c*x + (beta_c + gamma_c*beta_shift)`,
+    /// which factors as `gamma_c*(gamma_scale*x + beta_shift) + beta_c`.
+    /// So `beta_shift` must be scaled by EACH CHANNEL'S OWN `gamma_c`
+    /// before being folded into that channel's beta — a flat scalar add
+    /// is only correct when every `gamma_c` is equal, and was wrong
+    /// whenever gamma varied (found by Sourcery review on #278).
     ///
     /// `post_quant_std` near zero (a degenerate/collapsed distribution)
     /// leaves gamma unscaled (`gamma_scale = 1.0`) rather than dividing by
@@ -193,7 +200,8 @@ impl NormTweaker {
         let adjusted_beta: Vec<f32> = stats
             .beta
             .iter()
-            .map(|&b| (b as f64 + beta_shift) as f32)
+            .zip(stats.gamma.iter())
+            .map(|(&b, &g)| (b as f64 + g as f64 * beta_shift) as f32)
             .collect();
 
         LayerAdjustments {
@@ -206,9 +214,18 @@ impl NormTweaker {
     }
 
     /// Collect activation statistics for one normalization layer from a
-    /// real forward pass. `activations` is `[batch, seq_len, hidden_size]`
-    /// (or any shape where dim 0 is the axis to average the per-position
-    /// variance over — matching the source this was ported from).
+    /// real forward pass. `activations` may be any shape (e.g.
+    /// `[batch, seq_len, hidden_size]`); mean and variance are computed
+    /// over the WHOLE flattened distribution, not per-position.
+    ///
+    /// The mean is global, so the variance paired with it must describe
+    /// spread around that SAME global mean -- reducing a single dim and
+    /// averaging the per-position variances (the ported source's
+    /// original shape) silently drops the between-position variance
+    /// component (law of total variance:
+    /// `Var(X) = E[Var(X|pos)] + Var(E[X|pos])`), understating the true
+    /// spread whenever the mean varies across positions (found by
+    /// Sourcery review on #278).
     ///
     /// Population variance (`correction = 0.0`, KISS-Ops §6.13's default)
     /// — not Bessel's correction — since this is describing the
@@ -227,8 +244,9 @@ impl NormTweaker {
         gamma: &[f32],
         beta: &[f32],
     ) -> Result<LayerStats> {
-        let mean = activations.mean_all().realize_f32()[0] as f64;
-        let variance = activations.var(0, 0.0)?.mean_all().realize_f32()[0] as f64;
+        let flat = activations.flatten_all()?;
+        let mean = flat.mean_all().realize_f32()[0] as f64;
+        let variance = flat.var(0, 0.0)?.mean_all().realize_f32()[0] as f64;
         let std = variance.sqrt();
 
         Ok(LayerStats {
@@ -301,6 +319,45 @@ mod tests {
         );
     }
 
+    /// Non-uniform gamma: the adjusted layer computes
+    /// `y'_c = gamma_scale*gamma_c*x + (beta_c + gamma_c*beta_shift)`, which
+    /// factors as `gamma_c*(gamma_scale*x + beta_shift) + beta_c` -- i.e.
+    /// `beta_shift` is a correction applied to the INPUT before each
+    /// channel's own gamma_c multiplies it, so it must be scaled by
+    /// gamma_c when folded into the additive beta term. A flat scalar add
+    /// (the same beta_shift for every channel) is only correct when every
+    /// gamma_c happens to be equal, which is exactly what every other test
+    /// in this file uses and why this bug survived them.
+    #[test]
+    fn compute_adjustment_beta_shift_scales_by_each_channels_gamma() {
+        let config = NormTweakingConfig::default();
+        let tweaker = NormTweaker::new(config, Device::cpu());
+        let stats = LayerStats {
+            name: "layer.0".to_string(),
+            pre_quant_mean: 0.0,
+            pre_quant_std: 1.0,
+            post_quant_mean: 0.1,
+            post_quant_std: 0.8,
+            gamma: vec![1.0, 3.0],
+            beta: vec![0.0, 0.0],
+        };
+        let adjustment = tweaker.compute_adjustment(&stats);
+        let shift = adjustment.beta_shift as f32;
+        assert!(
+            (adjustment.adjusted_beta[0] - 1.0 * shift).abs() < 1e-4,
+            "channel 0 (gamma=1.0): expected beta + 1.0*shift = {}, got {}",
+            1.0 * shift,
+            adjustment.adjusted_beta[0]
+        );
+        assert!(
+            (adjustment.adjusted_beta[1] - 3.0 * shift).abs() < 1e-4,
+            "channel 1 (gamma=3.0): expected beta + 3.0*shift = {}, got {} -- \
+             a flat scalar add would give the SAME value as channel 0, which is wrong",
+            3.0 * shift,
+            adjustment.adjusted_beta[1]
+        );
+    }
+
     /// Degenerate case: a collapsed (near-zero-variance) post-quant
     /// distribution must not divide by ~zero. `gamma_scale` stays 1.0
     /// (unscaled) rather than exploding.
@@ -366,19 +423,59 @@ mod tests {
         let config = NormTweakingConfig::default();
         let tweaker = NormTweaker::new(config, device.clone());
 
-        // [[1,2,3],[4,5,6]], dim 0 reduced: per-column dev around the
-        // column mean (2.5,3.5,4.5) is ±1.5 each -> var = 2.25 per column
-        // (population: /2, not Bessel's /1) -> mean of [2.25,2.25,2.25] = 2.25.
+        // [[1,2,3],[4,5,6]], flattened: global mean = 3.5, deviations
+        // -2.5,-1.5,-0.5,0.5,1.5,2.5, squared sum = 17.5, population
+        // variance (/6, not Bessel's /5) = 17.5/6 = 2.91666...
         let data =
             Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], &device).unwrap();
         let stats = tweaker
             .collect_statistics(&data, "test_layer", &[1.0], &[0.0])
             .unwrap();
-        let want_var = 2.25_f64;
+        let want_var = 17.5_f64 / 6.0;
         let want_std = want_var.sqrt();
         assert!(
             (stats.pre_quant_std - want_std).abs() < 1e-4,
-            "population std = sqrt(2.25) = {want_std}, got {}",
+            "population std = sqrt(17.5/6) = {want_std}, got {}",
+            stats.pre_quant_std
+        );
+    }
+
+    /// The mean is GLOBAL (over every element), so the variance paired
+    /// with it must describe spread around THAT global mean — not an
+    /// average of per-position variances around each position's OWN mean,
+    /// which silently drops the between-position variance component (law
+    /// of total variance: Var(X) = E[Var(X|pos)] + Var(E[X|pos])). Found
+    /// by Sourcery review on #278.
+    ///
+    /// Every row is `[0.0, 100.0]`: each COLUMN is individually constant
+    /// (zero within-column variance), but the two columns' means are 100
+    /// apart. A within-column-only variance (reduce dim 0, then average)
+    /// sees 0 everywhere and misses the huge between-column spread
+    /// entirely; the correct population variance over the whole
+    /// flattened distribution is `((0-50)^2 + (100-50)^2) / 2 = 2500`
+    /// (std 50).
+    #[test]
+    fn collect_statistics_variance_includes_between_position_spread() {
+        let device = Device::cpu();
+        let config = NormTweakingConfig::default();
+        let tweaker = NormTweaker::new(config, device.clone());
+
+        let rows = 4;
+        let data: Vec<f32> = (0..rows).flat_map(|_| [0.0_f32, 100.0_f32]).collect();
+        let tensor = Tensor::from_f32(data, vec![rows, 2], &device).unwrap();
+        let stats = tweaker
+            .collect_statistics(&tensor, "test_layer", &[1.0], &[0.0])
+            .unwrap();
+
+        assert!(
+            (stats.pre_quant_mean - 50.0).abs() < 1e-4,
+            "got {}",
+            stats.pre_quant_mean
+        );
+        assert!(
+            (stats.pre_quant_std - 50.0).abs() < 1.0,
+            "a within-column-only variance would report ~0 here; the true \
+             population std over the flattened distribution is 50, got {}",
             stats.pre_quant_std
         );
     }
