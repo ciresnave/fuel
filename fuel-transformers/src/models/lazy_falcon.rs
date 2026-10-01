@@ -11,7 +11,7 @@
 //!   3. **Multi-query attention** (n_head_kv == 1) by default — one
 //!      shared K and one shared V for all attention heads. Implemented
 //!      via the existing GQA replication code with `num_kv_heads = 1`.
-//!   4. **Standard GELU MLP** — `down(gelu(up(x)))`, no gate path
+//!   4. **Standard GELU MLP** — `down(gelu_tanh(up(x)))`, no gate path
 //!      (h → 4h → h, two projections).
 //!   5. **No final LayerNorm** post-decoder per the eager
 //!      reference — wait, yes there is: `ln_f` after all decoder
@@ -347,7 +347,7 @@ impl FalconModel {
             .mlp_up
             .apply_linear(x_ln, cfg.hidden_size, inter)?
             .add_optional_trailing_bias(layer.mlp_up_bias.as_ref())?;
-        let up_act = up.gelu();
+        let up_act = up.gelu_tanh();
         layer
             .mlp_down
             .apply_linear(&up_act, inter, cfg.hidden_size)?

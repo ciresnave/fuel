@@ -2292,7 +2292,7 @@ impl DeepSeek2Model {
         let up = w.up.apply_linear(x, h, inter)?;
         let activated = match cfg.hidden_activation {
             DeepSeek2Activation::Silu => gate.silu(),
-            DeepSeek2Activation::Gelu => gate.gelu_erf(),
+            DeepSeek2Activation::Gelu => gate.gelu(),
         };
         let inner = activated.mul(&up)?;
         w.down.apply_linear(&inner, inter, h)
@@ -2327,7 +2327,7 @@ impl DeepSeek2Model {
             let up = ew.up.apply_linear(x, h, inter)?;
             let activated = match cfg.hidden_activation {
                 DeepSeek2Activation::Silu => gate.silu(),
-                DeepSeek2Activation::Gelu => gate.gelu_erf(),
+                DeepSeek2Activation::Gelu => gate.gelu(),
             };
             let inner = activated.mul(&up)?;
             let expert_out = ew.down.apply_linear(&inner, inter, h)?;
@@ -2350,7 +2350,7 @@ impl DeepSeek2Model {
         let s_up = w.shared_up.apply_linear(x, h, shared_inter)?;
         let s_act = match cfg.hidden_activation {
             DeepSeek2Activation::Silu => s_gate.silu(),
-            DeepSeek2Activation::Gelu => s_gate.gelu_erf(),
+            DeepSeek2Activation::Gelu => s_gate.gelu(),
         };
         let s_inner = s_act.mul(&s_up)?;
         let s_out = w.shared_down.apply_linear(&s_inner, shared_inter, h)?;

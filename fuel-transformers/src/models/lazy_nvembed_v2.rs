@@ -40,7 +40,7 @@
 //!
 //! # GeGLU FFN
 //!
-//! `proj(x).chunk(2)` → `(hidden_chunk * gate_chunk).gelu_erf()`
+//! `proj(x).chunk(2)` → `(hidden_chunk * gate_chunk).gelu()`
 //! followed by `down(...)`. The eager port reshapes the chunked
 //! output as `gate = first half (size dim_out)`,
 //! `value = second half`. The lazy port reproduces this with
@@ -254,7 +254,7 @@ impl NvEmbedV2Model {
             .apply_linear(&ff_in, bcfg.hidden_size, 2 * ff_hidden)?;
         let ff_value = ff_up.slice(2_usize, 0, ff_hidden)?;
         let ff_gate = ff_up.slice(2_usize, ff_hidden, ff_hidden)?;
-        let ff_inner = ff_value.mul(&ff_gate.gelu_erf())?;
+        let ff_inner = ff_value.mul(&ff_gate.gelu())?;
         let ff_out = self
             .weights
             .ff_down

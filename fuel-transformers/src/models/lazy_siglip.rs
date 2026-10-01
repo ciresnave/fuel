@@ -605,8 +605,8 @@ fn apply_encoder_layer(
 
 fn activate(x: &Tensor, kind: SiglipActivation) -> Tensor {
     match kind {
-        SiglipActivation::GeluPytorchTanh => x.gelu(),
-        SiglipActivation::Gelu => x.gelu_erf(),
+        SiglipActivation::GeluPytorchTanh => x.gelu_tanh(),
+        SiglipActivation::Gelu => x.gelu(),
         SiglipActivation::Silu => x.silu(),
         SiglipActivation::Relu => x.relu(),
     }

@@ -5817,8 +5817,8 @@ const CPU_ELEMENTWISE_UNARY_CONTRACT: &str =
 /// runs BEFORE `fill_unset_cpu_cost`, which upgrades the imported entries'
 /// `unknown_cost` sentinel to the same OpKind cost fn every CPU primitive gets.
 ///
-/// `gelu_tanh` (`OpKind::GeluElementwise`, base `gelu`) and `gelu_erf`
-/// (`OpKind::GeluErfElementwise`, base `gelu_erf`) stay DISTINCT — the exact-erf
+/// `gelu_tanh` (`OpKind::GeluTanhElementwise`, base `gelu_tanh`) and `gelu`
+/// (`OpKind::GeluElementwise`, base `gelu`) stay DISTINCT — the exact-erf
 /// GELU must never be confused with the tanh approximation under a Judge epsilon.
 ///
 /// The family declares NO fused ops, so `register_into`'s required fused argument
@@ -6787,16 +6787,16 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     register_cpu_affine_clamp_powi_from_contract(table);
 
     // Elementwise unary (22 ops × 4 dtypes = 88 bindings: relu/neg/sqr/sqrt/
-    // recip/abs/tanh/exp/log/sin/cos/sigmoid/silu/step/gelu/floor/ceil/round/
-    // sign/erf/gelu_erf/rsqrt × F32/F64/BF16/F16). Third production FKC-contract
+    // recip/abs/tanh/exp/log/sin/cos/sigmoid/silu/step/gelu_tanh/floor/ceil/round/
+    // sign/erf/gelu/rsqrt × F32/F64/BF16/F16). Third production FKC-contract
     // consumer and the FIRST user of the §3.4 multi-dtype fan-out: IMPORTED from
     // docs/kernel-contracts/cpu/elementwise-unary.fkc.md via the same
     // `CpuLinkRegistry`. Each per-op section declares a BASE entry_point that the
     // importer expands to `<base>_<dtype>`. The hand-written `table.register(...)`
-    // calls (the F32/F64/BF16/F16 unary blocks + the rounding/sign/erf/gelu_erf/
+    // calls (the F32/F64/BF16/F16 unary blocks + the rounding/sign/erf/gelu/
     // rsqrt block) are DELETED — this is the sole registration path. Placed
     // BEFORE the `fill_unset_cpu_*` passes so the imported entries pick up the CPU
-    // cost fill. gelu_tanh (GeluElementwise) and gelu_erf (GeluErfElementwise)
+    // cost fill. gelu_tanh (GeluTanhElementwise) and gelu (GeluElementwise)
     // stay DISTINCT.
     register_cpu_unary_from_contract(table);
 
@@ -7150,8 +7150,8 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         nf4_matmul_bf16_cpu_wrapper,
     );
 
-    // The 21 in-place unary activations (Relu/Silu/Gelu/Tanh/Sigmoid/Neg/Abs/
-    // Sqr/Sqrt/Rsqrt/Recip/Exp/Log/Sin/Cos/Sign/Floor/Ceil/Round/Erf/GeluErf ×
+    // The 21 in-place unary activations (Relu/Silu/GeluTanh/Tanh/Sigmoid/Neg/Abs/
+    // Sqr/Sqrt/Rsqrt/Recip/Exp/Log/Sin/Cos/Sign/Floor/Ceil/Round/Erf/Gelu ×
     // F32/F64/BF16/F16 = 84 bindings, each key [T, T]) are now registered FROM
     // docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md by
     // register_cpu_inplace_from_contract near the top of this fn: each per-op
@@ -7171,7 +7171,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // dtype-list closures) are DELETED.
 
     // Rounding / sign / transcendental unary ops (floor/ceil/round/sign/erf/
-    // gelu_erf/rsqrt × F32/F64/BF16/F16) are registered from the elementwise-unary
+    // gelu/rsqrt × F32/F64/BF16/F16) are registered from the elementwise-unary
     // FKC contract via register_cpu_unary_from_contract (near the top of this fn).
 
     // (Flip / Roll × 6 dtypes [T, T] and CumSum × 4 dtypes [T, T] are now
@@ -9666,7 +9666,7 @@ mod tests {
             OpKind::CosElementwise,
             OpKind::SigmoidElementwise,
             OpKind::SiluElementwise,
-            OpKind::GeluElementwise,
+            OpKind::GeluTanhElementwise,
             OpKind::StepElementwise,
             OpKind::SumReduce,
             OpKind::MaxReduce,
@@ -9697,7 +9697,7 @@ mod tests {
             OpKind::RoundElementwise,
             OpKind::SignElementwise,
             OpKind::ErfElementwise,
-            OpKind::GeluErfElementwise,
+            OpKind::GeluElementwise,
             OpKind::PowElementwise,
             OpKind::RsqrtElementwise,
             OpKind::RemElementwise,
@@ -9861,7 +9861,7 @@ mod tests {
             OpKind::CosElementwise,
             OpKind::SigmoidElementwise,
             OpKind::SiluElementwise,
-            OpKind::GeluElementwise,
+            OpKind::GeluTanhElementwise,
             OpKind::StepElementwise,
             OpKind::SumReduce,
             OpKind::MaxReduce,
@@ -9892,7 +9892,7 @@ mod tests {
             OpKind::RoundElementwise,
             OpKind::SignElementwise,
             OpKind::ErfElementwise,
-            OpKind::GeluErfElementwise,
+            OpKind::GeluElementwise,
             OpKind::PowElementwise,
             OpKind::RsqrtElementwise,
             OpKind::RemElementwise,
@@ -10499,8 +10499,8 @@ mod tests {
     /// Asserts each (op, dtype, Cpu) key resolves to the EXACT production
     /// wrapper fn-pointer, is contract-sourced (`kernel_source == "portable-cpu"`),
     /// caps stayed contiguous-only, and the audited bit-stable precision claim
-    /// rode through. `gelu_tanh` (`GeluElementwise`, base `gelu`) and `gelu_erf`
-    /// (`GeluErfElementwise`, base `gelu_erf`) are kept DISTINCT.
+    /// rode through. `gelu_tanh` (`GeluTanhElementwise`, base `gelu_tanh`) and `gelu`
+    /// (`GeluElementwise`, base `gelu`) are kept DISTINCT.
     #[test]
     fn global_bindings_registers_unary_family_from_contract() {
         let table = global_bindings();
@@ -10635,7 +10635,7 @@ mod tests {
                 ],
             ),
             (
-                OpKind::GeluElementwise,
+                OpKind::GeluTanhElementwise,
                 [
                     gelu_elementwise_f32_cpu_wrapper,
                     gelu_elementwise_f64_cpu_wrapper,
@@ -10689,7 +10689,7 @@ mod tests {
                 ],
             ),
             (
-                OpKind::GeluErfElementwise,
+                OpKind::GeluElementwise,
                 [
                     gelu_erf_elementwise_f32_cpu_wrapper,
                     gelu_erf_elementwise_f64_cpu_wrapper,
@@ -12308,8 +12308,8 @@ mod tests {
                 ],
             ),
             (
-                OpKind::GeluInplace,
-                "gelu",
+                OpKind::GeluTanhInplace,
+                "gelu_tanh",
                 [
                     gelu_inplace_f32_cpu_wrapper,
                     gelu_inplace_f64_cpu_wrapper,
@@ -12488,8 +12488,8 @@ mod tests {
                 ],
             ),
             (
-                OpKind::GeluErfInplace,
-                "gelu_erf",
+                OpKind::GeluInplace,
+                "gelu",
                 [
                     gelu_erf_inplace_f32_cpu_wrapper,
                     gelu_erf_inplace_f64_cpu_wrapper,

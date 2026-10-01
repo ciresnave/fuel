@@ -7,7 +7,7 @@
 //! - **Multi-query attention** — single shared K and V across all
 //!   attention heads (`multi_query == true` by default).
 //! - LayerNorm with bias on input + post-attention paths.
-//! - **GELU MLP** — `down(gelu(up(x)))`, no gate path.
+//! - **GELU MLP** — `down(gelu_tanh(up(x)))`, no gate path.
 //! - Q/K/V/O and MLP projections all have biases.
 //!
 //! The learned-position path is the only thing fundamentally
@@ -309,7 +309,7 @@ impl BigCodeModel {
             cfg.intermediate_size,
             std::sync::Arc::clone(&layer.mlp_fc_bias),
         )?;
-        let mid_act = mid.gelu_erf();
+        let mid_act = mid.gelu();
         let ffn_out = layer.mlp_proj.apply_linear_with_bias(
             &mid_act,
             cfg.intermediate_size,

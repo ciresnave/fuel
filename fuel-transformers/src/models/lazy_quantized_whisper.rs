@@ -357,7 +357,7 @@ impl QuantizedWhisperModel {
             d,
             mel_time,
         )?
-        .gelu();
+        .gelu_tanh();
         if !mel_time.is_multiple_of(2) {
             return Err(fuel_core::Error::Msg(
                 "forward_encoder: mel_time must be even for stride-2 conv".into(),
@@ -373,7 +373,7 @@ impl QuantizedWhisperModel {
             d,
             mel_time,
         )?
-        .gelu();
+        .gelu_tanh();
 
         let x = x.permute([0, 2, 1_usize])?;
         let pos = x
@@ -615,7 +615,7 @@ fn encoder_layer(
 
     let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, seq)?;
     let h_ff = cfg.encoder_ffn_dim;
-    let mid = q_linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, seq)?.gelu();
+    let mid = q_linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, seq)?.gelu_tanh();
     let ffn = q_linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, seq)?;
     x.add(&ffn)
 }
@@ -685,7 +685,7 @@ fn decoder_layer(
 
     let x_ln = layer_norm_affine(&x, &lw.final_ln_g, &lw.final_ln_b, 1e-5, d, q_seq)?;
     let h_ff = cfg.decoder_ffn_dim;
-    let mid = q_linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, q_seq)?.gelu();
+    let mid = q_linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, q_seq)?.gelu_tanh();
     let ffn = q_linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, q_seq)?;
     x.add(&ffn)
 }

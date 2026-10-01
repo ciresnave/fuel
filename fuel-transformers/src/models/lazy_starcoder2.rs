@@ -2,7 +2,7 @@
 //! StarCoder2 decoder ported to the lazy-graph API.
 //!
 //! Phase D LLM port. StarCoder2 is GQA + RoPE + LayerNorm + plain
-//! `c_proj(gelu(c_fc(x)))` MLP. Closest cousin in this batch is
+//! `c_proj(gelu_tanh(c_fc(x)))` MLP. Closest cousin in this batch is
 //! Falcon's serial-attention mode — same shared LN-with-bias
 //! pattern — but StarCoder2 uses RoPE (not Falcon-style halfsplit
 //! rotary on the heads-flattened view) and has standard
@@ -344,12 +344,12 @@ impl StarCoder2Model {
             cfg.norm_epsilon,
         )?;
 
-        // MLP: c_proj(gelu(c_fc(x))). Standard GELU, not GeluPyTorchTanh.
+        // MLP: c_proj(gelu_tanh(c_fc(x))). Standard GELU, not GeluPyTorchTanh.
         let mid = layer
             .mlp_fc
             .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?
             .add_optional_trailing_bias(layer.mlp_fc_bias.as_ref())?;
-        let mid_act = mid.gelu_erf();
+        let mid_act = mid.gelu();
         let ffn_out = layer
             .mlp_proj
             .apply_linear(&mid_act, cfg.intermediate_size, cfg.hidden_size)?

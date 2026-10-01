@@ -1043,7 +1043,7 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Tanh => (17, vec![], vec![], vec![], None, None),
         Op::Sigmoid => (18, vec![], vec![], vec![], None, None),
         Op::Silu => (19, vec![], vec![], vec![], None, None),
-        Op::Gelu => (20, vec![], vec![], vec![], None, None),
+        Op::GeluTanh => (20, vec![], vec![], vec![], None, None),
         Op::Relu => (21, vec![], vec![], vec![], None, None),
         Op::Step => (22, vec![], vec![], vec![], None, None),
         Op::Recip => (23, vec![], vec![], vec![], None, None),
@@ -1074,7 +1074,7 @@ fn op_key(op: &Op) -> Option<OpKey> {
         Op::Erf => (39, vec![], vec![], vec![], None, None),
         // Tag 40 was Op::Cast; the unary fanout wraps to 47 (next
         // free slot above the 40-46 cast/shape/reduce cluster).
-        Op::GeluErf => (47, vec![], vec![], vec![], None, None),
+        Op::Gelu => (47, vec![], vec![], vec![], None, None),
         Op::Pow => (49, vec![], vec![], vec![], None, None),
         Op::Rsqrt => (54, vec![], vec![], vec![], None, None),
         Op::Rem => (55, vec![], vec![], vec![], None, None),

@@ -415,7 +415,7 @@ impl PhiModel {
             cfg.ffn_dim,
             Arc::clone(&layer.mlp_fc1_bias),
         )?;
-        let gelu_out = fc1_out.gelu();
+        let gelu_out = fc1_out.gelu_tanh();
         let mlp_out = layer.mlp_fc2.apply_linear_with_bias(
             &gelu_out,
             cfg.ffn_dim,

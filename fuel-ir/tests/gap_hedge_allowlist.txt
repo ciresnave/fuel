@@ -113,7 +113,7 @@ fuel-graph/src/lib.rs	/// edge value). Not yet implemented.
 fuel-graph/src/lib.rs	/// hints that the executor may validate but does not yet act on.
 fuel-graph/src/lib.rs	/// mutates input 0. Not yet wired through autograd.
 fuel-graph/src/lib.rs	/// returns a clean "not yet implemented" error.
-fuel-graph/src/lib.rs	/// same formula as `Op::Gelu`. Not yet wired through autograd.
+fuel-graph/src/lib.rs	/// same formula as `Op::GeluTanh`. Not yet wired through autograd.
 fuel-graph/src/opt.rs	///    graph-rebinding workaround this fix makes unnecessary for
 fuel-graph/src/opt.rs	///   forward placement. Tracked as a follow-up TODO.
 fuel-graph/src/opt.rs	///   pass can fuse the two — tracked as a TODO alongside Phase 4's
