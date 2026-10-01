@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Post-training model compression for the Fuel ML framework.
 //!
-//! **Layer**: Models (or above) | **Stability**: experimental
+//! **Layer**: Use-Case Orchestration | **Stability**: experimental
 //!
 //! Techniques applied to a model's weights *after* it has been loaded and
 //! (optionally) quantized — as opposed to `fuel-training`, which owns the

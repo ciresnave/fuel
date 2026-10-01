@@ -13,7 +13,7 @@
 //! calibration data through both the unquantized and quantized models,
 //! and gradient-descend the gamma/beta parameters to minimize a divergence
 //! loss between the two activation distributions. What's implemented here
-//! (and in the lightbulb source) is a **closed-form shortcut**: given only
+//! (and in the lightbulb source) is a **closed-form approximation**: given only
 //! the pre- and post-quantization mean/std of a layer's activations, scale
 //! gamma by the std ratio and shift beta to match the mean — a single-step
 //! moment-matching correction, not an optimization loop. The ported

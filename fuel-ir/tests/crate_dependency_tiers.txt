@@ -162,6 +162,7 @@ fuel-transformers	110	models / libraries
 
 fuel	120	consumer facade
 
+fuel-compression	130	use-case orchestration
 fuel-inference	130	use-case orchestration
 fuel-training	130	use-case orchestration
 fuel-parallel	130	use-case orchestration
