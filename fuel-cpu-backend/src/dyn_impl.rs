@@ -153,8 +153,8 @@ fn cpu_unary_op(s: &HostBuffer, layout: &Layout, op: UnaryOp) -> Result<HostBuff
         Ceil => float_unary_identity_int(s, layout, |v: f32| v.ceil(), |v: f64| v.ceil()),
         Round => float_unary_identity_int(s, layout, |v: f32| v.round(), |v: f64| v.round()),
         Sign => all_unary_sign(s, layout),
-        Gelu => float_unary(s, layout, gelu_f32, gelu_f64),
-        GeluErf => float_unary(s, layout, gelu_erf_f32, gelu_erf_f64),
+        GeluTanh => float_unary(s, layout, gelu_f32, gelu_f64),
+        Gelu => float_unary(s, layout, gelu_erf_f32, gelu_erf_f64),
         Erf => float_unary(s, layout, erf::erf_f32, erf::erf_f64),
         Silu => float_unary(s, layout, silu_f32, silu_f64),
     }

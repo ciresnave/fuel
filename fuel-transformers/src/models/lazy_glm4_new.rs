@@ -460,8 +460,8 @@ impl Glm4NewModel {
         let up = gate_up.slice(2_usize, cfg.intermediate_size, cfg.intermediate_size)?;
         let act = match cfg.hidden_act {
             Glm4NewActivation::Silu => gate.silu(),
-            Glm4NewActivation::Gelu => gate.gelu_erf(),
-            Glm4NewActivation::GeluPytorchTanh => gate.gelu(),
+            Glm4NewActivation::Gelu => gate.gelu(),
+            Glm4NewActivation::GeluPytorchTanh => gate.gelu_tanh(),
         };
         let inner = act.mul(&up)?;
         let mlp_out = layer

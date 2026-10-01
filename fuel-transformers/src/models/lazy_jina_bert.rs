@@ -389,8 +389,8 @@ impl JinaBertModel {
         let gate = up.slice(2_usize, 0, i)?;
         let value = up.slice(2_usize, i, i)?;
         let gated = match cfg.hidden_activation {
-            JinaActivation::Gelu => gate.gelu_erf(),
-            JinaActivation::GeluPytorchTanh => gate.gelu(),
+            JinaActivation::Gelu => gate.gelu(),
+            JinaActivation::GeluPytorchTanh => gate.gelu_tanh(),
             JinaActivation::Relu => gate.relu(),
             JinaActivation::Silu => gate.silu(),
         };

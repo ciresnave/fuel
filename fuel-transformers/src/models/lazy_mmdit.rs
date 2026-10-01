@@ -501,7 +501,7 @@ fn mlp_residual(
     let x_mod = apply_modulation(&x_norm, &m.scale_mlp, &m.shift_mlp)?;
     let h1 = weights.fc1.apply_linear(&x_mod, dim, mlp_hidden)?;
     let h1 = h1.add_trailing_bias(Arc::clone(&weights.fc1_bias))?;
-    let h1 = h1.gelu();
+    let h1 = h1.gelu_tanh();
     let h2 = weights.fc2.apply_linear(&h1, mlp_hidden, dim)?;
     let h2 = h2.add_trailing_bias(Arc::clone(&weights.fc2_bias))?;
     gated_residual(x, &h2, &m.gate_mlp)
@@ -544,7 +544,7 @@ pub fn apply_single_stream(
     let h1_mod = apply_modulation(&h1_norm, &m.scale_mlp, &m.shift_mlp)?;
     let h2 = weights.fc1.apply_linear(&h1_mod, dim, mlp_hidden)?;
     let h2 = h2.add_trailing_bias(Arc::clone(&weights.fc1_bias))?;
-    let h2 = h2.gelu();
+    let h2 = h2.gelu_tanh();
     let h3 = weights.fc2.apply_linear(&h2, mlp_hidden, dim)?;
     let h3 = h3.add_trailing_bias(Arc::clone(&weights.fc2_bias))?;
     gated_residual(&h1, &h3, &m.gate_mlp)

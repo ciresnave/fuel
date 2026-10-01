@@ -493,7 +493,7 @@ mod tests {
         let pre = f32_node(&mut g, Op::Const, vec![]);
         let diverge = f32_node(&mut g, Op::Relu, vec![pre]);
         let arm0 = f32_node(&mut g, Op::Silu, vec![diverge]);
-        let arm1 = f32_node(&mut g, Op::Gelu, vec![diverge]);
+        let arm1 = f32_node(&mut g, Op::GeluTanh, vec![diverge]);
         g.set_target_backend(arm0, arm0_backend);
         g.set_target_backend(arm1, arm1_backend);
         let reconverge = f32_node(&mut g, Op::Relu, vec![arm0]);
@@ -621,7 +621,7 @@ mod tests {
         // --- branch 1 ---
         let div1 = f32_node(&mut g, Op::Relu, vec![pre]);
         let a0_1 = f32_node(&mut g, Op::Silu, vec![div1]);
-        let a1_1 = f32_node(&mut g, Op::Gelu, vec![div1]);
+        let a1_1 = f32_node(&mut g, Op::GeluTanh, vec![div1]);
         g.set_target_backend(a0_1, BackendId::Cuda);
         g.set_target_backend(a1_1, BackendId::Cpu);
         let recon1 = f32_node(&mut g, Op::Relu, vec![a0_1]);
@@ -635,7 +635,7 @@ mod tests {
         // --- branch 2 (downstream of branch 1's merge) ---
         let div2 = f32_node(&mut g, Op::Tanh, vec![recon1]);
         let a0_2 = f32_node(&mut g, Op::Silu, vec![div2]);
-        let a1_2 = f32_node(&mut g, Op::Gelu, vec![div2]);
+        let a1_2 = f32_node(&mut g, Op::GeluTanh, vec![div2]);
         g.set_target_backend(a0_2, BackendId::Cuda);
         g.set_target_backend(a1_2, BackendId::Cpu);
         let recon2 = f32_node(&mut g, Op::Relu, vec![a0_2]);

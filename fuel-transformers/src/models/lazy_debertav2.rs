@@ -428,7 +428,7 @@ fn apply_layer(
 
     // FFN.
     let inter = apply_linear(x, &w.ffn.intermediate, anchor)?;
-    let inter = inter.gelu();
+    let inter = inter.gelu_tanh();
     let out = apply_linear(&inter, &w.ffn.output, anchor)?;
     out.add(x)?.layer_norm_affine(
         Arc::clone(&w.ffn.output_ln.gain),

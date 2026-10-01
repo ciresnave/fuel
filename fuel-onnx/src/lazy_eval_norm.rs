@@ -36,7 +36,7 @@ pub fn try_dispatch(
         "Softmax" => softmax_op(node, values, /*log*/ false)?,
         "LogSoftmax" => softmax_op(node, values, /*log*/ true)?,
         "Relu" => unary_handler(node, values, |x| Ok(x.relu()))?,
-        "Gelu" => unary_handler(node, values, |x| Ok(x.gelu()))?,
+        "Gelu" => unary_handler(node, values, |x| Ok(x.gelu_tanh()))?,
         "Sigmoid" => unary_handler(node, values, |x| Ok(x.sigmoid()))?,
         "Tanh" => unary_handler(node, values, |x| Ok(x.tanh()))?,
         "LeakyRelu" => leaky_relu(node, values)?,
@@ -593,7 +593,7 @@ mod tests {
             &device,
         )
         .unwrap();
-        let expected = xt.gelu().realize_f32();
+        let expected = xt.gelu_tanh().realize_f32();
         assert_eq!(got.len(), expected.len());
         for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
             assert!(

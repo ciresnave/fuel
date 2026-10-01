@@ -477,7 +477,7 @@ impl NomicBertModel {
             NomicBertActivation::Gelu => {
                 let up = layer.fc11.apply_linear(x, d, h)?;
                 let up = up.add_optional_trailing_bias(layer.fc11_bias.as_ref())?;
-                let act = up.gelu_erf();
+                let act = up.gelu();
                 let down = layer.fc2.apply_linear(&act, h, d)?;
                 down.add_optional_trailing_bias(layer.fc2_bias.as_ref())
             }

@@ -106,8 +106,8 @@ fn apply_mlm_head(hidden: &Tensor, mlm: &MlmHead, cfg: &BertConfig) -> Result<Te
         .const_f32_like(Arc::clone(&mlm.transform_dense_b), Shape::from_dims(&[h]))?
         .reshape(Shape::from_dims(&[1, 1, h]))?;
     let x = x.broadcast_add(&bias_t)?;
-    // GELU (BERT default hidden_act = gelu)
-    let x = x.gelu_erf();
+    // GELU (BERT default hidden_act = gelu_tanh)
+    let x = x.gelu();
     // transform.LayerNorm with bias
     let x = x.layer_norm_affine(
         Arc::clone(&mlm.transform_ln_gain),

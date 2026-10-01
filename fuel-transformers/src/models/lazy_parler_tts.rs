@@ -327,8 +327,8 @@ fn apply_decoder_layer(
     )?;
     let h = w.fc1.apply_linear(&normed, h_dim, cfg.ffn_dim)?;
     let h = match cfg.activation_function {
-        ParlerActivation::Gelu => h.gelu(),
-        ParlerActivation::GeluPytorchTanh => h.gelu(),
+        ParlerActivation::Gelu => h.gelu_tanh(),
+        ParlerActivation::GeluPytorchTanh => h.gelu_tanh(),
         ParlerActivation::Relu => h.relu(),
         ParlerActivation::Silu => h.silu(),
     };

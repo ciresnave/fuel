@@ -218,7 +218,7 @@ fn apply_mlm_head(
     let dense_t = hidden.const_f32_like(Arc::clone(&mlm.head_dense), Shape::from_dims(&[h, h]))?;
     let x = hidden.matmul(&dense_t)?;
     // GELU
-    let x = x.gelu_erf();
+    let x = x.gelu();
     // head.norm: layer norm, no bias
     let zero_bias: Arc<[f32]> = Arc::from(vec![0.0_f32; h]);
     let x = x.layer_norm_affine(

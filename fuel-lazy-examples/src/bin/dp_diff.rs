@@ -182,7 +182,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Concat { .. } => "Concat",
         Op::Slice { .. } => "Slice",
         Op::Silu => "Silu",
-        Op::Gelu => "Gelu",
+        Op::GeluTanh => "Gelu",
         Op::Relu => "Relu",
         Op::Sigmoid => "Sigmoid",
         // Softmax / LayerNorm / RmsNorm / Rope / Conv2D all flow

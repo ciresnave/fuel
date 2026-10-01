@@ -113,7 +113,7 @@ pub fn cost_elementwise_unary_cpu(
 }
 
 /// Cost for elementwise unary transcendentals (Exp/Log/Sin/Cos/
-/// Tanh/Sigmoid/Silu/Gelu/GeluErf/Erf/Rsqrt). ~10 FLOPs/element
+/// Tanh/Sigmoid/Silu/GeluTanh/Gelu/Erf/Rsqrt). ~10 FLOPs/element
 /// (transcendentals lower to 5-15 hardware ops on average).
 pub fn cost_elementwise_unary_transcendental_cpu(
     shapes: &[Shape],
@@ -971,7 +971,7 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
 
         // Elementwise unary — transcendental.
         TanhElementwise | ExpElementwise | LogElementwise | SinElementwise | CosElementwise
-        | SigmoidElementwise | SiluElementwise | GeluElementwise | GeluErfElementwise
+        | SigmoidElementwise | SiluElementwise | GeluTanhElementwise | GeluElementwise
         | ErfElementwise | RsqrtElementwise => cost_elementwise_unary_transcendental_cpu,
 
         // Elementwise binary.

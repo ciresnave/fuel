@@ -467,7 +467,7 @@ fn apply_mix_ffn(
             .reshape(Shape::from_dims(&[b, hidden_features, h, w_sp]))?;
     let h2 = apply_conv2d(&chw, &m.dw_conv, anchor)?;
     let h2 = match cfg.hidden_act {
-        SegformerActivation::Gelu => h2.gelu(),
+        SegformerActivation::Gelu => h2.gelu_tanh(),
         SegformerActivation::Relu => h2.relu(),
     };
     let seq = h2

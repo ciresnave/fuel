@@ -177,8 +177,8 @@ fn build_cuda_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> {
         | OpKind::CosElementwise
         | OpKind::SigmoidElementwise
         | OpKind::SiluElementwise
+        | OpKind::GeluTanhElementwise
         | OpKind::GeluElementwise
-        | OpKind::GeluErfElementwise
         | OpKind::ErfElementwise
         | OpKind::StepElementwise
         | OpKind::SignElementwise

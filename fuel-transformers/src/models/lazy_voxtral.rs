@@ -352,7 +352,7 @@ impl VoxtralEncoder {
             d,
             mel_time,
         )?
-        .gelu();
+        .gelu_tanh();
         let x = conv1d_k3_s2_p1(
             &x,
             &self.weights.conv2_w,
@@ -361,7 +361,7 @@ impl VoxtralEncoder {
             d,
             mel_time,
         )?
-        .gelu();
+        .gelu_tanh();
 
         // ---- transpose to [1, T/2, d] + add learned positions -------------
         let x = x.permute([0, 2, 1_usize])?;
@@ -442,7 +442,7 @@ fn encoder_layer(
     let hidden = lw
         .fc1
         .apply_linear_with_bias(&h1_ln, d, cfg.intermediate_size, Arc::clone(&lw.fc1_bias))?
-        .gelu();
+        .gelu_tanh();
     let ffn_out = lw.fc2.apply_linear_with_bias(
         &hidden,
         cfg.intermediate_size,
@@ -475,7 +475,7 @@ impl VoxtralMultiModalProjector {
         let x =
             self.linear_1
                 .apply_linear(audio, self.audio_intermediate_size, self.text_hidden)?;
-        let x = x.gelu();
+        let x = x.gelu_tanh();
         self.linear_2
             .apply_linear(&x, self.text_hidden, self.text_hidden)
     }
