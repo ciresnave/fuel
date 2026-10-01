@@ -1,0 +1,13 @@
+[package]
+    categories.workspace = true
+    description          = "Post-training model compression for the Fuel ML framework: quantization-calibration and pruning techniques applied to a loaded model's weights."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-compression"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-core = { workspace = true }
+    fuel-ir   = { workspace = true }
