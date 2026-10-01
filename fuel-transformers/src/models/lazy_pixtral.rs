@@ -313,8 +313,8 @@ impl PixtralModel {
             .apply_linear(&h1_norm, h, cfg.intermediate_size)?;
         let activated = match cfg.activation {
             PixtralActivation::Silu => up.silu(),
-            PixtralActivation::Gelu => up.gelu_erf(),
-            PixtralActivation::GeluPytorchTanh => up.gelu(),
+            PixtralActivation::Gelu => up.gelu(),
+            PixtralActivation::GeluPytorchTanh => up.gelu_tanh(),
         };
         let ffn_inner = gate.mul(&activated)?;
         let down = block
@@ -336,8 +336,8 @@ impl PixtralModel {
         let l1 = l1.broadcast_add(&l1_b_t)?;
         let activated = match cfg.activation {
             PixtralActivation::Silu => l1.silu(),
-            PixtralActivation::Gelu => l1.gelu_erf(),
-            PixtralActivation::GeluPytorchTanh => l1.gelu(),
+            PixtralActivation::Gelu => l1.gelu(),
+            PixtralActivation::GeluPytorchTanh => l1.gelu_tanh(),
         };
         let l2 = weights
             .linear_2

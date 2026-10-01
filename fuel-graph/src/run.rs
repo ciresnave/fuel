@@ -1078,7 +1078,7 @@ mod tests {
         let pre = f32_node(&mut g, Op::Const, vec![]);
         let diverge = f32_node(&mut g, Op::Relu, vec![pre]);
         let arm0 = f32_node(&mut g, Op::Silu, vec![diverge]);
-        let arm1 = f32_node(&mut g, Op::Gelu, vec![diverge]);
+        let arm1 = f32_node(&mut g, Op::GeluTanh, vec![diverge]);
         // reconverge reads arm0 (arm-0 runnability).
         let reconverge = f32_node(&mut g, Op::Relu, vec![arm0]);
         let mut b = g.open_branch(diverge);
@@ -1379,7 +1379,7 @@ mod tests {
         // diamond 1
         let div1 = f32_node(&mut g, Op::Relu, vec![pre]);
         let a0_1 = f32_node(&mut g, Op::Silu, vec![div1]);
-        let a1_1 = f32_node(&mut g, Op::Gelu, vec![div1]);
+        let a1_1 = f32_node(&mut g, Op::GeluTanh, vec![div1]);
         let recon1 = f32_node(&mut g, Op::Relu, vec![a0_1]);
         let mut b1 = g.open_branch(div1);
         b1.add_arm(a0_1);
@@ -1391,7 +1391,7 @@ mod tests {
         // diamond 2 (downstream of diamond 1's merge)
         let div2 = f32_node(&mut g, Op::Tanh, vec![recon1]);
         let a0_2 = f32_node(&mut g, Op::Silu, vec![div2]);
-        let a1_2 = f32_node(&mut g, Op::Gelu, vec![div2]);
+        let a1_2 = f32_node(&mut g, Op::GeluTanh, vec![div2]);
         let recon2 = f32_node(&mut g, Op::Relu, vec![a0_2]);
         let mut b2 = g.open_branch(div2);
         b2.add_arm(a0_2);
@@ -1549,7 +1549,7 @@ mod tests {
         // One deliberate fork off `prev` (the layer boundary).
         let diverge = prev;
         let arm0 = f32_node(&mut g, Op::Silu, vec![diverge]);
-        let arm1 = f32_node(&mut g, Op::Gelu, vec![diverge]);
+        let arm1 = f32_node(&mut g, Op::GeluTanh, vec![diverge]);
         let reconverge = f32_node(&mut g, Op::Relu, vec![arm0]);
         let mut b = g.open_branch(diverge);
         b.add_arm(arm0);
@@ -1578,7 +1578,7 @@ mod tests {
         for _ in 0..12 {
             let diverge = prev;
             let arm0 = f32_node(&mut g, Op::Silu, vec![diverge]);
-            let arm1 = f32_node(&mut g, Op::Gelu, vec![diverge]);
+            let arm1 = f32_node(&mut g, Op::GeluTanh, vec![diverge]);
             let reconverge = f32_node(&mut g, Op::Relu, vec![arm0]);
             let mut b = g.open_branch(diverge);
             b.add_arm(arm0);

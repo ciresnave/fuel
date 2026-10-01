@@ -592,7 +592,7 @@ mod tests {
         let a0_mid = node(&mut g, Op::Relu, vec![diverge], &[4], dt);
         let arm0 = node(&mut g, Op::Silu, vec![a0_mid], &[4], dt);
         // arm 1 = a single fused-variant node.
-        let arm1 = node(&mut g, Op::Gelu, vec![diverge], &[4], dt);
+        let arm1 = node(&mut g, Op::GeluTanh, vec![diverge], &[4], dt);
         g.set_target_backend(a0_mid, backend);
         g.set_target_backend(arm0, backend);
         g.set_target_backend(arm1, backend);
@@ -790,7 +790,7 @@ mod tests {
         let diverge = node(&mut g, Op::Relu, vec![pre], &[4], dt);
         let a0_mid = node(&mut g, Op::Relu, vec![diverge], &[4], dt);
         let arm0 = node(&mut g, Op::Silu, vec![a0_mid], &[4], dt);
-        let arm1 = node(&mut g, Op::Gelu, vec![diverge], &[4], dt);
+        let arm1 = node(&mut g, Op::GeluTanh, vec![diverge], &[4], dt);
         // NO target_backend stamps on the arms.
         let reconverge = node(&mut g, Op::Relu, vec![arm0], &[4], dt);
         let mut b = g.open_branch(diverge);

@@ -422,8 +422,8 @@ impl Gemma4TextModel {
             .ffn_up
             .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
-            Gemma4Activation::Gelu => gate.gelu_erf(),
-            Gemma4Activation::GeluPytorchTanh => gate.gelu(),
+            Gemma4Activation::Gelu => gate.gelu(),
+            Gemma4Activation::GeluPytorchTanh => gate.gelu_tanh(),
         };
         let ffn_in = activated.mul(&up)?;
         let ffn_out =

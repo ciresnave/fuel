@@ -223,8 +223,8 @@ impl BlipTextModel {
             std::sync::Arc::clone(&w.pred_dense_bias),
         )?;
         let h_pred = match cfg.hidden_activation {
-            BlipTextActivation::Gelu => h_pred.gelu(),
-            BlipTextActivation::GeluPytorchTanh => h_pred.gelu_erf(),
+            BlipTextActivation::Gelu => h_pred.gelu_tanh(),
+            BlipTextActivation::GeluPytorchTanh => h_pred.gelu(),
             BlipTextActivation::Relu => h_pred.relu(),
         };
         let h_pred = h_pred.layer_norm_affine(
@@ -311,8 +311,8 @@ fn apply_decoder_layer(
         std::sync::Arc::clone(&w.ffn.intermediate_bias),
     )?;
     let inter = match cfg.hidden_activation {
-        BlipTextActivation::Gelu => inter.gelu(),
-        BlipTextActivation::GeluPytorchTanh => inter.gelu_erf(),
+        BlipTextActivation::Gelu => inter.gelu_tanh(),
+        BlipTextActivation::GeluPytorchTanh => inter.gelu(),
         BlipTextActivation::Relu => inter.relu(),
     };
     let out = w.ffn.output.apply_linear_with_bias(

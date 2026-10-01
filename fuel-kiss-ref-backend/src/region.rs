@@ -99,8 +99,8 @@ fn is_transcendental_tag(op: OpTag) -> bool {
             | T::Tanh
             | T::Sigmoid
             | T::Silu
+            | T::GeluTanh
             | T::Gelu
-            | T::GeluErf
             | T::Erf
             | T::Rsqrt
     )

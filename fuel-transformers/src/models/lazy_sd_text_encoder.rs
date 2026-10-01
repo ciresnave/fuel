@@ -417,8 +417,8 @@ fn encoder_layer(
     let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), h, h_ff, seq)?;
     let mid = match cfg.activation {
         ClipTextActivation::QuickGelu => quick_gelu(&mid)?,
-        ClipTextActivation::Gelu => mid.gelu(),
-        ClipTextActivation::GeluErf => mid.gelu_erf(),
+        ClipTextActivation::Gelu => mid.gelu_tanh(),
+        ClipTextActivation::GeluErf => mid.gelu(),
     };
     let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, h, seq)?;
     x.add(&ffn)

@@ -242,7 +242,7 @@ fn gelu_f16() {
         .map(|v| f16::from_f32(*v))
         .collect();
     let expected: Vec<f32> = vec![-0.0, -0.159, 0.0, 0.841, 1.954, 2.996, 10.0, 20.0];
-    let results = run(&v, unary::contiguous::gelu::HALF);
+    let results = run(&v, unary::contiguous::gelu_tanh::HALF);
     assert_eq!(approx_f16(results, 3), expected);
 }
 
@@ -250,7 +250,7 @@ fn gelu_f16() {
 fn gelu_f32() {
     let v: Vec<f32> = vec![-10f32, -1.0, 0., 1., 2., 3., 10.0, 20.0];
     let expected: Vec<f32> = vec![-0.0, -0.159, 0.0, 0.841, 1.955, 2.996, 10.0, 20.0];
-    let results = run(&v, unary::contiguous::gelu::FLOAT);
+    let results = run(&v, unary::contiguous::gelu_tanh::FLOAT);
     assert_eq!(approx(results, 3), expected);
 }
 

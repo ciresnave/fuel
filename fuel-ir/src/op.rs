@@ -63,9 +63,9 @@ pub enum UnaryOp {
     /// Square root.
     Sqrt,
     /// GELU activation using the tanh approximation.
-    Gelu,
+    GeluTanh,
     /// GELU activation using the exact erf formulation.
-    GeluErf,
+    Gelu,
     /// Gauss error function.
     Erf,
     /// Rectified linear unit (`max(0, x)`).
@@ -97,8 +97,8 @@ impl UnaryOp {
             "recip" => Some(Self::Recip),
             "sqr" => Some(Self::Sqr),
             "sqrt" => Some(Self::Sqrt),
+            "gelu_tanh" => Some(Self::GeluTanh),
             "gelu" => Some(Self::Gelu),
-            "gelu_erf" => Some(Self::GeluErf),
             "erf" => Some(Self::Erf),
             "relu" => Some(Self::Relu),
             "silu" => Some(Self::Silu),

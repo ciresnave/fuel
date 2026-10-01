@@ -262,7 +262,7 @@ fn apply_decoder_layer(
     // FFN: fc1 → activation → fc2.
     let h_ffn = w.fc1.apply_linear(&h2, d, cfg.decoder_ffn_dim)?;
     let h_ffn = match cfg.activation_function {
-        TrocrActivation::Gelu => h_ffn.gelu(),
+        TrocrActivation::Gelu => h_ffn.gelu_tanh(),
         TrocrActivation::Relu => h_ffn.relu(),
     };
     let h_ffn = w.fc2.apply_linear(&h_ffn, cfg.decoder_ffn_dim, d)?;

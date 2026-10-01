@@ -319,7 +319,7 @@ fn apply_block(x: &Tensor, blk: &HieraBlockWeights, anchor: &Tensor) -> Result<T
                 blk.mlp_fc1.out_features,
                 Arc::clone(&blk.mlp_fc1.b),
             )?
-            .gelu();
+            .gelu_tanh();
         blk.mlp_fc2.w.apply_linear_with_bias(
             &h,
             blk.mlp_fc2.in_features,

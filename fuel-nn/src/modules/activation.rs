@@ -26,7 +26,7 @@ activation_unit!(Tanh, tanh);
 /// GELU with the PyTorch `tanh`-approximation parameterization.
 ///
 /// `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))`.
-/// `Tensor::gelu` is the tanh approximation; this is a named
+/// `Tensor::gelu_tanh` is the tanh approximation; this is a named
 /// alias that documents the intent at use sites that read HF
 /// `hidden_act = "gelu_pytorch_tanh"`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -34,7 +34,7 @@ pub struct GeluPytorchTanh;
 
 impl Module for GeluPytorchTanh {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        Ok(xs.gelu())
+        Ok(xs.gelu_tanh())
     }
 }
 

@@ -614,8 +614,8 @@ impl MarianModel {
         let activated = match cfg.activation_function {
             MarianActivation::Relu => fc1.relu(),
             MarianActivation::Silu => fc1.silu(),
-            MarianActivation::Gelu => fc1.gelu_erf(),
-            MarianActivation::GeluPytorchTanh => fc1.gelu(),
+            MarianActivation::Gelu => fc1.gelu(),
+            MarianActivation::GeluPytorchTanh => fc1.gelu_tanh(),
         };
         let fc2 = add_bias_3d(
             fc2_w.apply_linear(&activated, ffn_dim, cfg.d_model)?,

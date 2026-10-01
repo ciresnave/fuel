@@ -298,7 +298,7 @@ pub enum Op {
     /// SiLU activation (x · sigmoid(x)), also called Swish.
     Silu,
     /// GELU activation (tanh approximation).
-    Gelu,
+    GeluTanh,
     /// Rectified linear unit (`max(0, x)`), element-wise.
     Relu,
     /// Heaviside step function: `1` where `x > 0`, `0` otherwise. Serves
@@ -327,9 +327,9 @@ pub enum Op {
     /// In-place Silu: `x = x * sigmoid(x)`. Same semantics as
     /// `Op::Silu`, mutates input 0. Not yet wired through autograd.
     SiluInplace,
-    /// In-place Gelu (tanh approximation): mutates input 0 with the
-    /// same formula as `Op::Gelu`. Not yet wired through autograd.
-    GeluInplace,
+    /// In-place GeluTanh (tanh approximation): mutates input 0 with the
+    /// same formula as `Op::GeluTanh`. Not yet wired through autograd.
+    GeluTanhInplace,
     /// In-place Tanh: mutates input 0. Same semantics as `Op::Tanh`.
     /// Not yet wired through autograd.
     TanhInplace,
@@ -377,8 +377,8 @@ pub enum Op {
     /// In-place Erf: `x = erf(x)`. Same semantics as `Op::Erf`.
     ErfInplace,
     /// In-place exact-GeLU: `x = 0.5 · x · (1 + erf(x/√2))`. Same
-    /// semantics as `Op::GeluErf`.
-    GeluErfInplace,
+    /// semantics as `Op::Gelu`.
+    GeluInplace,
     /// In-place clamp: `x = clamp(x, min, max)`. Same semantics as
     /// `Op::Clamp`. Backward gates the upstream by `(x ≥ min) ∧
     /// (x ≤ max)` (mirrors Op::Clamp).
@@ -447,11 +447,11 @@ pub enum Op {
     /// MulScalar(2/√π) → Mul(upstream, .)).
     Erf,
     /// Element-wise GELU activation, **exact erf formulation**:
-    /// `0.5 * x * (1 + erf(x/√2))`. Distinct from [`Op::Gelu`]
+    /// `0.5 * x * (1 + erf(x/√2))`. Distinct from [`Op::GeluTanh`]
     /// (tanh approximation, faster but slightly less accurate).
     /// Differentiable; backward decomposes into the standard-normal
     /// CDF + `x * φ(x)` (PDF) chain via primitives.
-    GeluErf,
+    Gelu,
     /// Element-wise binary power: `out = pow(a, b)` with real `b`.
     /// Both inputs share dtype `T` and shape. Distinct from
     /// [`Op::PowI`] (scalar `i32` exponent). Backward:
@@ -1241,7 +1241,7 @@ impl Op {
             | Op::ZeroFill
             | Op::ReluInplace
             | Op::SiluInplace
-            | Op::GeluInplace
+            | Op::GeluTanhInplace
             | Op::TanhInplace
             | Op::SigmoidInplace
             | Op::NegInplace
@@ -1259,7 +1259,7 @@ impl Op {
             | Op::CeilInplace
             | Op::RoundInplace
             | Op::ErfInplace
-            | Op::GeluErfInplace
+            | Op::GeluInplace
             | Op::ClampInplace { .. }
             | Op::PowIInplace(_) => Some(0),
 
@@ -1298,7 +1298,7 @@ impl Op {
             | Op::Tanh
             | Op::Sigmoid
             | Op::Silu
-            | Op::Gelu
+            | Op::GeluTanh
             | Op::Relu
             | Op::Step
             | Op::Recip
@@ -1315,7 +1315,7 @@ impl Op {
             | Op::Round
             | Op::Sign
             | Op::Erf
-            | Op::GeluErf
+            | Op::Gelu
             | Op::Pow
             | Op::Rsqrt
             | Op::Rem
@@ -1459,14 +1459,14 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Tanh => "Tanh",
         Op::Sigmoid => "Sigmoid",
         Op::Silu => "Silu",
-        Op::Gelu => "Gelu",
+        Op::GeluTanh => "GeluTanh",
         Op::Relu => "Relu",
         Op::Step => "Step",
         Op::Recip => "Recip",
         Op::Abs => "Abs",
         Op::ReluInplace => "ReluInplace",
         Op::SiluInplace => "SiluInplace",
-        Op::GeluInplace => "GeluInplace",
+        Op::GeluTanhInplace => "GeluTanhInplace",
         Op::TanhInplace => "TanhInplace",
         Op::SigmoidInplace => "SigmoidInplace",
         Op::NegInplace => "NegInplace",
@@ -1484,7 +1484,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::CeilInplace => "CeilInplace",
         Op::RoundInplace => "RoundInplace",
         Op::ErfInplace => "ErfInplace",
-        Op::GeluErfInplace => "GeluErfInplace",
+        Op::GeluInplace => "GeluInplace",
         Op::ClampInplace { .. } => "ClampInplace",
         Op::PowIInplace(_) => "PowIInplace",
         Op::Equal => "Equal",
@@ -1499,7 +1499,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Round => "Round",
         Op::Sign => "Sign",
         Op::Erf => "Erf",
-        Op::GeluErf => "GeluErf",
+        Op::Gelu => "Gelu",
         Op::Pow => "Pow",
         Op::Rsqrt => "Rsqrt",
         Op::Rem => "Rem",
@@ -5530,9 +5530,9 @@ impl NodeHandle {
         self.unary_op(Op::Silu)
     }
 
-    /// Append a `Gelu` node (tanh-approximation GELU).
-    pub fn gelu(&self) -> NodeHandle {
-        self.unary_op(Op::Gelu)
+    /// Append a `GeluTanh` node (tanh-approximation GELU).
+    pub fn gelu_tanh(&self) -> NodeHandle {
+        self.unary_op(Op::GeluTanh)
     }
 
     /// Append a `Step` node (Heaviside step: `1` where `x > 0`, else `0`).
@@ -5577,11 +5577,11 @@ impl NodeHandle {
         self.unary_op(Op::SiluInplace)
     }
 
-    /// Append a `GeluInplace` node — mutates `self`'s storage with
-    /// the tanh-approximation GELU. See `NodeHandle::gelu` for the
+    /// Append a `GeluTanhInplace` node — mutates `self`'s storage with
+    /// the tanh-approximation GELU. See `NodeHandle::gelu_tanh` for the
     /// functional variant.
-    pub fn gelu_inplace(&self) -> NodeHandle {
-        self.unary_op(Op::GeluInplace)
+    pub fn gelu_tanh_inplace(&self) -> NodeHandle {
+        self.unary_op(Op::GeluTanhInplace)
     }
 
     /// Append a `TanhInplace` node — mutates `self`'s storage with
@@ -5687,11 +5687,11 @@ impl NodeHandle {
         self.unary_op(Op::ErfInplace)
     }
 
-    /// Append a `GeluErfInplace` node — mutates `self`'s storage
-    /// with the exact-GeLU formula. See `NodeHandle::gelu_erf` for the
+    /// Append a `GeluInplace` node — mutates `self`'s storage
+    /// with the exact-GeLU formula. See `NodeHandle::gelu` for the
     /// functional variant.
-    pub fn gelu_erf_inplace(&self) -> NodeHandle {
-        self.unary_op(Op::GeluErfInplace)
+    pub fn gelu_inplace(&self) -> NodeHandle {
+        self.unary_op(Op::GeluInplace)
     }
 
     /// Append a `ClampInplace { min, max }` node — mutates `self`'s
@@ -5765,12 +5765,12 @@ impl NodeHandle {
         self.unary_op(Op::Erf)
     }
 
-    /// Append a `GeluErf` node — exact-erf formulation of GELU
-    /// (`0.5 * x * (1 + erf(x/√2))`). Distinct from [`Self::gelu`]
+    /// Append a `Gelu` node — exact-erf formulation of GELU
+    /// (`0.5 * x * (1 + erf(x/√2))`). Distinct from [`Self::gelu_tanh`]
     /// (tanh approximation). Output dtype = input dtype.
     /// Differentiable.
-    pub fn gelu_erf(&self) -> NodeHandle {
-        self.unary_op(Op::GeluErf)
+    pub fn gelu(&self) -> NodeHandle {
+        self.unary_op(Op::Gelu)
     }
 
     /// Append a `Pow` node `pow(self, other)` element-wise (real
@@ -9175,7 +9175,7 @@ impl NodeHandle {
                         push_node(&graph_handle, Op::Mul, vec![up_id, inner], x_shape, dtype);
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::Gelu => {
+                Op::GeluTanh => {
                     // GELU's tanh-approximation backward is non-trivial.
                     // For the MVP, compute it numerically stable via
                     // central differences — no, that's wrong for
@@ -9196,8 +9196,8 @@ impl NodeHandle {
                     // GELU backward should use Silu, which we just
                     // implemented properly.
                     panic!(
-                        "backward: Gelu gradient is not yet supported. \
-                         Use Silu for differentiable training; Gelu is \
+                        "backward: GeluTanh gradient is not yet supported. \
+                         Use Silu for differentiable training; GeluTanh is \
                          currently inference-only."
                     );
                 }
@@ -9588,7 +9588,7 @@ impl NodeHandle {
                         push_node(&graph_handle, Op::Mul, vec![up_id, y_log_a], a_shape, dtype);
                     accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
                 }
-                Op::GeluErf => {
+                Op::Gelu => {
                     // y = 0.5 * x * (1 + erf(x/√2)).
                     // dy/dx = Φ(x) + x · φ(x)
                     //       = 0.5 * (1 + erf(x/√2))
@@ -11161,16 +11161,16 @@ impl NodeHandle {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::GeluInplace => {
-                    // Mirrors Op::Gelu's panic — the tanh-approximation
+                Op::GeluTanhInplace => {
+                    // Mirrors Op::GeluTanh's panic — the tanh-approximation
                     // gradient is non-trivial and not yet implemented
                     // for the non-inplace variant either. Users who
                     // need a differentiable GELU should use SiluInplace
                     // (which has a proper backward).
                     panic!(
-                        "backward: GeluInplace gradient is not yet supported. \
-                         Use SiluInplace for differentiable training; GeluInplace \
-                         is currently inference-only (mirrors Op::Gelu's status)."
+                        "backward: GeluTanhInplace gradient is not yet supported. \
+                         Use SiluInplace for differentiable training; GeluTanhInplace \
+                         is currently inference-only (mirrors Op::GeluTanh's status)."
                     );
                 }
                 Op::NegInplace => {
@@ -11420,10 +11420,10 @@ impl NodeHandle {
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
-                Op::GeluErfInplace => {
-                    // Same backward as Op::GeluErf — exact-GELU derivative
+                Op::GeluInplace => {
+                    // Same backward as Op::Gelu — exact-GELU derivative
                     // is Φ(x) + x·φ(x). Both halves read pre-mutation x via
-                    // Phase 4a ordering. Identical 12-node chain to Op::GeluErf.
+                    // Phase 4a ordering. Identical 12-node chain to Op::Gelu.
                     const INV_SQRT_2: f64 = std::f64::consts::FRAC_1_SQRT_2;
                     const INV_SQRT_2PI: f64 = 0.398_942_280_401_432_7_f64;
                     let x = inputs[0];
@@ -14197,7 +14197,7 @@ mod tests {
     // ---- In-place ops Phase 1 -----------------------------------------------
     //
     // Smoke tests for the 5 new in-place unary variants
-    // (`Op::ReluInplace`, `Op::SiluInplace`, `Op::GeluInplace`,
+    // (`Op::ReluInplace`, `Op::SiluInplace`, `Op::GeluTanhInplace`,
     // `Op::TanhInplace`, `Op::SigmoidInplace`) and `FusedOps::INPLACE_AFFINE`.
     // Phase 1 only ships the structural plumbing (Op IR + destructive_input +
     // short_name + scheduler integration); dispatch + autograd land in Phases
@@ -14208,7 +14208,7 @@ mod tests {
         for op in [
             Op::ReluInplace,
             Op::SiluInplace,
-            Op::GeluInplace,
+            Op::GeluTanhInplace,
             Op::TanhInplace,
             Op::SigmoidInplace,
             Op::NegInplace,
@@ -14226,7 +14226,7 @@ mod tests {
             Op::CeilInplace,
             Op::RoundInplace,
             Op::ErfInplace,
-            Op::GeluErfInplace,
+            Op::GeluInplace,
         ] {
             assert_eq!(
                 op.destructive_input(),
@@ -14240,7 +14240,7 @@ mod tests {
     fn inplace_unary_short_names_round_trip() {
         assert_eq!(Op::ReluInplace.short_name(), "ReluInplace");
         assert_eq!(Op::SiluInplace.short_name(), "SiluInplace");
-        assert_eq!(Op::GeluInplace.short_name(), "GeluInplace");
+        assert_eq!(Op::GeluTanhInplace.short_name(), "GeluTanhInplace");
         assert_eq!(Op::TanhInplace.short_name(), "TanhInplace");
         assert_eq!(Op::SigmoidInplace.short_name(), "SigmoidInplace");
         assert_eq!(Op::NegInplace.short_name(), "NegInplace");
@@ -14258,7 +14258,7 @@ mod tests {
         assert_eq!(Op::CeilInplace.short_name(), "CeilInplace");
         assert_eq!(Op::RoundInplace.short_name(), "RoundInplace");
         assert_eq!(Op::ErfInplace.short_name(), "ErfInplace");
-        assert_eq!(Op::GeluErfInplace.short_name(), "GeluErfInplace");
+        assert_eq!(Op::GeluInplace.short_name(), "GeluInplace");
         assert_eq!(
             Op::ClampInplace { min: 0.0, max: 1.0 }.short_name(),
             "ClampInplace"
@@ -14393,16 +14393,16 @@ mod tests {
 
     #[test]
     fn backward_through_gelu_inplace_panics_matching_op_gelu() {
-        // GeluInplace mirrors Op::Gelu's "currently inference-only"
+        // GeluTanhInplace mirrors Op::GeluTanh's "currently inference-only"
         // panic — both rely on the same not-yet-implemented gradient.
         // SiluInplace is the recommended differentiable alternative.
         let x = NodeHandle::from_f32(vec![0.1], Shape::from_dims(&[1]), cpu_dev()).unwrap();
-        let y = x.gelu_inplace();
+        let y = x.gelu_tanh_inplace();
         let loss = y.sum_all();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loss.backward()));
         assert!(
             result.is_err(),
-            "GeluInplace backward should panic (mirrors Op::Gelu)"
+            "GeluTanhInplace backward should panic (mirrors Op::GeluTanh)"
         );
     }
 
@@ -14489,7 +14489,9 @@ mod tests {
         }
         check(x.relu_inplace(), x.id(), |o| matches!(o, Op::ReluInplace));
         check(x.silu_inplace(), x.id(), |o| matches!(o, Op::SiluInplace));
-        check(x.gelu_inplace(), x.id(), |o| matches!(o, Op::GeluInplace));
+        check(x.gelu_tanh_inplace(), x.id(), |o| {
+            matches!(o, Op::GeluTanhInplace)
+        });
         check(x.tanh_inplace(), x.id(), |o| matches!(o, Op::TanhInplace));
         check(x.sigmoid_inplace(), x.id(), |o| {
             matches!(o, Op::SigmoidInplace)
@@ -14509,9 +14511,7 @@ mod tests {
         check(x.ceil_inplace(), x.id(), |o| matches!(o, Op::CeilInplace));
         check(x.round_inplace(), x.id(), |o| matches!(o, Op::RoundInplace));
         check(x.erf_inplace(), x.id(), |o| matches!(o, Op::ErfInplace));
-        check(x.gelu_erf_inplace(), x.id(), |o| {
-            matches!(o, Op::GeluErfInplace)
-        });
+        check(x.gelu_inplace(), x.id(), |o| matches!(o, Op::GeluInplace));
         check(x.clamp_inplace(-1.0, 1.0), x.id(), |o| {
             matches!(o, Op::ClampInplace { .. })
         });
@@ -14547,7 +14547,7 @@ mod tests {
         check_emits_grad(|x| x.sin_inplace());
         check_emits_grad(|x| x.cos_inplace());
         check_emits_grad(|x| x.erf_inplace());
-        check_emits_grad(|x| x.gelu_erf_inplace());
+        check_emits_grad(|x| x.gelu_inplace());
         check_emits_grad(|x| x.clamp_inplace(-1.0, 2.0));
         check_emits_grad(|x| x.powi_inplace(3));
     }
@@ -16256,7 +16256,7 @@ mod tests {
         let pre = mk(&mut g, Op::Const, vec![]);
         let diverge = mk(&mut g, Op::Relu, vec![pre]);
         let arm0 = mk(&mut g, Op::Silu, vec![diverge]);
-        let arm1 = mk(&mut g, Op::Gelu, vec![diverge]);
+        let arm1 = mk(&mut g, Op::GeluTanh, vec![diverge]);
         let reconverge = mk(&mut g, Op::Relu, vec![arm0]);
         let mut b = g.open_branch(diverge);
         b.add_arm(arm0);

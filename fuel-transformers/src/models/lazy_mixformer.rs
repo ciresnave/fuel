@@ -305,8 +305,8 @@ impl MixFormerModel {
         let fc1_b_t = x.const_f32_like(Arc::clone(&layer.fc1_bias), Shape::from_dims(&[inner]))?;
         let fc1_out = fc1_lin.broadcast_add(&fc1_b_t)?;
         let activated = match cfg.hidden_activation {
-            MixFormerActivation::Gelu => fc1_out.gelu_erf(),
-            MixFormerActivation::GeluPytorchTanh => fc1_out.gelu(),
+            MixFormerActivation::Gelu => fc1_out.gelu(),
+            MixFormerActivation::GeluPytorchTanh => fc1_out.gelu_tanh(),
         };
         let fc2_lin = layer.fc2.apply_linear(&activated, inner, h)?;
         let fc2_b_t = x.const_f32_like(Arc::clone(&layer.fc2_bias), Shape::from_dims(&[h]))?;
