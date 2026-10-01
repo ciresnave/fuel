@@ -637,13 +637,13 @@ fn max_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> 
 
 fn avg_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     let (kernel, strides, padding) = parse_pool_attrs(node)?;
-    if get_attr_int_opt(node, "count_include_pad").unwrap_or(0) != 0 && padding != (0, 0) {
-        return Err(Error::Msg(format!(
-            "AveragePool '{}': count_include_pad=1 with non-zero pads is not supported in sub-port 2",
-            node.name
-        ))
-        .bt());
-    }
+    // ONNX AveragePool's own default is count_include_pad=0 (exclude padding
+    // from the divisor) -- now fully supported by fuel::avg_pool2d's
+    // per-position count-map path, so the previous "count_include_pad=1 with
+    // non-zero pads is not supported" refusal is gone: both values of the
+    // attribute are real now, not just the one Fuel's old uniform-divisor
+    // implementation happened to match.
+    let count_include_pad = get_attr_int_opt(node, "count_include_pad").unwrap_or(0) != 0;
     let x = get(values, node, &node.input[0])?;
     if x.rank() != 4 {
         return Err(Error::Msg(format!(
@@ -653,7 +653,7 @@ fn avg_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> 
         ))
         .bt());
     }
-    let y = x.avg_pool2d(kernel, strides, padding)?;
+    let y = x.avg_pool2d(kernel, strides, padding, count_include_pad)?;
     set_output(node, 0, y, values)?;
     Ok(())
 }

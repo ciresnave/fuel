@@ -6174,11 +6174,24 @@ impl Tensor {
         self.min_dim(dim).unwrap().unsqueeze(dim)
     }
 
-    /// Unbiased sample variance along `dim`, keeping the reduced dim as
-    /// size 1. Divides squared deviations by `n - 1` (Bessel's
-    /// correction), matching the eager [`Tensor::var_keepdim`] and
-    /// PyTorch defaults. `n == 1` produces NaN.
-    pub fn var_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
+    /// Variance along `dim`, keeping the reduced dim as size 1. Divides
+    /// squared deviations by `n - correction` (numpy/PyTorch-2.x
+    /// `correction` convention: `0.0` is the **population** variance
+    /// — KISS-Ops §6.13's default, and numpy's own default — `1.0` is
+    /// Bessel's (sample/unbiased) correction, matching PyTorch's *older*
+    /// default and the eager [`Tensor::var_keepdim`]'s prior behavior.
+    ///
+    /// **Not a default-argument convenience**: KISS-Ops §6.13 requires
+    /// Bessel's correction to be an EXPLICIT attribute, not an implicit
+    /// torch-style default silently baked into the divisor — this
+    /// parameter exists so a caller cannot get Bessel's correction by
+    /// omission. `correction >= n` produces a non-finite result (same
+    /// shape as any other degenerate reduction — never a panic).
+    pub fn var_keepdim<D: Dim>(
+        &self,
+        dim: D,
+        correction: f64,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "var_keepdim")?;
         let dims = shape.dims();
@@ -6186,18 +6199,22 @@ impl Tensor {
         let mean = self.mean_keepdim(dim)?;
         let deviation = self.broadcast_sub(&mean).unwrap();
         let squares = deviation.sqr();
-        // sum_keepdim then divide by (n-1); leaves the reduced dim as 1.
+        // sum_keepdim then divide by (n - correction); leaves the reduced dim as 1.
         let summed = squares.sum_keepdim(dim)?;
-        let divisor = (n.saturating_sub(1)) as f64;
+        let divisor = n as f64 - correction;
         Ok(summed.mul_scalar(1.0 / divisor))
     }
 
-    /// Unbiased sample variance along `dim`, squeezing the reduced dim.
-    /// See [`Self::var_keepdim`]. Accepts any [`Dim`].
-    pub fn var<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
+    /// Variance along `dim`, squeezing the reduced dim. See
+    /// [`Self::var_keepdim`] for the `correction` parameter's meaning.
+    pub fn var<D: Dim>(
+        &self,
+        dim: D,
+        correction: f64,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "var")?;
-        self.var_keepdim(dim)?.squeeze(dim)
+        self.var_keepdim(dim, correction)?.squeeze(dim)
     }
 
     // ---- composite scalar / binary ops (Phase A.4) ----
@@ -7395,6 +7412,7 @@ impl Tensor {
         kernel: (usize, usize),
         stride: (usize, usize),
         padding: (usize, usize),
+        count_include_pad: bool,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.len() != 4 {
@@ -7403,20 +7421,50 @@ impl Tensor {
             ))
             .bt());
         }
-        let c = dims[1];
+        let (c, h, w) = (dims[1], dims[2], dims[3]);
         let (kh, kw) = kernel;
         if kh == 0 || kw == 0 {
             return Err(
                 fuel_ir::Error::Msg("avg_pool2d: kernel sizes must be positive".into()).bt(),
             );
         }
-        let inv = 1.0_f32 / ((kh * kw) as f32);
-        // Depthwise kernel: one filter per input channel, each filter
-        // is a constant 1/(kh·kw). Shape [C, 1, kh, kw] with groups=C
-        // makes Conv2D compute one independent kernel per channel.
-        let weight =
-            self.const_f32_like(vec![inv; c * kh * kw], Shape::from_dims(&[c, 1, kh, kw]))?;
-        self.conv2d(&weight, None, stride, padding, c)
+
+        // KISS-Ops §6.13: count_include_pad must be an EXPLICIT choice, not
+        // an implicit torch-style default silently baked into the divisor.
+        // With no padding the two modes coincide (every window is full),
+        // so the uniform-divisor path below is exact either way.
+        if count_include_pad || padding == (0, 0) {
+            let inv = 1.0_f32 / ((kh * kw) as f32);
+            // Depthwise kernel: one filter per input channel, each filter
+            // is a constant 1/(kh·kw). Shape [C, 1, kh, kw] with groups=C
+            // makes Conv2D compute one independent kernel per channel.
+            let weight =
+                self.const_f32_like(vec![inv; c * kh * kw], Shape::from_dims(&[c, 1, kh, kw]))?;
+            return self.conv2d(&weight, None, stride, padding, c);
+        }
+
+        // count_include_pad = false with real padding: a uniform divisor is
+        // WRONG at every border window (it silently averages in the padded
+        // zeros as if they were real taps, undercounting the true mean by
+        // exactly the fraction of the window that's padding). The correct
+        // divisor is the per-position COUNT of valid (non-padded) taps, which
+        // varies by output position — sum-pool (an all-ones depthwise kernel)
+        // then divide by that count map instead of a constant.
+        let sum_weight = self.const_f32_like(
+            vec![1.0_f32; c * kh * kw],
+            Shape::from_dims(&[c, 1, kh, kw]),
+        )?;
+        let summed = self.conv2d(&sum_weight, None, stride, padding, c)?;
+
+        // The valid-tap count depends only on (H, W, kernel, stride,
+        // padding) -- not on N or C -- so it's computed once at minimal
+        // [1, 1, H, W] size and broadcast-divided into every (n, c) plane.
+        let ones_hw = self.const_f32_like(vec![1.0_f32; h * w], Shape::from_dims(&[1, 1, h, w]))?;
+        let count_weight =
+            self.const_f32_like(vec![1.0_f32; kh * kw], Shape::from_dims(&[1, 1, kh, kw]))?;
+        let count = ones_hw.conv2d(&count_weight, None, stride, padding, 1)?;
+
+        summed.broadcast_div(&count)
     }
 
     /// Eager-API parity for `avg_pool2d_with_stride`. Same shape as
@@ -7427,7 +7475,9 @@ impl Tensor {
         kernel: (usize, usize),
         stride: (usize, usize),
     ) -> std::result::Result<Self, fuel_ir::Error> {
-        self.avg_pool2d(kernel, stride, (0, 0))
+        // No padding, so count_include_pad is a don't-care (both modes
+        // coincide — see avg_pool2d's own short-circuit for this case).
+        self.avg_pool2d(kernel, stride, (0, 0), true)
     }
 
     /// 2-D max pooling. Input `[N, C, H, W]`, output
@@ -7450,10 +7500,14 @@ impl Tensor {
         stride: (usize, usize),
         padding: (usize, usize),
     ) -> std::result::Result<Self, fuel_ir::Error> {
-        // Default: zero-padded (legacy behavior). For PyTorch-correct
-        // semantics where padded slots must never win the max, use
-        // [`Self::max_pool2d_with_pad_value`] with `f32::NEG_INFINITY`.
-        self.max_pool2d_with_pad_value(kernel, stride, padding, 0.0)
+        // KISS-Ops §6.13 / PyTorch-correct semantics: a padded slot must
+        // never win the max — zero padding silently wins every all-negative
+        // window (e.g. post-activation feature maps dominated by negative
+        // values at the border), which is a real correctness bug, not a
+        // style choice. `f32::NEG_INFINITY` padding is the fix; use
+        // [`Self::max_pool2d_with_pad_value`] directly for any OTHER pad
+        // value (there is no implicit torch-style default here anymore).
+        self.max_pool2d_with_pad_value(kernel, stride, padding, f32::NEG_INFINITY)
     }
 
     /// `max_pool2d` variant where the boundary padding is filled with an
@@ -10315,28 +10369,51 @@ mod phase_a3_keepdim_tests {
     }
 
     #[test]
-    fn var_matches_unbiased_formula() {
-        // [[1,2,3],[4,5,6]] -> var along axis 1: each row has mean=mid, dev=[-1,0,1], sq sum=2, /2 = 1
+    fn var_matches_unbiased_formula_with_correction_1() {
+        // [[1,2,3],[4,5,6]] -> var along axis 1: each row has mean=mid, dev=[-1,0,1], sq sum=2, /(3-1) = 1
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
-        let out = t.var(1).unwrap();
+        let out = t.var(1, 1.0).unwrap();
         assert_eq!(out.shape().dims(), &[2]);
         let v = out.realize_f32();
         assert!((v[0] - 1.0).abs() < 1e-5, "var row 0 = {} != 1.0", v[0]);
         assert!((v[1] - 1.0).abs() < 1e-5, "var row 1 = {} != 1.0", v[1]);
     }
 
+    /// KISS-Ops §6.13 S14: `correction = 0.0` (the spec default, numpy's
+    /// default) divides by `n` instead of `n - 1` -- same fixture as the
+    /// Bessel test above, different divisor, so the two tests pin BOTH
+    /// halves of the explicit-attribute contract against the same data.
+    #[test]
+    fn var_population_with_correction_0() {
+        // Same fixture: dev=[-1,0,1], sq sum=2, /3 = 0.666...
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+        let out = t.var(1, 0.0).unwrap();
+        let v = out.realize_f32();
+        let want = 2.0 / 3.0;
+        assert!(
+            (v[0] - want).abs() < 1e-5,
+            "population var row 0 = {} != {want}",
+            v[0]
+        );
+        assert!(
+            (v[1] - want).abs() < 1e-5,
+            "population var row 1 = {} != {want}",
+            v[1]
+        );
+    }
+
     #[test]
     fn var_keepdim_preserves_dim() {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
-        let out = t.var_keepdim(1).unwrap();
+        let out = t.var_keepdim(1, 1.0).unwrap();
         assert_eq!(out.shape().dims(), &[2, 1]);
     }
 
     #[test]
     fn var_errors_out_of_bounds() {
         let t = cpu_f32(vec![1.0, 2.0], &[2]);
-        assert!(t.var(3).is_err());
-        assert!(t.var_keepdim(3).is_err());
+        assert!(t.var(3, 1.0).is_err());
+        assert!(t.var_keepdim(3, 1.0).is_err());
     }
 }
 
@@ -10837,11 +10914,31 @@ mod phase_a5_factory_tests {
         // = [-5,-6,-8,-9]; padded slots are -inf → max = -5.
         assert_eq!(v[8], -5.0);
 
-        // Sanity: zero-padded max_pool2d would mistakenly return 0 here
-        // (the padded zeros beat every negative interior value).
-        let zero_pad = x.max_pool2d((3, 3), (1, 1), (1, 1)).unwrap();
-        let vz = zero_pad.realize_f32();
-        assert_eq!(vz[0], 0.0);
+        // KISS-Ops S14: `max_pool2d`'s own default pad value was 0.0
+        // ("legacy behavior") -- the exact bug this test file demonstrates
+        // above -- and is now `f32::NEG_INFINITY`. So `max_pool2d` (no
+        // explicit pad value) must now agree with the NEG_INFINITY variant
+        // above, not with a zero-padded one; the OLD zero-padded answer is
+        // only reachable by asking for it explicitly via
+        // `max_pool2d_with_pad_value(..., 0.0)`, which this block also
+        // checks, to keep BOTH halves of the fix (new default AND old
+        // explicit escape hatch) under one assertion.
+        let default_pad = x.max_pool2d((3, 3), (1, 1), (1, 1)).unwrap();
+        let vd = default_pad.realize_f32();
+        assert_eq!(
+            vd[0], -1.0,
+            "max_pool2d's default must now match NEG_INFINITY padding, not 0.0"
+        );
+        assert_eq!(vd[8], -5.0);
+
+        let explicit_zero_pad = x
+            .max_pool2d_with_pad_value((3, 3), (1, 1), (1, 1), 0.0)
+            .unwrap();
+        let vz = explicit_zero_pad.realize_f32();
+        assert_eq!(
+            vz[0], 0.0,
+            "explicit 0.0 padding must still be reachable via max_pool2d_with_pad_value"
+        );
         assert_eq!(vz[8], 0.0);
     }
 
@@ -10965,7 +11062,7 @@ mod phase_a5_factory_tests {
         // 1×1×4×4 input with values 0..15.
         let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
         let x = cpu_f32(data, &[1, 1, 4, 4]);
-        let out = x.avg_pool2d((2, 2), (2, 2), (0, 0)).unwrap();
+        let out = x.avg_pool2d((2, 2), (2, 2), (0, 0), true).unwrap();
         assert_eq!(out.shape().dims(), &[1, 1, 2, 2]);
         // Each 2x2 block average: top-left = (0+1+4+5)/4 = 2.5,
         // top-right = (2+3+6+7)/4 = 4.5, bottom-left = (8+9+12+13)/4 = 10.5,
@@ -10980,15 +11077,84 @@ mod phase_a5_factory_tests {
     #[test]
     fn avg_pool2d_3x3_stride1_padding1_preserves_size() {
         let x = cpu_f32(vec![1.0; 16], &[1, 1, 4, 4]);
-        let out = x.avg_pool2d((3, 3), (1, 1), (1, 1)).unwrap();
+        let out = x.avg_pool2d((3, 3), (1, 1), (1, 1), true).unwrap();
         assert_eq!(out.shape().dims(), &[1, 1, 4, 4]);
+    }
+
+    /// KISS-Ops §6.13 S14: `count_include_pad = false` must divide each
+    /// border window by its TRUE valid-tap count, not the uniform `kh·kw`.
+    /// Fixture: a 1x1x4x4 all-ones input, 3x3 kernel, padding 1.
+    ///
+    /// `excluded` (count_include_pad=false) must be EXACTLY 1.0 at every
+    /// output position, border included: averaging any positive count of
+    /// real taps that are all 1.0 is always 1.0, regardless of how many
+    /// padded slots surround them — this is the invariant the fix exists
+    /// to restore. `included` (count_include_pad=true, today's old
+    /// behavior) must NOT share that invariant: it divides by the uniform
+    /// 9 regardless of how many taps were real, so a corner window (only
+    /// 4 of 9 taps real) computes `4/9 ≈ 0.444`, well below 1.0 — the two
+    /// modes genuinely disagree at the border, which is the point of the
+    /// fix. (On fully-interior positions, where every tap is real either
+    /// way, both modes necessarily agree — not asserted here since it
+    /// proves nothing about the fix; see the non-uniform fixture below for
+    /// a sharper per-position contrast.)
+    #[test]
+    fn avg_pool2d_excludes_padding_keeps_uniform_data_exactly_at_its_true_value() {
+        let x = cpu_f32(vec![1.0; 16], &[1, 1, 4, 4]);
+        let included = x.avg_pool2d((3, 3), (1, 1), (1, 1), true).unwrap();
+        let excluded = x.avg_pool2d((3, 3), (1, 1), (1, 1), false).unwrap();
+        assert_eq!(included.shape().dims(), excluded.shape().dims());
+
+        let ve = excluded.realize_f32();
+        for (i, &v) in ve.iter().enumerate() {
+            assert!(
+                (v - 1.0).abs() < 1e-5,
+                "count_include_pad=false must be exactly 1.0 at every position \
+                 (all real taps are 1.0) — position {i} got {v}",
+            );
+        }
+
+        let vi = included.realize_f32();
+        assert!(
+            (vi[0] - 1.0).abs() > 0.1,
+            "count_include_pad=true must NOT match at a corner (4 of 9 taps \
+             real → 4/9, far from 1.0) — got {}, modes should disagree here",
+            vi[0]
+        );
+    }
+
+    /// The actual discriminating case: non-uniform data at a border window.
+    /// A 1x1x2x2 input `[[10, 10], [10, 10]]`, kernel 2x2, padding 1 (so
+    /// the TOP-LEFT output position's window is `[[pad,pad],[pad,10]]` --
+    /// only ONE of four taps is real). count_include_pad=true (today's old
+    /// behavior) divides by the uniform 4: `10/4 = 2.5`. count_include_pad
+    /// =false (ONNX/PyTorch default) divides by the TRUE valid count, 1:
+    /// `10/1 = 10.0` -- the actual average of the real values in the
+    /// window, which is what "average pooling, excluding padding" means.
+    #[test]
+    fn avg_pool2d_excludes_padding_from_divisor_discriminating() {
+        let x = cpu_f32(vec![10.0, 10.0, 10.0, 10.0], &[1, 1, 2, 2]);
+        let included = x.avg_pool2d((2, 2), (1, 1), (1, 1), true).unwrap();
+        let excluded = x.avg_pool2d((2, 2), (1, 1), (1, 1), false).unwrap();
+        let vi = included.realize_f32();
+        let ve = excluded.realize_f32();
+        assert!(
+            (vi[0] - 2.5).abs() < 1e-5,
+            "count_include_pad=true: top-left = 10/4 = 2.5, got {}",
+            vi[0]
+        );
+        assert!(
+            (ve[0] - 10.0).abs() < 1e-5,
+            "count_include_pad=false: top-left = 10/1 (ONE real tap) = 10.0, got {}",
+            ve[0]
+        );
     }
 
     #[test]
     fn avg_pool2d_multi_channel() {
         // 1×2×2×2: each channel is filled with its index.
         let x = cpu_f32(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], &[1, 2, 2, 2]);
-        let out = x.avg_pool2d((2, 2), (2, 2), (0, 0)).unwrap();
+        let out = x.avg_pool2d((2, 2), (2, 2), (0, 0), true).unwrap();
         assert_eq!(out.shape().dims(), &[1, 2, 1, 1]);
         assert_eq!(out.realize_f32(), vec![0.0, 1.0]);
     }
@@ -11083,14 +11249,14 @@ mod phase_a5_factory_tests {
     #[test]
     fn pool_rejects_bad_rank() {
         let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        assert!(x.avg_pool2d((2, 2), (2, 2), (0, 0)).is_err());
+        assert!(x.avg_pool2d((2, 2), (2, 2), (0, 0), true).is_err());
         assert!(x.max_pool2d((2, 2), (2, 2), (0, 0)).is_err());
     }
 
     #[test]
     fn pool_rejects_zero_kernel() {
         let x = cpu_f32(vec![1.0; 16], &[1, 1, 4, 4]);
-        assert!(x.avg_pool2d((0, 2), (1, 1), (0, 0)).is_err());
+        assert!(x.avg_pool2d((0, 2), (1, 1), (0, 0), true).is_err());
         assert!(x.max_pool2d((2, 0), (1, 1), (0, 0)).is_err());
     }
 
