@@ -2824,6 +2824,85 @@ mod tests {
         );
     }
 
+    /// Fuel/OverMind self-fork design review (board item 86, ROADMAP.md "Research
+    /// track: forked-agent KV-cache mechanics" item 1): the one scenario flagged
+    /// as STRUCTURALLY PLAUSIBLE BUT UNVERIFIED when answering that design's §5.1
+    /// — the donor itself keeps decoding (never reaped, never discarded) WHILE a
+    /// sharer spliced from its registered prefix decodes a different suffix
+    /// concurrently over the same pool. Every other prefix-sharing test above
+    /// reaps or discards the donor before any sharer exists; this is the only one
+    /// where the donor is a live, ongoing continuation in its own right — the
+    /// actual "parent keeps running past the fork point" shape the design needs.
+    /// If donor-continues-after-registration broke anything, it would show up
+    /// here as either the donor's own decode diverging from its from-scratch
+    /// twin (corrupted/reclaimed shared blocks) or the sharer's diverging
+    /// (donor's later writes bleeding into the shared prefix it must not touch).
+    #[test]
+    fn donor_keeps_decoding_while_a_sharer_diverges_from_its_prefix() {
+        let model = tiny_model(9999);
+        let budget = KvBudget {
+            block_size: 4,
+            num_blocks: 64,
+        };
+        let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8]; // 2 full blocks at bs=4
+        let donor_max_new = 4;
+        let full_sharer: Vec<u32> = prefix
+            .iter()
+            .chain([9u32, 10, 11, 12].iter())
+            .copied()
+            .collect();
+        let sharer_max_new = 5;
+
+        // From-scratch references, computed before anything is shared.
+        let ref_donor = from_scratch_logits(&model, budget, &prefix, donor_max_new);
+        let ref_sharer = from_scratch_logits(&model, budget, &full_sharer, sharer_max_new);
+
+        let mut sched =
+            PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
+        let donor = sched
+            .add_session(&prefix, SamplingStrategy::Greedy, None, donor_max_new)
+            .unwrap();
+        // Capture BEFORE the first step, same timing as `from_scratch_logits`, so
+        // the donor's captured series includes the prefill-embedded first decode
+        // token as well as every subsequent decode step.
+        sched.capture_logits(donor).unwrap();
+        sched.step(); // prefill donor's 2 full blocks (filled >= 8, block-aligned)
+        let pid = sched.register_prefix(donor, 2).unwrap();
+
+        // THE POINT OF THIS TEST: no `reap_finished()`, no discard. The donor
+        // stays open with real remaining decode budget and keeps running.
+        let sharer = sched
+            .add_session_sharing_prefix(
+                pid,
+                &full_sharer,
+                SamplingStrategy::Greedy,
+                None,
+                sharer_max_new,
+            )
+            .unwrap();
+        sched.capture_logits(sharer).unwrap();
+
+        // Steps both the donor (to the end of its own max_new) and the sharer
+        // (prefill of its unique suffix, then decode) concurrently in one loop.
+        sched.run_to_completion();
+
+        let donor_logits = sched.take_captured_logits(donor).unwrap();
+        let sharer_logits = sched.take_captured_logits(sharer).unwrap();
+
+        let donor_maxdiff = logits_maxdiff(&donor_logits, &ref_donor);
+        assert_eq!(
+            donor_maxdiff, 0.0,
+            "donor keeps decoding byte-identically to its own from-scratch run even \
+             after its prefix was registered and spliced into a live sharer (maxdiff {donor_maxdiff})",
+        );
+        let sharer_maxdiff = logits_maxdiff(&sharer_logits, &ref_sharer);
+        assert_eq!(
+            sharer_maxdiff, 0.0,
+            "sharer decodes byte-identically to its own from-scratch run while the \
+             donor it was spliced from keeps decoding concurrently (maxdiff {sharer_maxdiff})",
+        );
+    }
+
     /// TASK 5 (adversarial) — releasing the prefix OWNER while a sharer is still
     /// live (and about to decode over the shared blocks) must not pull the rug:
     /// the sharer's own splice refcount keeps the blocks alive, so it decodes
