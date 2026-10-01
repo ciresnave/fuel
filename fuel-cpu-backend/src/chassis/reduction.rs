@@ -166,7 +166,13 @@ impl ReduceOp<f32> for Max {
         f32::NEG_INFINITY
     }
     fn fold(acc: f32, x: f32) -> f32 {
-        acc.max(x)
+        // KISS-Ops §6.11-0002: a reduce op MUST NaN-propagate. `f32::max`
+        // is NaN-as-missing (returns the non-NaN operand) — exactly the
+        // IEEE minNum/maxNum semantics §6.11-0002 forbids. Delegates to
+        // the SAME NaN-propagating logic as the elementwise `Maximum` op
+        // (binary.rs) rather than reimplementing it a second time with a
+        // chance to diverge.
+        <super::binary::Maximum as super::binary::BinaryOpCore>::f32(acc, x)
     }
     fn finalize(acc: f32, _: usize) -> f32 {
         acc
@@ -179,7 +185,7 @@ impl ReduceOp<f64> for Max {
         f64::NEG_INFINITY
     }
     fn fold(acc: f64, x: f64) -> f64 {
-        acc.max(x)
+        <super::binary::Maximum as super::binary::BinaryOpCore>::f64(acc, x)
     }
     fn finalize(acc: f64, _: usize) -> f64 {
         acc
@@ -192,7 +198,7 @@ impl ReduceOp<half::bf16> for Max {
         f32::NEG_INFINITY
     }
     fn fold(acc: f32, x: half::bf16) -> f32 {
-        acc.max(x.to_f32())
+        <super::binary::Maximum as super::binary::BinaryOpCore>::f32(acc, x.to_f32())
     }
     fn finalize(acc: f32, _: usize) -> half::bf16 {
         half::bf16::from_f32(acc)
@@ -205,7 +211,7 @@ impl ReduceOp<half::f16> for Max {
         f32::NEG_INFINITY
     }
     fn fold(acc: f32, x: half::f16) -> f32 {
-        acc.max(x.to_f32())
+        <super::binary::Maximum as super::binary::BinaryOpCore>::f32(acc, x.to_f32())
     }
     fn finalize(acc: f32, _: usize) -> half::f16 {
         half::f16::from_f32(acc)
@@ -222,7 +228,8 @@ impl ReduceOp<f32> for Min {
         f32::INFINITY
     }
     fn fold(acc: f32, x: f32) -> f32 {
-        acc.min(x)
+        // KISS-Ops §6.11-0002, same reasoning as Max::fold above.
+        <super::binary::Minimum as super::binary::BinaryOpCore>::f32(acc, x)
     }
     fn finalize(acc: f32, _: usize) -> f32 {
         acc
@@ -235,7 +242,7 @@ impl ReduceOp<f64> for Min {
         f64::INFINITY
     }
     fn fold(acc: f64, x: f64) -> f64 {
-        acc.min(x)
+        <super::binary::Minimum as super::binary::BinaryOpCore>::f64(acc, x)
     }
     fn finalize(acc: f64, _: usize) -> f64 {
         acc
@@ -248,7 +255,7 @@ impl ReduceOp<half::bf16> for Min {
         f32::INFINITY
     }
     fn fold(acc: f32, x: half::bf16) -> f32 {
-        acc.min(x.to_f32())
+        <super::binary::Minimum as super::binary::BinaryOpCore>::f32(acc, x.to_f32())
     }
     fn finalize(acc: f32, _: usize) -> half::bf16 {
         half::bf16::from_f32(acc)
@@ -261,7 +268,7 @@ impl ReduceOp<half::f16> for Min {
         f32::INFINITY
     }
     fn fold(acc: f32, x: half::f16) -> f32 {
-        acc.min(x.to_f32())
+        <super::binary::Minimum as super::binary::BinaryOpCore>::f32(acc, x.to_f32())
     }
     fn finalize(acc: f32, _: usize) -> half::f16 {
         half::f16::from_f32(acc)
@@ -636,6 +643,69 @@ mod tests {
         }
         let out = <Min as ReduceOp<f32>>::finalize(acc, xs.len());
         assert_eq!(out, -5.0);
+    }
+
+    /// KISS-Ops §6.11-0002 finding #1: a reduce op MUST NaN-propagate.
+    /// `f32::max`/`f64::max` are NaN-as-missing (IEEE minNum/maxNum
+    /// semantics) and silently drop a NaN input instead. Positive control:
+    /// elementwise `Maximum` (binary.rs) already gets this right, so the
+    /// delegation this fix introduces is tested against a real reference,
+    /// not just asserted to not-be-the-old-behavior.
+    #[test]
+    fn reduce_op_max_min_f32_propagate_nan() {
+        let xs = [1.0_f32, f32::NAN, 2.0];
+        let mut max_acc = <Max as ReduceOp<f32>>::init();
+        let mut min_acc = <Min as ReduceOp<f32>>::init();
+        for &x in &xs {
+            max_acc = <Max as ReduceOp<f32>>::fold(max_acc, x);
+            min_acc = <Min as ReduceOp<f32>>::fold(min_acc, x);
+        }
+        let max_out = <Max as ReduceOp<f32>>::finalize(max_acc, xs.len());
+        let min_out = <Min as ReduceOp<f32>>::finalize(min_acc, xs.len());
+        assert!(
+            max_out.is_nan(),
+            "Max must propagate a NaN input, got {max_out}"
+        );
+        assert!(
+            min_out.is_nan(),
+            "Min must propagate a NaN input, got {min_out}"
+        );
+
+        // Same check for f64, and for bf16/f16's f32-accumulator path.
+        let xs64 = [1.0_f64, f64::NAN, 2.0];
+        let mut max64 = <Max as ReduceOp<f64>>::init();
+        for &x in &xs64 {
+            max64 = <Max as ReduceOp<f64>>::fold(max64, x);
+        }
+        assert!(
+            <Max as ReduceOp<f64>>::finalize(max64, xs64.len()).is_nan(),
+            "f64 Max must propagate NaN"
+        );
+
+        let xs16 = [
+            half::bf16::from_f32(1.0),
+            half::bf16::NAN,
+            half::bf16::from_f32(2.0),
+        ];
+        let mut max16 = <Max as ReduceOp<half::bf16>>::init();
+        for &x in &xs16 {
+            max16 = <Max as ReduceOp<half::bf16>>::fold(max16, x);
+        }
+        let out16: half::bf16 = <Max as ReduceOp<half::bf16>>::finalize(max16, xs16.len());
+        assert!(out16.is_nan(), "bf16 Max must propagate NaN");
+
+        // Positive control: without any NaN input, both still find the
+        // correct extremum — the fix didn't just make everything NaN.
+        let xs_clean = [1.0_f32, -5.0, 3.0, 2.0];
+        let mut acc = <Max as ReduceOp<f32>>::init();
+        for &x in &xs_clean {
+            acc = <Max as ReduceOp<f32>>::fold(acc, x);
+        }
+        assert_eq!(
+            <Max as ReduceOp<f32>>::finalize(acc, xs_clean.len()),
+            3.0,
+            "positive control: Max still finds the correct extremum without NaN"
+        );
     }
 
     #[test]
