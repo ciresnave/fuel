@@ -360,6 +360,75 @@ impl DecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
     }
 }
 
+/// `Qwen3Model` — QK-Norm'd attention, no RoPE-scaling wrapper layer (unlike
+/// `Llama3Model`'s relationship to `LlamaModel`, there is no further-scaled
+/// Qwen3 variant to lose precision against here). Implements the CORE trait
+/// only: the paged surface would need `forward_paged_step*` threaded through
+/// separately, same scope boundary as `Llama3Model`.
+impl DecodeModel for fuel::lazy_qwen3::Qwen3Model {
+    fn n_layers(&self) -> usize {
+        self.config.num_hidden_layers
+    }
+    fn layer_state_specs(&self) -> Vec<LayerStateSpec> {
+        vec![
+            LayerStateSpec::KeyValue {
+                n_kv_heads: self.config.num_key_value_heads,
+                head_dim: self.config.head_dim,
+            };
+            self.config.num_hidden_layers
+        ]
+    }
+    fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        fuel::lazy_qwen3::Qwen3Model::forward_with_kv_context_persistent(
+            self, tokens, cache, ctx, session,
+        )
+    }
+}
+
+/// GGUF-quantized Qwen3. `QuantizedQwen3Model` wraps `Qwen3Model` at a
+/// SINGLE level (`inner() -> &Qwen3Model`, confirmed by reading
+/// `lazy_quantized_qwen3.rs` directly) — unlike `QuantizedLlama3Model`'s
+/// two-level nesting, there is no middle layer carrying scaling state that a
+/// one-level-too-deep delegation could silently skip. Every method still
+/// delegates to [`Self::inner`] for the same reason `QuantizedLlama3Model`
+/// does: the batched-arm pair is delegated rather than left to default so it
+/// cannot desync from the inner model if `Qwen3Model` ever gains one.
+impl DecodeModel for fuel::lazy_quantized_qwen3::QuantizedQwen3Model {
+    fn n_layers(&self) -> usize {
+        DecodeModel::n_layers(self.inner())
+    }
+    fn layer_state_specs(&self) -> Vec<LayerStateSpec> {
+        DecodeModel::layer_state_specs(self.inner())
+    }
+    fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<DecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        DecodeModel::forward_with_kv_context_persistent(self.inner(), tokens, cache, ctx, session)
+    }
+    fn supports_batched_decode(&self) -> bool {
+        DecodeModel::supports_batched_decode(self.inner())
+    }
+    fn build_batched_decode_logits(
+        &self,
+        caches: &mut [&mut KvCache],
+        last_tokens: &[u32],
+        device: &Device,
+        dtype: DType,
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        DecodeModel::build_batched_decode_logits(self.inner(), caches, last_tokens, device, dtype)
+    }
+}
+
 impl PagedDecodeModel for LlamaModel {
     fn forward_paged_step(
         &self,
@@ -2207,6 +2276,191 @@ mod tests {
         // Guards the consistency rule the trait documents: the batched-arm
         // predicate and the batched-arm method must agree. Delegated, so this
         // stays true if `Llama3Model` ever gains the arm.
+        assert_eq!(
+            DecodeModel::supports_batched_decode(&m),
+            DecodeModel::supports_batched_decode(m.inner()),
+        );
+    }
+
+    // ---------------- lightbulb board-97: Qwen3 decode surface ---------------
+
+    fn qwen3_tiny_cfg() -> fuel::lazy_qwen3::Qwen3Config {
+        fuel::lazy_qwen3::Qwen3Config {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            head_dim: 4,
+            max_position_embeddings: 64,
+            sliding_window: None,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            attention_bias: false,
+            tie_word_embeddings: false,
+        }
+    }
+    // Mirrors lazy_qwen3.rs's own (private) test-module `tiny_weights` --
+    // reimplemented here because it is `fn`-private to fuel-transformers and
+    // this crate cannot reach it. Same PRNG shape as this file's own
+    // LLaMA `tiny_weights` for consistency.
+    fn qwen3_tiny_weights(
+        cfg: &fuel::lazy_qwen3::Qwen3Config,
+        seed: u32,
+    ) -> fuel::lazy_qwen3::Qwen3Weights {
+        use fuel::lazy_qwen3::Qwen3LayerExtras;
+        let mut s = seed;
+        let mut next = || {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
+        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
+        let h = cfg.hidden_size;
+        let i = cfg.intermediate_size;
+        let kv = cfg.num_key_value_heads * cfg.head_dim;
+        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| LayerWeights {
+                attn_q: vec_of(h * h).into(),
+                attn_q_bias: None,
+                attn_k: vec_of(h * kv).into(),
+                attn_k_bias: None,
+                attn_v: vec_of(h * kv).into(),
+                attn_v_bias: None,
+                attn_o: vec_of(h * h).into(),
+                ffn_gate: vec_of(h * i).into(),
+                ffn_up: vec_of(h * i).into(),
+                ffn_down: vec_of(i * h).into(),
+                attn_norm_gain: Arc::from(vec![1.0; h]),
+                ffn_norm_gain: Arc::from(vec![1.0; h]),
+            })
+            .collect();
+        let layer_extras: Vec<Qwen3LayerExtras> = (0..cfg.num_hidden_layers)
+            .map(|_| Qwen3LayerExtras {
+                q_norm_gain: Arc::from(vec![1.0; cfg.head_dim]),
+                k_norm_gain: Arc::from(vec![1.0; cfg.head_dim]),
+            })
+            .collect();
+        fuel::lazy_qwen3::Qwen3Weights {
+            instance: fuel::decode_shape::ModelInstanceId::next(),
+            token_embedding: vec_of(cfg.vocab_size * h),
+            layers,
+            layer_extras,
+            final_norm_gain: Arc::from(vec![1.0; h]),
+            output: vec_of(h * cfg.vocab_size).into(),
+        }
+    }
+    fn qwen3_tiny_model(seed: u32) -> fuel::lazy_qwen3::Qwen3Model {
+        let cfg = qwen3_tiny_cfg();
+        fuel::lazy_qwen3::Qwen3Model {
+            config: cfg.clone(),
+            weights: qwen3_tiny_weights(&cfg, seed),
+        }
+    }
+
+    /// Confirms `impl DecodeModel for Qwen3Model` is wired correctly end to
+    /// end through `SessionScheduler`, not just that it compiles: a session
+    /// built on `Qwen3Model` must run to completion and produce the same
+    /// greedy token stream as calling `Qwen3Model::forward_with_kv_context_
+    /// persistent` directly in a hand-rolled loop (the function the trait
+    /// impl delegates to) -- this is a WIRING check, not a re-derivation of
+    /// Qwen3's own forward-pass correctness (lazy_qwen3.rs's own tests, e.g.
+    /// `forward_with_per_head_qk_norm`, already cover that).
+    #[test]
+    fn qwen3_decode_model_matches_hand_rolled_persistent_loop() {
+        let model = qwen3_tiny_model(1234);
+        let dev = Device::cpu();
+        let prompt = [1u32, 2, 3];
+        let max_new = 4;
+
+        // Oracle: call the inherent method directly, prefill + decode.
+        let mut cache = KvCache::with_capacity(
+            model.config.num_hidden_layers,
+            model.config.num_key_value_heads,
+            model.config.head_dim,
+            prompt.len() + max_new,
+            DType::F32,
+            &dev,
+        )
+        .unwrap();
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut session: Option<DecodeSession> = None;
+        let mut oracle_tokens = prompt.to_vec();
+        for &t in &prompt {
+            fuel::lazy_qwen3::Qwen3Model::forward_with_kv_context_persistent(
+                &model,
+                &[t],
+                &mut cache,
+                &mut ctx,
+                &mut session,
+            )
+            .unwrap();
+        }
+        for _ in 0..max_new {
+            let logits = fuel::lazy_qwen3::Qwen3Model::forward_with_kv_context_persistent(
+                &model,
+                &[*oracle_tokens.last().unwrap()],
+                &mut cache,
+                &mut ctx,
+                &mut session,
+            )
+            .unwrap();
+            let mut rng = 0u64;
+            oracle_tokens.push(sample_logits(&logits, SamplingStrategy::Greedy, &mut rng));
+        }
+
+        // The surface under test: the SAME model through SessionScheduler,
+        // reaching `forward_with_kv_context_persistent` only via the
+        // `DecodeModel` trait object.
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        sched
+            .add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        let out = sched.run_to_completion().unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].1, oracle_tokens,
+            "SessionScheduler-via-DecodeModel must match the hand-rolled \
+             persistent-decode loop byte-for-byte"
+        );
+    }
+
+    /// Mirrors `quantized_llama_reports_inner_cache_geometry`: the wrapper's
+    /// per-layer specs must collapse to the inner `Qwen3Model`'s geometry,
+    /// and the batched-arm predicate/method pair must stay consistent since
+    /// both are delegated rather than left to default.
+    #[test]
+    fn quantized_qwen3_reports_inner_cache_geometry() {
+        use fuel::lazy_quantized_qwen3::QuantizedQwen3Model;
+
+        // Q4_0-bakeable: hidden_size/intermediate_size must be multiples of
+        // 32 (Q4_0 blocks run along in-features) -- qwen3_tiny_cfg's 16 is
+        // too small for baking, same constraint Llama's scaled_q4_0_cfg
+        // documents.
+        let cfg = fuel::lazy_qwen3::Qwen3Config {
+            hidden_size: 32,
+            intermediate_size: 64,
+            num_attention_heads: 8,
+            head_dim: 4,
+            ..qwen3_tiny_cfg()
+        };
+        let src = qwen3_tiny_weights(&cfg, 5150);
+        let m = QuantizedQwen3Model::from_f32_bake(cfg.clone(), src).expect("Q4_0 bake");
+
+        let dims = ModelDims::from_model(&m).expect("uniform per-head KV geometry");
+        assert_eq!(dims.n_layers, cfg.num_hidden_layers);
+        assert_eq!(dims.n_kv_heads, cfg.num_key_value_heads);
+        assert_eq!(dims.head_dim, cfg.head_dim);
         assert_eq!(
             DecodeModel::supports_batched_decode(&m),
             DecodeModel::supports_batched_decode(m.inner()),
