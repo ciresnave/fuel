@@ -21,31 +21,37 @@
 //! Output: `[..., M, N]` matching the activations' dtype. `group_size`
 //! (∈ {64, 128} per AWQ's format) must evenly divide `K`.
 //!
-//! ## ⚠️ Packing-order verification status — READ BEFORE TRUSTING AGAINST A REAL CHECKPOINT
+//! ## Packing-order — verified against AutoAWQ's own source
 //!
 //! AWQ's CUDA kernel (and AutoAWQ/llm-awq's packer) does NOT pack eight
-//! int4 values into a `U32` word in naive sequential nibble order. Public
-//! documentation of the format describes an INTERLEAVED order,
-//! `[0, 2, 4, 6, 1, 3, 5, 7]` (physical nibble position → logical
-//! column within the group of 8), chosen for fast GPU unpacking. This
-//! decompose implements that interleaved order (see [`AWQ_UNPACK_ORDER`]
-//! and [`unpack_u32_nibbles`]) for BOTH `qweight` (along `K`) and
-//! `qzeros` (along `N`) — the latter assumed to use the identical
-//! convention, which has NOT been independently confirmed against an
-//! authoritative upstream source or a real `*-AWQ` checkpoint in this
-//! change (no network access was available while writing it).
+//! int4 values into a `U32` word in naive sequential nibble order. Confirmed
+//! directly against AutoAWQ's packer (`awq/modules/linear/gemm.py`,
+//! `WQLinear_GEMM.from_linear`, fetched and read 2026-10-02 — not inferred
+//! from a paraphrased description): it packs with
+//! `order_map = [0, 2, 4, 6, 1, 3, 5, 7]` via
+//! `qweight[:, col] |= intweight[:, col*8 + order_map[i]] << (i*4)` —
+//! i.e. physical nibble position `i` within the packed word holds the
+//! value from LOGICAL column `order_map[i]`, exactly [`AWQ_UNPACK_ORDER`]
+//! below. The same source states explicitly that **the identical order
+//! applies to `qzeros`**, confirming the assumption this module makes for
+//! both `qweight` (along `K`) and `qzeros` (along `N`).
+//!
+//! (A web search surfaced a DIFFERENT 8-value permutation,
+//! `[0, 4, 1, 5, 2, 6, 3, 7]`, attributed to AWQ — that is
+//! `_REVERSE_AWQ_PACK_ORDER`, the INVERSE permutation some tools use to
+//! convert an AWQ-packed tensor back to sequential/GPTQ order for
+//! re-packing. It is not the packing order itself, and using it here
+//! would have been exactly backwards. Recorded so the next reader who
+//! finds that same search result doesn't re-derive the same near-miss.)
 //!
 //! **What IS tested:** the decompose's own internal consistency — the
 //! unit tests build a small hand-packed example USING
 //! [`AWQ_UNPACK_ORDER`] and confirm the decompose recovers the exact
-//! codes and dequantized values those tests packed. This proves the
-//! ARITHMETIC (bit extraction, affine dequant, matmul) is correct for
-//! whatever the true packing order turns out to be — it does NOT prove
-//! `AWQ_UNPACK_ORDER` itself is the real AWQ order. **Before trusting
-//! this against a real AWQ checkpoint, confirm `AWQ_UNPACK_ORDER`
-//! against the AutoAWQ / llm-awq kernel source** (or a known-good
-//! dequantized reference tensor) and update this doc + the constant
-//! together if it's wrong.
+//! codes and dequantized values those tests packed. Combined with the
+//! source-verified order above, this is now a correctness claim against
+//! the real format, not just an internal-consistency check — but it has
+//! NOT been checked against bytes from a real `*-AWQ` checkpoint on disk;
+//! that remains the next verification step before shipping a loader.
 //!
 //! ## Architectural note — primitive decomposition (the recipe)
 //!
@@ -87,9 +93,12 @@ use crate::{Graph, Node, NodeId, Op};
 use fuel_ir::{DType, Shape};
 
 /// Physical nibble position (0..7, LSB-first within the packed `U32`
-/// word) → logical column index within its group of 8. AWQ's documented
-/// GPU-kernel packing order — see the module doc's packing-order
-/// verification status before trusting this against a real checkpoint.
+/// word) → logical column index within its group of 8. Verified directly
+/// against AutoAWQ's packer source (`order_map` in
+/// `awq/modules/linear/gemm.py`) — see the module doc for the citation
+/// and a near-miss worth not repeating (a different 8-value permutation
+/// found by web search is the INVERSE of this one, used for a different
+/// purpose).
 pub const AWQ_UNPACK_ORDER: [u32; 8] = [0, 2, 4, 6, 1, 3, 5, 7];
 
 /// Metadata-side registry entry for AwqMatmul.
@@ -572,7 +581,7 @@ mod tests {
         let z_bytes: Vec<u32> = vec![packed_z_word];
 
         let scale_val = 2.0f32;
-        let scale_bytes = vec![scale_val; 8];
+        let scale_bytes = [scale_val; 8];
 
         // Verify the pack/unpack round trip directly (sanity on the test's
         // own packing helper before trusting the graph-level assertions
@@ -665,7 +674,7 @@ mod tests {
         let packed_z_word = pack_u32_nibbles(z_codes);
         let z_bytes: Vec<u32> = vec![packed_z_word];
         let scale_val = 2.0f32;
-        let scale_bytes = vec![scale_val; 8];
+        let scale_bytes = [scale_val; 8];
 
         let params = FusedOpParams::AwqMatmul {
             group_size: 8,
