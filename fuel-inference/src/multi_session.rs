@@ -898,6 +898,21 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         reaped
     }
 
+    /// The GENERATED tail (excludes the prompt) produced so far by session
+    /// `id`, or `None` if `id` is unknown. `step()`'s `StepReport.advanced`
+    /// says WHICH sessions produced a token this tick; this is where a
+    /// caller reads the token VALUE without waiting for `reap_finished`
+    /// (which only returns a session's tokens once it transitions to
+    /// `Finished`) — a streaming serving loop needs each token the moment
+    /// it's produced, not just the final text. Read-only introspection, same
+    /// shape as [`PagedSessionScheduler::session_realize_count`].
+    pub fn session_new_tokens(&self, id: SessionId) -> Option<&[u32]> {
+        self.sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.new_tokens.as_slice())
+    }
+
     /// Advance one scheduling quantum: (1) run any `Prefill` sessions serially
     /// and sample their first token; (2) collect the `Decode`-ready set;
     /// (3) advance it (serial in C2; batched wiring lands in C3); (4) sample
@@ -2343,6 +2358,90 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, id);
         assert_eq!(out[0].1, standalone); // byte-identical token stream
+    }
+
+    /// `session_new_tokens` is the streaming accessor: a caller must be able
+    /// to read each token the moment `step()` produces it, without waiting
+    /// for the session to reach `Finished` (which is what `reap_finished`
+    /// requires). Steps one token at a time and asserts the generated tail
+    /// grows by exactly one element per step, matching the eventual
+    /// `reap_finished` result -- and that an unknown id returns `None`.
+    #[test]
+    fn session_new_tokens_grows_one_token_per_step_before_the_session_finishes() {
+        let model = tiny_model(4242);
+        let prompt = [1u32, 2, 3];
+        let max_new = 4;
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            test_budget(),
+        )
+        .unwrap();
+        let id = sched
+            .add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+
+        assert_eq!(
+            sched.session_new_tokens(id),
+            Some(&[][..]),
+            "no tokens generated yet"
+        );
+        assert_eq!(
+            sched.session_new_tokens(SessionId(id.0 + 1000)),
+            None,
+            "an unknown id must return None, not panic or an empty slice"
+        );
+
+        // `step()`'s own contract (see its doc comment) is: a single call
+        // both prefills-and-samples a `Prefill` session AND, in the SAME
+        // call, collects the newly-ready `Decode` set and advances it --
+        // so the first `step()` here can legitimately produce the prefill
+        // token AND the first decode token together. The invariant this
+        // test actually needs is therefore STRICTLY INCREASING and bounded
+        // by `max_new`, not "exactly one token per call".
+        let mut seen_lengths = Vec::new();
+        let mut prev_tail: Vec<u32> = Vec::new();
+        loop {
+            let report = sched.step().unwrap();
+            if report.finished.contains(&id) {
+                break;
+            }
+            let tail = sched.session_new_tokens(id).unwrap().to_vec();
+            assert!(
+                tail.len() > prev_tail.len(),
+                "tail must strictly grow each non-finishing step, got {tail:?} after {prev_tail:?}"
+            );
+            assert!(
+                tail.starts_with(&prev_tail),
+                "the previously-seen tail must remain an unchanged PREFIX of the \
+                 new tail -- {tail:?} does not extend {prev_tail:?}"
+            );
+            assert!(
+                tail.len() < max_new,
+                "must not reach the full budget before the session reports finished"
+            );
+            seen_lengths.push(tail.len());
+            prev_tail = tail;
+        }
+        assert!(
+            !seen_lengths.is_empty(),
+            "at least one non-finishing step must have been observed"
+        );
+
+        let reaped = sched.reap_finished();
+        assert_eq!(reaped.len(), 1);
+        assert_eq!(
+            reaped[0].1.len(),
+            prompt.len() + max_new,
+            "reap_finished's full token list must match prompt + max_new"
+        );
+        assert!(
+            reaped[0].1[prompt.len()..prompt.len() + prev_tail.len()] == prev_tail[..],
+            "the last mid-generation tail seen via session_new_tokens must be a \
+             prefix of the final generated tokens, byte-identical"
+        );
     }
 
     /// C-1: admission is gated on the KV block pool. A tight budget admits until
