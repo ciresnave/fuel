@@ -616,29 +616,39 @@ fn dtype_token(dt: DType) -> Option<&'static str> {
 /// derived in the iteration frame (§6.6-0013): a rank-deficient operand is
 /// right-aligned, with every frame axis below `rank − r` treated as broadcast
 /// (stride 0) for it.
+///
+/// KISS-CLASSIFY §6.5-0014, scope C (KISS#519, PM-ruled 2026-10-02): the
+/// broadcast-axis MASK still reads the frame-padded view (§6.6-0008/
+/// §6.6-0013) -- a padded axis contributes to admissibility regardless of
+/// the operand's own rank. But `layout_tag`, vector width, and the
+/// divisibility bucket read the operand's OWN axes only. Padding a
+/// rank-deficient operand as broadcast used to make `layout_tag` `br`
+/// REGARDLESS of the operand's own strides, so a dense `[256]` operand in a
+/// `[128,256]` frame collided with a genuinely strided/gathered rank-1
+/// operand under one sub-key -- two operands with different real memory
+/// behavior, one spelling. Splitting the two concerns (admissibility mask
+/// vs. this operand's own access pattern) is what KISS#519 fixes.
 fn operand_sub_key(o: &FdxOperandDesc, frame: &[i64], innermost_reduced: bool) -> String {
     let rank = frame.len();
     let off = rank - o.shape.len();
 
-    // The padded (frame-aligned) view: padded axes carry the frame extent
-    // with stride 0.
-    let ext_p: Vec<i64> = (0..rank)
-        .map(|i| if i < off { frame[i] } else { o.shape[i - off] })
-        .collect();
-    let str_p: Vec<i64> = (0..rank)
-        .map(|i| if i < off { 0 } else { o.strides[i - off] })
-        .collect();
-
     // Broadcast-axis mask (§6.6-0008): bit i set iff iteration-frame axis i
-    // has extent > 1 and this operand's stride along it is 0.
+    // has extent > 1 and this operand's stride along it is 0 -- computed
+    // over the frame-PADDED view, since a padded (rank-deficient) axis is a
+    // broadcast axis by construction regardless of what layout_tag reports.
     let mut mask = 0u8;
-    for i in 0..rank.min(8) {
-        if frame[i] > 1 && str_p[i] == 0 {
+    for (i, &f) in frame.iter().enumerate().take(rank.min(8)) {
+        let str_p_i = if i < off { 0 } else { o.strides[i - off] };
+        if f > 1 && str_p_i == 0 {
             mask |= 1 << i;
         }
     }
 
-    let layout = layout_code(&ext_p, &str_p);
+    // layout_tag reads the operand's OWN extents/strides only (§6.5-0014
+    // scope C) -- NOT the padded view. A rank-deficient operand's missing
+    // axes are an admissibility fact (captured in `mask` above), not a
+    // statement about how THIS operand's own memory is laid out.
+    let layout = layout_code(&o.shape, &o.strides);
 
     // Own innermost axis (§6.3-0011): axis rank−1 of the operand's OWN shape
     // (right-aligned to the frame innermost). A rank-0 operand has none.
@@ -649,14 +659,15 @@ fn operand_sub_key(o: &FdxOperandDesc, frame: &[i64], innermost_reduced: bool) -
 
     let div = div_bucket(inner_extent);
 
-    // Vector-access width (§6.5-0009 / §6.5-0013): v1 on a broadcast layout or
-    // any broadcast-marked axis, on a reduced innermost axis of a `red` cell,
-    // on a missing/sub-byte/unaligned base, or a non-forward-unit inner
-    // stride; else the largest L ∈ {8,4,2} within the 16-byte cap whose exact
-    // modulo divides the alignment and the inner extent.
+    // Vector-access width (§6.5-0009 / §6.5-0013): reads the operand's OWN
+    // axes (§6.5-0014 scope C) -- `mask != 0` (a FRAME-padded broadcast) no
+    // longer forces v1 on its own; only the operand's OWN layout being `br`
+    // does. Still v1 on: own layout `br`, a reduced innermost axis of a
+    // `red` cell, a missing/sub-byte/unaligned base, or a non-forward-unit
+    // inner stride; else the largest L ∈ {8,4,2} within the 16-byte cap
+    // whose exact modulo divides the alignment and the inner extent.
     let dsz = o.dtype.size_in_bytes();
     let vec = if layout == "br"
-        || mask != 0
         || innermost_reduced
         || dsz == 0
         || o.align_bytes == 0
@@ -1940,9 +1951,14 @@ mod tests {
 
     /// Work class and per-operand masks read the ITERATION FRAME
     /// (§6.5-0010 / §6.6-0013): a rank-deficient operand-0 is right-aligned,
-    /// its missing frame axis broadcast (stride 0) — so the cell is `grid`
-    /// (frame 128·256), not `block` (operand-0's own 256), and operand-0's
-    /// sub-key is `br/01/v1/d16/f`.
+    /// its missing frame axis counted as broadcast for the admissibility
+    /// MASK (stride 0) — so the cell is `grid` (frame 128·256), not `block`
+    /// (operand-0's own 256), and operand-0's mask is `01`. Its `layout_tag`
+    /// is `co`, not `br`, per §6.5-0014 scope C (KISS#519): layout reads the
+    /// operand's OWN dense `[256]` shape/strides, not the padded view —
+    /// padding is an admissibility fact (the mask), not a statement about
+    /// this operand's own memory layout. Same reasoning gives it `v4`, not
+    /// `v1`: `mask != 0` alone no longer forces scalar width.
     #[test]
     fn work_class_and_masks_use_the_iteration_frame() {
         let token = derive_structure_key_token(
@@ -1953,7 +1969,85 @@ mod tests {
         .expect("derives");
         assert_eq!(
             token,
-            "sk4|bin|f32|cuda:sm89|ix32|grid|r2|br/01/v1/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
+            "sk4|bin|f32|cuda:sm89|ix32|grid|r2|co/01/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
+        );
+    }
+
+    /// §6.5-0014 scope C (KISS#519) worked example: an EXPLICIT `[1,256]`
+    /// operand with a stride-0 leading axis of extent 1 derives the SAME
+    /// `co/01/v4/d16/f` as the rank-deficient `[256]` operand above --
+    /// `layout_tag` only reports `br` for an OWN axis with extent > 1 AND
+    /// stride 0 (§6.5-0002 step 1); extent-1 axes are excluded from the
+    /// contiguity product entirely, so a stride-0 extent-1 axis is `co`,
+    /// not `br`, matching the rank-deficient case's own-axes view exactly.
+    #[test]
+    fn explicit_unit_broadcast_axis_matches_rank_deficient_own_axes_layout() {
+        let explicit = FdxOperandDesc::from_layout(
+            &Layout::new(
+                Shape::from(vec![1usize, 256]),
+                [0isize, 1].into_iter().collect::<StrideVec>(),
+                0,
+            ),
+            DType::F32,
+        );
+        let token = derive_structure_key_token(
+            FuelOpCategory::BinaryElementwise,
+            &[explicit, f32c(&[128, 256]), f32c(&[128, 256])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        assert_eq!(
+            token,
+            "sk4|bin|f32|cuda:sm89|ix32|grid|r2|co/01/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
+        );
+    }
+
+    /// §6.5-0014 scope C (KISS#519) worked example: a dense vs. a strided
+    /// rank-3 operand in a rank-4 frame, differing ONLY in their own
+    /// strides -- layout_tag (and therefore `vec`) must track that
+    /// difference, which a frame-padded view (identical `ext_p` for both)
+    /// could never distinguish.
+    #[test]
+    fn frame_padded_dense_vs_strided_rank3_differ_by_own_layout() {
+        let dense = FdxOperandDesc::from_layout(
+            &Layout::new(
+                Shape::from(vec![4usize, 16, 64]),
+                [1024isize, 64, 1].into_iter().collect::<StrideVec>(),
+                0,
+            ),
+            DType::F32,
+        );
+        let strided = FdxOperandDesc::from_layout(
+            &Layout::new(
+                Shape::from(vec![4usize, 16, 64]),
+                [2048isize, 128, 2].into_iter().collect::<StrideVec>(),
+                0,
+            ),
+            DType::F32,
+        );
+        let frame_setter = f32c(&[8, 4, 16, 64]);
+
+        let dense_token = derive_structure_key_token(
+            FuelOpCategory::BinaryElementwise,
+            &[dense, frame_setter.clone()],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        assert_eq!(
+            dense_token,
+            "sk4|bin|f32|cuda:sm89|ix32|grid|r4|co/01/v4/d16/f;co/00/v4/d16/f|-"
+        );
+
+        let strided_token = derive_structure_key_token(
+            FuelOpCategory::BinaryElementwise,
+            &[strided, frame_setter],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        assert_eq!(
+            strided_token, "sk4|bin|f32|cuda:sm89|ix32|grid|r4|st/01/v1/d16/f;co/00/v4/d16/f|-",
+            "a non-forward-unit own stride must derive `st`/`v1` even though \
+             the frame-padded extents are byte-identical to the dense case"
         );
     }
 
