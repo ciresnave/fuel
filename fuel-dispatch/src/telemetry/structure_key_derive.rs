@@ -63,14 +63,24 @@ const MAX_OPERANDS: usize = 8;
 /// §6.4-0004 — the largest serialized token length, in bytes.
 const MAX_TOKEN_BYTES: usize = 4096;
 
-/// The reduced-axis set of a `red` cell — the reduce field (§6.6-0009 / §6.7-0005).
+/// The reduced-axis set of a `red` cell — the reduce field (§6.6-0009 /
+/// §6.7-0005). **Describes the INTENT, not the emitted token**: the actual
+/// `structure_key` spelling (`-`, `rall`, `rlast`, or `x<hh>`) depends on
+/// BOTH this axis set AND the cell's rank, by the rank-aware mask
+/// canonicalization in [`FuelOpCategory::reduced_mask`] /
+/// [`FuelOpCategory::reduce_field`] — not on a fixed per-variant spelling.
+/// For example `TrailingAxis` at rank 1 is indistinguishable from "every
+/// axis reduced" and canonicalizes to `rall`, not `rlast`; `All` at rank 0
+/// has no axis to reduce at all and canonicalizes to `-`; and a `Keepdim`
+/// mask that happens to equal the full-rank or trailing-bit mask
+/// canonicalizes to `rall`/`rlast` just like the named variants would.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReduceAxes {
-    /// Every axis reduced → `rall`.
+    /// Every axis reduced.
     All,
-    /// Only the trailing (innermost) axis → `rlast`.
+    /// Only the trailing (innermost) axis.
     TrailingAxis,
-    /// An explicit keepdim bitmask for any other axis set → `x<hh>`.
+    /// An explicit keepdim bitmask for any other axis set.
     Keepdim(u8),
 }
 
@@ -253,23 +263,19 @@ impl FuelOpCategory {
         }
     }
 
-    /// The reduce field (§6.6-0009): a non-`-` value only for a `red` cell —
-    /// every other family emits `-` by construction (§6.6-0017).
-    ///
-    /// `rank` is the cell's iteration-frame rank (same `rank` already used a
-    /// few lines away by `innermost_reduced` for the identical bitmask — this
-    /// function used to trust the caller's `ReduceAxes` tag verbatim instead
-    /// of re-deriving it, which let a caller's MISCLASSIFICATION reach the
-    /// wire undetected: `Keepdim(m)`'s own doc promises it is "for any OTHER
-    /// axis set" than all-axes or trailing-only, but nothing enforced that
-    /// promise. KISS-CLASSIFY §6.6-0009/§6.7-0005: an empty reduced set is
-    /// `-` (not a `Keepdim` form at all — `red` with nothing reduced is not
-    /// representable), a reduced set spanning every axis is `rall` regardless
-    /// of which constructor the caller used, and a reduced set that is
-    /// EXACTLY the trailing axis is `rlast` — both because `structure_key`
-    /// canonicalizes by OPERATION, not by which Rust variant produced it: two
-    /// callers describing the same reduction must get byte-identical tokens.
-    fn reduce_field(self, rank: usize) -> String {
+    /// The effective reduced-axis bitmask for this category at a given
+    /// iteration-frame `rank`, independent of which `ReduceAxes` variant
+    /// produced it (§6.6-0009/§6.7-0005: `structure_key` canonicalizes by
+    /// OPERATION, not by Rust variant). `0` for a non-`Reduction` category,
+    /// or for `rank == 0` (there is no axis to reduce). The SOLE source of
+    /// this mask for both [`Self::reduce_field`]'s token and the `v1`
+    /// innermost-reduced gate a few lines away — those two derivations
+    /// drifted once already (a rank-0 `All`/`TrailingAxis` reduction and an
+    /// equivalent `Keepdim(0)` disagreed on whether the innermost axis was
+    /// reduced, despite `reduce_field` already treating both as the
+    /// identical empty-mask case), which is exactly the class of bug a
+    /// single shared derivation forecloses structurally.
+    fn reduced_mask(self, rank: usize) -> u8 {
         let full_mask: u8 = if rank == 0 {
             0
         } else if rank >= 8 {
@@ -278,12 +284,34 @@ impl FuelOpCategory {
             (1u8 << rank) - 1
         };
         let trailing_bit: u8 = if rank == 0 { 0 } else { 1u8 << (rank - 1) };
-        let m = match self {
+        match self {
             FuelOpCategory::Reduction(ReduceAxes::All) => full_mask,
             FuelOpCategory::Reduction(ReduceAxes::TrailingAxis) => trailing_bit,
             FuelOpCategory::Reduction(ReduceAxes::Keepdim(m)) => m,
-            _ => return "-".to_string(),
-        };
+            _ => 0,
+        }
+    }
+
+    /// The reduce field (§6.6-0009): a non-`-` value only for a `red` cell —
+    /// every other family emits `-` by construction (§6.6-0017).
+    ///
+    /// `rank` is the cell's iteration-frame rank. This function used to
+    /// trust the caller's `ReduceAxes` tag verbatim instead of re-deriving
+    /// it via [`Self::reduced_mask`], which let a caller's MISCLASSIFICATION
+    /// reach the wire undetected: `Keepdim(m)`'s own doc promises it is "for
+    /// any OTHER axis set" than all-axes or trailing-only, but nothing
+    /// enforced that promise. KISS-CLASSIFY §6.6-0009/§6.7-0005: an empty
+    /// reduced set is `-` (not a `Keepdim` form at all — `red` with nothing
+    /// reduced is not representable), a reduced set spanning every axis is
+    /// `rall` regardless of which constructor the caller used, and a reduced
+    /// set that is EXACTLY the trailing axis is `rlast` — both because
+    /// `structure_key` canonicalizes by OPERATION, not by which Rust variant
+    /// produced it: two callers describing the same reduction must get
+    /// byte-identical tokens.
+    fn reduce_field(self, rank: usize) -> String {
+        let full_mask: u8 = if rank >= 8 { 0xFF } else { (1u8 << rank) - 1 };
+        let trailing_bit: u8 = if rank == 0 { 0 } else { 1u8 << (rank - 1) };
+        let m = self.reduced_mask(rank);
         if m == 0 {
             "-".to_string()
         } else if rank > 0 && m == full_mask {
@@ -423,15 +451,14 @@ pub fn derive_structure_key_token_with_acc_mp(
     // §6.5-0009(b): every operand of a reduction cell whose reduced set
     // includes the innermost iteration-frame axis derives v1. Right-alignment
     // (§6.6-0013) maps every operand's innermost axis to frame axis rank−1,
-    // so the gate is cell-level.
-    let innermost_reduced = match op {
-        FuelOpCategory::Reduction(ReduceAxes::All)
-        | FuelOpCategory::Reduction(ReduceAxes::TrailingAxis) => true,
-        FuelOpCategory::Reduction(ReduceAxes::Keepdim(m)) => {
-            rank >= 1 && (m >> (rank - 1)) & 1 == 1
-        }
-        _ => false,
-    };
+    // so the gate is cell-level. Derived from the SAME rank-aware mask
+    // `reduce_field`'s token uses (`FuelOpCategory::reduced_mask`) rather
+    // than re-matching `ReduceAxes` here: the two derivations drifted once
+    // already -- a rank-0 `All`/`TrailingAxis` reduction and an equivalent
+    // `Keepdim(0)` disagreed on this exact gate, even though `reduce_field`
+    // already treats both as the identical empty-mask ("-") case.
+    let reduced_mask = op.reduced_mask(rank);
+    let innermost_reduced = rank >= 1 && (reduced_mask >> (rank - 1)) & 1 == 1;
 
     // Field 7 — per-operand sub-keys, canonical order (inputs then output,
     // §6.6-0014), each derived in the iteration frame.
@@ -1756,6 +1783,55 @@ mod tests {
             "an empty reduced-axis set must decline to the inapplicable marker, not x00 \
              (vec width is v4 here, not v1, because nothing is reduced — the v1 gate is \
              specifically for a reduced innermost axis, which an empty mask never is)",
+        );
+    }
+
+    /// At a genuine rank-0 reduction cell (every operand scalar, since frame
+    /// rank is the max over operand ranks), `ReduceAxes::All` and
+    /// `ReduceAxes::TrailingAxis` must derive byte-identical tokens to the
+    /// logically-equivalent `ReduceAxes::Keepdim(0)` -- `reduce_field`
+    /// already treats all three as the same empty-mask case.
+    ///
+    /// Note on what this test does NOT demonstrate: a Sourcery review
+    /// described the pre-fix divergence as an OBSERVABLE wire-token
+    /// difference ("`All` emits `v1`, `Keepdim(0)` emits `v4`"). Checked
+    /// directly against the pre-fix code before trusting that: both
+    /// already produced IDENTICAL `v1` tokens at rank 0, because
+    /// `operand_sub_key`'s `inner_stride != Some(1)` branch independently
+    /// forces `v1` for any rank-0 operand (it has no inner stride at all),
+    /// regardless of `innermost_reduced`. So the specific "emits v4" claim
+    /// was wrong -- but the underlying concern was real: `innermost_reduced`
+    /// WAS computing a logically wrong value at rank 0 (`true` for
+    /// `All`/`TrailingAxis` when the reduced set is actually empty), it
+    /// just happened not to reach the wire through this particular
+    /// downstream guard. A future change to `operand_sub_key`'s OR-chain
+    /// (e.g. relaxing the inner-stride check) could have made that latent
+    /// wrongness live. This test guards the now-provably-correct derivation
+    /// rather than a wire-level regression that never existed.
+    #[test]
+    fn rank0_all_and_keepdim_zero_derive_identical_tokens() {
+        let all_token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::All),
+            &[f32c(&[]), f32c(&[])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        let trailing_token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::TrailingAxis),
+            &[f32c(&[]), f32c(&[])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        let keepdim_token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::Keepdim(0x00)),
+            &[f32c(&[]), f32c(&[])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        assert_eq!(all_token, keepdim_token, "All vs Keepdim(0) at rank 0");
+        assert_eq!(
+            trailing_token, keepdim_token,
+            "TrailingAxis vs Keepdim(0) at rank 0"
         );
     }
 
