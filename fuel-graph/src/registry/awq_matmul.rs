@@ -24,7 +24,7 @@
 //! ## Packing-order — verified against AutoAWQ's own source
 //!
 //! AWQ's CUDA kernel (and AutoAWQ/llm-awq's packer) does NOT pack eight
-//! int4 values into a `U32` word in naive sequential nibble order. Confirmed
+//! int4 values into a `U32` word in plain sequential nibble order. Confirmed
 //! directly against AutoAWQ's packer (`awq/modules/linear/gemm.py`,
 //! `WQLinear_GEMM.from_linear`, fetched and read 2026-10-02 — not inferred
 //! from a paraphrased description): it packs with
@@ -71,8 +71,8 @@
 //! DEFERRED follow-on work — see the module's own top-of-file note in
 //! that file and this crate's registry-level gap tracking. This
 //! decompose is the correctness floor: it produces the right answer on
-//! every backend (including CUDA, via lowering), just not yet via the
-//! fast fused kernel path.
+//! every backend (including CUDA, via lowering); reaching the fast fused
+//! kernel path is the separate follow-on work named above.
 //!
 //! Unlike NF4's bit-extraction (packed as `U8`, exact in `F32`), AWQ's
 //! packed words are `U32` (values up to 2^32−1), which LOSES PRECISION
@@ -174,8 +174,9 @@ fn push(graph: &mut Graph, op: Op, inputs: Vec<NodeId>, shape: Shape, dtype: DTy
 /// Extract the 8 packed int4 nibbles from a `U32`-packed tensor `packed`
 /// (shape `[..., W]`, each element a packed word) into 8 separate `F64`
 /// tensors of shape `[..., W]`, one per PHYSICAL nibble position
-/// (`result[p]` holds the value at physical position `p`, NOT yet
-/// reordered to logical column order). Arithmetic runs in F64 because a
+/// (`result[p]` holds the value at physical position `p`, still in
+/// physical order — the caller reorders to logical column order via
+/// [`AWQ_UNPACK_ORDER`]). Arithmetic runs in F64 because a
 /// `U32` value can exceed F32's 24-bit-mantissa exact-integer range.
 ///
 /// `nibble_p = floor(w / 16^p) mod 16`, computed as
