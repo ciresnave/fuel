@@ -7229,6 +7229,153 @@ impl NodeHandle {
         }
     }
 
+    /// Append an `AwqMatmul` node — AWQ (mit-han-lab) asymmetric int4
+    /// weight-only matrix multiply. Four inputs:
+    /// - `self` (activations): `[..., M, K]`, dtype ∈ {F32, F16, BF16}
+    /// - `qweight`: `[N, K/8]` U32 (eight int4 codes packed per word)
+    /// - `qzeros`:  `[K/group_size, N/8]` U32 (eight int4 zero-point
+    ///   codes packed per word)
+    /// - `scales`:  `[K/group_size, N]` F32 (per-group, per-output-
+    ///   channel scale)
+    ///
+    /// Output: `[..., M, N]` matching activations' dtype.
+    ///
+    /// `group_size` must be positive and evenly divide `K`. `K` must be a
+    /// multiple of 8 (`qweight`'s packing); `N` must be a multiple of 8
+    /// (`qzeros`' packing). `split_k_iters` is a CUDA launch-tuning
+    /// parameter carried through unused by the (current, decompose-only)
+    /// execution path — see [`crate::registry::awq_matmul`]'s module doc
+    /// for what is and isn't wired/verified yet, including the
+    /// packing-order caveat.
+    ///
+    /// Emits `Op::Fused(FusedOps::AWQ_MATMUL, FusedOpParams::AwqMatmul
+    /// { group_size, split_k_iters })`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one
+    /// this builder is building into, or if any shape/dtype precondition
+    /// above doesn't hold — same discipline as [`Self::nf4_matmul`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn awq_matmul(
+        &self,
+        qweight: &NodeHandle,
+        qzeros: &NodeHandle,
+        scales: &NodeHandle,
+        group_size: usize,
+        split_k_iters: i32,
+    ) -> NodeHandle {
+        assert!(
+            Arc::ptr_eq(&self.graph, &qweight.graph)
+                && Arc::ptr_eq(&self.graph, &qzeros.graph)
+                && Arc::ptr_eq(&self.graph, &scales.graph),
+            "awq_matmul: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
+        );
+        let act_dtype = self.dtype();
+        assert!(
+            matches!(act_dtype, DType::F32 | DType::F16 | DType::BF16),
+            "awq_matmul v1: activations must be F32/F16/BF16, got {:?}",
+            act_dtype,
+        );
+        assert_eq!(
+            qweight.dtype(),
+            DType::U32,
+            "awq_matmul: qweight must be U32 (eight 4-bit codes per word), got {:?}",
+            qweight.dtype(),
+        );
+        assert_eq!(
+            qzeros.dtype(),
+            DType::U32,
+            "awq_matmul: qzeros must be U32 (eight 4-bit codes per word), got {:?}",
+            qzeros.dtype(),
+        );
+        assert_eq!(
+            scales.dtype(),
+            DType::F32,
+            "awq_matmul: scales must be F32, got {:?}",
+            scales.dtype(),
+        );
+        let a_dims = self.shape();
+        let a_dims = a_dims.dims();
+        let w_dims = qweight.shape();
+        let w_dims = w_dims.dims();
+        let z_dims = qzeros.shape();
+        let z_dims = z_dims.dims();
+        let s_dims = scales.shape();
+        let s_dims = s_dims.dims();
+        assert!(
+            a_dims.len() >= 2,
+            "awq_matmul: activations must be rank ≥ 2, got {a_dims:?}",
+        );
+        assert_eq!(
+            w_dims.len(),
+            2,
+            "awq_matmul: qweight must be rank 2 [N, K/8], got {w_dims:?}",
+        );
+        assert_eq!(
+            z_dims.len(),
+            2,
+            "awq_matmul: qzeros must be rank 2 [K/group_size, N/8], got {z_dims:?}",
+        );
+        assert_eq!(
+            s_dims.len(),
+            2,
+            "awq_matmul: scales must be rank 2 [K/group_size, N], got {s_dims:?}",
+        );
+        let _m = a_dims[a_dims.len() - 2];
+        let k = a_dims[a_dims.len() - 1];
+        let n = w_dims[0];
+        assert!(
+            k.is_multiple_of(8),
+            "awq_matmul: k={k} must be a multiple of 8 (qweight packs 8 codes per word along k)",
+        );
+        assert!(
+            n.is_multiple_of(8),
+            "awq_matmul: n={n} must be a multiple of 8 (qzeros packs 8 codes per word along n)",
+        );
+        assert!(
+            group_size > 0 && k.is_multiple_of(group_size),
+            "awq_matmul: k={k} must be a positive multiple of group_size={group_size}",
+        );
+        assert_eq!(
+            w_dims[1],
+            k / 8,
+            "awq_matmul: qweight second dim {} must equal k/8 = {}",
+            w_dims[1],
+            k / 8,
+        );
+        let n_groups = k / group_size;
+        assert_eq!(
+            z_dims,
+            &[n_groups, n / 8][..],
+            "awq_matmul: qzeros {z_dims:?} must be [k/group_size={n_groups}, n/8={}]",
+            n / 8,
+        );
+        assert_eq!(
+            s_dims,
+            &[n_groups, n][..],
+            "awq_matmul: scales {s_dims:?} must be [k/group_size={n_groups}, n={n}]",
+        );
+        let mut out_dims: Vec<usize> = a_dims[..a_dims.len() - 1].to_vec();
+        out_dims.push(n);
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::Fused(
+                crate::registry::FusedOps::AWQ_MATMUL,
+                crate::registry::FusedOpParams::AwqMatmul {
+                    group_size,
+                    split_k_iters,
+                },
+            ),
+            inputs: vec![self.id, qweight.id, qzeros.id, scales.id],
+            shape: Shape::from_dims(&out_dims),
+            dtype: act_dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Append an `SsdChunkScan` node — Mamba-2's State-Space
     /// Duality chunked scan (forward). Five inputs:
     /// - `self` (x): `[batch, seqlen, heads, head_dim]` F32
@@ -12036,6 +12183,52 @@ mod tests {
         static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>> =
             std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
+
+    /// `Tensor::awq_matmul`'s public builder end-to-end: a well-formed call
+    /// produces a `Fused(AWQ_MATMUL, ..)` node with the right output
+    /// shape/dtype. The decompose MATH is tested at the registry level
+    /// (`registry::awq_matmul::tests`); this just confirms the builder's
+    /// own validation + node construction work from the public API.
+    #[test]
+    fn awq_matmul_builder_produces_expected_node() {
+        let act = NodeHandle::from_f32(vec![0.0_f32; 2 * 8], Shape::from_dims(&[2, 8]), cpu_dev())
+            .unwrap();
+        let qweight = act
+            .const_u32_like(vec![0u32; 8], Shape::from_dims(&[8, 1]))
+            .unwrap();
+        let qzeros = act
+            .const_u32_like(vec![0u32; 1], Shape::from_dims(&[1, 1]))
+            .unwrap();
+        let scales = act
+            .const_f32_like(vec![1.0_f32; 8], Shape::from_dims(&[1, 8]))
+            .unwrap();
+        let out = act.awq_matmul(&qweight, &qzeros, &scales, 8, 8);
+        assert_eq!(out.shape().dims(), &[2, 8]);
+        assert_eq!(out.dtype(), DType::F32);
+        assert!(matches!(
+            out.graph.read().unwrap().node(out.id).op,
+            Op::Fused(id, _) if id == crate::registry::FusedOps::AWQ_MATMUL
+        ));
+    }
+
+    /// Born-red: a non-U32 `qweight` must panic with a clear message, not
+    /// silently misinterpret bytes.
+    #[test]
+    #[should_panic(expected = "qweight must be U32")]
+    fn awq_matmul_builder_panics_on_wrong_qweight_dtype() {
+        let act = NodeHandle::from_f32(vec![0.0_f32; 2 * 8], Shape::from_dims(&[2, 8]), cpu_dev())
+            .unwrap();
+        let qweight = act
+            .const_f32_like(vec![0.0_f32; 8], Shape::from_dims(&[8, 1]))
+            .unwrap();
+        let qzeros = act
+            .const_u32_like(vec![0u32; 1], Shape::from_dims(&[1, 1]))
+            .unwrap();
+        let scales = act
+            .const_f32_like(vec![1.0_f32; 8], Shape::from_dims(&[1, 8]))
+            .unwrap();
+        let _ = act.awq_matmul(&qweight, &qzeros, &scales, 8, 8);
     }
 
     #[test]

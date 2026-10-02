@@ -1943,14 +1943,32 @@ mod tests {
     /// OpKind.
     #[test]
     fn precision_guarantee_lint_bit_stable_cpu_coverage() {
-        use fuel_graph::registry::{FusedOpId, default_registry};
+        use fuel_graph::registry::{FusedOpId, FusedOps, default_registry};
 
-        // The allowlist is empty now that every registered fused op
-        // has bit-stable CPU coverage. If a future commit introduces
-        // a new entry without immediate CPU coverage, add it here
-        // with a documented reason AND file a follow-up to remove
-        // the line.
-        const KNOWN_GAPS: &[(FusedOpId, &str)] = &[];
+        // If a future commit introduces a new entry without immediate
+        // CPU coverage, add it here with a documented reason AND file
+        // a follow-up to remove the line. This check already detects
+        // its own expiry: if a CPU registration later appears for an
+        // allowlisted id, the `has_cpu` check below fails loudly
+        // rather than silently granting double coverage.
+        //
+        // AwqMatmul (fuel-graph's AWQ weight-only GEMM op) ships
+        // decompose-only in this increment: its dequant-then-matmul
+        // decompose already provides correctness on every backend via
+        // existing primitive ops, which independently carry their own
+        // CPU coverage -- but this lint checks for a DIRECT
+        // binding-table CPU registration of the fused op itself,
+        // which AwqMatmul deliberately does not have yet. Reaching
+        // the real, measured CUDA kernel
+        // (fuel-cuda-backend/src/baracuda/quant_w4a16.rs::awq_gemm_f16)
+        // is separate follow-on work named in the op's own module doc;
+        // a CPU binding-table wrapper is the same class of follow-up.
+        const KNOWN_GAPS: &[(FusedOpId, &str)] = &[(
+            FusedOps::AWQ_MATMUL,
+            "decompose-only in this increment; no direct CPU binding-table \
+             registration yet -- see fuel-graph/src/registry/awq_matmul.rs's \
+             module doc for the follow-on dispatch-wiring work",
+        )];
 
         let meta = default_registry();
         let kernels = default_kernel_registry();
@@ -2015,11 +2033,12 @@ mod tests {
             covered > 0 || allowlisted > 0,
             "lint covered 0 ops — registry appears empty"
         );
-        // Stronger commitment: with KNOWN_GAPS empty, every entry
-        // should be covered.
+        // Stronger commitment: exactly the one documented gap above,
+        // no silent additions.
         assert_eq!(
-            allowlisted, 0,
-            "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
+            allowlisted, 1,
+            "KNOWN_GAPS allowlist has exactly 1 documented entry (AwqMatmul); \
+             saw {allowlisted} allowlisted",
         );
         // Sanity: we should see all 24 registered fused ops covered.
         // 14 from the original Phase 7.6 lineup + PowIBackward
@@ -2030,7 +2049,9 @@ mod tests {
         // + SSD_CHUNK_SCAN + NF4_MATMUL (the full CPU OpKind coverage
         // plan: FSCE + Mamba-adjacent trio + NF4) +
         // FLASH_ATTN_BACKWARD_{Q,K,V} (reusing the binding-table CPU
-        // dispatch wrappers).
+        // dispatch wrappers). AWQ_MATMUL is the registry's 25th entry
+        // and is the one documented KNOWN_GAPS allowlist line above,
+        // not counted here.
         assert_eq!(
             covered, 24,
             "expected 24 fused ops covered by bit-stable CPU impls, got {covered}",

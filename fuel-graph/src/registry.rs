@@ -33,6 +33,7 @@ use fuel_ir::{DType, DynScalar, Shape};
 use fuel_kernel_seam_types::PatternNode;
 use std::collections::HashMap;
 
+pub mod awq_matmul;
 pub mod causal_conv1d;
 pub mod conv2d;
 pub mod conv_transpose_2d;
@@ -320,6 +321,35 @@ pub enum FusedOpParams {
     /// 64 in bitsandbytes). The NF4 NormalFloat lookup table is
     /// baked into the kernel — not a runtime input.
     Nf4Matmul { block_size: usize },
+    /// AwqMatmul — AWQ (mit-han-lab) asymmetric int4 weight-only
+    /// matmul: `dequant(q) = (q - zero_point) * scale`, per-group.
+    /// Three inputs:
+    /// - `activations`: `[..., M, K]`
+    /// - `qweight`:     `[N, K/8]` U32 (eight int4 codes packed
+    ///   per word, K must be a multiple of 8).
+    /// - `qzeros`:      `[K/group_size, N/8]` U32 (eight int4
+    ///   zero-point codes packed per word, N must be a multiple
+    ///   of 8).
+    /// - `scales`:      `[K/group_size, N]` F32 (per-group,
+    ///   per-output-channel scale).
+    ///
+    /// Output: `[..., M, N]` matching the activations' dtype.
+    ///
+    /// `group_size` (∈ {64, 128} per AWQ's format) must evenly
+    /// divide `K`. `split_k_iters` is a CUDA-kernel launch-tuning
+    /// parameter (unused by the decompose path; carried so a future
+    /// fused CUDA dispatch doesn't need a second params shape).
+    ///
+    /// ⚠️ The packed-int4 UNPACK ORDER within each `U32` word
+    /// (`qweight`/`qzeros`) is NOT independently verified against a
+    /// real AutoAWQ/llm-awq checkpoint in this change — see the
+    /// module doc on [`crate::registry::awq_matmul`] for what IS and
+    /// isn't confirmed. Treat dequantized values as unverified
+    /// against real checkpoints until that is checked.
+    AwqMatmul {
+        group_size: usize,
+        split_k_iters: i32,
+    },
     /// FlashAttnBackward — shared params for the Q/K/V backward
     /// variants. Carries the same shape parameters as the forward
     /// `FlashAttn` so the recompute pass produces identical scores.
@@ -630,6 +660,14 @@ impl FusedOpParams {
                 tag: 21,
                 bits: Vec::new(),
                 ints: vec![*block_size as i64],
+            },
+            FusedOpParams::AwqMatmul {
+                group_size,
+                split_k_iters,
+            } => FusedOpParamsKey {
+                tag: 23,
+                bits: Vec::new(),
+                ints: vec![*group_size as i64, *split_k_iters as i64],
             },
             FusedOpParams::FlashAttnBackward {
                 softmax_scale,
@@ -1193,6 +1231,22 @@ impl FusedOps {
     pub const FLASH_ATTN_BACKWARD_K: FusedOpId = FusedOpId(23);
     /// FlashAttnBackwardV — produces dV. See [`Self::FLASH_ATTN_BACKWARD_Q`].
     pub const FLASH_ATTN_BACKWARD_V: FusedOpId = FusedOpId(24);
+
+    /// AwqMatmul — AWQ (mit-han-lab) asymmetric int4 weight-only
+    /// matmul. Four inputs `[activations, qweight, qzeros, scales]`
+    /// (one more than NF4's three — AWQ's zero-point is a fourth
+    /// operand, not baked into the dequant like NF4's codebook) where
+    /// `qweight: [N, K/8] U32`,
+    /// `qzeros: [K/group_size, N/8] U32`, `scales: [K/group_size, N]
+    /// F32`. Output `[..., M, N]` matching activations' dtype
+    /// (F32/F16/BF16 in v1). Carries `{ group_size, split_k_iters }`
+    /// in [`FusedOpParams::AwqMatmul`]. `BackwardKind::NotDifferentiable`
+    /// (AWQ weights are frozen, same reasoning as [`Self::NF4_MATMUL`]).
+    /// Unlike NF4 (a non-linear codebook with no primitive spelling),
+    /// AWQ's affine dequant decomposes cleanly into primitives — see
+    /// the module doc on [`crate::registry::awq_matmul`] for the
+    /// recipe and its current verification status.
+    pub const AWQ_MATMUL: FusedOpId = FusedOpId(25);
 }
 
 /// Process-wide default registry: the union of every fused op's
@@ -1231,6 +1285,7 @@ pub fn default_registry() -> &'static FusedOpRegistry {
             .with_entry(selective_scan::entry())
             .with_entry(ssd_chunk_scan::entry())
             .with_entry(nf4_matmul::entry())
+            .with_entry(awq_matmul::entry())
     })
 }
 
