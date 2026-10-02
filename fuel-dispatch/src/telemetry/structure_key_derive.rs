@@ -56,14 +56,31 @@
 use super::structure_key::FdxOperandDesc;
 use fuel_ir::DType;
 
-/// The reduced-axis set of a `red` cell — the reduce field (§6.6-0009 / §6.7-0005).
+/// §6.4-0001 — the largest rank a cell operand may carry.
+const MAX_RANK: usize = 8;
+/// §6.4-0002 — the largest number of operands a cell may carry.
+const MAX_OPERANDS: usize = 8;
+/// §6.4-0004 — the largest serialized token length, in bytes.
+const MAX_TOKEN_BYTES: usize = 4096;
+
+/// The reduced-axis set of a `red` cell — the reduce field (§6.6-0009 /
+/// §6.7-0005). **Describes the INTENT, not the emitted token**: the actual
+/// `structure_key` spelling (`-`, `rall`, `rlast`, or `x<hh>`) depends on
+/// BOTH this axis set AND the cell's rank, by the rank-aware mask
+/// canonicalization in [`FuelOpCategory::reduced_mask`] /
+/// [`FuelOpCategory::reduce_field`] — not on a fixed per-variant spelling.
+/// For example `TrailingAxis` at rank 1 is indistinguishable from "every
+/// axis reduced" and canonicalizes to `rall`, not `rlast`; `All` at rank 0
+/// has no axis to reduce at all and canonicalizes to `-`; and a `Keepdim`
+/// mask that happens to equal the full-rank or trailing-bit mask
+/// canonicalizes to `rall`/`rlast` just like the named variants would.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReduceAxes {
-    /// Every axis reduced → `rall`.
+    /// Every axis reduced.
     All,
-    /// Only the trailing (innermost) axis → `rlast`.
+    /// Only the trailing (innermost) axis.
     TrailingAxis,
-    /// An explicit keepdim bitmask for any other axis set → `x<hh>`.
+    /// An explicit keepdim bitmask for any other axis set.
     Keepdim(u8),
 }
 
@@ -246,16 +263,86 @@ impl FuelOpCategory {
         }
     }
 
-    /// The reduce field (§6.6-0009): a non-`-` value only for a `red` cell —
-    /// every other family emits `-` by construction (§6.6-0017).
-    fn reduce_field(self) -> String {
+    /// The effective reduced-axis bitmask for this category at a given
+    /// iteration-frame `rank`, independent of which `ReduceAxes` variant
+    /// produced it (§6.6-0009/§6.7-0005: `structure_key` canonicalizes by
+    /// OPERATION, not by Rust variant). `0` for a non-`Reduction` category,
+    /// or for `rank == 0` (there is no axis to reduce). The SOLE source of
+    /// this mask for both [`Self::reduce_field`]'s token and the `v1`
+    /// innermost-reduced gate a few lines away — those two derivations
+    /// drifted once already (a rank-0 `All`/`TrailingAxis` reduction and an
+    /// equivalent `Keepdim(0)` disagreed on whether the innermost axis was
+    /// reduced, despite `reduce_field` already treating both as the
+    /// identical empty-mask case), which is exactly the class of bug a
+    /// single shared derivation forecloses structurally.
+    fn reduced_mask(self, rank: usize) -> u8 {
+        let full_mask: u8 = if rank == 0 {
+            0
+        } else if rank >= 8 {
+            0xFF
+        } else {
+            (1u8 << rank) - 1
+        };
+        let trailing_bit: u8 = if rank == 0 { 0 } else { 1u8 << (rank - 1) };
         match self {
-            FuelOpCategory::Reduction(ReduceAxes::All) => "rall".to_string(),
-            FuelOpCategory::Reduction(ReduceAxes::TrailingAxis) => "rlast".to_string(),
-            FuelOpCategory::Reduction(ReduceAxes::Keepdim(m)) => format!("x{m:02x}"),
-            _ => "-".to_string(),
+            FuelOpCategory::Reduction(ReduceAxes::All) => full_mask,
+            FuelOpCategory::Reduction(ReduceAxes::TrailingAxis) => trailing_bit,
+            FuelOpCategory::Reduction(ReduceAxes::Keepdim(m)) => m,
+            _ => 0,
         }
     }
+
+    /// The reduce field (§6.6-0009): a non-`-` value only for a `red` cell —
+    /// every other family emits `-` by construction (§6.6-0017).
+    ///
+    /// `rank` is the cell's iteration-frame rank. This function used to
+    /// trust the caller's `ReduceAxes` tag verbatim instead of re-deriving
+    /// it via [`Self::reduced_mask`], which let a caller's MISCLASSIFICATION
+    /// reach the wire undetected: `Keepdim(m)`'s own doc promises it is "for
+    /// any OTHER axis set" than all-axes or trailing-only, but nothing
+    /// enforced that promise. KISS-CLASSIFY §6.6-0009/§6.7-0005: an empty
+    /// reduced set is `-` (not a `Keepdim` form at all — `red` with nothing
+    /// reduced is not representable), a reduced set spanning every axis is
+    /// `rall` regardless of which constructor the caller used, and a reduced
+    /// set that is EXACTLY the trailing axis is `rlast` — both because
+    /// `structure_key` canonicalizes by OPERATION, not by which Rust variant
+    /// produced it: two callers describing the same reduction must get
+    /// byte-identical tokens.
+    fn reduce_field(self, rank: usize) -> String {
+        let full_mask: u8 = if rank >= 8 { 0xFF } else { (1u8 << rank) - 1 };
+        let trailing_bit: u8 = if rank == 0 { 0 } else { 1u8 << (rank - 1) };
+        let m = self.reduced_mask(rank);
+        if m == 0 {
+            "-".to_string()
+        } else if rank > 0 && m == full_mask {
+            "rall".to_string()
+        } else if rank > 0 && m == trailing_bit {
+            "rlast".to_string()
+        } else {
+            format!("x{m:02x}")
+        }
+    }
+}
+
+/// Is `target` a well-formed namespaced target (§6.8-0001/-0005): exactly one
+/// `:` separating two non-empty parts, with neither part (nor the separator
+/// itself) containing `|`, `;`, `/`, whitespace, or a control character.
+/// `target.contains(':')` alone — the prior check — accepts `"a:b:c"`,
+/// `":x"`, `"x:"`, and `"cuda:sm|89"`, all of which this rejects.
+fn is_valid_namespaced_target(target: &str) -> bool {
+    let mut parts = target.split(':');
+    let (Some(ns), Some(rest)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false; // more than one ':'
+    }
+    if ns.is_empty() || rest.is_empty() {
+        return false;
+    }
+    !target
+        .chars()
+        .any(|c| c == '|' || c == ';' || c == '/' || c.is_whitespace() || c.is_control())
 }
 
 /// Derive the KISS `sk4` `structure_key` token for a cell, independently of
@@ -293,12 +380,12 @@ pub fn derive_structure_key_token_with_acc_mp(
         return None;
     }
     let first = operands.first()?;
-    if operands.len() > 8 {
+    if operands.len() > MAX_OPERANDS {
         return None; // MAX_OPERANDS cap (§6.4-0002)
     }
     if operands
         .iter()
-        .any(|o| o.shape.len() > 8 || o.shape.len() != o.strides.len())
+        .any(|o| o.shape.len() > MAX_RANK || o.shape.len() != o.strides.len())
     {
         return None; // MAX_RANK cap (§6.4-0001) / malformed descriptor
     }
@@ -314,8 +401,8 @@ pub fn derive_structure_key_token_with_acc_mp(
         return None;
     }
     let dtype = dtype_token(first.dtype)?;
-    if !target.contains(':') {
-        return None; // namespaced target required (§6.8-0001)
+    if !is_valid_namespaced_target(target) {
+        return None; // namespaced target required (§6.8-0001/-0005)
     }
 
     // Iteration frame (§6.6-0013): rank = widest operand rank (§6.6-0006);
@@ -364,15 +451,14 @@ pub fn derive_structure_key_token_with_acc_mp(
     // §6.5-0009(b): every operand of a reduction cell whose reduced set
     // includes the innermost iteration-frame axis derives v1. Right-alignment
     // (§6.6-0013) maps every operand's innermost axis to frame axis rank−1,
-    // so the gate is cell-level.
-    let innermost_reduced = match op {
-        FuelOpCategory::Reduction(ReduceAxes::All)
-        | FuelOpCategory::Reduction(ReduceAxes::TrailingAxis) => true,
-        FuelOpCategory::Reduction(ReduceAxes::Keepdim(m)) => {
-            rank >= 1 && (m >> (rank - 1)) & 1 == 1
-        }
-        _ => false,
-    };
+    // so the gate is cell-level. Derived from the SAME rank-aware mask
+    // `reduce_field`'s token uses (`FuelOpCategory::reduced_mask`) rather
+    // than re-matching `ReduceAxes` here: the two derivations drifted once
+    // already -- a rank-0 `All`/`TrailingAxis` reduction and an equivalent
+    // `Keepdim(0)` disagreed on this exact gate, even though `reduce_field`
+    // already treats both as the identical empty-mask ("-") case.
+    let reduced_mask = op.reduced_mask(rank);
+    let innermost_reduced = rank >= 1 && (reduced_mask >> (rank - 1)) & 1 == 1;
 
     // Field 7 — per-operand sub-keys, canonical order (inputs then output,
     // §6.6-0014), each derived in the iteration frame.
@@ -393,7 +479,7 @@ pub fn derive_structure_key_token_with_acc_mp(
         idx = index_width,
         work = work_class,
         ops = operand_keys.join(";"),
-        reduce = op.reduce_field(),
+        reduce = op.reduce_field(rank),
     );
     // §6.7-0013(c)/(e): the non-contraction precision field is
     // OMITTED-WHEN-ABSENT — not `-`, not empty. This is a deliberate contrast
@@ -408,6 +494,9 @@ pub fn derive_structure_key_token_with_acc_mp(
     if let Some(c) = contraction {
         token.push('|');
         token.push_str(&c);
+    }
+    if token.len() > MAX_TOKEN_BYTES {
+        return None; // §6.4-0004 — declines, never truncates
     }
     Some(token)
 }
@@ -963,6 +1052,57 @@ mod tests {
             derive_structure_key_token(cell, &ops, "vulkansg64.ops-abr.arith-f16.cm-none"),
             None,
             "a non-namespaced target must decline, not pass through"
+        );
+    }
+
+    /// KISS-lane finding D10 (2026-10-01): the target check used to be bare
+    /// `target.contains(':')`, which only asks "does a colon appear
+    /// anywhere" — so a target with a second colon, an empty namespace, an
+    /// empty vocabulary half, or a forbidden character riding along with a
+    /// lone valid-looking colon all passed. §6.8-0001/-0005 want EXACTLY one
+    /// `:` separating two non-empty parts with no `|`/`;`/`/`/whitespace/
+    /// control characters anywhere in the string.
+    #[test]
+    fn malformed_namespaced_targets_decline() {
+        let ops = [f32c(&[8, 4096]), f32c(&[4096, 4096]), f32c(&[8, 4096])];
+        let cell = FuelOpCategory::Contraction(gem_f32(8, 4096, 4096));
+        for bad in [
+            "a:b:c",       // more than one ':'
+            ":x",          // empty namespace
+            "x:",          // empty vocabulary half
+            "cuda:sm|89",  // forbidden '|' rides with an otherwise-valid colon
+            "cuda:sm;89",  // forbidden ';'
+            "cuda:sm/89",  // forbidden '/'
+            "cuda: sm89",  // whitespace
+            "cuda:sm89\t", // control character
+        ] {
+            assert_eq!(
+                derive_structure_key_token(cell, &ops, bad),
+                None,
+                "malformed target `{bad:?}` must decline, not pass bare contains(':') check",
+            );
+        }
+    }
+
+    /// KISS-lane finding D11 (2026-10-01): no cap existed on the emitted
+    /// token's length before this fix — §6.4-0004 bounds it at 4096 bytes,
+    /// and a cell whose target string alone exceeds that must decline rather
+    /// than emit an oversized token.
+    #[test]
+    fn an_oversized_token_declines_rather_than_emitting_unbounded() {
+        let ops = [f32c(&[4, 8])];
+        let cell = FuelOpCategory::BinaryElementwise;
+        let huge_target = format!("cuda:{}", "a".repeat(MAX_TOKEN_BYTES));
+        assert_eq!(
+            derive_structure_key_token(cell, &ops, &huge_target),
+            None,
+            "a token whose target alone exceeds MAX_TOKEN_BYTES must decline",
+        );
+        // Positive control: the same cell with a short target still derives,
+        // so the decline above is about SIZE, not something else about the cell.
+        assert!(
+            derive_structure_key_token(cell, &ops, "cuda:sm89").is_some(),
+            "positive control: the cell itself is derivable with a short target",
         );
     }
 
@@ -1578,6 +1718,161 @@ mod tests {
             token,
             "sk4|red|f32|cuda:sm89|ix32|block|r4|co/00/v1/da/f;co/00/v1/da/f|x0a"
         );
+    }
+
+    /// KISS-lane finding D7 (2026-10-01): `reduce_field` used to trust the
+    /// caller's `ReduceAxes` tag verbatim instead of re-deriving the
+    /// classification from `(rank, bitmask)` — so a caller that (legitimately
+    /// or not) described a rank-1 reduction via `TrailingAxis` rather than
+    /// `All` got `rlast` instead of `rall`, even though
+    /// [`kiss_a1_reduction_rank1_all_axes_golden`]'s own doc comment already
+    /// states the §6.6-0009 rule ("`rall`, never `rlast`") — that test just
+    /// happened to exercise it only through the `All` constructor, which was
+    /// never the vulnerable path. `structure_key` canonicalizes by what the
+    /// OPERATION is, not by which Rust variant a caller picked to describe
+    /// it: two callers describing the identical rank-1 reduction must get the
+    /// byte-identical token.
+    #[test]
+    fn trailing_axis_at_rank1_is_rall_not_rlast() {
+        let token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::TrailingAxis),
+            &[f32c(&[8]), f32c(&[1])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        assert_eq!(
+            token, "sk4|red|f32|cuda:sm89|ix32|warp|r1|co/00/v1/d8/f;co/00/v1/da/f|rall",
+            "a rank-1 TrailingAxis reduction is the same operation as All at rank 1 \
+             and must derive the same reduce field",
+        );
+    }
+
+    /// D7, second case: a `Keepdim` bitmask that happens to span every axis
+    /// (here `0x03` at rank 2 — bits 0 and 1 both set) must canonicalize to
+    /// `rall`, not the literal bitmask spelling `x03` — the bitmask form is
+    /// reserved for genuinely PARTIAL axis sets (§6.6-0009's `Keepdim` doc:
+    /// "for any OTHER axis set").
+    #[test]
+    fn keepdim_spanning_every_axis_is_rall_not_the_bitmask() {
+        let token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::Keepdim(0x03)),
+            &[f32c(&[4, 8]), f32c(&[1, 1])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        assert_eq!(
+            token, "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/00/v1/da/f|rall",
+            "Keepdim(0x03) at rank 2 reduces every axis, same operation as All",
+        );
+    }
+
+    /// D7, third case: an EMPTY `Keepdim` bitmask (no axis reduced) is not a
+    /// representable `red` cell at all — §6.6-0009/§6.7-0005 the reduce field
+    /// is `-` when inapplicable, and a reduction that reduces nothing is
+    /// exactly that, never a literal `x00`.
+    #[test]
+    fn keepdim_empty_mask_is_dash_not_x00() {
+        let token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::Keepdim(0x00)),
+            &[f32c(&[4, 8]), f32c(&[4, 8])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        assert_eq!(
+            token, "sk4|red|f32|cuda:sm89|ix32|warp|r2|co/00/v4/d8/f;co/00/v4/d8/f|-",
+            "an empty reduced-axis set must decline to the inapplicable marker, not x00 \
+             (vec width is v4 here, not v1, because nothing is reduced — the v1 gate is \
+             specifically for a reduced innermost axis, which an empty mask never is)",
+        );
+    }
+
+    /// At a genuine rank-0 reduction cell (every operand scalar, since frame
+    /// rank is the max over operand ranks), `ReduceAxes::All` and
+    /// `ReduceAxes::TrailingAxis` must derive byte-identical tokens to the
+    /// logically-equivalent `ReduceAxes::Keepdim(0)` -- `reduce_field`
+    /// already treats all three as the same empty-mask case.
+    ///
+    /// Note on what this test does NOT demonstrate: a Sourcery review
+    /// described the pre-fix divergence as an OBSERVABLE wire-token
+    /// difference ("`All` emits `v1`, `Keepdim(0)` emits `v4`"). Checked
+    /// directly against the pre-fix code before trusting that: both
+    /// already produced IDENTICAL `v1` tokens at rank 0, because
+    /// `operand_sub_key`'s `inner_stride != Some(1)` branch independently
+    /// forces `v1` for any rank-0 operand (it has no inner stride at all),
+    /// regardless of `innermost_reduced`. So the specific "emits v4" claim
+    /// was wrong -- but the underlying concern was real: `innermost_reduced`
+    /// WAS computing a logically wrong value at rank 0 (`true` for
+    /// `All`/`TrailingAxis` when the reduced set is actually empty), it
+    /// just happened not to reach the wire through this particular
+    /// downstream guard. A future change to `operand_sub_key`'s OR-chain
+    /// (e.g. relaxing the inner-stride check) could have made that latent
+    /// wrongness live. This test guards the now-provably-correct derivation
+    /// rather than a wire-level regression that never existed.
+    #[test]
+    fn rank0_all_and_keepdim_zero_derive_identical_tokens() {
+        let all_token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::All),
+            &[f32c(&[]), f32c(&[])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        let trailing_token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::TrailingAxis),
+            &[f32c(&[]), f32c(&[])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        let keepdim_token = derive_structure_key_token(
+            FuelOpCategory::Reduction(ReduceAxes::Keepdim(0x00)),
+            &[f32c(&[]), f32c(&[])],
+            "cuda:sm89",
+        )
+        .expect("derives");
+        assert_eq!(all_token, keepdim_token, "All vs Keepdim(0) at rank 0");
+        assert_eq!(
+            trailing_token, keepdim_token,
+            "TrailingAxis vs Keepdim(0) at rank 0"
+        );
+    }
+
+    /// D7, exhaustive: for every `(rank, bitmask)` pair the three canonical
+    /// forms are mutually exclusive and exhaustive over `Keepdim`'s own
+    /// output space — this is the regression guard against the class of bug
+    /// above recurring in a shape the three named cases don't happen to hit.
+    #[test]
+    fn reduce_field_keepdim_classification_is_exhaustive_over_rank_and_mask() {
+        for rank in 0usize..=8 {
+            let full_mask: u8 = if rank == 0 {
+                0
+            } else if rank >= 8 {
+                0xFF
+            } else {
+                (1u8 << rank) - 1
+            };
+            for m in 0u32..=0xFF {
+                let m = m as u8;
+                // Keepdim's own contract: a bit set above `rank` is not a
+                // representable axis — only exercise in-range masks.
+                if m & !full_mask != 0 {
+                    continue;
+                }
+                let op = FuelOpCategory::Reduction(ReduceAxes::Keepdim(m));
+                let field = op.reduce_field(rank);
+                if m == 0 {
+                    assert_eq!(field, "-", "rank {rank} mask {m:#04x} must be '-'");
+                } else if rank > 0 && m == full_mask {
+                    assert_eq!(field, "rall", "rank {rank} mask {m:#04x} must be 'rall'");
+                } else if rank > 0 && m == (1u8 << (rank - 1)) {
+                    assert_eq!(field, "rlast", "rank {rank} mask {m:#04x} must be 'rlast'");
+                } else {
+                    assert_eq!(
+                        field,
+                        format!("x{m:02x}"),
+                        "rank {rank} mask {m:#04x} must be the literal bitmask",
+                    );
+                }
+            }
+        }
     }
 
     // ---- §6.5/§6.6 derivation pins (spec-conformance fixes) -----------------
