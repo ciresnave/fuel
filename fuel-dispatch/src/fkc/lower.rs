@@ -360,6 +360,7 @@ pub(crate) fn fused_op_id_for_const_name(s: &str) -> Option<FusedOpId> {
         "FLASH_ATTN_BACKWARD_Q" => FusedOps::FLASH_ATTN_BACKWARD_Q,
         "FLASH_ATTN_BACKWARD_K" => FusedOps::FLASH_ATTN_BACKWARD_K,
         "FLASH_ATTN_BACKWARD_V" => FusedOps::FLASH_ATTN_BACKWARD_V,
+        "AWQ_MATMUL" => FusedOps::AWQ_MATMUL,
         _ => return None,
     };
     Some(id)
@@ -2046,6 +2047,7 @@ return:
             "FLASH_ATTN_BACKWARD_Q",
             "FLASH_ATTN_BACKWARD_K",
             "FLASH_ATTN_BACKWARD_V",
+            "AWQ_MATMUL",
         ]
         .iter()
         .map(|n| super::fused_op_id_for_const_name(n).expect("table arm exists"))

@@ -1234,6 +1234,7 @@ variant_table!(
     InplaceAffine => None,
     SsdChunkScan => None,
     Nf4Matmul => None,
+    AwqMatmul => None,
     FlashAttnBackward => None,
     SelectiveScan => None,
     CausalConv1d => None,
