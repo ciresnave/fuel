@@ -363,8 +363,8 @@ impl DecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
 /// `Qwen3Model` — QK-Norm'd attention, no RoPE-scaling wrapper layer (unlike
 /// `Llama3Model`'s relationship to `LlamaModel`, there is no further-scaled
 /// Qwen3 variant to lose precision against here). Implements the CORE trait
-/// only: the paged surface would need `forward_paged_step*` threaded through
-/// separately, same scope boundary as `Llama3Model`.
+/// only: the paged surface is a separate `forward_paged_step*` threading
+/// job, same scope boundary as `Llama3Model`.
 impl DecodeModel for fuel::lazy_qwen3::Qwen3Model {
     fn n_layers(&self) -> usize {
         self.config.num_hidden_layers
