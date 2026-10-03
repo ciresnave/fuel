@@ -195,6 +195,17 @@ DISPOSITIONS = {
              "baracuda forge). WAS MIS-DISPOSITIONED DEFECT ('declared nowhere') until "
              "GAP-330's repair read the site -- the harm this table exists to prevent."),
 
+    # fuel-core dissolution: gguf_file.rs's MLMF repoint (Content::open).
+    # fuel_ir::GgmlDType (the same link, same doc comment) is NOT listed
+    # here: it resolves under --workspace --no-deps (fuel_ir is built as
+    # part of the same invocation, unlike fuel_cuda_backend above, which
+    # is also CI-excluded) -- measured by this gate going from 11 broken
+    # links to 10 the run after this comment's link was added, not assumed.
+    "MetaValue::Bytes": (CORRECT,
+             "fuel-loaders/src/quantized/gguf_file.rs's Content::open doc "
+             "comment. mlmf_core::MetaValue is a real crates.io dependency of "
+             "fuel-loaders; cross-crate under --no-deps."),
+
     # ---- NOT-A-LINK: notation rustdoc misreads. Fix with a code span. ----
     "Layout::contiguous(shape)": (NOT_A_LINK,
              "a CALL EXPRESSION, not a path -- the trailing `(shape)` makes it notation. "
