@@ -45,7 +45,7 @@
 //!    Router's default backend until [`populate_dispatch_table`]
 //!    runs successfully.
 
-use crate::judge::oracle::ProfileJudgeOracle;
+use crate::judge::ProfileJudgeOracle;
 use fuel_ir::Result;
 pub use fuel_ir::dispatch::{
     Criterion, DEFAULT_ACCURACY_PENALTY, DispatchOptions, DispatchTable, OpKind, Pick,
