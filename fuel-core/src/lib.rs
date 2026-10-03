@@ -93,7 +93,6 @@ pub mod lazy_latent_cache;
 pub mod metal_backend;
 #[cfg(feature = "mkl")]
 mod mkl;
-pub mod model_progress;
 #[cfg(feature = "vulkan")]
 pub mod vulkan_backend;
 // dispatch.rs (Judge cache) moved into judge::cache 2026-05-31 — the
