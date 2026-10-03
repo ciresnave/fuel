@@ -80,10 +80,8 @@ pub mod cpu_backend;
 pub mod cuda_backend;
 mod device;
 mod dtype;
-pub mod dyn_backend;
 pub mod error;
 pub mod hf_config;
-pub mod layout;
 pub mod lazy;
 pub mod lazy_latent_cache;
 // `seq_bucketing` removed in Phase 6d: paged attention via
@@ -131,8 +129,6 @@ pub mod nf4;
 pub mod quantized;
 pub mod safetensors;
 pub mod shape;
-mod storage;
-mod strided_index;
 pub mod test_utils;
 pub mod train;
 pub mod utils;
@@ -144,10 +140,18 @@ pub use cpu_backend::{CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 pub use device::{Device, DeviceLocation, NdArray};
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use error::{Context, Error, Result};
-pub use layout::Layout;
 pub use shape::{D, Shape};
-pub use storage::Storage;
-pub use strided_index::{StridedBlocks, StridedIndex};
+// `layout.rs`/`storage.rs`/`strided_index.rs`/`dyn_backend.rs` deleted
+// (fuel-core dissolution, Part 1 shims): zero consumers via
+// fuel_core::<module>::*, fuel::<module>::*, or the root re-export below,
+// anywhere in this repo or across 5 sibling repos (fresh-fetched, checked
+// module-path + root-qualified + grouped-import forms, positive-controlled).
+// Root re-exports inlined directly from their real homes so
+// crate::Layout/fuel_core::Layout/fuel::Layout (etc.) are unchanged for the
+// one internal consumer (device.rs) that used them.
+pub use fuel_backend_contract::Storage;
+pub use fuel_ir::layout::Layout;
+pub use fuel_ir::strided_index::{StridedBlocks, StridedIndex};
 
 // Eager `Tensor` is the runtime data type the executor materializes into.
 // New user code should use [`lazy::Tensor`] — the graph builder — and
