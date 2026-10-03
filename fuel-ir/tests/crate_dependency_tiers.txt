@@ -117,6 +117,7 @@
 # ---------------------------------------------------------------------------
 
 fuel-ir	10	IR vocabulary
+fuel-kv-pool	10	KV serving substrate
 
 fuel-conv	20	kernels
 fuel-cpu-kernels	20	kernels

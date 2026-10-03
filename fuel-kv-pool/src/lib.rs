@@ -159,8 +159,8 @@ impl KvGeometry {
 /// arbitrates over N pools keyed by *(device, geometry)*. Whether that surfaces
 /// as a per-pool device tag here or a per-block `DeviceLocation` lower down is
 /// deferred to that increment's design (the field shape follows the design, not
-/// a guess) — reserved, not yet built, per "establish it belongs before
-/// building it".
+/// a guess) — the field stays absent until that design lands, per "establish
+/// it belongs before building it".
 ///
 /// **Contract requirement both shapes must satisfy (C-5, corrected 2026-07-29
 /// §15 v0.7):** device placement is a **per-device budget**, not a device set.
