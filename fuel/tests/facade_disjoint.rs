@@ -60,55 +60,72 @@ fn pub_mod_names(src: &str) -> BTreeSet<String> {
 /// picks up names from unrelated re-exports (`Layout`, `Storage`, `probe`,
 /// ...). That's safe here -- the caller only intersects this set against
 /// `lazy_<model>`-shaped names, so a non-colliding extra name is inert.
+/// Split into three helpers (statement collection / name extraction /
+/// alias resolution) to stay under the project's cyclomatic-complexity
+/// gate -- the single-function version this replaced measured 11 (Codacy,
+/// threshold 8), flagged on #305 and deferred to this follow-up.
 fn pub_use_names(src: &str) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
+    collect_use_statements(src)
+        .iter()
+        .flat_map(|stmt| names_in_use_statement(stmt))
+        .collect()
+}
+
+/// Every complete `pub use <path>...;` statement in `src`, reassembled
+/// across line breaks (a multi-line brace list is one statement) with the
+/// leading `pub use ` and trailing `;` stripped.
+fn collect_use_statements(src: &str) -> Vec<String> {
+    let mut statements = Vec::new();
     let mut buf = String::new();
     let mut in_use = false;
     for line in src.lines() {
         let trimmed = line.trim();
         if !in_use {
-            match trimmed.strip_prefix("pub use ") {
-                Some(rest) => {
-                    in_use = true;
-                    buf.clear();
-                    buf.push_str(rest);
-                }
-                None => continue,
-            }
+            let Some(rest) = trimmed.strip_prefix("pub use ") else {
+                continue;
+            };
+            in_use = true;
+            buf.clear();
+            buf.push_str(rest);
         } else {
             buf.push(' ');
             buf.push_str(trimmed);
         }
         if let Some((stmt, _)) = buf.split_once(';') {
-            if let Some(path_part) = stmt.rsplit("::").next() {
-                let path_part = path_part.trim();
-                if let Some(inner) = path_part
-                    .strip_prefix('{')
-                    .and_then(|s| s.strip_suffix('}'))
-                {
-                    for item in inner.split(',') {
-                        // `as ALIAS` introduces ALIAS at the root, not the
-                        // original name -- `.last()` takes the alias when
-                        // present (sabotage-verified: `pub use X::lazy as
-                        // lazy_llama2c;` must register `lazy_llama2c`, not
-                        // `lazy`, or a real collision slips past this gate).
-                        let name = item.trim().split(" as ").last().unwrap_or("").trim();
-                        if !name.is_empty() {
-                            names.insert(name.to_string());
-                        }
-                    }
-                } else if !path_part.is_empty() {
-                    let name = path_part.split(" as ").last().unwrap_or("").trim();
-                    if !name.is_empty() {
-                        names.insert(name.to_string());
-                    }
-                }
-            }
+            statements.push(stmt.to_string());
             in_use = false;
             buf.clear();
         }
     }
-    names
+    statements
+}
+
+/// The root name(s) one `pub use <path>::NAME;` / `pub use <path>::{NAME, ...};`
+/// statement (leading `pub use `, trailing `;` already stripped) introduces.
+fn names_in_use_statement(stmt: &str) -> Vec<String> {
+    let Some(path_part) = stmt.rsplit("::").next() else {
+        return Vec::new();
+    };
+    let path_part = path_part.trim();
+    match path_part
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+    {
+        Some(inner) => inner.split(',').filter_map(root_name_of_item).collect(),
+        None => root_name_of_item(path_part).into_iter().collect(),
+    }
+}
+
+/// The name a single brace-list item (or a whole non-brace path tail)
+/// introduces at the root, resolving an `as ALIAS` to the alias.
+///
+/// `as ALIAS` introduces ALIAS at the root, not the original name --
+/// `.last()` takes the alias when present (sabotage-verified: `pub use
+/// X::lazy as lazy_llama2c;` must register `lazy_llama2c`, not `lazy`, or
+/// a real collision slips past this gate).
+fn root_name_of_item(item: &str) -> Option<String> {
+    let name = item.trim().split(" as ").last()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 #[test]
