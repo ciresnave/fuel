@@ -20,6 +20,7 @@ fuel-backend-contract = { workspace = true }
 fuel-correctness-fixtures = { workspace = true, features = ["serde", "capture"] }
 fuel-cpu-backend = { workspace = true }
 fuel-hardware = { workspace = true }
+fuel-kv-pool = { workspace = true }
 fuel-dispatch = { workspace = true }
 fuel-memory = { workspace = true }
 bytemuck = { workspace = true }

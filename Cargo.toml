@@ -33,6 +33,7 @@ members = [
     "fuel-dispatch",
     "fuel-vulkan-backend",
     "fuel-inference",
+    "fuel-kv-pool",
     "fuel-kernels-source",
     "fuel-vulkan-kernels",
     "fuel-lazy-examples",
@@ -73,6 +74,7 @@ default-members = [
     "fuel-cuda-backend",
     "fuel-vulkan-backend",
     "fuel-kernels-source",
+    "fuel-kv-pool",
     "fuel-vulkan-kernels",
     "fuel-lazy-examples",
     "fuel-memory",
@@ -142,6 +144,7 @@ fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.12.0" }
 fuel-dispatch = { path = "./fuel-dispatch", version = "0.12.0" }
 fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.12.0" }
 fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.12.0" }
+fuel-kv-pool = { path = "./fuel-kv-pool", version = "0.12.0" }
 fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.12.0" }
 fuel-datasets = { path = "./fuel-datasets", version = "0.12.0" }
 fuel-formats = { path = "./fuel-formats", version = "0.12.0" }
