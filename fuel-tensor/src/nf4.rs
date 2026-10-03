@@ -36,7 +36,7 @@
 //!
 //! ## What this module does NOT do
 //!
-//! - Parse safetensors files (use [`crate::safetensors`] or your
+//! - Parse safetensors files (use [`fuel_loaders::safetensors`] or your
 //!   preferred loader).
 //! - Parse bnb `quant_state` JSON metadata (read `blocksize`, `shape`,
 //!   etc. from your own loader and pass them as args).
@@ -318,7 +318,7 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState
 /// Load a single NF4-quantized layer from a parsed safetensors view
 /// (typically obtained via the `safetensors` crate's
 /// `SafeTensors::deserialize` or fuel-core's
-/// [`crate::safetensors::MmapedSafetensors`]).
+/// [`fuel_loaders::safetensors::MmapedSafetensors`]).
 ///
 /// `prefix` is the layer's name in the safetensors file
 /// (e.g. `"model.layers.0.self_attn.q_proj"`). The function expects

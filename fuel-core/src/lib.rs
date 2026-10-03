@@ -74,66 +74,43 @@
 #![allow(clippy::identity_op)]
 
 pub mod backend;
-pub mod cuda_backend;
-mod device;
-mod dtype;
 pub mod error;
 pub mod hf_config;
-pub mod lazy;
-pub mod lazy_latent_cache;
-// `seq_bucketing` removed in Phase 6d: paged attention via
-// `Op::PagedAttn` (and `Tensor::paged_attn`) supersedes the
-// bucket-and-pad approach. Variable-length decode is now expressed
-// directly via per-sequence `context_lens`.
-pub mod metal_backend;
+// `cuda_backend`/`device`/`dtype`/`lazy`/`lazy_latent_cache`/`metal_backend`/
+// `vulkan_backend`/`decode_shape`/`factories`/`inference_context`/
+// `kv_block_pool_device`/`persistent_decode`/`judge`/`pipelined_bridge`/
+// `planner`/`scheduling`/`nf4`/`test_utils` all moved to `fuel-tensor`
+// (board #109, one PR: they are a single mutually-referencing graph,
+// measured via a full crate::-reference census before any file moved).
+// Re-exported below so every `fuel_core::<module>::*` / `fuel::<module>::*`
+// call site is unchanged. See docs/release-0.13.0-wave.md.
+pub use fuel_tensor::metal_backend;
 #[cfg(feature = "vulkan")]
-pub mod vulkan_backend;
-// dispatch.rs (Judge cache) moved into judge::cache 2026-05-31 — the
-// `fuel_core::dispatch` name was a misnomer for what was just the
-// cached output of the Judge. Callers now reach the cache via
-// `fuel_core::judge::cached()` / `populate_dispatch_table()` /
-// `invalidate()` (re-exported at the judge module's top level).
-pub mod decode_shape;
-// `decode_state_spec` moved to `fuel-inference` (fuel-core dissolution, plan
-// item 9): zero Tensor/Device coupling, and its only consumer
-// (`fuel_inference::multi_session`) is already in that crate. No shim —
-// `multi_session.rs` was the sole caller of `fuel_core::decode_state_spec`
-// (and `fuel-core` cannot depend on `fuel-inference` to forward one: that
-// crate depends on this one via the `fuel` facade).
-pub mod factories;
-pub mod inference_context;
+pub use fuel_tensor::vulkan_backend;
+pub use fuel_tensor::{
+    cuda_backend, decode_shape, factories, inference_context, judge, kv_block_pool_device, lazy,
+    lazy_latent_cache, nf4, persistent_decode, pipelined_bridge, planner, scheduling, test_utils,
+};
 pub mod kv_block_pool;
-pub mod kv_block_pool_device;
-pub mod persistent_decode;
-// `multi_session` (the K-way decode scheduler) moved to `fuel-inference` (Q2,
-// 2026-07-29): it is consumer-side orchestration, not a Foundation primitive.
-// It reaches the model through the `DecodeModel` trait, so it no longer belongs
-// in `fuel-core`. See `fuel-inference/src/multi_session.rs`.
-pub mod judge;
-pub mod pipelined_bridge;
-pub mod planner;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
-/// Hardware discovery moved to the `fuel-hardware` crate (retirement B0.2);
-/// re-exported here so `fuel_core::probe` / `crate::probe` callers are unchanged.
-pub use fuel_hardware::probe;
-pub mod scheduling;
 /// `SystemTopology` moved to `fuel-dispatch::topology` (retirement B0.2c — it fuses
 /// the dispatch overlay with fuel-hardware discovery); re-exported so
 /// `crate::topology` / `fuel_core::topology` callers are unchanged.
 pub use fuel_dispatch::topology;
+/// Hardware discovery moved to the `fuel-hardware` crate (retirement B0.2);
+/// re-exported here so `fuel_core::probe` / `crate::probe` callers are unchanged.
+pub use fuel_hardware::probe;
 /// Transfer (bandwidth) calibration moved to `fuel-hardware` (retirement B0.2b);
 /// re-exported so `crate::transfer_cost` / `fuel_core::transfer_cost` is unchanged.
 pub use fuel_hardware::transfer_cost;
-pub mod nf4;
 pub mod quantized;
 pub mod safetensors;
-pub mod test_utils;
 pub mod train;
 pub mod utils;
 
 #[cfg(feature = "cudnn")]
-pub use cuda_backend::cudnn;
+pub use fuel_tensor::cuda_backend::cudnn;
 
 // `cpu_backend/mod.rs` deleted (fuel-core dissolution, Part 1 shims): zero
 // consumers via fuel_core::cpu_backend::/fuel::cpu_backend:: (module path)
@@ -145,9 +122,9 @@ pub use cuda_backend::cudnn;
 // consumers at any path, so they are not replaced by anything. The 4 root
 // types ARE re-exported directly from fuel_ir below (also zero measured
 // consumers, kept anyway for API-surface stability).
-pub use device::{Device, DeviceLocation, NdArray};
-pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use error::{Context, Error, Result};
+pub use fuel_tensor::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
+pub use fuel_tensor::{Device, DeviceLocation, NdArray};
 // `layout.rs`/`storage.rs`/`strided_index.rs`/`dyn_backend.rs`/`shape.rs`/
 // `cpu_backend/mod.rs` all deleted (fuel-core dissolution, Part 1 shims):
 // zero consumers via fuel_core::<module>::*, fuel::<module>::*, or the root
@@ -158,8 +135,8 @@ pub use error::{Context, Error, Result};
 // cpu_backend/mod.rs's own doc comment claiming a fuel-nn consumer was
 // stale. Root re-exports inlined directly from their real homes so
 // crate::Layout/fuel_core::Shape/fuel::StridedIndex/fuel::CpuStorage (etc.)
-// are unchanged for the one internal consumer (device.rs) that used a
-// module path.
+// are unchanged for external callers; device.rs (the one internal consumer
+// that used a module path) moved to fuel-tensor along with Device itself.
 pub use fuel_backend_contract::Storage;
 pub use fuel_ir::layout::Layout;
 pub use fuel_ir::shape::{D, Shape};
@@ -176,16 +153,16 @@ pub use fuel_ir::{CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 // `fuel_core::tensor::Tensor` remains accessible for the same callers.
 #[doc(hidden)]
 #[cfg(feature = "cuda")]
-pub use cuda_backend as cuda;
+pub use fuel_tensor::cuda_backend as cuda;
 
 #[cfg(feature = "cuda")]
-pub use cuda_backend::{CudaDevice, CudaStorage};
+pub use fuel_tensor::cuda_backend::{CudaDevice, CudaStorage};
 
 #[cfg(feature = "cuda")]
 pub use fuel_cuda_backend::builder_arg;
 
 #[cfg(feature = "metal")]
-pub use metal_backend::{MetalDevice, MetalError, MetalStorage};
+pub use fuel_tensor::metal_backend::{MetalDevice, MetalError, MetalStorage};
 
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
