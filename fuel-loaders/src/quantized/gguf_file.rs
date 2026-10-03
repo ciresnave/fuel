@@ -136,7 +136,10 @@ impl Content {
     ///   mmap-backed reader, not specific to this adapter.
     ///   `mlmf_source_file::FileSource::open_read` (copy-based, TOCTOU-immune)
     ///   exists as an untaken mitigation if this ever needs hardening.
-    /// - **Metadata parity, not correctness, differences vs. `Content::read`:**
+    /// - **Metadata parity, not correctness, differences vs. `Content::read`
+    ///   -- MUST be resolved or explicitly accepted before any consumer is
+    ///   repointed from `read` to `open` (tracked in `docs/gaps.md`; this is
+    ///   a precondition of that future sweep, not a closed known-limitation):**
     ///   duplicate keys keep MLMF's (first-wins) resolution rather than
     ///   `read`'s (last-wins) when a malformed file declares the same key
     ///   twice; `Value::String` from `open` does not strip a trailing NUL
@@ -149,7 +152,8 @@ impl Content {
     ///   constructor already handles) is rejected by MLMF where `read`
     ///   tolerates it via lossy decoding. All four are pre-existing,
     ///   malformed-input-only edge cases, not observed on any real model
-    ///   file; none is fixed here.
+    ///   file, and none is fixed here -- but each one is a BEHAVIOR CHANGE a
+    ///   consumer repoint would introduce silently if not revisited first.
     pub fn open(path: &Path) -> Result<Self> {
         use mlmf_core::{ByteSource as _, MetadataSource as _, TensorContainer as _};
 
