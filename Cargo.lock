@@ -417,9 +417,9 @@ checksum = "127e3a583500cf4756396dab9f54df50f8ab92dc087aff5ce18623b6d7865870"
 
 [[package]]
 name = "baracuda-core"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fa21ed6439d43179025b6534e097029880e5889bf5d8691095cd2c7cd14e65f"
+checksum = "fcf69aad498b3e0ef84f4ed7e342eb28ce0100b6359100a7cec69333d127c8e3"
 dependencies = [
  "baracuda-types",
  "libloading 0.8.9",
@@ -468,9 +468,9 @@ dependencies = [
 
 [[package]]
 name = "baracuda-cuda-sys"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9229cd9024eafb44d90e3f9312af8f51a1479dae2bd980c00716e1d7e896427"
+checksum = "f9ea95590c8850ce4886eb0f734e0a4f34847f12f5049043e216e96d446ecd9c"
 dependencies = [
  "baracuda-build",
  "baracuda-core",
@@ -570,9 +570,9 @@ dependencies = [
 
 [[package]]
 name = "baracuda-driver"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4cf15ce47b79a42065f9bd877d4d4c971b1e9143f580c1c3b3654b518306fdb"
+checksum = "e372e44833514764139f86e4ab9942fa79602e4c5c01d84b868183f0fc4e0245"
 dependencies = [
  "baracuda-core",
  "baracuda-cuda-sys",
@@ -611,9 +611,9 @@ dependencies = [
 
 [[package]]
 name = "baracuda-kernels-types"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4609a3203c98e038a2b0a5d0547efafa0ef449fbdd0b97b2e30dc57b623eb6ca"
+checksum = "65774cfb84ec86b46a2ee24dbfdaf34f95d20411e73b061a6810562a2753aea9"
 dependencies = [
  "baracuda-driver",
  "baracuda-types",
@@ -676,9 +676,9 @@ dependencies = [
 
 [[package]]
 name = "baracuda-types"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1ffc70dcfdf71fd9744707f870cf611894e76f2dc754cf5b68bcd87e894ad4e"
+checksum = "e57d845c5349af7cd1196c787022b08663b63b163aec237b8eeafacddb2dda57"
 dependencies = [
  "float8",
  "half",
