@@ -1561,7 +1561,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2167,12 +2167,17 @@ dependencies = [
 name = "fuel-loaders"
 version = "0.12.9"
 dependencies = [
+ "byteorder",
  "fuel-backend-contract",
  "fuel-formats",
  "fuel-ir",
  "fuel-quantized",
  "memmap2",
+ "mlmf-core",
+ "mlmf-gguf",
+ "mlmf-source-file",
  "safetensors",
+ "tempfile",
  "tokenizers",
  "yoke",
 ]
@@ -3497,6 +3502,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "mlmf-core"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4b8e4608b3bb873985dcf6d17db4ad0e3fb5427c04895f84b7848835c9eb577"
+dependencies = [
+ "bytemuck",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mlmf-ggml"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "449089eb1c9ed523ae5166e500cf0b13eff2f8b02ef0ef425c892282fff6aae8"
+dependencies = [
+ "mlmf-core",
+]
+
+[[package]]
+name = "mlmf-gguf"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "225a51effb21e4c097634ff7fa7145a1cc914bc245260332beed1815695d0e13"
+dependencies = [
+ "mlmf-core",
+ "mlmf-ggml",
+]
+
+[[package]]
+name = "mlmf-source-file"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2b7c06286a860f8f3439ee39163332b29d2e83a834e53d0ed7a1a7b941d67c9"
+dependencies = [
+ "memmap2",
+ "mlmf-core",
+]
+
+[[package]]
 name = "monostate"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4630,7 +4675,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5308,7 +5353,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6143,7 +6188,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

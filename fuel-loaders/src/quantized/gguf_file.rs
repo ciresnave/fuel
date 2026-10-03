@@ -11,11 +11,34 @@
 //! [`Content::tensor_infos`] plus [`Content::tensor_data_offset`] and slice the
 //! backing mmap yourself. That is what the lazy loaders already do; see
 //! `fuel-core/src/lazy_quantized_llama.rs` and its siblings.
+//!
+//! # [`Content::open`] — the MLMF-backed constructor
+//!
+//! Added for the fuel-core dissolution's MLMF repoint (CireSnave: "fuel
+//! should use MLMF for loading and saving"). ADDITIVE ONLY — [`Content::read`]
+//! above is untouched, still backed by `fuel-formats`' own byte-stream
+//! parser, and stays the entry point for a caller that only has a
+//! `Read + Seek`, not a `Path`.
+//!
+//! `open` exists as a second constructor rather than a `read` rewrite
+//! because MLMF's parsers (`mlmf_gguf::{parse_header, GgufMetadata::parse,
+//! parse_tensors}`) are byte-SLICE-based, not stream-based, and
+//! `parse_tensors` range-checks every tensor's declared byte range against
+//! `bytes.len()` — so handing it anything shorter than the real file
+//! (a growable probe buffer, say) makes every tensor look like it runs
+//! past the end of a truncated "file" that only exists in this read. The
+//! correct byte slice is the real file's full length, which is exactly
+//! what [`mlmf_source_file::FileSource`]'s mmap gives for free: the OS
+//! pages in only what the parsers actually touch (header + KV metadata +
+//! tensor-info table), never the multi-GB tensor-data region, matching
+//! `Content::read`'s own "never touches tensor data" discipline without
+//! needing stream support MLMF's parsers don't have.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek};
+use std::path::Path;
 
-use fuel_ir::error::Result;
+use fuel_ir::error::{Error, Result};
 
 pub use fuel_formats::gguf::{
     DEFAULT_ALIGNMENT, TensorInfo, Value, ValueType, VersionedMagic, read_string, write_string,
@@ -34,6 +57,8 @@ pub struct Content {
 }
 
 impl Content {
+    /// The original byte-stream constructor. UNCHANGED — still
+    /// `fuel-formats`' own parser, never touches tensor data.
     pub fn read<R: Read + Seek>(reader: &mut R) -> Result<Self> {
         let parsed = fuel_formats::gguf::Content::read(reader)?;
         Ok(Self {
@@ -42,5 +67,229 @@ impl Content {
             tensor_infos: parsed.tensor_infos,
             tensor_data_offset: parsed.tensor_data_offset,
         })
+    }
+
+    /// Parse `path` via MLMF's mmap-backed GGUF reader
+    /// (`mlmf_source_file::FileSource` + `mlmf_gguf`'s staged parsers).
+    ///
+    /// Behavior-equal to [`Content::read`] on a well-formed file (pinned by
+    /// `gguf_open_matches_read` in this module's tests), with three
+    /// differences this crate's two typed-Err disciplines force, not
+    /// optional choices:
+    ///
+    /// - A metadata key this build's index could not fully walk
+    ///   (`!meta.index_complete()`) is a typed [`Error`], never a partial
+    ///   [`Content::metadata`] map.
+    /// - A tensor whose ggml type code MLMF itself cannot resolve at all is
+    ///   *omitted* by MLMF's own container (that omission is seam-level,
+    ///   not a defect) — this constructor turns that omission back into a
+    ///   typed `Err` naming the tensor, matching `Content::read`'s
+    ///   "the whole read fails" discipline rather than silently returning
+    ///   fewer tensors than the file declares.
+    /// - A tensor whose ggml type code MLMF resolves but [`fuel_ir::GgmlDType`]
+    ///   (fuel's narrower set) does not — `F64`/`I8`/`I16`/`I32`/`I64` and
+    ///   every `IQ*`/`TQ*`/`MXFP4`/`NVFP4`/`Q1_0`/`Q2_0` code — is a typed
+    ///   `Err` from the same `GgmlDType::from_u32` call `Content::read`
+    ///   already uses, reached uniformly for every tensor via
+    ///   `GgmlType::code()`'s raw ggml wire code (verified byte-identical
+    ///   to `GgmlDType::to_u32`'s numbering) rather than branching on
+    ///   MLMF's `Encoding::Dense`/`Blocked` split.
+    ///
+    /// # GAP (non-UTF-8 metadata strings)
+    ///
+    /// MLMF's [`MetaValue::Bytes`] (a declared string whose bytes are not
+    /// valid UTF-8, preserved verbatim per GGUF spec §9 clause 2.1) has no
+    /// [`Value`] equivalent — `Value::String` is the only string variant,
+    /// and `fuel_formats::gguf::read_string` already does a **lossy**
+    /// `String::from_utf8_lossy` conversion for the *same* case via
+    /// `Content::read`. This constructor replicates that exact lossy
+    /// behavior (an explicit match arm, not a silent default) so the two
+    /// constructors read a malformed-but-spec-legal file identically; it
+    /// does not fix the underlying lossiness. Filed as a GAP for the
+    /// breaking wave that also fixes `read_string` and adds a real
+    /// `Value::Bytes` variant (adding a variant to the non-`#[non_exhaustive]`
+    /// `Value` enum breaks exhaustive matches elsewhere — a second-number
+    /// change, not a patch, so it is deliberately not bundled here).
+    pub fn open(path: &Path) -> Result<Self> {
+        use mlmf_core::{ByteSource as _, MetadataSource as _, TensorContainer as _};
+
+        let origin = path.display().to_string();
+
+        let source = mlmf_source_file::FileSource::open(path)
+            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
+        let bytes = source.as_bytes();
+
+        let mut cursor = mlmf_gguf::cursor::Cursor::new(bytes);
+        let header = mlmf_gguf::parse_header(&mut cursor)
+            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
+        let (meta, _meta_report) = mlmf_gguf::GgufMetadata::parse(bytes, &origin)
+            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
+        let (tensors, tensors_report) = mlmf_gguf::parse_tensors(bytes, &meta, &origin)
+            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
+
+        if !meta.index_complete() {
+            return Err(Error::Msg(
+                "gguf: metadata index incomplete -- an unrecognized value \
+                 type blocked the walk before the end of the key-value block"
+                    .to_string(),
+            )
+            .with_path(path));
+        }
+
+        // Eager HashMap<String, Value>: fuel's `Content::metadata` is eager
+        // today (Content::read decodes every key up front), so `open`
+        // preserves that shape rather than MLMF's own lazy get()-by-key
+        // model. `get()` fully materializes its value, including arrays
+        // (its own doc: "a caller who wants the whole array should call
+        // get once and pay for it once") -- the same cost Content::read
+        // already pays for every key, not a new one.
+        let mut metadata = HashMap::new();
+        for key in meta.keys() {
+            let mv = meta.get(key).expect("key came from this meta's own keys()");
+            metadata.insert(key.to_string(), meta_value_to_fuel_value(mv));
+        }
+
+        // A tensor MLMF itself could not resolve at all is OMITTED from
+        // `tensors.tensors()` (seam-level, not a defect in MLMF) -- turn
+        // that back into a typed Err so `open` fails the whole read the
+        // same way `Content::read` does, rather than silently returning
+        // fewer tensors than the file declares.
+        if tensors.tensors().len() != header.tensor_count as usize {
+            let unresolved: Vec<String> = tensors_report
+                .entries()
+                .iter()
+                .filter_map(|u| match &u.kind {
+                    mlmf_core::UnrecognizedKind::TensorEncoding { name, declared, .. } => {
+                        Some(format!("{name} ({declared:?})"))
+                    }
+                    _ => None,
+                })
+                .collect();
+            return Err(Error::Msg(format!(
+                "gguf: {} of {} declared tensors have a type MLMF cannot resolve at all: {unresolved:?}",
+                header.tensor_count as usize - tensors.tensors().len(),
+                header.tensor_count,
+            ))
+            .with_path(path));
+        }
+
+        let mut tensor_infos = HashMap::new();
+        for d in tensors.tensors() {
+            let code = encoding_ggml_code(&d.encoding).ok_or_else(|| {
+                Error::Msg(format!(
+                    "gguf: tensor {:?}: dense dtype has no ggml code mapping",
+                    d.name
+                ))
+                .with_path(path)
+            })?;
+            let ggml_dtype = fuel_ir::GgmlDType::from_u32(code).map_err(|e| {
+                Error::Msg(format!("gguf: tensor {:?}: {e}", d.name)).with_path(path)
+            })?;
+            // GGUF's on-disk dimension order needs reversing to match
+            // fuel's row-major convention -- the same reversal
+            // `fuel_formats::gguf::Content::read` performs
+            // (`dimensions.reverse()`); MLMF's `TensorDescriptor::shape`
+            // preserves the file's declared (non-reversed) order.
+            let mut dims: Vec<usize> = d.shape.dims().to_vec();
+            dims.reverse();
+            tensor_infos.insert(
+                d.name.clone(),
+                TensorInfo {
+                    shape: fuel_ir::Shape::from(dims),
+                    // Relative to tensor_data_offset, matching
+                    // `TensorInfo::offset`'s existing contract
+                    // (Content::read stores the on-disk relative offset,
+                    // not an absolute file position).
+                    offset: d.bytes.start - tensors.data_start(),
+                    ggml_dtype,
+                },
+            );
+        }
+
+        let magic = match header.version {
+            2 => VersionedMagic::GgufV2,
+            3 => VersionedMagic::GgufV3,
+            // mlmf-gguf's own SUPPORTED set is exactly {2, 3} -- parse_header
+            // above already refused anything else with GgufError::UnsupportedVersion.
+            v => {
+                return Err(
+                    Error::Msg(format!("gguf: unexpected parsed version {v}")).with_path(path)
+                );
+            }
+        };
+
+        Ok(Self {
+            magic,
+            metadata,
+            tensor_infos,
+            tensor_data_offset: tensors.data_start(),
+        })
+    }
+}
+
+/// `MetaValue`'s 14 variants (13 GGUF value kinds + `Bytes`) to fuel's
+/// `Value`'s 13 -- every GGUF-declarable kind maps directly except `Bytes`,
+/// which has no fuel equivalent. See [`Content::open`]'s doc for why that
+/// one arm is lossy on purpose, pinned by a test, and not silently
+/// defaulted.
+fn meta_value_to_fuel_value(mv: &mlmf_core::MetaValue) -> Value {
+    use mlmf_core::MetaValue as M;
+    match mv {
+        M::U8(v) => Value::U8(*v),
+        M::I8(v) => Value::I8(*v),
+        M::U16(v) => Value::U16(*v),
+        M::I16(v) => Value::I16(*v),
+        M::U32(v) => Value::U32(*v),
+        M::I32(v) => Value::I32(*v),
+        M::U64(v) => Value::U64(*v),
+        M::I64(v) => Value::I64(*v),
+        M::F32(v) => Value::F32(*v),
+        M::F64(v) => Value::F64(*v),
+        M::Bool(v) => Value::Bool(*v),
+        M::String(s) => Value::String(s.clone()),
+        M::Array(items) => Value::Array(items.iter().map(meta_value_to_fuel_value).collect()),
+        // GAP: non-UTF-8 string bytes, preserved verbatim by MLMF (GGUF
+        // spec Β§9 clause 2.1). fuel has no Value::Bytes; replicate
+        // Content::read's own lossy fuel_formats::gguf::read_string
+        // behavior exactly, rather than defaulting silently, so both
+        // constructors agree on a malformed-but-spec-legal file. Pinned by
+        // `gguf_open_non_utf8_string_is_lossy_like_read` below; fixing the
+        // lossiness (adding Value::Bytes) is its own breaking-wave PR.
+        M::Bytes(raw) => Value::String(String::from_utf8_lossy(raw).into_owned()),
+        // MetaValue is #[non_exhaustive]; every variant that exists today
+        // is matched above.
+        #[allow(unreachable_patterns)]
+        _ => Value::String(String::new()),
+    }
+}
+
+/// The raw ggml wire-format type code for a resolved `TensorDescriptor`'s
+/// encoding -- uniform across MLMF's `Dense`/`Blocked` split, since fuel's
+/// own `GgmlDType::from_u32` is keyed on that same wire code space
+/// regardless of which MLMF branch produced it.
+///
+/// `None` only for a `Dense(dt)` whose `dt` is outside the 8 dtypes
+/// `GgmlType::encoding()` can ever produce for the Dense case
+/// (F32/F16/BF16/F64/I8/I16/I32/I64) -- unreachable in practice, named
+/// rather than panicked on, per this crate's never-panic-on-production-paths
+/// rule.
+fn encoding_ggml_code(encoding: &mlmf_core::Encoding) -> Option<u32> {
+    use mlmf_core::{DType, Encoding};
+    match encoding {
+        Encoding::Blocked(spec) => Some(spec.code),
+        // Dense's `code` isn't carried on the descriptor (only the decoded
+        // DType is) -- map back to the ggml wire code by hand. Verified
+        // against mlmf-ggml's own row() table: F32=0, F16=1, BF16=30,
+        // I8=24, I16=25, I32=26, I64=27, F64=28 -- the only 8 DTypes
+        // GgmlType::encoding() ever returns as Dense.
+        Encoding::Dense(DType::F32) => Some(0),
+        Encoding::Dense(DType::F16) => Some(1),
+        Encoding::Dense(DType::BF16) => Some(30),
+        Encoding::Dense(DType::I8) => Some(24),
+        Encoding::Dense(DType::I16) => Some(25),
+        Encoding::Dense(DType::I32) => Some(26),
+        Encoding::Dense(DType::I64) => Some(27),
+        Encoding::Dense(DType::F64) => Some(28),
+        Encoding::Dense(_) => None,
     }
 }

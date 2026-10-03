@@ -16,6 +16,14 @@
     safetensors           = { workspace = true }
     yoke                  = { workspace = true }
 
+# gguf_file.rs's mmap-backed Content::open constructor (fuel-core
+# dissolution: MLMF repoint, CireSnave's "fuel should use MLMF for loading"
+# ruling). Content::read (fuel-formats' own byte-stream parser) is
+# untouched and stays the default for callers without a Path.
+    mlmf-core        = { version = "0.5.8" }
+    mlmf-gguf        = { version = "0.5.8" }
+    mlmf-source-file = { version = "0.5.8" }
+
 # Slice 3 added `safetensors.rs`, which is NOT `#[cfg(not(target_arch =
 # "wasm32"))]` in fuel-core (it must attempt to build on every target) and
 # uses `memmap2` unconditionally -- so memmap2 moved back to plain
@@ -29,3 +37,7 @@
 # (fuel-core/src/quantized/mod.rs's original gating, preserved on the move).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
     tokenizers = { workspace = true, features = ["fancy-regex"] }
+
+[dev-dependencies]
+    byteorder = { workspace = true }
+    tempfile  = { workspace = true }

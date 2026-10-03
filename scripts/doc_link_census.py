@@ -195,6 +195,21 @@ DISPOSITIONS = {
              "baracuda forge). WAS MIS-DISPOSITIONED DEFECT ('declared nowhere') until "
              "GAP-330's repair read the site -- the harm this table exists to prevent."),
 
+    # fuel-core dissolution: gguf_file.rs's MLMF repoint (Content::open).
+    # Both are REAL dependencies of fuel-loaders (fuel_ir is a workspace
+    # path dep, mlmf_core a crates.io dep) -- unresolved only because
+    # --no-deps means rustdoc never builds docs for ANY dependency,
+    # workspace member or not, same cross-crate-under---no-deps cause as
+    # fuel_cuda_backend::CudaDevice above (also a workspace member).
+    "fuel_ir::GgmlDType": (CORRECT,
+             "fuel-loaders/src/quantized/gguf_file.rs's Content::open doc "
+             "comment. fuel_ir is a real workspace dependency of fuel-loaders; "
+             "cross-crate under --no-deps."),
+    "MetaValue::Bytes": (CORRECT,
+             "fuel-loaders/src/quantized/gguf_file.rs's Content::open doc "
+             "comment. mlmf_core::MetaValue is a real crates.io dependency of "
+             "fuel-loaders; cross-crate under --no-deps."),
+
     # ---- NOT-A-LINK: notation rustdoc misreads. Fix with a code span. ----
     "Layout::contiguous(shape)": (NOT_A_LINK,
              "a CALL EXPRESSION, not a path -- the trailing `(shape)` makes it notation. "
