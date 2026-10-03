@@ -20,9 +20,9 @@
 # dissolution: MLMF repoint, CireSnave's "fuel should use MLMF for loading"
 # ruling). Content::read (fuel-formats' own byte-stream parser) is
 # untouched and stays the default for callers without a Path.
-    mlmf-core        = { version = "0.5.8" }
-    mlmf-gguf        = { version = "0.5.8" }
-    mlmf-source-file = { version = "0.5.8" }
+    mlmf-core        = { version = "0.5.10" }
+    mlmf-gguf        = { version = "0.5.10" }
+    mlmf-source-file = { version = "0.5.10" }
 
 # Slice 3 added `safetensors.rs`, which is NOT `#[cfg(not(target_arch =
 # "wasm32"))]` in fuel-core (it must attempt to build on every target) and

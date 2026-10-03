@@ -112,16 +112,13 @@ impl Content {
     /// change, not a patch, so it is deliberately not bundled here).
     /// # Known limitations (adversarial review, triaged, not all fixed here)
     ///
-    /// - **Quadratic metadata walk (finding B).** `MetadataSource` exposes
-    ///   only `keys()` + `get(key)`, no single-pass iterator over entries;
-    ///   for a file with N metadata keys this loop is O(N) `get` calls, each
-    ///   of which MLMF documents as re-walking its own index. A real GGUF's
-    ///   N is small (tens to low hundreds of keys) so this is not a
-    ///   practical DoS on legitimate files, but an adversarial file could
-    ///   inflate N. Not fixable from this adapter alone -- it needs an
-    ///   `entries()`-style single-pass API on `MetadataSource` itself.
-    ///   Tracked as a future ask to the mlmf lane, not filed as a fuel GAP
-    ///   (the defect, if any, is upstream).
+    /// - **Quadratic metadata walk (finding B) -- FIXED, 2026-10-03.**
+    ///   Originally O(N) separate `get(key)` calls, each re-walking MLMF's
+    ///   own index, for a file with N metadata keys. `decode_metadata` now
+    ///   uses `MetadataSource::entries()` (mlmf-core/mlmf-gguf 0.5.10+), a
+    ///   genuine single pass -- see that function's own doc for the exact
+    ///   verification. Left here so a reader following the finding list
+    ///   sees it closed rather than silently vanished.
     /// - **Array decode doubles peak momentarily (finding 6b).** A huge
     ///   `MetaValue::Array` already costs the same to decode via
     ///   `Content::read`; `meta_value_to_fuel_value`'s `.collect()` on the
@@ -155,7 +152,7 @@ impl Content {
     ///   file, and none is fixed here -- but each one is a BEHAVIOR CHANGE a
     ///   consumer repoint would introduce silently if not revisited first.
     pub fn open(path: &Path) -> Result<Self> {
-        use mlmf_core::{ByteSource as _, MetadataSource as _, TensorContainer as _};
+        use mlmf_core::ByteSource as _;
 
         let origin = path.display().to_string();
 
@@ -171,153 +168,11 @@ impl Content {
         let (tensors, tensors_report) = mlmf_gguf::parse_tensors(bytes, &meta, &origin)
             .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
 
-        if !meta.index_complete() {
-            return Err(Error::Msg(
-                "gguf: metadata index incomplete -- an unrecognized value \
-                 type blocked the walk before the end of the key-value block"
-                    .to_string(),
-            )
-            .with_path(path));
-        }
-
-        // Eager HashMap<String, Value>: fuel's `Content::metadata` is eager
-        // today (Content::read decodes every key up front), so `open`
-        // preserves that shape rather than MLMF's own lazy get()-by-key
-        // model. `get()` fully materializes its value, including arrays
-        // (its own doc: "a caller who wants the whole array should call
-        // get once and pay for it once") -- the same cost Content::read
-        // already pays for every key, not a new one.
-        //
-        // `meta.get(key)` returning `None` for a `key` that came from this
-        // same `meta`'s own `keys()` is not reachable today (MLMF's one
-        // "unreadable" entry always pairs with `index_complete() == false`,
-        // already refused above) -- but that invariant lives in MLMF's
-        // internals, not in the `MetadataSource` trait contract, so a typed
-        // Err here (not `.expect`) is what keeps a future MLMF release from
-        // turning this into a panic (adversarial review finding #7).
-        let mut metadata = HashMap::new();
-        for key in meta.keys() {
-            let mv = meta.get(key).ok_or_else(|| {
-                Error::Msg(format!(
-                    "gguf: metadata key {key:?} came from this file's own key \
-                     list but has no decodable value -- an index/value \
-                     inconsistency in the underlying parser"
-                ))
-                .with_path(path)
-            })?;
-            metadata.insert(
-                key.to_string(),
-                meta_value_to_fuel_value(mv).map_err(|e| {
-                    Error::Msg(format!("gguf: metadata key {key:?}: {e}")).with_path(path)
-                })?,
-            );
-        }
-
-        // Finding A (adversarial review): `fuel_formats::gguf::Content::read`
-        // resolves `general.alignment` from SIX value-type arms (U8/U16/U32/
-        // I8/I16/I32, non-negative); MLMF's `GgufMetadata::alignment()`
-        // accepts ONLY U32 and silently falls back to its own default (32)
-        // for every other type or an invalid U32 -- a file declaring the
-        // alignment as, say, `I32(64)` would make `read` and an unguarded
-        // `open` compute DIFFERENT `tensor_data_offset`s with no error at all.
-        // Resolve it fuel's way from the metadata just decoded above, and
-        // REFUSE rather than silently trust `tensors.data_start()` (which
-        // was already computed with MLMF's narrower rule) if the two
-        // disagree -- a typed Err is always safe; a silently wrong byte
-        // offset into the tensor-data region is not.
-        let fuel_alignment = match metadata.get("general.alignment") {
-            Some(Value::U8(v)) => *v as u64,
-            Some(Value::U16(v)) => *v as u64,
-            Some(Value::U32(v)) => *v as u64,
-            Some(Value::I8(v)) if *v >= 0 => *v as u64,
-            Some(Value::I16(v)) if *v >= 0 => *v as u64,
-            Some(Value::I32(v)) if *v >= 0 => *v as u64,
-            _ => DEFAULT_ALIGNMENT,
-        };
-        if !fuel_alignment.is_power_of_two() {
-            return Err(Error::Msg(format!(
-                "gguf: general.alignment must be a non-zero power of two, got {fuel_alignment}"
-            ))
-            .with_path(path));
-        }
-        if fuel_alignment != meta.alignment() {
-            return Err(Error::Msg(format!(
-                "gguf: general.alignment resolves to {fuel_alignment} under fuel's rules \
-                 (U8/U16/U32/I8/I16/I32) but to {} under MLMF's (U32 only) -- refusing rather \
-                 than risk a silently wrong tensor_data_offset",
-                meta.alignment()
-            ))
-            .with_path(path));
-        }
-
-        // A tensor MLMF itself could not resolve at all is OMITTED from
-        // `tensors.tensors()` (seam-level, not a defect in MLMF) -- turn
-        // that back into a typed Err so `open` fails the whole read the
-        // same way `Content::read` does, rather than silently returning
-        // fewer tensors than the file declares.
-        if tensors.tensors().len() != header.tensor_count as usize {
-            let unresolved: Vec<String> = tensors_report
-                .entries()
-                .iter()
-                .filter_map(|u| match &u.kind {
-                    mlmf_core::UnrecognizedKind::TensorEncoding { name, declared, .. } => {
-                        Some(format!("{name} ({declared:?})"))
-                    }
-                    _ => None,
-                })
-                .collect();
-            return Err(Error::Msg(format!(
-                "gguf: {} of {} declared tensors have a type MLMF cannot resolve at all: {unresolved:?}",
-                header.tensor_count as usize - tensors.tensors().len(),
-                header.tensor_count,
-            ))
-            .with_path(path));
-        }
-
-        let mut tensor_infos = HashMap::new();
-        for d in tensors.tensors() {
-            let code = encoding_ggml_code(&d.encoding).ok_or_else(|| {
-                Error::Msg(format!(
-                    "gguf: tensor {:?}: dense dtype has no ggml code mapping",
-                    d.name
-                ))
-                .with_path(path)
-            })?;
-            let ggml_dtype = fuel_ir::GgmlDType::from_u32(code).map_err(|e| {
-                Error::Msg(format!("gguf: tensor {:?}: {e}", d.name)).with_path(path)
-            })?;
-            // GGUF's on-disk dimension order needs reversing to match
-            // fuel's row-major convention -- the same reversal
-            // `fuel_formats::gguf::Content::read` performs
-            // (`dimensions.reverse()`); MLMF's `TensorDescriptor::shape`
-            // preserves the file's declared (non-reversed) order.
-            let mut dims: Vec<usize> = d.shape.dims().to_vec();
-            dims.reverse();
-            tensor_infos.insert(
-                d.name.clone(),
-                TensorInfo {
-                    shape: fuel_ir::Shape::from(dims),
-                    // Relative to tensor_data_offset, matching
-                    // `TensorInfo::offset`'s existing contract
-                    // (Content::read stores the on-disk relative offset,
-                    // not an absolute file position).
-                    offset: d.bytes.start - tensors.data_start(),
-                    ggml_dtype,
-                },
-            );
-        }
-
-        let magic = match header.version {
-            2 => VersionedMagic::GgufV2,
-            3 => VersionedMagic::GgufV3,
-            // mlmf-gguf's own SUPPORTED set is exactly {2, 3} -- parse_header
-            // above already refused anything else with GgufError::UnsupportedVersion.
-            v => {
-                return Err(
-                    Error::Msg(format!("gguf: unexpected parsed version {v}")).with_path(path)
-                );
-            }
-        };
+        let metadata = decode_metadata(&meta, path)?;
+        check_alignment_agrees(&metadata, meta.alignment(), path)?;
+        check_all_tensors_resolved(&tensors, &tensors_report, &header, path)?;
+        let tensor_infos = build_tensor_infos(&tensors, path)?;
+        let magic = resolve_magic(header.version, path)?;
 
         Ok(Self {
             magic,
@@ -325,6 +180,197 @@ impl Content {
             tensor_infos,
             tensor_data_offset: tensors.data_start(),
         })
+    }
+}
+
+/// Decodes every metadata key up front into an eager `HashMap<String,
+/// Value>`: fuel's `Content::metadata` is eager today (`Content::read`
+/// decodes every key up front), so `open` preserves that shape rather than
+/// MLMF's own lazy get()-by-key model.
+///
+/// Also enforces `index_complete()`: a metadata key this build's index
+/// could not fully walk is a typed [`Error`], never a partial map.
+///
+/// Uses `MetadataSource::entries()` (mlmf-core/mlmf-gguf 0.5.10+), a true
+/// single pass over MLMF's own stored entry list -- NOT the `keys()` +
+/// per-key `get()` walk this previously used, which was O(N) separate
+/// internal re-scans for N keys (adversarial review finding B, the
+/// quadratic-metadata-walk deferral). Verified by reading
+/// `GgufMetadata::entries()`'s override directly (mlmf-gguf 0.5.10
+/// metadata.rs:510): it iterates its own `entries` field once, not
+/// `self.keys().iter().map(|k| self.get(k))`. Closes that deferral.
+///
+/// `entries()` OMITS an undecodable entry rather than erroring (matching
+/// `get()`'s own contract) -- not reachable today because
+/// `index_complete() == false` already refuses such a file above, but the
+/// length check below is a typed Err, not a `.expect`, so a future MLMF
+/// release that weakens that invariant fails loudly here instead of
+/// silently returning fewer metadata keys than the file declares
+/// (adversarial review finding #7's same discipline, applied to this walk).
+fn decode_metadata(
+    meta: &mlmf_gguf::GgufMetadata<'_>,
+    path: &Path,
+) -> Result<HashMap<String, Value>> {
+    use mlmf_core::MetadataSource as _;
+
+    if !meta.index_complete() {
+        return Err(Error::Msg(
+            "gguf: metadata index incomplete -- an unrecognized value \
+             type blocked the walk before the end of the key-value block"
+                .to_string(),
+        )
+        .with_path(path));
+    }
+
+    let entries = meta.entries();
+    let key_count = meta.keys().len();
+    if entries.len() != key_count {
+        return Err(Error::Msg(format!(
+            "gguf: metadata entries() returned {} pairs but keys() lists {key_count} keys -- \
+             an index/value inconsistency in the underlying parser",
+            entries.len()
+        ))
+        .with_path(path));
+    }
+
+    let mut metadata = HashMap::new();
+    for (key, mv) in entries {
+        metadata.insert(
+            key.to_string(),
+            meta_value_to_fuel_value(mv).map_err(|e| {
+                Error::Msg(format!("gguf: metadata key {key:?}: {e}")).with_path(path)
+            })?,
+        );
+    }
+    Ok(metadata)
+}
+
+/// Finding A (adversarial review): `fuel_formats::gguf::Content::read`
+/// resolves `general.alignment` from SIX value-type arms (U8/U16/U32/
+/// I8/I16/I32, non-negative); MLMF's `GgufMetadata::alignment()` accepts
+/// ONLY U32 and silently falls back to its own default (32) for every
+/// other type or an invalid U32 -- a file declaring the alignment as, say,
+/// `I32(64)` would make `read` and an unguarded `open` compute DIFFERENT
+/// `tensor_data_offset`s with no error at all. Resolve it fuel's way from
+/// the metadata already decoded, and REFUSE rather than silently trust
+/// `tensors.data_start()` (which was already computed with MLMF's narrower
+/// rule, passed in as `mlmf_alignment`) if the two disagree -- a typed Err
+/// is always safe; a silently wrong byte offset into the tensor-data
+/// region is not.
+fn check_alignment_agrees(
+    metadata: &HashMap<String, Value>,
+    mlmf_alignment: u64,
+    path: &Path,
+) -> Result<()> {
+    let fuel_alignment = match metadata.get("general.alignment") {
+        Some(Value::U8(v)) => *v as u64,
+        Some(Value::U16(v)) => *v as u64,
+        Some(Value::U32(v)) => *v as u64,
+        Some(Value::I8(v)) if *v >= 0 => *v as u64,
+        Some(Value::I16(v)) if *v >= 0 => *v as u64,
+        Some(Value::I32(v)) if *v >= 0 => *v as u64,
+        _ => DEFAULT_ALIGNMENT,
+    };
+    if !fuel_alignment.is_power_of_two() {
+        return Err(Error::Msg(format!(
+            "gguf: general.alignment must be a non-zero power of two, got {fuel_alignment}"
+        ))
+        .with_path(path));
+    }
+    if fuel_alignment != mlmf_alignment {
+        return Err(Error::Msg(format!(
+            "gguf: general.alignment resolves to {fuel_alignment} under fuel's rules \
+             (U8/U16/U32/I8/I16/I32) but to {mlmf_alignment} under MLMF's (U32 only) -- \
+             refusing rather than risk a silently wrong tensor_data_offset"
+        ))
+        .with_path(path));
+    }
+    Ok(())
+}
+
+/// A tensor MLMF itself could not resolve at all is OMITTED from
+/// `tensors.tensors()` (seam-level, not a defect in MLMF) -- turn that back
+/// into a typed Err so `open` fails the whole read the same way
+/// `Content::read` does, rather than silently returning fewer tensors than
+/// the file declares.
+fn check_all_tensors_resolved(
+    tensors: &mlmf_gguf::GgufTensors<'_>,
+    tensors_report: &mlmf_core::Report,
+    header: &mlmf_gguf::Header,
+    path: &Path,
+) -> Result<()> {
+    use mlmf_core::TensorContainer as _;
+
+    if tensors.tensors().len() == header.tensor_count as usize {
+        return Ok(());
+    }
+    let unresolved: Vec<String> = tensors_report
+        .entries()
+        .iter()
+        .filter_map(|u| match &u.kind {
+            mlmf_core::UnrecognizedKind::TensorEncoding { name, declared, .. } => {
+                Some(format!("{name} ({declared:?})"))
+            }
+            _ => None,
+        })
+        .collect();
+    Err(Error::Msg(format!(
+        "gguf: {} of {} declared tensors have a type MLMF cannot resolve at all: {unresolved:?}",
+        header.tensor_count as usize - tensors.tensors().len(),
+        header.tensor_count,
+    ))
+    .with_path(path))
+}
+
+/// Maps every MLMF `TensorDescriptor` to fuel's `TensorInfo` shape.
+fn build_tensor_infos(
+    tensors: &mlmf_gguf::GgufTensors<'_>,
+    path: &Path,
+) -> Result<HashMap<String, TensorInfo>> {
+    use mlmf_core::TensorContainer as _;
+
+    let mut tensor_infos = HashMap::new();
+    for d in tensors.tensors() {
+        let code = encoding_ggml_code(&d.encoding).ok_or_else(|| {
+            Error::Msg(format!(
+                "gguf: tensor {:?}: dense dtype has no ggml code mapping",
+                d.name
+            ))
+            .with_path(path)
+        })?;
+        let ggml_dtype = fuel_ir::GgmlDType::from_u32(code)
+            .map_err(|e| Error::Msg(format!("gguf: tensor {:?}: {e}", d.name)).with_path(path))?;
+        // GGUF's on-disk dimension order needs reversing to match fuel's
+        // row-major convention -- the same reversal
+        // `fuel_formats::gguf::Content::read` performs
+        // (`dimensions.reverse()`); MLMF's `TensorDescriptor::shape`
+        // preserves the file's declared (non-reversed) order.
+        let mut dims: Vec<usize> = d.shape.dims().to_vec();
+        dims.reverse();
+        tensor_infos.insert(
+            d.name.clone(),
+            TensorInfo {
+                shape: fuel_ir::Shape::from(dims),
+                // Relative to tensor_data_offset, matching
+                // `TensorInfo::offset`'s existing contract (`Content::read`
+                // stores the on-disk relative offset, not an absolute file
+                // position).
+                offset: d.bytes.start - tensors.data_start(),
+                ggml_dtype,
+            },
+        );
+    }
+    Ok(tensor_infos)
+}
+
+/// mlmf-gguf's own SUPPORTED version set is exactly {2, 3} -- `parse_header`
+/// already refuses anything else with `GgufError::UnsupportedVersion`, so
+/// the wildcard arm here is unreachable in practice, not a silent default.
+fn resolve_magic(version: u32, path: &Path) -> Result<VersionedMagic> {
+    match version {
+        2 => Ok(VersionedMagic::GgufV2),
+        3 => Ok(VersionedMagic::GgufV3),
+        v => Err(Error::Msg(format!("gguf: unexpected parsed version {v}")).with_path(path)),
     }
 }
 

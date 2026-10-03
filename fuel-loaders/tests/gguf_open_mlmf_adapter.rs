@@ -103,8 +103,14 @@ fn build_gguf(
 /// and every metadata key's value, not just counts. This is the exact
 /// comparison the design review asked for before trusting `open` on
 /// anything else.
-#[test]
-fn gguf_open_matches_read_for_three_tensors_and_real_metadata() {
+/// Shared fixture for the positive-control pair below: a well-formed file
+/// with THREE tensors spanning both MLMF encoding branches (F32 and F16 are
+/// `Encoding::Dense`; Q4_0 is `Encoding::Blocked`, exercising the
+/// `BlockSpec.code` passthrough separately from the Dense-DType hand-mapping)
+/// plus TWO real metadata entries (a scalar U32 and a String). Parses it
+/// through both constructors and returns both `Content`s so each assertion
+/// group can live in its own under-50-line test.
+fn open_matches_read_fixture() -> (Content, Content) {
     // Q4_0: 32 elements/block, 18 bytes/block -- one whole block, dims=[32].
     let q4_0_data = vec![0u8; 18];
     let f32_data = 0.0f32.to_le_bytes().repeat(4); // 2x2
@@ -143,10 +149,15 @@ fn gguf_open_matches_read_for_three_tensors_and_real_metadata() {
     std::fs::write(&path, &gguf).expect("write synthetic gguf");
     let via_open = Content::open(&path).expect("Content::open on the same bytes");
 
+    (via_read, via_open)
+}
+
+#[test]
+fn gguf_open_matches_read_for_three_tensors() {
+    let (via_read, via_open) = open_matches_read_fixture();
+
     assert_eq!(via_read.magic, via_open.magic);
     assert_eq!(via_read.tensor_data_offset, via_open.tensor_data_offset);
-    assert_eq!(via_read.metadata.len(), 2);
-    assert_eq!(via_open.metadata.len(), 2);
     assert_eq!(via_read.tensor_infos.len(), 3);
     assert_eq!(via_open.tensor_infos.len(), 3);
 
@@ -160,6 +171,14 @@ fn gguf_open_matches_read_for_three_tensors_and_real_metadata() {
         assert_eq!(r.offset, o.offset, "{name}: offset must agree");
         assert_eq!(r.ggml_dtype, o.ggml_dtype, "{name}: dtype must agree");
     }
+}
+
+#[test]
+fn gguf_open_matches_read_for_real_metadata() {
+    let (via_read, via_open) = open_matches_read_fixture();
+
+    assert_eq!(via_read.metadata.len(), 2);
+    assert_eq!(via_open.metadata.len(), 2);
 
     // `Value` derives no `PartialEq` -- match each variant by hand, on
     // BOTH constructors' output, for BOTH metadata keys.

@@ -3503,9 +3503,9 @@ dependencies = [
 
 [[package]]
 name = "mlmf-core"
-version = "0.5.8"
+version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4b8e4608b3bb873985dcf6d17db4ad0e3fb5427c04895f84b7848835c9eb577"
+checksum = "6f8c97edd4d598aa59f6afbe522d7fdfae14ddf54398997973115b3e110c6e82"
 dependencies = [
  "bytemuck",
  "smallvec",
@@ -3514,18 +3514,18 @@ dependencies = [
 
 [[package]]
 name = "mlmf-ggml"
-version = "0.5.8"
+version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "449089eb1c9ed523ae5166e500cf0b13eff2f8b02ef0ef425c892282fff6aae8"
+checksum = "59984fa0af7ac68e62a163724673cd22393eccf75ef67d49810b59c306ba2084"
 dependencies = [
  "mlmf-core",
 ]
 
 [[package]]
 name = "mlmf-gguf"
-version = "0.5.8"
+version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "225a51effb21e4c097634ff7fa7145a1cc914bc245260332beed1815695d0e13"
+checksum = "c18cd453df09dbb49f2635648c00e30c128743a587aa2beec20b31a8e491e02b"
 dependencies = [
  "mlmf-core",
  "mlmf-ggml",
@@ -3533,9 +3533,9 @@ dependencies = [
 
 [[package]]
 name = "mlmf-source-file"
-version = "0.5.8"
+version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2b7c06286a860f8f3439ee39163332b29d2e83a834e53d0ed7a1a7b941d67c9"
+checksum = "42bba266d5af2ed176135fdea0d5536251ae4ff610decb463d1bb633740c2ddb"
 dependencies = [
  "memmap2",
  "mlmf-core",
