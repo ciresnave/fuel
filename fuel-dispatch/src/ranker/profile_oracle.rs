@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! `ProfileJudgeOracle` — fuel-core's concrete
-//! [`JudgeOracle`](fuel_dispatch::ranker::JudgeOracle) over the
-//! Judge's measured profile data.
+//! `ProfileJudgeOracle` — the concrete [`JudgeOracle`](super::judge::JudgeOracle)
+//! over the Judge's measured profile data.
 //!
-//! Phase 3 of the picker-work arc shipped the `JudgeOracle` trait +
-//! `PlanOptions::with_judge` in `fuel-dispatch`, but `fuel-dispatch`
-//! can't depend on `fuel-core` (dependency cycle), so the adapter
-//! over the real measurement store lives here.
+//! Moved from `fuel-core::judge::oracle` (fuel-core dissolution, plan item
+//! 8): it had zero coupling to `fuel-core`'s `Tensor`/`Device` or to the
+//! rest of `judge/mod.rs`, only to this crate's own `ranker::judge` types
+//! plus `fuel_ir`. The `Judge` struct that PRODUCES a `ProfileReport` stays
+//! in `fuel-core::judge` (it builds synthetic `Tensor`s to time kernels);
+//! this adapter only CONSUMES one, so the dependency-cycle concern the old
+//! doc comment described no longer applies to this file.
 //!
 //! # Data source: `ProfileReport`, not `DispatchTable`
 //!
@@ -38,13 +40,14 @@
 //! of entry order. Within one equivalence class the replicated
 //! entries share a latency, so the min is a no-op there.
 
-use fuel_dispatch::ranker::{HashMapJudge, JudgeOracle};
+use super::judge::{HashMapJudge, JudgeOracle};
 use fuel_ir::DType;
 use fuel_ir::dispatch::{OpKind, PROFILE_REPORT_VERSION, ProfileReport, SizeClass};
 use fuel_ir::probe::BackendId;
 
 /// [`JudgeOracle`] adapter over a [`ProfileReport`]. Build once per
-/// report (cache lifecycle in [`super::cache`]), query per candidate
+/// report (cache lifecycle in `fuel_core::judge::cache`, which stays
+/// alongside the `Judge` that produces the report), query per candidate
 /// from the optimizer ranker's cost composer.
 #[derive(Debug, Default, Clone)]
 pub struct ProfileJudgeOracle {
@@ -142,8 +145,22 @@ impl JudgeOracle for ProfileJudgeOracle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::judge::test_equiv_key;
     use fuel_ir::dispatch::ProfileEntry;
+
+    /// Minimal equivalence key for a fixture entry — fixtures never load
+    /// through the hardware gate, so the vendor/device ids are
+    /// irrelevant, only the backend. Mirrors
+    /// `fuel_core::judge::test_equiv_key`, which stays `pub(crate)` there
+    /// and so can't be reused across the crate boundary.
+    fn test_equiv_key(backend: BackendId) -> fuel_ir::probe::EquivalenceKey {
+        fuel_ir::probe::EquivalenceKey {
+            backend,
+            vendor_id: 0,
+            device_id: 0,
+            compute_capability: None,
+            driver_version: String::new(),
+        }
+    }
 
     fn entry(
         backend: BackendId,
@@ -367,7 +384,7 @@ mod tests {
             entries: vec![entry(BackendId::Cpu, OpKind::MatMul, 16, 0, 1_000, "aocl")],
         };
         let oracle = ProfileJudgeOracle::from_report(&report);
-        let opts = fuel_dispatch::plan::PlanOptions::new().with_judge(&oracle);
+        let opts = crate::plan::PlanOptions::new().with_judge(&oracle);
         let queried = opts
             .judge
             .expect("with_judge sets the oracle")

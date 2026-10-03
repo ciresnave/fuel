@@ -48,6 +48,7 @@ pub mod filters;
 pub mod judge;
 pub mod judge_aware_selector;
 pub mod placement_dp;
+pub mod profile_oracle;
 pub mod route_picker;
 pub mod runtime_selector;
 pub mod vram_pressure_selector;
