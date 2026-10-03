@@ -146,11 +146,11 @@ pub use cache::*;
 // (this module's own tests, `cache.rs`) are unchanged.
 pub use fuel_dispatch::ranker::profile_oracle::ProfileJudgeOracle;
 
-use crate::probe::ProbeReport;
 use fuel_correctness_fixtures::{
     CorrectnessDrift, CorrectnessFixture, FIXTURE_FILE_VERSION, FixtureFile,
     validate_against_fixture,
 };
+use fuel_hardware::probe::ProbeReport;
 use fuel_ir::probe::{BackendId, DeviceDescriptor};
 use fuel_ir::{DType, Result, Shape};
 use std::collections::HashMap;
@@ -2374,13 +2374,13 @@ fn load_fixtures_recursive(
     let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> = HashMap::new();
     let mut visit = |p: &Path| -> Result<()> {
         let raw = std::fs::read_to_string(p).map_err(|e| {
-            crate::error::Error::Msg(format!(
+            fuel_ir::error::Error::Msg(format!(
                 "judge: failed to read fixture file {}: {e}",
                 p.display(),
             ))
         })?;
         let file: FixtureFile = serde_json::from_str(&raw).map_err(|e| {
-            crate::error::Error::Msg(format!(
+            fuel_ir::error::Error::Msg(format!(
                 "judge: failed to parse fixture file {} as FixtureFile: {e}",
                 p.display(),
             ))
@@ -2404,14 +2404,14 @@ fn load_fixtures_recursive(
 
     fn walk(dir: &Path, visit: &mut dyn FnMut(&Path) -> Result<()>) -> Result<()> {
         let entries = std::fs::read_dir(dir).map_err(|e| {
-            crate::error::Error::Msg(format!(
+            fuel_ir::error::Error::Msg(format!(
                 "judge: failed to read fixture dir {}: {e}",
                 dir.display(),
             ))
         })?;
         for entry in entries {
             let entry = entry.map_err(|e| {
-                crate::error::Error::Msg(format!(
+                fuel_ir::error::Error::Msg(format!(
                     "judge: failed reading dir entry in {}: {e}",
                     dir.display(),
                 ))
@@ -2431,7 +2431,7 @@ fn load_fixtures_recursive(
     } else if root.is_dir() {
         walk(root, &mut visit)?;
     } else {
-        return Err(crate::error::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "judge: fixture path {} does not exist",
             root.display(),
         )));

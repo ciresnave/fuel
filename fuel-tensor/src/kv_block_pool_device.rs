@@ -3,7 +3,7 @@
 //! [`KvBlockPool`] host-side allocator to real device `Storage` (multi-session
 //! serving, Increment 2, Part 2).
 //!
-//! The pure core ([`crate::kv_block_pool`]) owns block *metadata* — free list,
+//! The pure core ([`fuel_kv_pool`]) owns block *metadata* — free list,
 //! refcounts, per-session block tables — and deliberately touches no device, no
 //! tensors, no model (which is what keeps its eventual `fuel-inference` move
 //! cheap). This module is the counterpart that owns the *bytes*:
@@ -35,10 +35,10 @@ use fuel_memory::Storage;
 
 use crate::Device;
 use crate::decode_shape::KvAllocId;
-use crate::kv_block_pool::{
+use crate::lazy::Tensor;
+use fuel_kv_pool::{
     Externalized, KvAllocError, KvBlockPool, KvGeometry, PhysBlockId, SessionHandle,
 };
-use crate::lazy::Tensor;
 
 /// Which of a layer's two pool buffers a block operation targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,11 +79,11 @@ struct SavedBlock {
 impl DeviceEvicted {
     /// The categories of state this handle covers (delegates the core handle's
     /// enumeration — the Q9 completeness gate).
-    pub fn covers(&self) -> &[crate::kv_block_pool::StateKind] {
+    pub fn covers(&self) -> &[fuel_kv_pool::StateKind] {
         self.core_handle.covers()
     }
     /// This handle's fidelity guarantee (`Lossy` this increment).
-    pub fn fidelity(&self) -> crate::kv_block_pool::Fidelity {
+    pub fn fidelity(&self) -> fuel_kv_pool::Fidelity {
         self.core_handle.fidelity()
     }
     /// Number of blocks whose bytes this handle carries (the exclusive,
@@ -357,19 +357,19 @@ impl DeviceKvPool {
     /// **rung-2 product** — materialize a registered prefix at a block-aligned,
     /// NON-ZERO position offset in `dst` via a uniform θ·M RoPE delta-rotation of
     /// its cached keys. Unlike the pure-core zero-copy
-    /// [`splice_prefix_from`](crate::kv_block_pool::KvBlockPool::splice_prefix_from)
+    /// [`splice_prefix_from`](fuel_kv_pool::KvBlockPool::splice_prefix_from)
     /// (rung-1, prefix at position 0), this COPIES: the prefix's keys were rotated
     /// for positions `0..N` and are numerically wrong at `M..M+N`, so fresh blocks
     /// are allocated and written with rotated K + copied V. `rope_base` is the
     /// model's θ — a plain param, so a pool-driving consumer supplies its own (the
     /// §15 seam). Returns the shared token count `N`. `M = filled_tokens(dst)` must
     /// be block-aligned; validation + fresh-block bookkeeping is
-    /// [`KvBlockPool::alloc_shifted_prefix_slots`](crate::kv_block_pool::KvBlockPool::alloc_shifted_prefix_slots),
+    /// [`KvBlockPool::alloc_shifted_prefix_slots`](fuel_kv_pool::KvBlockPool::alloc_shifted_prefix_slots),
     /// which is transactional (a refusal allocates nothing). f32 pool.
     pub fn splice_prefix_shifted(
         &mut self,
-        prefix: crate::kv_block_pool::PrefixId,
-        dst: crate::kv_block_pool::SessionHandle,
+        prefix: fuel_kv_pool::PrefixId,
+        dst: fuel_kv_pool::SessionHandle,
         rope_base: f64,
     ) -> crate::Result<usize> {
         let g = self.geometry();
@@ -1897,7 +1897,7 @@ mod tests {
             2,
             "both exclusive blocks captured"
         );
-        assert_eq!(handle.fidelity(), crate::kv_block_pool::Fidelity::Lossy);
+        assert_eq!(handle.fidelity(), fuel_kv_pool::Fidelity::Lossy);
         assert_eq!(
             pool.core().free_blocks(),
             free_before + 2,

@@ -2,10 +2,10 @@
 //! Device abstraction for CPU, CUDA, and Metal backends.
 //!
 //! ```rust
-//! use fuel_core::Device;
+//! use fuel_tensor::Device;
 //! let dev = Device::cpu();
 //! assert!(dev.is_cpu());
-//! assert_eq!(dev.location(), fuel_core::DeviceLocation::Cpu);
+//! assert_eq!(dev.location(), fuel_tensor::DeviceLocation::Cpu);
 //! ```
 use crate::{DType, HostBuffer, Result, Shape, Storage, WithDType};
 use fuel_backend_contract::dyn_backend::DynBackendDevice;
@@ -23,12 +23,12 @@ pub use fuel_ir::DeviceLocation;
 /// # Example
 ///
 /// ```rust
-/// use fuel_core::{Device, DType};
-/// use fuel_core::lazy::Tensor;
+/// use fuel_tensor::{Device, DType};
+/// use fuel_tensor::lazy::Tensor;
 /// let dev = Device::cpu();
 /// let t = Tensor::zeros((2, 3), DType::F32, &dev)?;
 /// assert_eq!(t.shape().dims(), &[2, 3]);
-/// # Ok::<(), fuel_core::Error>(())
+/// # Ok::<(), fuel_tensor::Error>(())
 /// ```
 #[derive(Clone, Debug)]
 pub struct Device {
@@ -44,13 +44,13 @@ pub struct Device {
 /// # Example
 ///
 /// ```rust
-/// use fuel_core::NdArray;
+/// use fuel_tensor::NdArray;
 /// // Scalars, arrays, and nested arrays all implement `NdArray` and report
 /// // the shape their data describes.
 /// assert_eq!(3.14f32.shape()?.dims(), &[] as &[usize]);
 /// assert_eq!((&[1f32, 2., 3.]).shape()?.dims(), &[3]);
 /// assert_eq!((&[[1f32, 2.], [3., 4.]]).shape()?.dims(), &[2, 2]);
-/// # Ok::<(), fuel_core::Error>(())
+/// # Ok::<(), fuel_tensor::Error>(())
 /// ```
 pub trait NdArray {
     /// Returns the shape determined by this array-like value.
@@ -271,7 +271,7 @@ impl Device {
     /// # Example
     ///
     /// ```rust
-    /// use fuel_core::Device;
+    /// use fuel_tensor::Device;
     /// let dev = Device::cpu();
     /// assert!(dev.is_cpu());
     /// ```
@@ -295,7 +295,7 @@ impl Device {
     /// constructors (`Tensor::from_f32`, `const_f32_like`, etc.) take
     /// a `&Arc<dyn DynBackendDevice>` so they can allocate Storage on
     /// the right device without depending on fuel-core. Callers that
-    /// hold a `&fuel_core::Device` thread it through with
+    /// hold a `&fuel_tensor::Device` thread it through with
     /// `dev.as_dyn()`.
     pub fn as_dyn(&self) -> &Arc<dyn DynBackendDevice> {
         &self.inner
@@ -321,7 +321,7 @@ impl Device {
     /// # Example
     ///
     /// ```rust
-    /// use fuel_core::Device;
+    /// use fuel_tensor::Device;
     /// assert!(Device::cpu().same_device(&Device::cpu()));
     /// ```
     pub fn same_device(&self, rhs: &Self) -> bool {
@@ -333,7 +333,7 @@ impl Device {
     /// # Example
     ///
     /// ```rust
-    /// use fuel_core::{Device, DeviceLocation};
+    /// use fuel_tensor::{Device, DeviceLocation};
     /// assert_eq!(Device::cpu().location(), DeviceLocation::Cpu);
     /// ```
     pub fn location(&self) -> DeviceLocation {
@@ -345,7 +345,7 @@ impl Device {
     /// # Example
     ///
     /// ```rust
-    /// use fuel_core::Device;
+    /// use fuel_tensor::Device;
     /// assert!(Device::cpu().is_cpu());
     /// ```
     pub fn is_cpu(&self) -> bool {
@@ -357,7 +357,7 @@ impl Device {
     /// # Example
     ///
     /// ```rust
-    /// use fuel_core::Device;
+    /// use fuel_tensor::Device;
     /// assert!(!Device::cpu().is_cuda());
     /// ```
     pub fn is_cuda(&self) -> bool {
@@ -369,7 +369,7 @@ impl Device {
     /// # Example
     ///
     /// ```rust
-    /// use fuel_core::Device;
+    /// use fuel_tensor::Device;
     /// assert!(!Device::cpu().is_metal());
     /// ```
     pub fn is_metal(&self) -> bool {
@@ -381,7 +381,7 @@ impl Device {
     /// # Example
     ///
     /// ```rust
-    /// use fuel_core::Device;
+    /// use fuel_tensor::Device;
     /// // CPU does not have native BF16 support
     /// assert!(!Device::cpu().supports_bf16());
     /// ```
@@ -394,7 +394,7 @@ impl Device {
     /// # Example
     ///
     /// ```rust
-    /// use fuel_core::{Device, DType};
+    /// use fuel_tensor::{Device, DType};
     /// assert_eq!(Device::cpu().bf16_default_to_f32(), DType::F32);
     /// ```
     pub fn bf16_default_to_f32(&self) -> DType {
@@ -483,9 +483,9 @@ impl Device {
     /// This is a no-op on CPU.
     ///
     /// ```rust
-    /// use fuel_core::Device;
+    /// use fuel_tensor::Device;
     /// Device::cpu().synchronize()?;
-    /// # Ok::<(), fuel_core::Error>(())
+    /// # Ok::<(), fuel_tensor::Error>(())
     /// ```
     pub fn synchronize(&self) -> Result<()> {
         self.inner.synchronize_dyn()

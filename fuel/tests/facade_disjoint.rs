@@ -46,9 +46,75 @@ fn pub_mod_names(src: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Every name introduced at the crate root via `pub use <path>::NAME;` or
+/// `pub use <path>::{NAME, ...};` (single- or multi-line) -- the same
+/// root-name-set effect as `pub mod` for THIS test's purposes. Added for
+/// board #109: `lazy`/`lazy_latent_cache` moved from direct `pub mod`
+/// declarations to `pub use fuel_tensor::{...}` re-exports, so the test's
+/// previous `pub_mod_names`-only check stopped seeing them even though
+/// `fuel_core::lazy`/`fuel::lazy` still resolve identically at runtime --
+/// the LAYOUT changed, the invariant this test protects did not.
+///
+/// Line/brace-based, not a real Rust parser (same stated-scope tradeoff as
+/// `pub_mod_names` above): it doesn't filter by source crate, so it also
+/// picks up names from unrelated re-exports (`Layout`, `Storage`, `probe`,
+/// ...). That's safe here -- the caller only intersects this set against
+/// `lazy_<model>`-shaped names, so a non-colliding extra name is inert.
+fn pub_use_names(src: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut buf = String::new();
+    let mut in_use = false;
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if !in_use {
+            match trimmed.strip_prefix("pub use ") {
+                Some(rest) => {
+                    in_use = true;
+                    buf.clear();
+                    buf.push_str(rest);
+                }
+                None => continue,
+            }
+        } else {
+            buf.push(' ');
+            buf.push_str(trimmed);
+        }
+        if let Some((stmt, _)) = buf.split_once(';') {
+            if let Some(path_part) = stmt.rsplit("::").next() {
+                let path_part = path_part.trim();
+                if let Some(inner) = path_part
+                    .strip_prefix('{')
+                    .and_then(|s| s.strip_suffix('}'))
+                {
+                    for item in inner.split(',') {
+                        // `as ALIAS` introduces ALIAS at the root, not the
+                        // original name -- `.last()` takes the alias when
+                        // present (sabotage-verified: `pub use X::lazy as
+                        // lazy_llama2c;` must register `lazy_llama2c`, not
+                        // `lazy`, or a real collision slips past this gate).
+                        let name = item.trim().split(" as ").last().unwrap_or("").trim();
+                        if !name.is_empty() {
+                            names.insert(name.to_string());
+                        }
+                    }
+                } else if !path_part.is_empty() {
+                    let name = path_part.split(" as ").last().unwrap_or("").trim();
+                    if !name.is_empty() {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+            in_use = false;
+            buf.clear();
+        }
+    }
+    names
+}
+
 #[test]
 fn facade_globs_are_disjoint() {
-    let core = pub_mod_names(CORE_LIB);
+    let mut core = pub_mod_names(CORE_LIB);
+    core.extend(pub_use_names(CORE_LIB));
     let models = pub_mod_names(MODELS_MOD);
 
     // Positive controls: an empty parse would make the disjointness vacuous.

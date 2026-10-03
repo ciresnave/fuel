@@ -4,7 +4,7 @@
 //! Every backend that fuel-core can drive at runtime declares a single
 //! [`BackendFactory`] value in this module. The registry ([`registry`])
 //! returns the cfg-gated subset that's actually compiled in, and
-//! consumers — currently the [`crate::probe`] enumerator and the
+//! consumers — currently the [`fuel_hardware::probe`] enumerator and the
 //! [`crate::judge`] profiler — walk that registry instead of naming
 //! `fuel_cuda_backend::CudaDevice`/`fuel_vulkan_backend::VulkanBackend`/...
 //! by hand.

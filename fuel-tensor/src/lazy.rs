@@ -8015,7 +8015,7 @@ impl Tensor {
 
     /// Build a `Tensor` from a `safetensors::TensorView`. This is
     /// the most natural entry point when iterating over a
-    /// [`crate::safetensors::MmapedSafetensors`] or similar.
+    /// [`fuel_loaders::safetensors::MmapedSafetensors`] or similar.
     pub fn from_safetensors_view(
         view: &safetensors::tensor::TensorView<'_>,
         device: &Device,
@@ -8890,7 +8890,7 @@ pub fn apply_affine_rms_norm(x: &Tensor, gain: &Arc<[f32]>, dim: usize, eps: f64
 /// Handles `F32`, `F64`, `BF16`, and `F16` — the dtypes real LLaMA
 /// weights use on disk. Returns an error for unsupported dtypes.
 pub fn load_tensor_as_f32(
-    st: &crate::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
 ) -> crate::Result<Vec<f32>> {
     use safetensors::Dtype;
@@ -8941,7 +8941,7 @@ pub fn load_tensor_as_f32(
 /// call to this function is effectively "give me that matrix as I'd
 /// use it in `matmul`."
 pub fn load_transposed_matrix(
-    st: &crate::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     out_features: usize,
     in_features: usize,
@@ -8978,7 +8978,7 @@ pub fn load_transposed_matrix(
 /// read bf16 elements from the file, place them in the transposed
 /// target buffer, no conversion.
 pub fn load_transposed_matrix_preserve_dtype(
-    st: &crate::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     out_features: usize,
     in_features: usize,

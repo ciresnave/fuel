@@ -36,9 +36,23 @@ pub fn new_device(_ordinal: usize) -> Result<Device> {
     Err(Error::NotCompiledWithMetalSupport.bt())
 }
 
+/// Returns `true` if this crate was compiled with Apple Metal support.
+///
+/// A LOCAL copy of `fuel_core::utils::metal_is_available` (fuel-core
+/// dissolution, board #109): `cfg!(feature = "metal")` must check
+/// WHICHEVER crate it is compiled into, and after this move that is
+/// `fuel-tensor`, not `fuel-core` -- referencing fuel-core's copy would
+/// check the wrong crate's feature flag (and would also need a
+/// fuel-tensor -> fuel-core dependency, a cycle with fuel-core's own
+/// need for fuel-tensor). `fuel-core/src/utils.rs`'s own copy is
+/// unaffected and untouched by this move.
+fn metal_is_available() -> bool {
+    cfg!(feature = "metal")
+}
+
 /// Returns a Metal device if available, otherwise falls back to CPU.
 pub fn device_if_available(ordinal: usize) -> Result<Device> {
-    if crate::utils::metal_is_available() {
+    if metal_is_available() {
         new_device(ordinal)
     } else {
         Ok(Device::cpu())

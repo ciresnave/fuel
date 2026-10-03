@@ -49,7 +49,7 @@ pub fn new_device_with_stream(_ordinal: usize) -> Result<Device> {
 
 /// Returns a CUDA device if available, otherwise falls back to CPU.
 pub fn device_if_available(ordinal: usize) -> Result<Device> {
-    if crate::utils::cuda_is_available() {
+    if fuel_hardware::utils::cuda_is_available() {
         new_device(ordinal)
     } else {
         Ok(Device::cpu())

@@ -10,7 +10,7 @@
 //! # One-call API
 //!
 //! ```no_run
-//! use fuel_core::scheduling::{prepare_dispatch_table, ScheduleOptions};
+//! use fuel_tensor::scheduling::{prepare_dispatch_table, ScheduleOptions};
 //! let (table, _report) = prepare_dispatch_table(ScheduleOptions::default())
 //!     .expect("prepare_dispatch_table");
 //! // `table` is now queryable with `.pick(op, dtype, size, criterion)`.
@@ -36,9 +36,9 @@
 
 use crate::judge::{Criterion, DispatchOptions, DispatchTable, Pick};
 use crate::judge::{Judge, OpKind, ProfileEntry, ProfileReport, SizeClass};
-use crate::probe::{HardwareChange, ProbeReport};
-use crate::transfer_cost::BandwidthMatrix;
 use fuel_graph::{Graph, NodeId, Op};
+use fuel_hardware::probe::{HardwareChange, ProbeReport};
+use fuel_hardware::transfer_cost::BandwidthMatrix;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, Result};
 use std::collections::HashMap;
@@ -80,7 +80,7 @@ pub fn prepare_dispatch_table(opts: ScheduleOptions) -> Result<(DispatchTable, P
     let probe_path = opts
         .probe_path
         .clone()
-        .or_else(crate::probe::default_report_path);
+        .or_else(fuel_hardware::probe::default_report_path);
     let profile_path = opts
         .profile_path
         .clone()
@@ -296,9 +296,9 @@ pub fn auto_place_and_route(
 /// Default cache path for the bandwidth report — `bandwidth.json`
 /// next to `probe.json` in the OS cache dir.
 fn default_bandwidth_path() -> Option<PathBuf> {
-    crate::probe::default_report_path().and_then(|p| {
+    fuel_hardware::probe::default_report_path().and_then(|p| {
         p.parent()
-            .map(|parent| parent.join(crate::transfer_cost::BANDWIDTH_REPORT_FILENAME))
+            .map(|parent| parent.join(fuel_hardware::transfer_cost::BANDWIDTH_REPORT_FILENAME))
     })
 }
 
@@ -316,7 +316,7 @@ pub fn prepare_dp_inputs(
     let probe_path = opts
         .probe_path
         .clone()
-        .or_else(crate::probe::default_report_path);
+        .or_else(fuel_hardware::probe::default_report_path);
     let profile_path = opts
         .profile_path
         .clone()
@@ -457,7 +457,7 @@ pub fn dp_plan(
     graph: &fuel_graph::Graph,
     roots: &[NodeId],
     profile: &ProfileReport,
-    bandwidth: &crate::transfer_cost::BandwidthMatrix,
+    bandwidth: &fuel_hardware::transfer_cost::BandwidthMatrix,
     available_backends: &[BackendId],
     fallback_device: DeviceLocation,
 ) -> HashMap<NodeId, DeviceLocation> {
@@ -609,7 +609,7 @@ pub fn dp_plan(
 /// route via CPU as a two-hop transfer (the worst case is the
 /// Vulkan→CPU→CUDA pattern; CPU→CPU is essentially free).
 fn transfer_cost_with_cpu_fallback(
-    bandwidth: &crate::transfer_cost::BandwidthMatrix,
+    bandwidth: &fuel_hardware::transfer_cost::BandwidthMatrix,
     src: BackendId,
     dst: BackendId,
     bytes: usize,
@@ -1076,7 +1076,9 @@ mod tests {
     /// CUDA; with it, CPU wins.
     #[test]
     fn dp_plan_avoids_costly_transfers() {
-        use crate::transfer_cost::{BANDWIDTH_REPORT_VERSION, BandwidthMatrix, TransferCost};
+        use fuel_hardware::transfer_cost::{
+            BANDWIDTH_REPORT_VERSION, BandwidthMatrix, TransferCost,
+        };
         // CUDA is the winner of dispatch (small compute cost penalty)
         // but every byte costs 100ns to upload + 100ns to download.
         // Even a tiny tensor crosses the threshold where keeping it
@@ -1179,7 +1181,9 @@ mod tests {
     /// isn't pessimistically pinning everything to CPU.
     #[test]
     fn dp_plan_picks_dispatch_winner_when_transfer_is_cheap() {
-        use crate::transfer_cost::{BANDWIDTH_REPORT_VERSION, BandwidthMatrix, TransferCost};
+        use fuel_hardware::transfer_cost::{
+            BANDWIDTH_REPORT_VERSION, BandwidthMatrix, TransferCost,
+        };
         let entries = vec![
             ProfileEntry {
                 op: OpKind::MatMul,

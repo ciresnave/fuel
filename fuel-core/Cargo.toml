@@ -28,6 +28,10 @@ fuel-formats = { workspace = true }
 fuel-loaders = { workspace = true }
 fuel-quantized = { workspace = true }
 fuel-graph = { workspace = true }
+# board #109: Tensor/Device/pipelined_bridge/judge/etc moved here; this crate
+# keeps re-exporting their old paths (lib.rs), and train.rs/kv_block_pool.rs
+# (not yet moved) reference them internally.
+fuel-tensor = { workspace = true }
 hf-hub = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -89,11 +93,18 @@ default = []
 # Enables fuel-dispatch's plan-time emission + adds the process-wide opt-in
 # sink, hardware stamp, and explicit-flush API (`fuel_core::telemetry`). Off by
 # default — a build that never sets this is byte-identical.
-telemetry = ["fuel-dispatch/telemetry"]
+telemetry = ["fuel-dispatch/telemetry", "fuel-tensor/telemetry"]
 
 # NVIDIA GPU backend via baracuda (cuBLAS + driver). Dynamic-loaded at
 # runtime; cargo build does not require the CUDA toolkit installed.
 # Use: cargo build --features cuda
+#
+# board #109: the actual bridge code (`cuda_backend`, `device`, `lazy`, ...)
+# moved to fuel-tensor, so this feature must forward to fuel-tensor's own
+# "cuda" -- otherwise fuel-core's `#[cfg(feature = "cuda")]` re-exports
+# (lib.rs) would gate correctly while fuel-tensor's OWN `#[cfg(feature =
+# "cuda")]`-gated internals (the moved code's real content) stayed off,
+# since the two crates' features are otherwise independent flags.
 cuda = [
     "dep:fuel-cuda-backend",
     "dep:baracuda-types",
@@ -102,16 +113,17 @@ cuda = [
     "fuel-dispatch/cuda",
     "fuel-memory/cuda",
     "fuel-hardware/cuda",
+    "fuel-tensor/cuda",
 ]
 
 # Enables cuda + cuDNN accelerated convolution and normalization.
-cudnn = ["cuda", "dep:baracuda-cudnn", "fuel-cuda-backend?/cudnn"]
+cudnn = ["cuda", "dep:baracuda-cudnn", "fuel-cuda-backend?/cudnn", "fuel-tensor/cudnn"]
 
 # Multi-GPU communication via NVIDIA NCCL.
-nccl = ["cuda", "dep:baracuda-nccl", "fuel-cuda-backend?/nccl"]
+nccl = ["cuda", "dep:baracuda-nccl", "fuel-cuda-backend?/nccl", "fuel-tensor/nccl"]
 
 # Intel MKL BLAS for CPU (Linux/Windows). Faster matmul on Intel hardware.
-mkl = ["dep:libc", "dep:intel-mkl-src", "fuel-cpu-backend/mkl"]
+mkl = ["dep:libc", "dep:intel-mkl-src", "fuel-cpu-backend/mkl", "fuel-tensor/mkl"]
 
 # AMD AOCL-BLAS (BLIS) for CPU. Faster matmul on Zen-class AMD CPUs.
 # Links via the out-of-tree `aocl-blas` crate; runs the 2×2 sgemm probe
@@ -130,7 +142,7 @@ aocl = ["dep:fuel-aocl-cpu-backend"]
 onemkl = ["dep:fuel-mkl-cpu-backend"]
 
 # Apple Accelerate BLAS for CPU (macOS only). Faster matmul on Apple hardware.
-accelerate = ["dep:libc", "dep:accelerate-src", "fuel-cpu-backend/accelerate"]
+accelerate = ["dep:libc", "dep:accelerate-src", "fuel-cpu-backend/accelerate", "fuel-tensor/accelerate"]
 
 # Apple Metal GPU backend (macOS 13+, Apple Silicon or AMD GPU on Intel Mac).
 # Use: cargo build --features metal
@@ -141,12 +153,13 @@ metal = [
     "dep:fuel-metal-kernels",
     "fuel-dispatch/metal",
     "fuel-memory/metal",
+    "fuel-tensor/metal",
 ]
 
 # Cross-vendor GPU backend via Vulkan (vulkane + precompiled SPIR-V).
 # Use: cargo build --features vulkan. No toolchain required at build
 # time — shaders are precompiled and committed.
-vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
+vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan", "fuel-hardware/vulkan", "fuel-tensor/vulkan"]
 
 # Pipes the `ug` feature through to fuel-cuda-backend and fuel-metal-backend so the
 # per-backend `XxxUgIOp1::new(..., device)` constructors are available

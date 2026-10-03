@@ -30,7 +30,26 @@ filtered read of this same list.
   paths, but the `fuel-core` crate itself goes away. Board item 9.
 - **`Tensor` moves into a new `fuel-tensor` crate** (mechanical move per
   CireSnave's ruling on #109; the semantic split, if any, is a later,
-  separate decision). Board #109.
+  separate decision). Board #109, PR #305 (one PR for the whole
+  mutually-referencing cluster: `lazy`/`device`/the 3 GPU bridges/`dtype`'s
+  trait trio/`pipelined_bridge`/`judge`/`factories`/`planner`/
+  `decode_shape`/`lazy_latent_cache`/`test_utils`/`scheduling`/
+  `inference_context`/`kv_block_pool_device`/`persistent_decode`/`nf4` —
+  a full crate::-reference census found they cannot split into the
+  originally-planned smaller PRs without a dependency cycle).
+- **Two duplicated items, each with a named single-home follow-up, from
+  PR #305's move:** fuel-tensor carries its own local copy of
+  `fuel_core::bail!` (`$crate::Error` resolves to whichever crate invokes
+  it, and `fuel-tensor` depending on `fuel-core` for the macro would cycle
+  with `fuel-core`'s own need for `fuel-tensor`) — single-home candidate:
+  alongside `Error`/`Result` in `fuel_ir::error`. `metal_backend`'s
+  `metal_is_available()` is also a local copy of
+  `fuel_core::utils::metal_is_available` (the `cfg!(feature = "metal")`
+  check must read whichever crate it's compiled into) — single-home
+  candidate: wherever `utils.rs`'s own already-flagged
+  accelerate/mkl/metal feature-check functions eventually land (that
+  destination is itself still "Final home TBD" per `utils.rs`'s own doc,
+  independent of this move).
 - **`fuel-kernel-seam::JitRequest` gains `pub target: TargetId` and becomes
   `#[non_exhaustive]`**, with a `JitRequest::new(...)` constructor; baracuda's
   5 construction sites move to `::new(...)` in the same release so they

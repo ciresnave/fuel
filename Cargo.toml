@@ -34,6 +34,7 @@ members = [
     "fuel-vulkan-backend",
     "fuel-inference",
     "fuel-kv-pool",
+    "fuel-tensor",
     "fuel-kernels-source",
     "fuel-vulkan-kernels",
     "fuel-lazy-examples",
@@ -73,6 +74,7 @@ default-members = [
     "fuel-kernel-seam-types",
     "fuel-cuda-backend",
     "fuel-vulkan-backend",
+    "fuel-tensor",
     "fuel-kernels-source",
     "fuel-kv-pool",
     "fuel-vulkan-kernels",
@@ -143,6 +145,7 @@ fuel-kernel-seam = { path = "./fuel-kernel-seam", version = "0.12.0" }
 fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.12.0" }
 fuel-dispatch = { path = "./fuel-dispatch", version = "0.12.0" }
 fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.12.0" }
+fuel-tensor = { path = "./fuel-tensor", version = "0.12.0" }
 fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.12.0" }
 fuel-kv-pool = { path = "./fuel-kv-pool", version = "0.12.0" }
 fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.12.0" }
