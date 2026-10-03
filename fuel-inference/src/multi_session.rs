@@ -52,8 +52,8 @@ use std::collections::HashMap;
 
 use fuel_ir::{DType, Error};
 
+use crate::decode_state_spec::LayerStateSpec;
 use fuel::Device;
-use fuel::decode_state_spec::LayerStateSpec;
 use fuel::inference_context::{
     DecodeSession, InferenceContext, KvCache, PagedDecodePlan, PagedDecodeSession,
 };
@@ -109,7 +109,7 @@ pub trait DecodeModel {
     /// `[latent, k_pe]` slots) cannot honor, yet was syntactically able to
     /// return, mis-allocating silently. A uniform per-head-KV model returns the
     /// same [`LayerStateSpec::KeyValue`] for every index and is unaffected. See
-    /// GAP-166 and [`fuel::decode_state_spec`].
+    /// GAP-166 and [`crate::decode_state_spec`].
     fn layer_state_specs(&self) -> Vec<LayerStateSpec>;
 
     /// One persistent-KV forward: run `tokens` (full prompt on prefill, the last
@@ -4401,8 +4401,8 @@ mod tests {
         fn layer_state_specs(&self) -> Vec<LayerStateSpec> {
             vec![
                 LayerStateSpec::Slots(vec![
-                    fuel::decode_state_spec::StateSlot::new(vec![512usize]),
-                    fuel::decode_state_spec::StateSlot::new(vec![64usize]),
+                    crate::decode_state_spec::StateSlot::new(vec![512usize]),
+                    crate::decode_state_spec::StateSlot::new(vec![64usize]),
                 ]);
                 2
             ]

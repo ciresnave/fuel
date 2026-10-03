@@ -206,6 +206,34 @@ DISPOSITIONS = {
              "comment. mlmf_core::MetaValue is a real crates.io dependency of "
              "fuel-loaders; cross-crate under --no-deps."),
 
+    # fuel-core dissolution (plan item 9): decode_state_spec.rs moved from
+    # fuel-core to fuel-inference, which needed these 4 links to go the OTHER
+    # way (fuel-inference referencing fuel-core types it still consumes).
+    # MEASURED, not guessed: `cargo doc -p fuel-inference --no-deps` emits
+    # exactly these 4 (6 occurrences, 2 of them twice) as unresolved; fuel-core
+    # IS a real dependency of fuel-inference (via the `fuel` facade), so a
+    # full-deps doc build resolves them -- same --no-deps-only pattern as
+    # `fuel_cuda_backend::CudaDevice` above, just crossing the opposite
+    # direction of the fuel-core/fuel-inference edge.
+    "fuel_core::lazy_latent_cache::LatentCache": (CORRECT,
+             "fuel-inference/src/decode_state_spec.rs module doc, referencing a "
+             "fuel-core type via the `fuel` facade dependency. MEASURED: "
+             "`cargo doc -p fuel-inference --no-deps` leaves it unresolved -- "
+             "cross-crate under --no-deps; a full-deps build resolves it, since "
+             "fuel-inference genuinely depends on fuel-core."),
+    "fuel_core::lazy_latent_cache::LatentCache::new": (CORRECT,
+             "same site/reason as `fuel_core::lazy_latent_cache::LatentCache` above "
+             "-- two distinct call sites in decode_state_spec.rs (module doc + a "
+             "function doc comment), same cross-crate under --no-deps cause."),
+    "fuel_core::inference_context::LatentKvCache::with_capacity": (CORRECT,
+             "same cross-crate under --no-deps cause as "
+             "`fuel_core::lazy_latent_cache::LatentCache` above; "
+             "fuel-inference/src/decode_state_spec.rs module doc."),
+    "fuel_core::kv_block_pool::KvGeometry": (CORRECT,
+             "same cross-crate under --no-deps cause as "
+             "`fuel_core::lazy_latent_cache::LatentCache` above; two distinct call "
+             "sites in decode_state_spec.rs (module doc + a function doc comment)."),
+
     # ---- NOT-A-LINK: notation rustdoc misreads. Fix with a code span. ----
     "Layout::contiguous(shape)": (NOT_A_LINK,
              "a CALL EXPRESSION, not a path -- the trailing `(shape)` makes it notation. "

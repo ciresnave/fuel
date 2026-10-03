@@ -94,7 +94,12 @@ pub mod vulkan_backend;
 // `fuel_core::judge::cached()` / `populate_dispatch_table()` /
 // `invalidate()` (re-exported at the judge module's top level).
 pub mod decode_shape;
-pub mod decode_state_spec;
+// `decode_state_spec` moved to `fuel-inference` (fuel-core dissolution, plan
+// item 9): zero Tensor/Device coupling, and its only consumer
+// (`fuel_inference::multi_session`) is already in that crate. No shim —
+// `multi_session.rs` was the sole caller of `fuel_core::decode_state_spec`
+// (and `fuel-core` cannot depend on `fuel-inference` to forward one: that
+// crate depends on this one via the `fuel` facade).
 pub mod factories;
 pub mod inference_context;
 pub mod kv_block_pool;

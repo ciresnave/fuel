@@ -237,7 +237,9 @@ impl DataConsts {
 /// The model-scalar geometry the shared build path needs.
 ///
 /// Deliberately **not** a description of the KV state — that is
-/// [`crate::decode_state_spec`]'s job, and conflating the two is the GAP-166
+/// `fuel_inference::decode_state_spec`'s job (moved there in the fuel-core
+/// dissolution; not an intra-doc link, since fuel-core cannot depend on
+/// fuel-inference to resolve one), and conflating the two is the GAP-166
 /// mistake. These are the dimensions of the *graph* this path builds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DecodeDims {
