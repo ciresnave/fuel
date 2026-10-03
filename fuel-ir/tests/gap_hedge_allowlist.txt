@@ -8,7 +8,6 @@ fuel-core/src/judge/mod.rs	// naive CPU SDPA is ~Hq·k_len·D ≈ 8.4M MACs per 
 fuel-core/src/judge/mod.rs	//! Op kinds *not yet profiled* (build_input_graph would `panic!` if
 fuel-core/src/judge/mod.rs	/// of one (op, size) cell. Returns `None` for ops not yet supported.
 fuel-core/src/judge/mod.rs	/// op family is not yet wired into the direct-call path.
-fuel-core/src/kv_block_pool.rs	/// a guess) — reserved, not yet built, per "establish it belongs before
 fuel-core/src/kv_block_pool_device.rs	/// f32-only for now (the CPU-gated increment); the pool's real dtype is
 fuel-core/src/kv_block_pool_device.rs	/// way. f32-only for now (see [`Self::write_block`]).
 fuel-core/src/lazy.rs	/// Allocate a data-determined [`fuel_ir::SymId`] not yet used by any

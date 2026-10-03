@@ -1,0 +1,11 @@
+[package]
+    categories.workspace = true
+    description          = "Paged KV-cache block allocator for the fuel ML framework — leaf crate, zero fuel-internal dependencies"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-kv-pool"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
