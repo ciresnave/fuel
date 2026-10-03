@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Per-layer decode-state description (GAP-029 / GAP-166).
 //!
+//! Moved from `fuel-core::decode_state_spec` (fuel-core dissolution, plan
+//! item 9): zero coupling to `Tensor`/`Device`, and its sole consumer
+//! (`crate::multi_session`) is already in this crate.
+//!
 //! # Why this exists
 //!
 //! The decode seam used to describe a model's cache with three scalars —
@@ -9,7 +13,7 @@
 //! state, and that the state is per-head K/V at all.
 //!
 //! Both are false on `main` today. `DeepSeek2Model` decodes through a
-//! [`crate::lazy_latent_cache::LatentCache`] whose per-layer state is a
+//! [`fuel_core::lazy_latent_cache::LatentCache`] whose per-layer state is a
 //! compressed latent trailing `[kv_lora_rank]` plus a post-RoPE `k_pe` trailing
 //! `[qk_rope_head_dim]` — no per-head K/V anywhere. The hazard is not that such
 //! a model *cannot* implement the scalar vocabulary; it is that it **can, and
@@ -21,8 +25,8 @@
 //! # The vocabulary is not invented here
 //!
 //! Fuel already generalized this, twice, and the decode seam simply did not
-//! adopt it: [`crate::lazy_latent_cache::LatentCache::new`] and
-//! [`crate::inference_context::LatentKvCache::with_capacity`] both take
+//! adopt it: [`fuel_core::lazy_latent_cache::LatentCache::new`] and
+//! [`fuel_core::inference_context::LatentKvCache::with_capacity`] both take
 //! `slot_trailing: Vec<Vec<usize>>` — a per-slot trailing shape. In that
 //! vocabulary a standard KV layer is simply the 2-slot case:
 //!
@@ -50,7 +54,7 @@
 //! # Scope boundary — read this before assuming the assert is gone
 //!
 //! This module changes the vocabulary the **decode trait** speaks. It does
-//! **not** change [`crate::kv_block_pool::KvGeometry`], whose own documentation
+//! **not** change [`fuel_core::kv_block_pool::KvGeometry`], whose own documentation
 //! commits to the vLLM shared-block-table model ("a physical block addresses the
 //! SAME slot in *every* layer's K/V buffer"), nor `ModelDims` in `fuel-inference`.
 //! [`LayerStateSpec::collapse_uniform`] exists precisely to hand those consumers
@@ -60,14 +64,14 @@
 //! than no fix**, because it consumes the attention that would have caught it.
 //! The allocator-side assumption is tracked separately; nothing here removes it.
 
-use crate::{Error, Result};
+use fuel_ir::{Error, Result};
 
 /// One per-token state buffer a layer appends to during decode.
 ///
 /// The trailing shape is the per-token extent: a standard K buffer is
 /// `[n_kv_heads, head_dim]`, an MLA compressed latent is `[kv_lora_rank]`, and
 /// an empty trailing is a legal per-token scalar slot (matching
-/// [`crate::lazy_latent_cache::LatentCache::new`]'s documented contract).
+/// [`fuel_core::lazy_latent_cache::LatentCache::new`]'s documented contract).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateSlot {
     /// Per-token trailing shape, excluding the sequence axis.
@@ -140,7 +144,7 @@ impl LayerStateSpec {
     }
 
     /// Collapse a per-layer spec list into the single `(n_kv_heads, head_dim)`
-    /// pair today's `ModelDims` / [`crate::kv_block_pool::KvGeometry`] consumers
+    /// pair today's `ModelDims` / [`fuel_core::kv_block_pool::KvGeometry`] consumers
     /// require.
     ///
     /// **This helper is the one place the old assert is still made, so it makes
