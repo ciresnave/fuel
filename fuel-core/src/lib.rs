@@ -74,14 +74,11 @@
 #![allow(clippy::identity_op)]
 
 pub mod backend;
-pub mod cpu_backend;
 pub mod cuda_backend;
 mod device;
 mod dtype;
-pub mod dyn_backend;
 pub mod error;
 pub mod hf_config;
-pub mod layout;
 pub mod lazy;
 pub mod lazy_latent_cache;
 // `seq_bucketing` removed in Phase 6d: paged attention via
@@ -126,9 +123,6 @@ pub use fuel_hardware::transfer_cost;
 pub mod nf4;
 pub mod quantized;
 pub mod safetensors;
-pub mod shape;
-mod storage;
-mod strided_index;
 pub mod test_utils;
 pub mod train;
 pub mod utils;
@@ -136,14 +130,36 @@ pub mod utils;
 #[cfg(feature = "cudnn")]
 pub use cuda_backend::cudnn;
 
-pub use cpu_backend::{CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
+// `cpu_backend/mod.rs` deleted (fuel-core dissolution, Part 1 shims): zero
+// consumers via fuel_core::cpu_backend::/fuel::cpu_backend:: (module path)
+// or the root re-export below, anywhere in this repo or across 5 sibling
+// repos -- the module's own doc comment claimed fuel-nn called `unary_map`
+// through it; that claim was stale, not current. `Map1`/`Map1Any`/`Map2`/
+// `Map2InPlace`/`Map2U8`/`binary_map`/`binary_map_vec`/`unary_map`/
+// `unary_map_vec` were never re-exported at crate root and had zero
+// consumers at any path, so they are not replaced by anything. The 4 root
+// types ARE re-exported directly from fuel_ir below (also zero measured
+// consumers, kept anyway for API-surface stability).
 pub use device::{Device, DeviceLocation, NdArray};
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use error::{Context, Error, Result};
-pub use layout::Layout;
-pub use shape::{D, Shape};
-pub use storage::Storage;
-pub use strided_index::{StridedBlocks, StridedIndex};
+// `layout.rs`/`storage.rs`/`strided_index.rs`/`dyn_backend.rs`/`shape.rs`/
+// `cpu_backend/mod.rs` all deleted (fuel-core dissolution, Part 1 shims):
+// zero consumers via fuel_core::<module>::*, fuel::<module>::*, or the root
+// re-export below, anywhere in this repo or across 5 sibling repos
+// (fresh-fetched, checked module-path + root-qualified + grouped-import
+// forms, positive-controlled). shape.rs's 2 tests (stride/test_from_tuple)
+// are byte-identical duplicates of tests already in fuel_ir/src/shape.rs;
+// cpu_backend/mod.rs's own doc comment claiming a fuel-nn consumer was
+// stale. Root re-exports inlined directly from their real homes so
+// crate::Layout/fuel_core::Shape/fuel::StridedIndex/fuel::CpuStorage (etc.)
+// are unchanged for the one internal consumer (device.rs) that used a
+// module path.
+pub use fuel_backend_contract::Storage;
+pub use fuel_ir::layout::Layout;
+pub use fuel_ir::shape::{D, Shape};
+pub use fuel_ir::strided_index::{StridedBlocks, StridedIndex};
+pub use fuel_ir::{CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 
 // Eager `Tensor` is the runtime data type the executor materializes into.
 // New user code should use [`lazy::Tensor`] — the graph builder — and
