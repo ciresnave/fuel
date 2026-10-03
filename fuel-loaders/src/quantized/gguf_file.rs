@@ -218,8 +218,8 @@ impl Content {
         // I8/I16/I32, non-negative); MLMF's `GgufMetadata::alignment()`
         // accepts ONLY U32 and silently falls back to its own default (32)
         // for every other type or an invalid U32 -- a file declaring the
-        // alignment as, say, `I32(64)` would make `read` and a naive `open`
-        // compute DIFFERENT `tensor_data_offset`s with no error at all.
+        // alignment as, say, `I32(64)` would make `read` and an unguarded
+        // `open` compute DIFFERENT `tensor_data_offset`s with no error at all.
         // Resolve it fuel's way from the metadata just decoded above, and
         // REFUSE rather than silently trust `tensors.data_start()` (which
         // was already computed with MLMF's narrower rule) if the two
