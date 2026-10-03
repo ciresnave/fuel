@@ -130,7 +130,6 @@ pub use fuel_hardware::transfer_cost;
 pub mod nf4;
 pub mod quantized;
 pub mod safetensors;
-pub mod shape;
 mod storage;
 mod strided_index;
 pub mod test_utils;
@@ -145,7 +144,11 @@ pub use device::{Device, DeviceLocation, NdArray};
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use error::{Context, Error, Result};
 pub use layout::Layout;
-pub use shape::{D, Shape};
+// `shape.rs` deleted (fuel-core dissolution, Part 1 shims): pure re-export
+// (`pub use fuel_ir::shape::*;`), zero module-path consumers anywhere, and
+// its 2 tests (stride/test_from_tuple) are byte-identical duplicates of
+// tests already in fuel_ir/src/shape.rs. Root re-export inlined directly.
+pub use fuel_ir::shape::{D, Shape};
 pub use storage::Storage;
 pub use strided_index::{StridedBlocks, StridedIndex};
 
