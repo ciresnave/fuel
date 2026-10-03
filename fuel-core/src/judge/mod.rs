@@ -137,9 +137,14 @@
 //! criteria without re-profiling.
 
 pub mod cache;
-pub mod oracle;
 pub use cache::*;
-pub use oracle::ProfileJudgeOracle;
+// `oracle` moved to `fuel_dispatch::ranker::profile_oracle` (fuel-core
+// dissolution, plan item 8) — it had zero coupling to this module's
+// `Tensor`/`Device`-constructing profiling code, only to `fuel-dispatch`'s
+// own `ranker::judge` types. Re-exported here so `crate::judge::
+// ProfileJudgeOracle` / `fuel_core::judge::ProfileJudgeOracle` callers
+// (this module's own tests, `cache.rs`) are unchanged.
+pub use fuel_dispatch::ranker::profile_oracle::ProfileJudgeOracle;
 
 use crate::probe::ProbeReport;
 use fuel_correctness_fixtures::{
@@ -163,8 +168,13 @@ pub use fuel_ir::dispatch::{
     OpKind, PROFILE_REPORT_VERSION, ProfileEntry, ProfileReport, SizeClass,
 };
 
-/// Default filename for the persisted profile report.
-pub const PROFILE_REPORT_FILENAME: &str = "judge.json";
+// `PROFILE_REPORT_FILENAME` + `default_report_path` moved to
+// `fuel_dispatch::judge_report_path` (fuel-core dissolution, plan item 8) —
+// pure path-joining logic, zero coupling to this module's `Tensor`/`Device`
+// profiling code. Re-exported below so `crate::judge::PROFILE_REPORT_FILENAME`
+// / `crate::judge::default_report_path` callers (`cache.rs`, `scheduling.rs`,
+// and this module's own tests) are unchanged.
+pub use fuel_dispatch::judge_report_path::{PROFILE_REPORT_FILENAME, default_report_path};
 
 /// A synthetic device identity for fixtures, stamped with the given
 /// `backend` so `ProfileEntry::device.backend` agrees with the entry's
@@ -339,13 +349,6 @@ const DECODE_SCORE_CAP_ELEMS: usize = DECODE_HEADS * DECODE_KLEN_CAP;
 /// QKᵀ/softmax/PV primitives are already covered by slices 2/2.5 at the
 /// same decode shapes).
 const DECODE_KV_HEADS: usize = 4;
-
-pub fn default_report_path() -> Option<std::path::PathBuf> {
-    crate::probe::default_report_path().and_then(|p| {
-        p.parent()
-            .map(|parent| parent.join(PROFILE_REPORT_FILENAME))
-    })
-}
 
 /// How many measurement iterations per (op, dtype, size, backend)
 /// cell. Median of this many runs is recorded.
