@@ -10,7 +10,7 @@
 //! # One-call API
 //!
 //! ```no_run
-//! use fuel_core::scheduling::{prepare_dispatch_table, ScheduleOptions};
+//! use fuel_tensor::scheduling::{prepare_dispatch_table, ScheduleOptions};
 //! let (table, _report) = prepare_dispatch_table(ScheduleOptions::default())
 //!     .expect("prepare_dispatch_table");
 //! // `table` is now queryable with `.pick(op, dtype, size, criterion)`.

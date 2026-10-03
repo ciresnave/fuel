@@ -210,7 +210,7 @@ const LEDGER: &[Row] = &[
     Row {
         clause: "KISS-OPS-6.15-0001",
         disposition: Obligation,
-        test: Some("fuel-core/src/lazy.rs::fmax_fmin_ieee_suppress_nan_where_prop_propagates"),
+        test: Some("fuel-tensor/src/lazy.rs::fmax_fmin_ieee_suppress_nan_where_prop_propagates"),
         reason: "The four minmax ops must not be merged/aliased/substituted. Fuel has the \
                  NaN-PROPAGATING pair natively (Maximum/Minimum, torch parity) and RESOLVES the \
                  NaN-SUPPRESSING pair (fmax_ieee/fmin_ieee) through KISS's §6.13 decomposition; \
@@ -229,7 +229,9 @@ const LEDGER: &[Row] = &[
     Row {
         clause: "KISS-OPS-6.15-0003",
         disposition: Obligation,
-        test: Some("fuel-core/src/lazy.rs::rem_trunc_diverges_from_floored_rem_on_opposite_signs"),
+        test: Some(
+            "fuel-tensor/src/lazy.rs::rem_trunc_diverges_from_floored_rem_on_opposite_signs",
+        ),
         reason: "rem_floor and rem_trunc must not be merged. Fuel has floored `rem` natively \
                  and RESOLVES rem_trunc through KISS's §6.13 decomposition `a - trunc(a/b)*b`; \
                  the named test pins the sign-of-dividend divergence from floored rem (GAP-048).",
