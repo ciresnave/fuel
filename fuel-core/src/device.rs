@@ -7,8 +7,8 @@
 //! assert!(dev.is_cpu());
 //! assert_eq!(dev.location(), fuel_core::DeviceLocation::Cpu);
 //! ```
-use crate::dyn_backend::DynBackendDevice;
 use crate::{DType, HostBuffer, Result, Shape, Storage, WithDType};
+use fuel_backend_contract::dyn_backend::DynBackendDevice;
 use fuel_cpu_backend::dyn_impl::CpuBackendDevice;
 use std::sync::Arc;
 
