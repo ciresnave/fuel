@@ -522,6 +522,14 @@ impl ModelDims {
     }
 }
 
+/// Normalises an empty EOS-id list to `None`, so "no EOS configured" has
+/// exactly one representation regardless of how a caller spelled it —
+/// `Some(vec![])` and `None` would otherwise both mean "never stop on EOS"
+/// but compare unequal and read differently at every call site.
+fn normalize_eos_ids(eos_ids: Option<Vec<u32>>) -> Option<Vec<u32>> {
+    eos_ids.filter(|ids| !ids.is_empty())
+}
+
 /// One decode session's mutable state — a faithful bundle of the four
 /// per-generation loop locals from
 /// [`fuel_model_llama::LlamaModel::generate_streaming_with_kv_context`]
@@ -537,7 +545,11 @@ pub struct SessionState {
     pub(crate) tokens: Vec<u32>,
     pub(crate) rng_state: u64,
     pub(crate) strategy: SamplingStrategy,
-    pub(crate) eos_id: Option<u32>,
+    /// EOS token ids — stopping on ANY of them (LLaMA-3-style multi-EOS
+    /// checkpoints declare several). `None` after construction means
+    /// normalized-empty too (see [`normalize_eos_ids`]), so there is one
+    /// representation of "no EOS".
+    pub(crate) eos_ids: Option<Vec<u32>>,
     /// `max_new_tokens` budget left — decremented once per sampled token.
     pub(crate) remaining: usize,
     pub(crate) phase: SessionPhase,
@@ -561,7 +573,7 @@ impl SessionState {
         dims: ModelDims,
         prompt: &[u32],
         strategy: SamplingStrategy,
-        eos_id: Option<u32>,
+        eos_ids: Option<Vec<u32>>,
         max_new: usize,
         device: &Device,
         dtype: DType,
@@ -597,7 +609,7 @@ impl SessionState {
             tokens: prompt.to_vec(),
             rng_state,
             strategy,
-            eos_id,
+            eos_ids: normalize_eos_ids(eos_ids),
             remaining: max_new,
             phase: SessionPhase::Prefill,
             last_logits: None,
@@ -645,7 +657,9 @@ impl SessionState {
         // Two distinct reasons to stop -- hit EOS, or ran out of budget --
         // but `Finished` is not reason-parameterised, so the distinction was
         // never carried by the value. Merging loses nothing the type holds.
-        if self.eos_id == Some(next) || self.remaining == 0 {
+        // Stops on ANY configured EOS id (multi-EOS checkpoints, e.g.
+        // LLaMA-3-instruct, declare several).
+        if self.eos_ids.as_ref().is_some_and(|ids| ids.contains(&next)) || self.remaining == 0 {
             self.phase = SessionPhase::Finished;
         } else {
             self.phase = SessionPhase::Decode;
@@ -897,7 +911,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         &mut self,
         prompt: &[u32],
         strategy: SamplingStrategy,
-        eos_id: Option<u32>,
+        eos_ids: Option<Vec<u32>>,
         max_new: usize,
     ) -> fuel::Result<SessionId> {
         // C-1 gate: does this session's KV reservation fit? Check before any
@@ -923,7 +937,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
             dims,
             prompt,
             strategy,
-            eos_id,
+            eos_ids,
             max_new,
             &self.device,
             self.dtype,
@@ -1288,7 +1302,9 @@ struct PagedSession {
     new_tokens: Vec<u32>,
     rng_state: u64,
     strategy: SamplingStrategy,
-    eos_id: Option<u32>,
+    /// EOS token ids — stops on ANY of them, normalized via
+    /// `normalize_eos_ids` (same contract as `SessionState::eos_ids`).
+    eos_ids: Option<Vec<u32>>,
     remaining: usize,
     phase: SessionPhase,
     last_logits: Option<Vec<f32>>,
@@ -1516,7 +1532,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         &mut self,
         prompt: &[u32],
         strategy: SamplingStrategy,
-        eos_id: Option<u32>,
+        eos_ids: Option<Vec<u32>>,
         max_new: usize,
     ) -> fuel::Result<SessionId> {
         if prompt.is_empty() {
@@ -1547,7 +1563,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             new_tokens: Vec::new(),
             rng_state,
             strategy,
-            eos_id,
+            eos_ids: normalize_eos_ids(eos_ids),
             remaining: max_new,
             phase: SessionPhase::Prefill,
             last_logits: None,
@@ -1624,7 +1640,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         prefix: PrefixId,
         prompt: &[u32],
         strategy: SamplingStrategy,
-        eos_id: Option<u32>,
+        eos_ids: Option<Vec<u32>>,
         max_new: usize,
     ) -> fuel::Result<SessionId> {
         if prompt.is_empty() {
@@ -1676,7 +1692,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             new_tokens: Vec::new(),
             rng_state,
             strategy,
-            eos_id,
+            eos_ids: normalize_eos_ids(eos_ids),
             remaining: max_new,
             phase: SessionPhase::Prefill,
             last_logits: None,
@@ -1902,7 +1918,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         s.remaining = s.remaining.saturating_sub(1);
         let id = s.id;
         report.advanced.push(id);
-        if s.eos_id == Some(next) || s.remaining == 0 {
+        if s.eos_ids.as_ref().is_some_and(|ids| ids.contains(&next)) || s.remaining == 0 {
             s.phase = SessionPhase::Finished;
             report.finished.push(id);
         } else {
@@ -2553,7 +2569,7 @@ mod tests {
             dims(&cfg),
             &[1],
             SamplingStrategy::Greedy,
-            Some(3),
+            Some(vec![3]),
             10,
             &Device::cpu(),
             DType::F32,
@@ -2562,6 +2578,100 @@ mod tests {
         s.last_logits = Some(vec![0.0, 0.0, 0.0, 0.9, 0.0]); // argmax 3 == eos
         assert_eq!(s.sample_and_append().unwrap(), Some(3));
         assert_eq!(s.phase, SessionPhase::Finished);
+    }
+
+    /// Multi-EOS (board #109 follow-up): a session configured with several
+    /// EOS ids stops when the sampled token is the LAST one listed, not just
+    /// the first — `contains`, not a positional match.
+    #[test]
+    fn sample_and_append_multi_eos_stops_on_last_listed_id() {
+        let cfg = tiny_cfg();
+        let mut s = SessionState::new(
+            SessionId(0),
+            dims(&cfg),
+            &[1],
+            SamplingStrategy::Greedy,
+            Some(vec![5, 7, 3]),
+            10,
+            &Device::cpu(),
+            DType::F32,
+        )
+        .unwrap();
+        s.last_logits = Some(vec![0.0, 0.0, 0.0, 0.9, 0.0]); // argmax 3 -- last in the list
+        assert_eq!(s.sample_and_append().unwrap(), Some(3));
+        assert_eq!(s.phase, SessionPhase::Finished);
+    }
+
+    /// A duplicate id in the EOS list is inert, not double-counted or
+    /// otherwise special -- stopping still works via plain containment.
+    #[test]
+    fn sample_and_append_multi_eos_tolerates_duplicate_id() {
+        let cfg = tiny_cfg();
+        let mut s = SessionState::new(
+            SessionId(0),
+            dims(&cfg),
+            &[1],
+            SamplingStrategy::Greedy,
+            Some(vec![3, 3, 5]),
+            10,
+            &Device::cpu(),
+            DType::F32,
+        )
+        .unwrap();
+        s.last_logits = Some(vec![0.0, 0.0, 0.0, 0.9, 0.0]); // argmax 3
+        assert_eq!(s.sample_and_append().unwrap(), Some(3));
+        assert_eq!(s.phase, SessionPhase::Finished);
+    }
+
+    /// Sabotage: a token NOT in the configured EOS list must not stop the
+    /// session -- only budget exhaustion should, and the budget here is wide
+    /// open. Guards against a contains-check degenerating into "any EOS
+    /// configured stops on anything".
+    #[test]
+    fn sample_and_append_multi_eos_does_not_stop_on_unlisted_id() {
+        let cfg = tiny_cfg();
+        let mut s = SessionState::new(
+            SessionId(0),
+            dims(&cfg),
+            &[1],
+            SamplingStrategy::Greedy,
+            Some(vec![0, 1, 2]), // argmax below (index 3) is NOT in this list
+            10,
+            &Device::cpu(),
+            DType::F32,
+        )
+        .unwrap();
+        s.last_logits = Some(vec![0.0, 0.0, 0.0, 0.9, 0.0]); // argmax 3
+        assert_eq!(s.sample_and_append().unwrap(), Some(3));
+        assert_eq!(
+            s.phase,
+            SessionPhase::Decode,
+            "token 3 is not in the configured EOS list [0, 1, 2] -- must not stop"
+        );
+    }
+
+    /// `Some(vec![])` and `None` must be ONE representation of "no EOS" --
+    /// normalized at construction, so a caller that happens to pass an empty
+    /// Vec (e.g. a model with no declared EOS tokens) behaves identically to
+    /// one that passes `None`.
+    #[test]
+    fn empty_eos_list_normalizes_to_none() {
+        let cfg = tiny_cfg();
+        let s = SessionState::new(
+            SessionId(0),
+            dims(&cfg),
+            &[1, 2, 3],
+            SamplingStrategy::Greedy,
+            Some(vec![]),
+            5,
+            &Device::cpu(),
+            DType::F32,
+        )
+        .unwrap();
+        assert_eq!(
+            s.eos_ids, None,
+            "Some(vec![]) must normalize to None, the same as passing None directly"
+        );
     }
 
     #[test]
@@ -2842,7 +2952,7 @@ mod tests {
 
         let mut s =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
-        s.add_session(&prompt, SamplingStrategy::Greedy, Some(first_gen), 5)
+        s.add_session(&prompt, SamplingStrategy::Greedy, Some(vec![first_gen]), 5)
             .unwrap();
         let out = s.run_to_completion()[0].1.clone();
         assert_eq!(
@@ -4224,7 +4334,7 @@ mod tests {
             .iter()
             .map(|(p, eos, mn)| {
                 sched
-                    .add_session(p, SamplingStrategy::Greedy, *eos, *mn)
+                    .add_session(p, SamplingStrategy::Greedy, eos.map(|e| vec![e]), *mn)
                     .unwrap()
             })
             .collect();
