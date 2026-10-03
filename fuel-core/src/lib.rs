@@ -76,7 +76,6 @@
 #[cfg(feature = "accelerate")]
 mod accelerate;
 pub mod backend;
-pub mod cpu_backend;
 pub mod cuda_backend;
 mod device;
 mod dtype;
@@ -140,10 +139,20 @@ pub mod utils;
 #[cfg(feature = "cudnn")]
 pub use cuda_backend::cudnn;
 
-pub use cpu_backend::{CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
+// `cpu_backend/mod.rs` deleted (fuel-core dissolution, Part 1 shims): zero
+// consumers via fuel_core::cpu_backend::/fuel::cpu_backend:: (module path)
+// or the root re-export below, anywhere in this repo or across 5 sibling
+// repos -- the module's own doc comment claimed fuel-nn called `unary_map`
+// through it; that claim was stale, not current. `Map1`/`Map1Any`/`Map2`/
+// `Map2InPlace`/`Map2U8`/`binary_map`/`binary_map_vec`/`unary_map`/
+// `unary_map_vec` were never re-exported at crate root and had zero
+// consumers at any path, so they are not replaced by anything. The 4 root
+// types ARE re-exported directly from fuel_ir below (also zero measured
+// consumers, kept anyway for API-surface stability).
 pub use device::{Device, DeviceLocation, NdArray};
 pub use dtype::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use error::{Context, Error, Result};
+pub use fuel_ir::{CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 pub use layout::Layout;
 pub use shape::{D, Shape};
 pub use storage::Storage;
