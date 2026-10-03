@@ -53,6 +53,11 @@ pub fn metal_is_available() -> bool {
 
 #[cfg(test)]
 mod tests {
+    // Only brought in by a test below; under default features (none of
+    // accelerate/mkl/metal on) every test in this module is cfg'd out, and
+    // an unconditional `use super::*;` would then be unused — the clippy
+    // failure this comment exists to explain if it recurs.
+    #[cfg(any(feature = "accelerate", feature = "mkl", feature = "metal"))]
     use super::*;
 
     // Positive-control tripwires for the feature landmine this move surfaced
