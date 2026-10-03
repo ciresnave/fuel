@@ -1809,6 +1809,7 @@ dependencies = [
  "fuel-graph",
  "fuel-hardware",
  "fuel-ir",
+ "fuel-kv-pool",
  "fuel-loaders",
  "fuel-memory",
  "fuel-metal-backend",
@@ -2143,6 +2144,10 @@ dependencies = [
  "kiss-ops-vocab",
  "kiss-ref-core",
 ]
+
+[[package]]
+name = "fuel-kv-pool"
+version = "0.12.9"
 
 [[package]]
 name = "fuel-lazy-examples"
