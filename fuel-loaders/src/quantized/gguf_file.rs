@@ -110,6 +110,46 @@ impl Content {
     /// `Value::Bytes` variant (adding a variant to the non-`#[non_exhaustive]`
     /// `Value` enum breaks exhaustive matches elsewhere — a second-number
     /// change, not a patch, so it is deliberately not bundled here).
+    /// # Known limitations (adversarial review, triaged, not all fixed here)
+    ///
+    /// - **Quadratic metadata walk (finding B).** `MetadataSource` exposes
+    ///   only `keys()` + `get(key)`, no single-pass iterator over entries;
+    ///   for a file with N metadata keys this loop is O(N) `get` calls, each
+    ///   of which MLMF documents as re-walking its own index. A real GGUF's
+    ///   N is small (tens to low hundreds of keys) so this is not a
+    ///   practical DoS on legitimate files, but an adversarial file could
+    ///   inflate N. Not fixable from this adapter alone -- it needs an
+    ///   `entries()`-style single-pass API on `MetadataSource` itself.
+    ///   Tracked as a future ask to the mlmf lane, not filed as a fuel GAP
+    ///   (the defect, if any, is upstream).
+    /// - **Array decode doubles peak momentarily (finding 6b).** A huge
+    ///   `MetaValue::Array` already costs the same to decode via
+    ///   `Content::read`; `meta_value_to_fuel_value`'s `.collect()` on the
+    ///   `?`-propagating iterator holds the source items and the fuel
+    ///   `Vec<Value>` live at once, a transient ~2x on that one key's array,
+    ///   same shape as `Content::read`'s existing risk, not a new one this
+    ///   constructor introduces.
+    /// - **Concurrent truncation of the mapped file (finding 6c).** mmap's
+    ///   inherent risk: if another process truncates `path` after `open`
+    ///   maps it, a later read through the mapping can raise `SIGBUS`
+    ///   (POSIX) or an access violation (Windows), inherent to any
+    ///   mmap-backed reader, not specific to this adapter.
+    ///   `mlmf_source_file::FileSource::open_read` (copy-based, TOCTOU-immune)
+    ///   exists as an untaken mitigation if this ever needs hardening.
+    /// - **Metadata parity, not correctness, differences vs. `Content::read`:**
+    ///   duplicate keys keep MLMF's (first-wins) resolution rather than
+    ///   `read`'s (last-wins) when a malformed file declares the same key
+    ///   twice; `Value::String` from `open` does not strip a trailing NUL
+    ///   the way `fuel_formats::gguf::read_string` does for `read` (`"abc\0"`
+    ///   stays `"abc\0"` via `open`, becomes `"abc"` via `read`); a GGUF
+    ///   `Bool` byte value in `2..=255` is accepted by MLMF (any nonzero
+    ///   byte is `true`) where `read`'s own decoder may reject it; and a
+    ///   non-UTF-8 metadata *key* or tensor *name* (as opposed to a
+    ///   *string value*, which is the `MetaValue::Bytes` case this
+    ///   constructor already handles) is rejected by MLMF where `read`
+    ///   tolerates it via lossy decoding. All four are pre-existing,
+    ///   malformed-input-only edge cases, not observed on any real model
+    ///   file; none is fixed here.
     pub fn open(path: &Path) -> Result<Self> {
         use mlmf_core::{ByteSource as _, MetadataSource as _, TensorContainer as _};
 
@@ -143,10 +183,67 @@ impl Content {
         // (its own doc: "a caller who wants the whole array should call
         // get once and pay for it once") -- the same cost Content::read
         // already pays for every key, not a new one.
+        //
+        // `meta.get(key)` returning `None` for a `key` that came from this
+        // same `meta`'s own `keys()` is not reachable today (MLMF's one
+        // "unreadable" entry always pairs with `index_complete() == false`,
+        // already refused above) -- but that invariant lives in MLMF's
+        // internals, not in the `MetadataSource` trait contract, so a typed
+        // Err here (not `.expect`) is what keeps a future MLMF release from
+        // turning this into a panic (adversarial review finding #7).
         let mut metadata = HashMap::new();
         for key in meta.keys() {
-            let mv = meta.get(key).expect("key came from this meta's own keys()");
-            metadata.insert(key.to_string(), meta_value_to_fuel_value(mv));
+            let mv = meta.get(key).ok_or_else(|| {
+                Error::Msg(format!(
+                    "gguf: metadata key {key:?} came from this file's own key \
+                     list but has no decodable value -- an index/value \
+                     inconsistency in the underlying parser"
+                ))
+                .with_path(path)
+            })?;
+            metadata.insert(
+                key.to_string(),
+                meta_value_to_fuel_value(mv).map_err(|e| {
+                    Error::Msg(format!("gguf: metadata key {key:?}: {e}")).with_path(path)
+                })?,
+            );
+        }
+
+        // Finding A (adversarial review): `fuel_formats::gguf::Content::read`
+        // resolves `general.alignment` from SIX value-type arms (U8/U16/U32/
+        // I8/I16/I32, non-negative); MLMF's `GgufMetadata::alignment()`
+        // accepts ONLY U32 and silently falls back to its own default (32)
+        // for every other type or an invalid U32 -- a file declaring the
+        // alignment as, say, `I32(64)` would make `read` and a naive `open`
+        // compute DIFFERENT `tensor_data_offset`s with no error at all.
+        // Resolve it fuel's way from the metadata just decoded above, and
+        // REFUSE rather than silently trust `tensors.data_start()` (which
+        // was already computed with MLMF's narrower rule) if the two
+        // disagree -- a typed Err is always safe; a silently wrong byte
+        // offset into the tensor-data region is not.
+        let fuel_alignment = match metadata.get("general.alignment") {
+            Some(Value::U8(v)) => *v as u64,
+            Some(Value::U16(v)) => *v as u64,
+            Some(Value::U32(v)) => *v as u64,
+            Some(Value::I8(v)) if *v >= 0 => *v as u64,
+            Some(Value::I16(v)) if *v >= 0 => *v as u64,
+            Some(Value::I32(v)) if *v >= 0 => *v as u64,
+            _ => DEFAULT_ALIGNMENT,
+        };
+        if !fuel_alignment.is_power_of_two() {
+            return Err(Error::Msg(format!(
+                "gguf: general.alignment must be a non-zero power of two, got {fuel_alignment}"
+            ))
+            .with_path(path));
+        }
+        if fuel_alignment != meta.alignment() {
+            return Err(Error::Msg(format!(
+                "gguf: general.alignment resolves to {fuel_alignment} under fuel's rules \
+                 (U8/U16/U32/I8/I16/I32) but to {} under MLMF's (U32 only) -- refusing rather \
+                 than risk a silently wrong tensor_data_offset",
+                meta.alignment()
+            ))
+            .with_path(path));
         }
 
         // A tensor MLMF itself could not resolve at all is OMITTED from
@@ -230,11 +327,21 @@ impl Content {
 /// `MetaValue`'s 14 variants (13 GGUF value kinds + `Bytes`) to fuel's
 /// `Value`'s 13 -- every GGUF-declarable kind maps directly except `Bytes`,
 /// which has no fuel equivalent. See [`Content::open`]'s doc for why that
-/// one arm is lossy on purpose, pinned by a test, and not silently
-/// defaulted.
-fn meta_value_to_fuel_value(mv: &mlmf_core::MetaValue) -> Value {
+/// one arm is lossy on purpose and pinned by a test.
+///
+/// Returns `Err` for anything outside the 14 variants known today.
+/// `MetaValue` is `#[non_exhaustive]` and this crate's own `mlmf-core`
+/// dependency is a caret requirement (`"0.5.8"`), so a semver-compatible
+/// 0.5.x release adding a variant would otherwise hit this function with
+/// zero compile-time warning (adversarial review finding #5: an earlier
+/// version of this match silently returned `Value::String(String::new())`
+/// for that case -- a plausible real value, e.g. an empty `chat_template`,
+/// indistinguishable from the corruption). A typed Err that names the
+/// unhandled variant is the only choice that can't be confused with real
+/// data.
+fn meta_value_to_fuel_value(mv: &mlmf_core::MetaValue) -> std::result::Result<Value, String> {
     use mlmf_core::MetaValue as M;
-    match mv {
+    Ok(match mv {
         M::U8(v) => Value::U8(*v),
         M::I8(v) => Value::I8(*v),
         M::U16(v) => Value::U16(*v),
@@ -247,8 +354,13 @@ fn meta_value_to_fuel_value(mv: &mlmf_core::MetaValue) -> Value {
         M::F64(v) => Value::F64(*v),
         M::Bool(v) => Value::Bool(*v),
         M::String(s) => Value::String(s.clone()),
-        M::Array(items) => Value::Array(items.iter().map(meta_value_to_fuel_value).collect()),
-        // GAP: non-UTF-8 string bytes, preserved verbatim by MLMF (GGUF
+        M::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(meta_value_to_fuel_value)
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        ),
+        // GAP-344: non-UTF-8 string bytes, preserved verbatim by MLMF (GGUF
         // spec Β§9 clause 2.1). fuel has no Value::Bytes; replicate
         // Content::read's own lossy fuel_formats::gguf::read_string
         // behavior exactly, rather than defaulting silently, so both
@@ -256,11 +368,12 @@ fn meta_value_to_fuel_value(mv: &mlmf_core::MetaValue) -> Value {
         // `gguf_open_non_utf8_string_is_lossy_like_read` below; fixing the
         // lossiness (adding Value::Bytes) is its own breaking-wave PR.
         M::Bytes(raw) => Value::String(String::from_utf8_lossy(raw).into_owned()),
-        // MetaValue is #[non_exhaustive]; every variant that exists today
-        // is matched above.
-        #[allow(unreachable_patterns)]
-        _ => Value::String(String::new()),
-    }
+        // MetaValue is #[non_exhaustive] -- every variant that exists in
+        // mlmf-core 0.5.8 is matched above; this arm is reachable only by a
+        // FUTURE mlmf release adding one, and must stay an Err, never a
+        // default (see this function's own doc).
+        other => return Err(format!("unrecognized MetaValue variant: {other:?}")),
+    })
 }
 
 /// The raw ggml wire-format type code for a resolved `TensorDescriptor`'s

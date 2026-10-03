@@ -196,15 +196,11 @@ DISPOSITIONS = {
              "GAP-330's repair read the site -- the harm this table exists to prevent."),
 
     # fuel-core dissolution: gguf_file.rs's MLMF repoint (Content::open).
-    # Both are REAL dependencies of fuel-loaders (fuel_ir is a workspace
-    # path dep, mlmf_core a crates.io dep) -- unresolved only because
-    # --no-deps means rustdoc never builds docs for ANY dependency,
-    # workspace member or not, same cross-crate-under---no-deps cause as
-    # fuel_cuda_backend::CudaDevice above (also a workspace member).
-    "fuel_ir::GgmlDType": (CORRECT,
-             "fuel-loaders/src/quantized/gguf_file.rs's Content::open doc "
-             "comment. fuel_ir is a real workspace dependency of fuel-loaders; "
-             "cross-crate under --no-deps."),
+    # fuel_ir::GgmlDType (the same link, same doc comment) is NOT listed
+    # here: it resolves under --workspace --no-deps (fuel_ir is built as
+    # part of the same invocation, unlike fuel_cuda_backend above, which
+    # is also CI-excluded) -- measured by this gate going from 11 broken
+    # links to 10 the run after this comment's link was added, not assumed.
     "MetaValue::Bytes": (CORRECT,
              "fuel-loaders/src/quantized/gguf_file.rs's Content::open doc "
              "comment. mlmf_core::MetaValue is a real crates.io dependency of "
