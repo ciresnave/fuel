@@ -85,7 +85,7 @@ use fuel_ir::{DeviceLocation, Error, HostBuffer, Layout, Result, SymEnv, probe::
 use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
-use crate::topology::SystemTopology;
+use fuel_dispatch::topology::SystemTopology;
 use fuel_ir::dtype::WithDType;
 
 /// The picker's attribution of a realize root's dispatched kernel:
@@ -815,7 +815,7 @@ fn build_optimized_graph(
     // `options` so the borrow outlives the plan; `hooks()` is `None` (⇒ no
     // hooks threaded, byte-identical plan) unless emission is enabled.
     #[cfg(feature = "telemetry")]
-    let tele_install = crate::telemetry::TelemetryInstall::new(pinned_device);
+    let tele_install = fuel_dispatch::telemetry::judge_sink::TelemetryInstall::new(pinned_device);
     #[cfg(feature = "telemetry")]
     let tele_hooks = tele_install.hooks();
 

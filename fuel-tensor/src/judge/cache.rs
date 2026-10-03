@@ -150,8 +150,8 @@ pub fn populate_dispatch_table() -> Result<()> {
     if cached().is_some() {
         return Ok(());
     }
-    let probe = crate::probe::ProbeReport::probe_all();
-    if let Some(p) = crate::probe::default_report_path() {
+    let probe = fuel_hardware::probe::ProbeReport::probe_all();
+    if let Some(p) = fuel_hardware::probe::default_report_path() {
         if let Some(parent) = p.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -185,7 +185,7 @@ pub fn invalidate() -> Result<()> {
     *slot()
         .write()
         .map_err(|_| fuel_ir::Error::Msg("judge cache lock poisoned".into()))? = None;
-    if let Some(p) = crate::probe::default_report_path() {
+    if let Some(p) = fuel_hardware::probe::default_report_path() {
         let _ = std::fs::remove_file(&p);
     }
     if let Some(p) = super::default_report_path() {
@@ -199,11 +199,11 @@ pub fn invalidate() -> Result<()> {
 /// the current hardware doesn't match what was probed when the
 /// profile was last saved.
 fn try_load_persisted() -> Option<CachedJudge> {
-    let probe_path = crate::probe::default_report_path()?;
-    let prior_probe = crate::probe::ProbeReport::load(&probe_path)
+    let probe_path = fuel_hardware::probe::default_report_path()?;
+    let prior_probe = fuel_hardware::probe::ProbeReport::load(&probe_path)
         .ok()
         .flatten()?;
-    let now_probe = crate::probe::ProbeReport::probe_all();
+    let now_probe = fuel_hardware::probe::ProbeReport::probe_all();
     if now_probe.diff(&prior_probe).needs_rejudge() {
         return None;
     }
