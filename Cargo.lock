@@ -2057,6 +2057,7 @@ dependencies = [
  "fuel-cuda-backend",
  "fuel-ir",
  "fuel-vulkan-backend",
+ "num_cpus",
  "serde",
  "serde_json",
 ]
