@@ -13,6 +13,7 @@
     fuel-cpu-backend    = { workspace = true }
     fuel-cuda-backend   = { workspace = true, optional = true }
     fuel-vulkan-backend = { workspace = true, optional = true }
+    num_cpus            = { workspace = true }
     serde               = { workspace = true }
     serde_json          = { workspace = true }
 
