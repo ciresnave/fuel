@@ -28,7 +28,7 @@ filtered read of this same list.
 - **`fuel-core` removed** (dissolution complete): every module relocated to
   its destination crate; the facade (`fuel`) keeps re-exporting the moved
   paths, but the `fuel-core` crate itself goes away. Board item 9.
-- **`Tensor` moves into a new `fuel-tensor` crate** (mechanical move per
+- ~~**`Tensor` moves into a new `fuel-tensor` crate** (mechanical move per
   CireSnave's ruling on #109; the semantic split, if any, is a later,
   separate decision). Board #109, PR #305 (one PR for the whole
   mutually-referencing cluster: `lazy`/`device`/the 3 GPU bridges/`dtype`'s
@@ -36,8 +36,9 @@ filtered read of this same list.
   `decode_shape`/`lazy_latent_cache`/`test_utils`/`scheduling`/
   `inference_context`/`kv_block_pool_device`/`persistent_decode`/`nf4` —
   a full crate::-reference census found they cannot split into the
-  originally-planned smaller PRs without a dependency cycle).
-- **Two duplicated items, each with a named single-home follow-up, from
+  originally-planned smaller PRs without a dependency cycle).~~ Merged
+  2026-10-03 (`3e3833a0`).
+- ~~**Two duplicated items, each with a named single-home follow-up, from
   PR #305's move:** fuel-tensor carries its own local copy of
   `fuel_core::bail!` (`$crate::Error` resolves to whichever crate invokes
   it, and `fuel-tensor` depending on `fuel-core` for the macro would cycle
@@ -49,7 +50,10 @@ filtered read of this same list.
   candidate: wherever `utils.rs`'s own already-flagged
   accelerate/mkl/metal feature-check functions eventually land (that
   destination is itself still "Final home TBD" per `utils.rs`'s own doc,
-  independent of this move).
+  independent of this move).~~ Merged with #305 (2026-10-03,
+  `3e3833a0`); the two duplicates themselves are NOT yet resolved to a
+  single home — that follow-up is still open and un-ticketed (no GAP row
+  yet), tracked only by this struck bullet until one is filed.
 - **`fuel-kernel-seam::JitRequest` gains `pub target: TargetId` and becomes
   `#[non_exhaustive]`**, with a `JitRequest::new(...)` constructor; baracuda's
   5 construction sites move to `::new(...)` in the same release so they
