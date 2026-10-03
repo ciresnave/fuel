@@ -153,6 +153,7 @@ fuel-aocl-cpu-backend	90	vendor backends
 fuel-mkl-cpu-backend	90	vendor backends
 
 fuel-core	100	aggregate
+fuel-tensor	100	tensor / user-facing handle
 
 fuel-model-core	110	models / libraries
 fuel-model-llama	110	models / libraries

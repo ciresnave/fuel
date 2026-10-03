@@ -2359,6 +2359,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuel-tensor"
+version = "0.12.9"
+
+[[package]]
 name = "fuel-tensor-tools"
 version = "0.12.9"
 dependencies = [

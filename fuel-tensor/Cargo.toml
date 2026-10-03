@@ -1,0 +1,11 @@
+[package]
+    categories.workspace = true
+    description          = "Fuel's user-facing Tensor handle and Device abstraction — the central, near-universal consumer surface of the former fuel-core (board #109; CireSnave: \"Move Tensor into fuel-tensor. We can worry about a semantic split later.\")"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-tensor"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
