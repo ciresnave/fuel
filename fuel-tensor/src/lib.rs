@@ -32,6 +32,16 @@
 //! # Ok(())}
 //! ```
 
+// GAP-229: `clippy::identity_op` fires across fuel-core+fuel-dispatch (and now
+// fuel-tensor, since the flagged sites in judge/mod.rs and lazy.rs moved here)
+// and is a defect in 0 of them — it measures a house idiom, not debt, so it is
+// allowed at the crate root. Carried forward verbatim from fuel-core/src/lib.rs
+// (board #109 move) rather than re-derived, since the measurement and the two
+// intentional classes it documents (DOC-INDEX, DOC-SHAPE) are about the CODE
+// that moved, not about which crate currently compiles it. See fuel-core's own
+// copy of this comment (unaffected by this move) for the full rationale.
+#![allow(clippy::identity_op)]
+
 pub mod cuda_backend;
 pub mod decode_shape;
 pub mod device;
@@ -61,6 +71,13 @@ pub use fuel_ir::error::{Context, Error, Result};
 // within.
 pub use fuel_ir::layout::Layout;
 pub use fuel_ir::shape::{D, Shape};
+// device.rs's `use crate::{DType, HostBuffer, Result, Shape, Storage,
+// WithDType};` -- a GROUPED import, which an earlier `crate::X` text census
+// missed (it doesn't contain the substring `crate::HostBuffer`, only
+// `HostBuffer` inside `crate::{...}`'s braces). Caught by the first real
+// `cargo check`, not the census.
+pub use fuel_backend_contract::Storage;
+pub use fuel_ir::HostBuffer;
 
 #[doc(hidden)]
 #[cfg(feature = "cuda")]

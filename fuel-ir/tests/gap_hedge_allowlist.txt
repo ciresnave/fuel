@@ -1,19 +1,19 @@
 fuel-aocl-cpu-backend/src/lib.rs	/// run would need a manual `set PATH=...` before invocation.
-fuel-core/src/inference_context.rs	//!   not yet on the pre-allocated path (grow-by-replace works without
-fuel-core/src/judge/cache.rs	//! not yet useful for realize-time dispatch — the router needs
-fuel-core/src/judge/mod.rs	// All others: not yet wired into the direct-call path. The
-fuel-core/src/judge/mod.rs	// FlashAttn kernel (naive SDPA, `flash_attn_{f32,f16,bf16}` in
-fuel-core/src/judge/mod.rs	// Reductions + ReduceTo not yet wired into the direct-call
-fuel-core/src/judge/mod.rs	// naive CPU SDPA is ~Hq·k_len·D ≈ 8.4M MACs per QKᵀ/PV pass.
-fuel-core/src/judge/mod.rs	//! Op kinds *not yet profiled* (build_input_graph would `panic!` if
-fuel-core/src/judge/mod.rs	/// of one (op, size) cell. Returns `None` for ops not yet supported.
-fuel-core/src/judge/mod.rs	/// op family is not yet wired into the direct-call path.
-fuel-core/src/kv_block_pool_device.rs	/// f32-only for now (the CPU-gated increment); the pool's real dtype is
-fuel-core/src/kv_block_pool_device.rs	/// way. f32-only for now (see [`Self::write_block`]).
-fuel-core/src/lazy.rs	/// Allocate a data-determined [`fuel_ir::SymId`] not yet used by any
-fuel-core/src/lazy.rs	/// does not yet expose.
-fuel-core/src/lazy_latent_cache.rs	//! surface can later be re-expressed on top of it — deferred for now because
-fuel-core/src/persistent_decode.rs	// would need per-variant inv_freq, and no such model exists yet. Single-base	documented scope boundary with a stated trigger; not an unfinished-work admission (architect-authorised)
+fuel-tensor/src/inference_context.rs	//!   not yet on the pre-allocated path (grow-by-replace works without
+fuel-tensor/src/judge/cache.rs	//! not yet useful for realize-time dispatch — the router needs
+fuel-tensor/src/judge/mod.rs	// All others: not yet wired into the direct-call path. The
+fuel-tensor/src/judge/mod.rs	// FlashAttn kernel (naive SDPA, `flash_attn_{f32,f16,bf16}` in
+fuel-tensor/src/judge/mod.rs	// Reductions + ReduceTo not yet wired into the direct-call
+fuel-tensor/src/judge/mod.rs	// naive CPU SDPA is ~Hq·k_len·D ≈ 8.4M MACs per QKᵀ/PV pass.
+fuel-tensor/src/judge/mod.rs	//! Op kinds *not yet profiled* (build_input_graph would `panic!` if
+fuel-tensor/src/judge/mod.rs	/// of one (op, size) cell. Returns `None` for ops not yet supported.
+fuel-tensor/src/judge/mod.rs	/// op family is not yet wired into the direct-call path.
+fuel-tensor/src/kv_block_pool_device.rs	/// f32-only for now (the CPU-gated increment); the pool's real dtype is
+fuel-tensor/src/kv_block_pool_device.rs	/// way. f32-only for now (see [`Self::write_block`]).
+fuel-tensor/src/lazy.rs	/// Allocate a data-determined [`fuel_ir::SymId`] not yet used by any
+fuel-tensor/src/lazy.rs	/// does not yet expose.
+fuel-tensor/src/lazy_latent_cache.rs	//! surface can later be re-expressed on top of it — deferred for now because
+fuel-tensor/src/persistent_decode.rs	// would need per-variant inv_freq, and no such model exists yet. Single-base	documented scope boundary with a stated trigger; not an unfinished-work admission (architect-authorised)
 fuel-core/src/train.rs	//! ## Not yet covered
 fuel-correctness-fixtures/src/lib.rs	//! ## Not yet in v1 (deferred to follow-up sessions)
 fuel-cpu-backend/src/byte_kernels.rs	// FlashAttn — naive multi-head SDPA (math definition)
