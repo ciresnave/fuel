@@ -100,7 +100,7 @@ impl PaddleOcrVlTextConfig {
 // `rope_scaling.mrope_section`, and the artifact carries a `vision_config`
 // sibling that this text config does not model (serde ignores it). The raw
 // therefore has a NESTED sub-struct, and `resolve` lifts the nested value to the
-// flat `mrope_section` field. kv + head_dim route through `fuel_core::hf_config`
+// flat `mrope_section` field. kv + head_dim route through `fuel_loaders::hf_config`
 // (PaddleOCR-VL ships an explicit, decoupled head_dim, e.g. 128 vs 1024/16=64).
 #[derive(Debug, Clone, serde::Deserialize)]
 struct PaddleOcrRopeScalingRaw {
@@ -151,11 +151,11 @@ impl PaddleOcrVlTextConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,

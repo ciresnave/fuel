@@ -87,7 +87,7 @@ fn default_partial_rotary_factor() -> f64 {
 /// so this struct is pure `serde` and carries no logic. Anything that has to
 /// look at a *sibling* field — which `#[serde(default = "...")]` cannot do —
 /// lives in [`PhiConfigRaw::resolve`] instead. That split is the whole reason
-/// this type exists; see [`fuel_core::hf_config`] for the measurement behind it.
+/// this type exists; see [`fuel_loaders::hf_config`] for the measurement behind it.
 ///
 /// `head_dim` and `num_key_value_heads` are `Option` on purpose: absent and
 /// present-but-equal-to-the-default are different facts, and collapsing them
@@ -137,7 +137,7 @@ impl PhiConfigRaw {
             // Deliberately NOT resolved: `PhiConfig` keeps the `Option`, and
             // the MHA fallback happens at use site rather than at parse time.
             num_key_value_heads: self.num_key_value_heads,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
@@ -162,7 +162,7 @@ impl PhiConfig {
         // Route through the shared rule rather than hand-rolling the fallback
         // (item-8-II membership gate). Verified identical to the previous
         // `unwrap_or(num_attention_heads)` on every input, incl. Some(1) → 1.
-        fuel_core::hf_config::num_key_value_heads(
+        fuel_loaders::hf_config::num_key_value_heads(
             self.num_key_value_heads,
             self.num_attention_heads,
         )

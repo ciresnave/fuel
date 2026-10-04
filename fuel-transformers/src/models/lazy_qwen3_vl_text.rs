@@ -64,7 +64,7 @@ pub struct Qwen3VlTextConfig {
 // nested again under `text_config.rope_scaling`. So the raw's TOP LEVEL is just
 // `text_config`, and `resolve` builds the flat config from the inner object,
 // lifting mrope_section from its nested rope_scaling. kv + head_dim route through
-// `fuel_core::hf_config` (Qwen3-VL ships an explicit, decoupled head_dim, e.g.
+// `fuel_loaders::hf_config` (Qwen3-VL ships an explicit, decoupled head_dim, e.g.
 // 128 vs 2560/32=80).
 #[derive(Debug, Clone, serde::Deserialize)]
 struct Qwen3VlRopeScalingRaw {
@@ -127,11 +127,11 @@ impl Qwen3VlTextConfigRaw {
             intermediate_size: t.intermediate_size,
             num_hidden_layers: t.num_hidden_layers,
             num_attention_heads: t.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 t.num_key_value_heads,
                 t.num_attention_heads,
             )?,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 t.head_dim,
                 t.hidden_size,
                 t.num_attention_heads,

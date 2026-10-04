@@ -58,7 +58,7 @@ impl StarCoder2Config {
 // ROADMAP item 8 (II): config-from-path, as a capability of the config TYPE.
 // A `serde` raw carrying HF's field names + constant defaults, then `resolve`
 // routes the two sibling-derived values (kv heads, head_dim) through the shared
-// `fuel_core::hf_config` rules. StarCoder2 ships an explicit `head_dim` only for
+// `fuel_loaders::hf_config` rules. StarCoder2 ships an explicit `head_dim` only for
 // padded-head variants; the take-if-present rule honors it and derives the
 // quotient otherwise.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -106,11 +106,11 @@ impl StarCoder2ConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
