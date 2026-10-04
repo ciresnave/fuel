@@ -100,8 +100,12 @@ pub use fuel_tensor::{
     lazy_latent_cache, nf4, persistent_decode, pipelined_bridge, planner, scheduling, test_utils,
 };
 pub mod kv_block_pool;
-#[cfg(feature = "telemetry")]
-pub mod telemetry;
+// `telemetry` deleted (fuel-core dissolution, GAP-347 PR 1): it was a pure
+// `pub use fuel_dispatch::telemetry::judge_sink::*;` shim with zero real
+// external consumers. `fuel`'s facade now re-exports the real module
+// directly (`fuel/src/lib.rs`); the `telemetry` Cargo feature here is kept
+// as a pass-through (`fuel-dispatch/telemetry` + `fuel-tensor/telemetry`)
+// in case anything still enables it transitively through this crate.
 /// `SystemTopology` moved to `fuel-dispatch::topology` (retirement B0.2c — it fuses
 /// the dispatch overlay with fuel-hardware discovery); re-exported so
 /// `crate::topology` / `fuel_core::topology` callers are unchanged.

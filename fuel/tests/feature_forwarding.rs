@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Feature-forwarding gate for the `fuel` facade.
 //!
-//! The facade re-exports two crates — `fuel-core` (Foundation: tensor API) and,
-//! since Stage 2, `fuel-transformers` (Models tier: the model zoo). A consumer
-//! enabling `fuel/cuda` must get a CUDA-capable tensor API AND CUDA-built models,
-//! so the facade must forward each feature to EVERY dependency that declares it —
+//! The facade re-exports three crates — `fuel-core` (Foundation: tensor API),
+//! since Stage 2, `fuel-transformers` (Models tier: the model zoo), and since
+//! the `telemetry` shim's retirement (fuel-core dissolution, GAP-347),
+//! `fuel-dispatch` directly (for `fuel_dispatch::telemetry::judge_sink`, now
+//! re-exported without going through fuel-core). A consumer enabling
+//! `fuel/cuda` must get a CUDA-capable tensor API AND CUDA-built models, so
+//! the facade must forward each feature to EVERY dependency that declares it —
 //! and to no dependency that does not.
 //!
 //! This gate DERIVES that rule from the three manifests rather than encoding a
@@ -43,6 +46,7 @@ use std::collections::BTreeSet;
 const FACADE_MANIFEST: &str = include_str!("../Cargo.toml");
 const CORE_MANIFEST: &str = include_str!("../../fuel-core/Cargo.toml");
 const TRANSFORMERS_MANIFEST: &str = include_str!("../../fuel-transformers/Cargo.toml");
+const DISPATCH_MANIFEST: &str = include_str!("../../fuel-dispatch/Cargo.toml");
 
 /// Parse the `[features]` table into `(name, [array elements])` pairs, in order.
 ///
@@ -126,6 +130,7 @@ fn facade_forwards_each_feature_to_every_dep_that_declares_it() {
     let facade = parse_features(FACADE_MANIFEST);
     let core = parse_features(CORE_MANIFEST);
     let transformers = parse_features(TRANSFORMERS_MANIFEST);
+    let dispatch = parse_features(DISPATCH_MANIFEST);
 
     // Positive controls: an empty parse would make every assertion vacuous.
     assert!(
@@ -143,14 +148,21 @@ fn facade_forwards_each_feature_to_every_dep_that_declares_it() {
         "parsed only {} fuel-transformers feature(s) — parser or include path broken",
         transformers.len()
     );
+    assert!(
+        !dispatch.is_empty(),
+        "parsed only {} fuel-dispatch feature(s) — parser or include path broken",
+        dispatch.len()
+    );
 
     let core_names = feature_names(&core);
     let tf_names = feature_names(&transformers);
+    let dispatch_names = feature_names(&dispatch);
     let facade_names = feature_names(&facade);
 
-    // The dependencies the facade forwards to, each with its own declared set.
-    // Derived from the manifests — see the module doc for why a hardcoded split
-    // would rot silently.
+    // The dependencies covered by the BLANKET closure rule below: every
+    // facade feature must forward to exactly these deps' matching features,
+    // no more, no less. `fuel-dispatch` is deliberately NOT one of them —
+    // see the `telemetry`-specific exception after this loop for why.
     let deps: [(&str, &BTreeSet<String>); 2] =
         [("fuel-core", &core_names), ("fuel-transformers", &tf_names)];
 
@@ -168,12 +180,39 @@ fn facade_forwards_each_feature_to_every_dep_that_declares_it() {
         facade_names.difference(&union).collect::<Vec<_>>(),
     );
 
-    // (ii) Each facade feature forwards to EXACTLY the deps that declare it.
+    // (ii) Each facade feature forwards to EXACTLY the deps that declare it —
+    // EXCEPT `telemetry`, which also forwards to `fuel-dispatch/telemetry`
+    // (see the dedicated exception below the loop). `fuel-dispatch` is
+    // deliberately excluded from the generic `deps` closure above: it
+    // declares many OTHER features (cuda, vulkan, jit, ...) that the facade
+    // must NOT blanket-forward just because of this one narrow, single-
+    // feature re-export (`fuel::telemetry` -> `fuel_dispatch::telemetry::
+    // judge_sink`, added when that module left fuel-core — GAP-347 PR 1).
     for (name, elems) in &facade {
         if name == "default" {
             assert!(
                 elems.is_empty(),
                 "facade `default` must stay empty (enable nothing), got {elems:?}"
+            );
+            continue;
+        }
+        if name == "telemetry" {
+            let expected: BTreeSet<String> = deps
+                .iter()
+                .filter(|(_, feats)| feats.contains(name))
+                .map(|(dep, _)| format!("{dep}/{name}"))
+                .chain(
+                    dispatch_names
+                        .contains("telemetry")
+                        .then(|| "fuel-dispatch/telemetry".to_string()),
+                )
+                .collect();
+            let got: BTreeSet<String> = elems.iter().cloned().collect();
+            assert_eq!(
+                got, expected,
+                "facade feature `telemetry` must forward to fuel-core/telemetry \
+                 (if declared) AND fuel-dispatch/telemetry (the GAP-347 exception) \
+                 — expected {expected:?}, got {got:?}"
             );
             continue;
         }
@@ -198,7 +237,11 @@ fn facade_forwards_each_feature_to_every_dep_that_declares_it() {
 #[cfg(feature = "telemetry")]
 #[test]
 fn telemetry_forward_reaches_gated_module() {
-    // `fuel::telemetry` exists only when fuel-core/telemetry is enabled.
+    // `fuel::telemetry` is a direct re-export of `fuel_dispatch::telemetry::
+    // judge_sink` (GAP-347 PR 1 — the module left fuel-core, which had zero
+    // real external consumers of it). Reachable whenever this crate's own
+    // `telemetry` feature is on, which forwards to `fuel-dispatch/telemetry`
+    // (and, as a pass-through, `fuel-core/telemetry`).
     #[allow(unused_imports)]
     use fuel::telemetry;
 }

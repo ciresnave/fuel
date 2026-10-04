@@ -91,8 +91,12 @@ default = []
 
 # Baracuda dispatch-telemetry / miss-reporting emission (production consumer).
 # Enables fuel-dispatch's plan-time emission + adds the process-wide opt-in
-# sink, hardware stamp, and explicit-flush API (`fuel_core::telemetry`). Off by
-# default — a build that never sets this is byte-identical.
+# sink, hardware stamp, and explicit-flush API. Off by default — a build that
+# never sets this is byte-identical. Pure pass-through now (GAP-347 PR 1):
+# the `fuel_core::telemetry` module this once gated was deleted (zero real
+# consumers; `fuel`'s facade re-exports `fuel_dispatch::telemetry::judge_sink`
+# directly). Kept so anything still enabling `fuel-core/telemetry` transitively
+# still turns the real feature on downstream.
 telemetry = ["fuel-dispatch/telemetry", "fuel-tensor/telemetry"]
 
 # NVIDIA GPU backend via baracuda (cuBLAS + driver). Dynamic-loaded at
