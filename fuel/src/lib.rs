@@ -18,6 +18,16 @@
 // glob carries exactly what fuel-core exposes under the active feature set.
 pub use fuel_core::*;
 
+// `telemetry` retired from fuel-core (fuel-core dissolution, GAP-347 PR 1):
+// the module was already a pure `pub use fuel_dispatch::telemetry::judge_sink::*;`
+// shim with zero real external consumers (checked: only this crate's own
+// tests/feature_forwarding.rs referenced `fuel::telemetry`). Re-exported
+// directly here under the same name and feature gate so that test, and any
+// future `fuel::telemetry` caller, is unaffected by the module leaving
+// fuel-core — `fuel_core::*` above no longer carries it.
+#[cfg(feature = "telemetry")]
+pub use fuel_dispatch::telemetry::judge_sink as telemetry;
+
 // `#[macro_export]` macros are placed at the CRATE ROOT in the MACRO namespace,
 // which a glob re-export (`pub use fuel_core::*`) does NOT carry. `bail!` is the
 // framework's one exported macro (used in ~60 consumer files), so it is
