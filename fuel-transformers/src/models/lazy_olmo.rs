@@ -53,7 +53,7 @@ impl OlmoConfig {
 
 // ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
 // HF field names + OLMo's own constant defaults, then `resolve` routes kv heads
-// + head_dim through the shared `fuel_core::hf_config` rules. OLMo v1 uses
+// + head_dim through the shared `fuel_loaders::hf_config` rules. OLMo v1 uses
 // non-parametric LayerNorm, so its config carries no `layer_norm_eps` — the field
 // defaults to the port's 1e-5. `clip_qkv` (null in the artifact) is unmodelled.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -96,11 +96,11 @@ impl OlmoConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,

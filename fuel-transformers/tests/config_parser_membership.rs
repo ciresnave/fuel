@@ -2,7 +2,7 @@
 //! ROADMAP item-8-II MEMBERSHIP GATE.
 //!
 //! (II) is config-from-path built ON the config types (RULED: no shared struct —
-//! the real duplication is the two cross-field rules in `fuel_core::hf_config`,
+//! the real duplication is the two cross-field rules in `fuel_loaders::hf_config`,
 //! already extracted). Building the rule does not make anyone USE it, so this gate
 //! asserts every DENSE causal-LM config that parses a `config.json` routes GQA
 //! through `hf_config::num_key_value_heads` (the take-if-present-else-derive rule)

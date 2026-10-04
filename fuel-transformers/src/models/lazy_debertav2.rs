@@ -68,7 +68,7 @@ fn default_position_buckets() -> usize {
 /// It derives no `head_dim` and no `num_key_value_heads`; its only
 /// cross-field default is the `max_relative_positions` sentinel below, which
 /// is specific to DeBERTa's relative-position bucketing and belongs here
-/// rather than in [`fuel_core::hf_config`]. A rule with one call site is not
+/// rather than in [`fuel_loaders::hf_config`]. A rule with one call site is not
 /// shared infrastructure.
 ///
 /// `max_relative_positions` is `i64` on purpose: **HF ships `-1` to mean

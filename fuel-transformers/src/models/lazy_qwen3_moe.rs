@@ -54,7 +54,7 @@ impl Qwen3MoeConfig {
 
 // ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
 // HF field names + Qwen3's own constant defaults, then `resolve` routes kv heads
-// + head_dim through the shared `fuel_core::hf_config` rules. Qwen3-MoE ships an
+// + head_dim through the shared `fuel_loaders::hf_config` rules. Qwen3-MoE ships an
 // EXPLICIT, DECOUPLED head_dim (128 on Qwen3-30B-A3B vs 2048/32 = 64), so the
 // take-if-present rule is load-bearing here. MoE sizing (moe_intermediate_size,
 // num_experts, num_experts_per_tok) is REQUIRED — a MoE config always states it.
@@ -112,13 +112,13 @@ impl Qwen3MoeConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
             )?,
             attention_bias: self.attention_bias,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,

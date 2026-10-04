@@ -83,7 +83,12 @@
 // with; a caller wanting it uses `fuel_backend_contract::backend::HostStorage`
 // directly, as every real consumer already does.
 pub mod error;
-pub mod hf_config;
+// `hf_config` deleted (fuel-core dissolution, GAP-347 PR 3): it was a pure
+// `pub use fuel_loaders::hf_config::*;` shim. Real in-workspace consumers
+// via `fuel_core::hf_config::` directly (fuel-model-llama, fuel-model-phi,
+// fuel-transformers's 30 model files) repointed to `fuel_loaders` in the
+// same change. `fuel`'s facade now re-exports the real crate directly
+// (`fuel/src/lib.rs`) for any `fuel::hf_config` caller.
 // `cuda_backend`/`device`/`dtype`/`lazy`/`lazy_latent_cache`/`metal_backend`/
 // `vulkan_backend`/`decode_shape`/`factories`/`inference_context`/
 // `kv_block_pool_device`/`persistent_decode`/`judge`/`pipelined_bridge`/

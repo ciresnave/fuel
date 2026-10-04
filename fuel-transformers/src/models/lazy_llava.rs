@@ -175,7 +175,7 @@ impl HFLlavaConfig {
         // than copying num_key_value_heads verbatim: a non-dividing kv count
         // would otherwise reach LlamaModel::apply_layer and truncate silently
         // (GAP-282). `?` propagates the typed rejection out of to_llava_config.
-        let n_kv_heads = fuel_core::hf_config::num_key_value_heads(
+        let n_kv_heads = fuel_loaders::hf_config::num_key_value_heads(
             Some(t.num_key_value_heads),
             t.num_attention_heads,
         )?;

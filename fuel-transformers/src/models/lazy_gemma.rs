@@ -104,7 +104,7 @@ fn gemma_activation_from_str(s: &str) -> fuel_core::Result<GemmaActivation> {
 
 // ROADMAP item 8 (II): config-from-path on the #57 template. Gemma-1 is a FLAT
 // artifact: a `serde` raw with HF field names + Gemma's own constant defaults,
-// then `resolve` routes kv heads + head_dim through the shared `fuel_core::hf_config`
+// then `resolve` routes kv heads + head_dim through the shared `fuel_loaders::hf_config`
 // rules (Gemma ships an explicit, often-decoupled head_dim, e.g. 256 vs 3072/16=192
 // on gemma-7b). `hidden_act` (also accepted as `hidden_activation`) is corrected
 // to the tanh GELU — see `gemma_activation_from_str`.
@@ -154,11 +154,11 @@ impl GemmaConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,

@@ -50,7 +50,7 @@ fn default_rope_theta() -> f64 {
 ///
 /// `n_kv_heads` and `head_dim` are `Option` because absent and
 /// present-and-equal-to-the-default are different facts — see
-/// [`fuel_core::hf_config`].
+/// [`fuel_loaders::hf_config`].
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Llama2cConfigRaw {
     vocab_size: usize,
@@ -75,7 +75,7 @@ impl Llama2cConfigRaw {
     }
 
     /// Apply the two cross-field defaults, then rename into this crate's
-    /// vocabulary. Both rules live in [`fuel_core::hf_config`] because they are
+    /// vocabulary. Both rules live in [`fuel_loaders::hf_config`] because they are
     /// shared, not because they are complicated.
     fn resolve(self) -> Result<Llama2cConfig> {
         Ok(Llama2cConfig {
@@ -83,12 +83,12 @@ impl Llama2cConfigRaw {
             hidden_dim: self.intermediate_size,
             n_layers: self.num_hidden_layers,
             n_heads: self.num_attention_heads,
-            n_kv_heads: fuel_core::hf_config::num_key_value_heads(
+            n_kv_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,
             vocab_size: self.vocab_size,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,

@@ -1744,6 +1744,7 @@ dependencies = [
  "fuel-core",
  "fuel-dispatch",
  "fuel-kv-pool",
+ "fuel-loaders",
  "fuel-transformers",
 ]
 
@@ -2284,6 +2285,7 @@ dependencies = [
  "fuel-graph",
  "fuel-ir",
  "fuel-kv-pool",
+ "fuel-loaders",
  "half",
  "hf-hub",
  "serde",
@@ -2298,6 +2300,7 @@ dependencies = [
  "fuel-core",
  "fuel-graph",
  "fuel-ir",
+ "fuel-loaders",
  "fuel-quantized",
  "half",
  "hf-hub",
@@ -2471,6 +2474,7 @@ dependencies = [
  "fuel-dispatch",
  "fuel-graph",
  "fuel-ir",
+ "fuel-loaders",
  "fuel-model-llama",
  "fuel-model-phi",
  "fuel-nn",

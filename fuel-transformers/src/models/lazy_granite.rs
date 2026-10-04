@@ -35,7 +35,7 @@ impl GraniteConfig {
 
 // ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
 // HF field names + constant defaults, then `resolve` routes kv heads through the
-// shared `fuel_core::hf_config` rule. GraniteConfig carries NO explicit head_dim
+// shared `fuel_loaders::hf_config` rule. GraniteConfig carries NO explicit head_dim
 // (it derives `hidden_size / num_attention_heads` in `head_dim()`), so only the
 // kv-head rule is routed. Granite's scaling multipliers
 // (attention/embedding/residual/logits) are not modelled by GraniteConfig and are
@@ -76,7 +76,7 @@ impl GraniteConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,
