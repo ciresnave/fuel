@@ -78,7 +78,7 @@ filtered read of this same list.
   `None` at construction, so "no EOS" has one representation. No shim —
   callers (lightbulb) adapt their call sites after this merges.~~ Merged
   2026-10-04 (PR #307). Lightbulb notified of the exact new signature.
-- **PR-D (board #109 follow-up): `judge/cache.rs`'s storage/lookup half
+- ~~**PR-D (board #109 follow-up): `judge/cache.rs`'s storage/lookup half
   moves to `fuel_dispatch::judge_cache`** (`cached`, `cached_oracle`,
   `invalidate`, the process-wide slot) — the one Tensor-dependent function,
   `populate_dispatch_table`, stays as a thin fn in `fuel-tensor` that runs
@@ -88,8 +88,9 @@ filtered read of this same list.
   `docs/restructure-migration-design.md` §5.1 Row 3's amended note for why
   the original 2026-09-02 ruling undercounted this). Behavior-preserving —
   no public signature changes, same `cached()`/`cached_oracle()`/
-  `populate_dispatch_table()` call sites. Not a breaking item on its own.
-- **PR-D: `fuel-core/src/backend.rs` deleted** — a pure
+  `populate_dispatch_table()` call sites. Not a breaking item on its own.~~
+  Merged 2026-10-04 (PR #308).
+- ~~**PR-D: `fuel-core/src/backend.rs` deleted** — a pure
   `pub use fuel_backend_contract::backend::HostStorage;` compat shim with
   zero consumers via `fuel_core::backend::`/`fuel::backend::` module path
   anywhere in the repo (verified with a positive-control grep: the same
@@ -100,7 +101,25 @@ filtered read of this same list.
   explicitly OUT of this item's scope — it needs a feature-flag semantics
   question answered first (does linking `fuel-metal-backend` alone imply
   availability, or does it need its own `metal` feature) that wasn't
-  resolved here.
+  resolved here.~~ Merged with PR-D (2026-10-04, #308).
+- **`train.rs` moves to `fuel-training/src/train.rs`** (board #109
+  follow-up): `docs/restructure-migration-design.md` Row 5's original
+  "no below-consumer; PASSES" only checked fuel-core's own graph — the real
+  consumers of `fuel::train::{OptimizerConfig,Parameter,TrainState,loss}`
+  are at the FACADE level (`fuel-examples/src/mnist_train.rs`,
+  `fuel-lazy-examples/src/bin/llama-finetune-vulkan.rs`), outside it.
+  **`fuel::train` is deliberately RETIRED, breaking** — `fuel-training`
+  already depends on the facade `fuel` (`fuel-training → fuel →
+  fuel-core`), so a `fuel-core` compat re-export of `fuel-training` would
+  cycle (`fuel-core → fuel-training → fuel → fuel-core`); no shim is
+  possible. `fuel` is unpublished, so no external downstream breaks.
+  Callers use `fuel_training::train` directly; both real consumers updated
+  in the same PR. `fuel-training` gained direct `fuel-dispatch`/`fuel-ir`/
+  `fuel-memory` deps (train.rs needs items not re-exported through the
+  facade). A second, pre-existing `LrSchedule` system
+  (`lazy_training_augmentations`, already in `fuel-training` via
+  `training_loop`) overlaps train.rs's own — filed as GAP-346, not
+  reconciled in this move per the PM's explicit instruction.
 
 ## Allocation
 

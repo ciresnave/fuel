@@ -112,9 +112,18 @@ pub use fuel_hardware::probe;
 /// Transfer (bandwidth) calibration moved to `fuel-hardware` (retirement B0.2b);
 /// re-exported so `crate::transfer_cost` / `fuel_core::transfer_cost` is unchanged.
 pub use fuel_hardware::transfer_cost;
+// `train.rs` moved to `fuel-training/src/train.rs` (board #109 follow-up,
+// PM-approved after Row 5's original "no below-consumer; PASSES" was found
+// stale: `fuel::train`'s real consumers are at the FACADE level, outside
+// fuel-core's own graph). NO compat re-export is possible here -- a
+// fuel-core re-export of fuel-training creates fuel-core -> fuel-training,
+// and fuel-training already depends on `fuel` -> `fuel-core`: a real cycle.
+// `fuel::train` is therefore deliberately retired; callers use
+// `fuel_training::train` directly. Both former consumers
+// (fuel-examples/src/mnist_train.rs, fuel-lazy-examples's
+// llama-finetune-vulkan.rs) updated in the same change.
 pub mod quantized;
 pub mod safetensors;
-pub mod train;
 pub mod utils;
 
 #[cfg(feature = "cudnn")]

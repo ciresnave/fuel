@@ -10,12 +10,21 @@
     version.workspace    = true
 
 [dependencies]
-    fuel       = { workspace = true }
-    fuel-nn    = { workspace = true }
-    fuel-graph = { workspace = true }
-    serde      = { workspace = true }
-    serde_json = { workspace = true }
-    tracing    = { workspace = true }
+    fuel          = { workspace = true }
+    fuel-nn       = { workspace = true }
+    fuel-graph    = { workspace = true }
+    # Added for train.rs's move here (board #109 follow-up): StorageCache
+    # (fuel-dispatch), Storage/from_slice_cpu/alloc_cpu_zeroed (fuel-memory),
+    # and DType/Error/Result/Shape (fuel-ir) aren't all re-exported through
+    # the `fuel` facade under the paths train.rs uses them at, and train.rs
+    # needs them directly. All three are Foundation-tier, downward of this
+    # top-leaf crate -- no cycle.
+    fuel-dispatch = { workspace = true }
+    fuel-ir       = { workspace = true }
+    fuel-memory   = { workspace = true }
+    serde         = { workspace = true }
+    serde_json    = { workspace = true }
+    tracing       = { workspace = true }
 
 [features]
     accelerate = ["fuel/accelerate"]

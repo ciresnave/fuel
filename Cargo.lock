@@ -1997,6 +1997,7 @@ dependencies = [
  "fuel-datasets",
  "fuel-model-llama",
  "fuel-onnx",
+ "fuel-training",
  "fuel-transformers",
  "half",
  "hf-hub",
@@ -2162,6 +2163,7 @@ dependencies = [
  "fuel-ir",
  "fuel-model-llama",
  "fuel-model-phi",
+ "fuel-training",
  "fuel-vulkan-backend",
  "hf-hub",
  "tracing",
@@ -2444,7 +2446,10 @@ name = "fuel-training"
 version = "0.12.9"
 dependencies = [
  "fuel",
+ "fuel-dispatch",
  "fuel-graph",
+ "fuel-ir",
+ "fuel-memory",
  "fuel-nn",
  "serde",
  "serde_json",

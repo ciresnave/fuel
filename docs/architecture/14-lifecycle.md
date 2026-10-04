@@ -599,7 +599,8 @@ changes.
 **What it is:** the same build-graph-then-realize loop, with a backward pass and an
 optimizer step.
 
-**Today** (`TrainState::step`, `fuel-core/src/train.rs:386`):
+**Today** (`TrainState::step`, `fuel-training/src/train.rs:398`, moved from
+`fuel-core/src/train.rs` board #109 follow-up):
 
 1. Build a **fresh graph**; bind each parameter's current storage `Arc` to an `Op::Const`
    placeholder (the same persistent-`Arc` pattern as the KV-cache).
