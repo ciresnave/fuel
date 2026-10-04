@@ -15,8 +15,9 @@
 //! that runs `Judge::run` (needs Tensor) and hands the result to [`store`]
 //! — a downward call, no cycle.
 //!
-//! The [`Judge`](crate::judge) link in the module docs below refers to that
-//! fuel-tensor type; this module has no dependency on it.
+//! `Judge` (mentioned above) is `fuel_tensor::judge::Judge` — plain text,
+//! not a doc link, since this crate cannot resolve a path in a crate above
+//! it in the dependency graph. This module has no dependency on it.
 //!
 //! # Criteria
 //!
@@ -409,6 +410,35 @@ mod tests {
         assert_eq!(p.kernel_source, "aocl");
     }
 
+    /// Fastest-pick backend at the sample report's shared (MatMul, F32,
+    /// size 12) cell — the one both [`sample_report`] and
+    /// [`swapped_backend_report`] share, just with the winner flipped.
+    fn fastest_matmul_12_backend(table: &DispatchTable) -> BackendId {
+        table
+            .pick(
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(12),
+                Criterion::Fastest,
+            )
+            .unwrap()
+            .backend
+    }
+
+    /// Same (op, dtype, size_class) cell as [`sample_report`] but with the
+    /// winner flipped (CPU fast, CUDA slow) — `entry`'s `device` field
+    /// stays co-encoded with `backend`, as `from_report`'s debug_assert
+    /// requires.
+    fn swapped_backend_report() -> ProfileReport {
+        ProfileReport {
+            version: fuel_ir::dispatch::PROFILE_REPORT_VERSION,
+            entries: vec![
+                entry(BackendId::Cuda, OpKind::MatMul, 12, 10_000_000, 1e-6),
+                entry(BackendId::Cpu, OpKind::MatMul, 12, 2_000_000, 1e-4),
+            ],
+        }
+    }
+
     /// PR-D condition (2): cached()/cached_oracle() behave identically
     /// across the move -- same hit/miss/invalidate sequence this test
     /// would have exercised against the pre-move `fuel-tensor` copy.
@@ -428,17 +458,8 @@ mod tests {
             cached_oracle().is_some(),
             "hit: store() populated the oracle half too"
         );
-        let hit_pick = cached()
-            .unwrap()
-            .pick(
-                OpKind::MatMul,
-                DType::F32,
-                SizeClass(12),
-                Criterion::Fastest,
-            )
-            .unwrap();
         assert_eq!(
-            hit_pick.backend,
+            fastest_matmul_12_backend(&cached().unwrap()),
             BackendId::Cuda,
             "same table as sample_report direct-build"
         );
@@ -455,28 +476,9 @@ mod tests {
         // with a different report must be the one and only thing that
         // changes what cached() returns next, proving no other write path
         // exists.
-        let other = ProfileReport {
-            version: fuel_ir::dispatch::PROFILE_REPORT_VERSION,
-            entries: vec![
-                // Swapped vs sample_report: CPU is now the fast one at
-                // size 12 (`entry`'s `device` field stays co-encoded with
-                // `backend`, as `from_report`'s debug_assert requires).
-                entry(BackendId::Cuda, OpKind::MatMul, 12, 10_000_000, 1e-6),
-                entry(BackendId::Cpu, OpKind::MatMul, 12, 2_000_000, 1e-4),
-            ],
-        };
-        store(&other).unwrap();
-        let after_second_store = cached()
-            .unwrap()
-            .pick(
-                OpKind::MatMul,
-                DType::F32,
-                SizeClass(12),
-                Criterion::Fastest,
-            )
-            .unwrap();
+        store(&swapped_backend_report()).unwrap();
         assert_eq!(
-            after_second_store.backend,
+            fastest_matmul_12_backend(&cached().unwrap()),
             BackendId::Cpu,
             "cached() reflects the SECOND store(), confirming store is the sole writer"
         );
