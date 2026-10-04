@@ -1334,7 +1334,8 @@ what multi-session serving and reproducible training each need on their own meri
 3. ~~Is C-3 in scope for Increment 2?~~ **RESOLVED 2026-07-29 (cae56435) — YES, and it IS the
    block-pool allocator.** Paged blocks + refcounting *are* the evict/restore/splice mechanism; C-1
    falls out of the same free list. One coherent piece. The lossy-KV arm shipped as the allocator
-   core (`fuel-core/src/kv_block_pool.rs`, part 1); the training/RL exact fidelity is a later
+   core (`fuel-kv-pool/src/lib.rs`, moved from `fuel-core/src/kv_block_pool.rs`, GAP-347 PR 2;
+   part 1); the training/RL exact fidelity is a later
    increment (see Q9). Design:
    `docs/superpowers/plans/2026-07-29-kv-block-pool-allocator-serving-inc2.md`.
 4. **Rename `SchedulePolicy` → `DecodeArm`?**

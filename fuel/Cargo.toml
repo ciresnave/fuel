@@ -22,6 +22,11 @@ fuel-core = { path = "../fuel-core", version = "0.12.0" }
 # PR 1): the facade re-exports `fuel_dispatch::telemetry::judge_sink`
 # directly now, instead of through fuel-core's (deleted) re-export module.
 fuel-dispatch = { path = "../fuel-dispatch", version = "0.12.0" }
+# Added for `kv_block_pool`'s shim retirement (fuel-core dissolution,
+# GAP-347 PR 2): the facade re-exports `fuel_kv_pool` directly now,
+# instead of through fuel-core's (deleted) re-export module. Unconditional
+# (fuel-core's `kv_block_pool` module was never feature-gated).
+fuel-kv-pool = { path = "../fuel-kv-pool", version = "0.12.0" }
 # Stage 2: the facade re-exports the model zoo from fuel-transformers (Models
 # tier). Added in the SAME commit that repoints fuel-transformers -> fuel-core,
 # because a facade depending on a fuel-transformers that still depends on the

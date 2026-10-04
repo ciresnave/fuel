@@ -28,6 +28,16 @@ pub use fuel_core::*;
 #[cfg(feature = "telemetry")]
 pub use fuel_dispatch::telemetry::judge_sink as telemetry;
 
+// `kv_block_pool` retired from fuel-core (fuel-core dissolution, GAP-347
+// PR 2): the module was already a pure `pub use fuel_kv_pool::*;` shim.
+// Real consumers reaching it via `fuel_core::kv_block_pool::` directly
+// (not through this facade) were repointed to `fuel_kv_pool` directly in
+// the same change (fuel-model-llama). Re-exported here, unconditionally
+// (never feature-gated in fuel-core), so `fuel::kv_block_pool` callers
+// (fuel-inference, and the lightbulb sibling project) are unaffected by
+// the module leaving fuel-core — `fuel_core::*` above no longer carries it.
+pub use fuel_kv_pool as kv_block_pool;
+
 // `#[macro_export]` macros are placed at the CRATE ROOT in the MACRO namespace,
 // which a glob re-export (`pub use fuel_core::*`) does NOT carry. `bail!` is the
 // framework's one exported macro (used in ~60 consumer files), so it is
