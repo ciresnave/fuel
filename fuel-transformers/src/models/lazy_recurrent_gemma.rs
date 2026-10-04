@@ -229,7 +229,7 @@ impl RecurrentGemmaConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,

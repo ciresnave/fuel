@@ -229,11 +229,11 @@ impl LlamaConfigRaw {
             dim: self.hidden_size,
             n_layers: self.num_hidden_layers,
             n_heads: self.num_attention_heads,
-            n_kv_heads: fuel_core::hf_config::num_key_value_heads(
+            n_kv_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,

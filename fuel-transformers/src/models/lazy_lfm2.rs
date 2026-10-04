@@ -250,7 +250,7 @@ fn lfm2_agree_required<T: PartialEq + std::fmt::Debug>(
 /// the quotient. An explicit key, if one ever appears, WINS -- the derivation
 /// is the fallback, not an override.
 ///
-/// NOT `fuel_core::hf_config::head_dim`, deliberately. That helper is
+/// NOT `fuel_loaders::hf_config::head_dim`, deliberately. That helper is
 /// `explicit.unwrap_or(hidden_size / num_attention_heads)`: it neither checks
 /// divisibility (so it silently truncates, the GAP-282 shape) nor guards a zero
 /// head count (so it PANICS on a malformed config, on a parse path). This
@@ -303,7 +303,7 @@ impl LFM2ConfigRaw {
             hidden_size: self.hidden_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 num_attention_heads,
             )?,

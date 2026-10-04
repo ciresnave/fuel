@@ -127,7 +127,7 @@ fn glm4_new_activation_from_str(s: &str) -> fuel_core::Result<Glm4NewActivation>
 
 // ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
 // HF field names + GLM-4's own constant defaults, then `resolve` routes kv heads
-// through the shared `fuel_core::hf_config` rule. `head_dim` and
+// through the shared `fuel_loaders::hf_config` rule. `head_dim` and
 // `partial_rotary_factor` are already `Option` on Glm4NewConfig (derived at
 // use-site by `head_dim()` / `rotary_dim()`), so they pass through verbatim —
 // GLM-4-0414 ships an explicit `partial_rotary_factor: 0.5`, read faithfully.
@@ -184,7 +184,7 @@ impl Glm4NewConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,

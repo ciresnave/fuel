@@ -144,7 +144,7 @@ impl PhiConfigRaw {
 
     fn resolve(self) -> fuel_core::Result<PhiConfig> {
         // ORDERED, not a flat map: rotary_dim reads the resolved head_dim.
-        let head_dim = fuel_core::hf_config::head_dim(
+        let head_dim = fuel_loaders::hf_config::head_dim(
             self.head_dim,
             self.hidden_size,
             self.num_attention_heads,

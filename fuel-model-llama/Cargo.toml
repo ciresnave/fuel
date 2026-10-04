@@ -30,6 +30,10 @@
     # GAP-347 PR 2): repoints this crate's 19 `fuel_core::kv_block_pool::`
     # sites to the real crate directly.
     fuel-kv-pool  = { workspace = true }
+    # Added for hf_config's shim retirement (fuel-core dissolution,
+    # GAP-347 PR 3): repoints this crate's `fuel_core::hf_config::` sites
+    # to the real crate directly.
+    fuel-loaders  = { workspace = true }
     half          = { workspace = true }
     hf-hub        = { workspace = true }
     serde         = { workspace = true }

@@ -38,6 +38,17 @@ pub use fuel_dispatch::telemetry::judge_sink as telemetry;
 // the module leaving fuel-core — `fuel_core::*` above no longer carries it.
 pub use fuel_kv_pool as kv_block_pool;
 
+// `hf_config` retired from fuel-core (fuel-core dissolution, GAP-347 PR 3):
+// the module was already a pure `pub use fuel_loaders::hf_config::*;` shim.
+// Real consumers reaching it via `fuel_core::hf_config::` directly (not
+// through this facade) were repointed to `fuel_loaders::hf_config`
+// directly in the same change (fuel-model-llama, fuel-model-phi,
+// fuel-transformers's 30 model files). Re-exported here, unconditionally
+// (never feature-gated in fuel-core), for API-surface stability — zero
+// known consumers reach it via `fuel::hf_config` today, but `fuel_core::*`
+// above no longer carries it, so this keeps the path alive regardless.
+pub use fuel_loaders::hf_config;
+
 // `#[macro_export]` macros are placed at the CRATE ROOT in the MACRO namespace,
 // which a glob re-export (`pub use fuel_core::*`) does NOT carry. `bail!` is the
 // framework's one exported macro (used in ~60 consumer files), so it is

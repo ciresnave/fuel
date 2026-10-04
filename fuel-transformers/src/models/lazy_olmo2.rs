@@ -54,7 +54,7 @@ impl Olmo2Config {
 
 // ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
 // HF field names + constant defaults, then `resolve` routes kv heads + head_dim
-// through the shared `fuel_core::hf_config` rules. OLMo2 ships an explicit
+// through the shared `fuel_loaders::hf_config` rules. OLMo2 ships an explicit
 // `head_dim`; the take-if-present rule honors it, deriving the quotient otherwise.
 #[derive(Debug, Clone, serde::Deserialize)]
 struct Olmo2ConfigRaw {
@@ -96,11 +96,11 @@ impl Olmo2ConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,

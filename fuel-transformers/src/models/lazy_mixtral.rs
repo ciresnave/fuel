@@ -125,11 +125,11 @@ impl MixtralConfigRaw {
             intermediate_size: self.intermediate_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
             )?,
-            head_dim: fuel_core::hf_config::head_dim(
+            head_dim: fuel_loaders::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
