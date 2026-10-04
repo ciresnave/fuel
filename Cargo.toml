@@ -329,7 +329,12 @@ baracuda-cutlass       = { version = "0.0.1-alpha.81" }
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
-baracuda-kernels-types = { version = "0.0.1-alpha.81" }
+# Bumped to alpha.84 for fuel-kernel-seam's board #106 Step A (TargetId):
+# alpha.84 is the first version whose `unpopped-vocab` dep is 0.14.3 (the
+# registration-based TargetId impl; 0.11.0 was the old fixed-index one).
+# Independent of the other baracuda-* pins below, which stay at alpha.81 --
+# baracuda's own crates version independently of each other.
+baracuda-kernels-types = { version = "0.0.1-alpha.84" }
 baracuda-kernels-sys   = { version = "0.0.1-alpha.81", features = [
     "cudnn",
     "sm89",

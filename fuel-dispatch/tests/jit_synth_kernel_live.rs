@@ -283,17 +283,17 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
         art: std::sync::Mutex::new(Some(artifact)),
     };
 
-    let req = JitRequest {
-        region: relu_add_region(),
-        operands: vec![
+    let req = JitRequest::new(
+        relu_add_region(),
+        vec![
             OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
             OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
         ],
-        arch: ArchSku::Sm89,
-        budget: JitBudget {
+        ArchSku::Sm89,
+        JitBudget {
             max_compile_ms: 5_000,
         },
-    };
+    );
 
     let adopted = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
         load_synth_kernel(art, &device)
@@ -509,14 +509,14 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
         art: std::sync::Mutex::new(Some(artifact)),
     };
 
-    let req = JitRequest {
-        region: mul_scalar_slot_region(),
-        operands: vec![OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256)],
-        arch: ArchSku::Sm89,
-        budget: JitBudget {
+    let req = JitRequest::new(
+        mul_scalar_slot_region(),
+        vec![OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256)],
+        ArchSku::Sm89,
+        JitBudget {
             max_compile_ms: 5_000,
         },
-    };
+    );
     let adopted = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
         load_synth_kernel(art, &device)
     })
@@ -585,14 +585,14 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     // tuple `build_lookup_dtypes` produces (inputs then output). Element-aligned
     // (4 B) + a non-vector-multiple count → the Scalar schedule our loader handles.
     let operand = || OperandDesc::new(1, &[7], &[1], ElementKind::F32, 4);
-    let req = JitRequest {
-        region: relu_add_region(),
-        operands: vec![operand(), operand(), operand()],
-        arch: ArchSku::Sm89,
-        budget: JitBudget {
+    let req = JitRequest::new(
+        relu_add_region(),
+        vec![operand(), operand(), operand()],
+        ArchSku::Sm89,
+        JitBudget {
             max_compile_ms: 5_000,
         },
-    };
+    );
 
     // (1) The synthesizer accepts + builds the region (independent of our loader).
     match synth.synthesize(&req) {
@@ -852,14 +852,14 @@ fn live_baracuda_synthesizer_paged_attn_dense_region() {
     ];
 
     let synth = BaracudaSynthesizer::new(10_000);
-    let req = JitRequest {
+    let req = JitRequest::new(
         region,
         operands,
-        arch: ArchSku::Sm89,
-        budget: JitBudget {
+        ArchSku::Sm89,
+        JitBudget {
             max_compile_ms: 10_000,
         },
-    };
+    );
 
     println!("\n=== PagedAttn dense region -> real BaracudaSynthesizer ===");
     match synth.synthesize(&req) {

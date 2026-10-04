@@ -115,12 +115,7 @@ pub fn jit_request_for_unplaceable_fused(
     }
     operands.push(operand_desc(graph, id)?);
 
-    Some(JitRequest {
-        region,
-        operands,
-        arch,
-        budget,
-    })
+    Some(JitRequest::new(region, operands, arch, budget))
 }
 
 /// One node's shape/strides/dtype as an [`OperandDesc`]. `None` if the dtype has

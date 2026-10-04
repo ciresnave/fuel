@@ -54,10 +54,6 @@ filtered read of this same list.
   `3e3833a0`); the two duplicates themselves are NOT yet resolved to a
   single home — that follow-up is still open and un-ticketed (no GAP row
   yet), tracked only by this struck bullet until one is filed.
-- **`fuel-kernel-seam::JitRequest` gains `pub target: TargetId` and becomes
-  `#[non_exhaustive]`**, with a `JitRequest::new(...)` constructor; baracuda's
-  5 construction sites move to `::new(...)` in the same release so they
-  break once, not twice. Board #106 Step A.
 - **`fuel-compression` renamed to `fuel-posttrain`** (mechanical: directory
   `git mv`, package name, the 2 repo sites). Not a model-definition crate
   (the `fuel-model-*` family is reserved for those); names the lifecycle
@@ -102,7 +98,7 @@ filtered read of this same list.
   question answered first (does linking `fuel-metal-backend` alone imply
   availability, or does it need its own `metal` feature) that wasn't
   resolved here.~~ Merged with PR-D (2026-10-04, #308).
-- **`train.rs` moves to `fuel-training/src/train.rs`** (board #109
+- ~~**`train.rs` moves to `fuel-training/src/train.rs`** (board #109
   follow-up): `docs/restructure-migration-design.md` Row 5's original
   "no below-consumer; PASSES" only checked fuel-core's own graph — the real
   consumers of `fuel::train::{OptimizerConfig,Parameter,TrainState,loss}`
@@ -119,7 +115,33 @@ filtered read of this same list.
   facade). A second, pre-existing `LrSchedule` system
   (`lazy_training_augmentations`, already in `fuel-training` via
   `training_loop`) overlaps train.rs's own — filed as GAP-346, not
-  reconciled in this move per the PM's explicit instruction.
+  reconciled in this move per the PM's explicit instruction.~~ Merged
+  2026-10-04 (PR #309).
+- **Board #106 Step A: `fuel-kernel-seam::JitRequest` gains `pub target:
+  TargetId` and becomes `#[non_exhaustive]`**, with a `JitRequest::new(region,
+  operands, arch, budget)` constructor deriving `target` via
+  `TargetId::from(arch)` (verified infallible for all 4 `ArchSku` variants
+  by an exhaustive test, not a sample). 7 construction sites in fuel moved
+  to `::new(...)` (`jit_adopt.rs`, `jit_carrier.rs` — the only production
+  site — `jit_synth_kernel_live.rs` ×4, `fuel-kernel-seam`'s own test).
+  `fuel-kernel-seam`'s `baracuda-kernels-types` pin bumped alpha.81 →
+  alpha.84 (the first version depending on `unpopped-vocab` 0.14.3, the
+  registration-based `TargetId` impl; 0.11.0 was the old fixed-index one).
+  **Breaking for baracuda**: `#[non_exhaustive]` makes every external
+  struct-literal construction a hard compile error — baracuda's own
+  construction sites (its Step B, tracked in its own repo, last counted at
+  5) must move to `::new(...)` too. **Publication ordering, stated because
+  it gates baracuda's own architecture work**: `fuel-kernel-seam`'s version
+  is tied to the whole-workspace version (`version.workspace = true`), and
+  `fuel-ir`/`fuel-tensor` have never been published to crates.io — so this
+  new `fuel-kernel-seam` cannot reach crates.io until the 0.13.0 wave
+  publishes. Baracuda's Step B develops against a **git rev** pin
+  (`fuel-kernel-seam = { git = "...", rev = "<Step-A-merge-sha>" }`) in the
+  meantime; `baracuda-cuda-emit` (and anything else with that dep) cannot
+  publish ITS own change until this wave publishes and baracuda switches
+  the pin to the real crates.io version. **The 0.13.0 wave's publication is
+  therefore on baracuda's critical path, not just fuel's — prioritize
+  accordingly.**
 
 ## Allocation
 
