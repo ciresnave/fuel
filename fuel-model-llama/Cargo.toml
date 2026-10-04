@@ -26,6 +26,10 @@
     fuel-dispatch = { workspace = true }
     fuel-graph    = { workspace = true }
     fuel-ir       = { workspace = true }
+    # Added for kv_block_pool's shim retirement (fuel-core dissolution,
+    # GAP-347 PR 2): repoints this crate's 19 `fuel_core::kv_block_pool::`
+    # sites to the real crate directly.
+    fuel-kv-pool  = { workspace = true }
     half          = { workspace = true }
     hf-hub        = { workspace = true }
     serde         = { workspace = true }

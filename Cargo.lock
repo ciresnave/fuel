@@ -1743,6 +1743,7 @@ version = "0.12.9"
 dependencies = [
  "fuel-core",
  "fuel-dispatch",
+ "fuel-kv-pool",
  "fuel-transformers",
 ]
 
@@ -2282,6 +2283,7 @@ dependencies = [
  "fuel-dispatch",
  "fuel-graph",
  "fuel-ir",
+ "fuel-kv-pool",
  "half",
  "hf-hub",
  "serde",
