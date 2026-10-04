@@ -396,7 +396,7 @@ repaths also ride this move:** `pipelined_bridge.rs:316` and `:1233` reference
 `fuel-judge` while `pipelined_bridge` → `fuel-dispatch`, those links become cross-crate in
 both directions at once.
 
-#### Row 3 — the Judge (`judge/mod.rs` 3910 → `fuel-judge`; `judge/oracle.rs` 439 + `judge/cache.rs` 412 → `fuel-dispatch`) · RULED (§5.1), premise VERIFIED
+#### Row 3 — the Judge (`judge/mod.rs` 3910 → `fuel-judge`; `judge/oracle.rs` 439 + `judge/cache.rs` 412 → `fuel-dispatch`) · RULED (§5.1), premise VERIFIED — **SUPERSEDED, see below**
 
 Pre-flight confirmed 2026-09-02: `oracle.rs`/`cache.rs` non-test imports are only
 `fuel_dispatch` + `fuel_ir` — **zero** `fuel-core`-Foundation code deps, so the
@@ -405,6 +405,34 @@ Execution note: their tests reference `crate::judge::{test_equiv_key,
 PROFILE_REPORT_VERSION}` from `judge/mod.rs` → `fuel-judge`; those helpers must
 move/repath on the split — test wiring, not a layering fault. `factories.rs` joins this
 crate's runner (see Row 2).
+
+**SUPERSEDED (2026-10-04, PR-D, board #109 follow-up).** Two things changed
+the premise: (1) CireSnave's #109 ruling ("move Tensor into fuel-tensor, worry
+about a semantic split later") landed `judge/mod.rs` (the Judge runner) in
+`fuel-tensor`, not the `fuel-judge` top-leaf this row assumed — no `fuel-judge`
+crate was created; that bigger split was judged not needed to satisfy layering
+and was explicitly declined by the PM when this row's deviation was raised. (2)
+The 2026-09-02 pre-flight's "`cache.rs` non-test imports are only `fuel_dispatch`
++ `fuel_ir`" claim MISSED one real import: `populate_dispatch_table()` called
+`crate::judge::Judge::default().run(&probe)` directly — `Judge::run` realizes
+real tensor ops across backends to profile them, genuinely `Tensor`-dependent.
+A bare `cache.rs → fuel-dispatch` move, as this row specified, would have
+recreated the `fuel-dispatch → fuel-tensor` cycle #305 was built to avoid (the
+cycle this row's own pre-flight checked for and correctly found absent in
+`oracle.rs` — the miss was specific to this one function in `cache.rs`).
+
+**What actually shipped:** `cache.rs`'s storage/lookup mechanics (`cached`,
+`cached_oracle`, `invalidate`, the process-wide slot, the `DispatchTable`/
+`ProfileJudgeOracle` re-exports) moved to `fuel_dispatch::judge_cache`, exactly
+as this row specified. `populate_dispatch_table` alone stayed behind as a thin
+fn in `fuel-tensor/src/judge/cache.rs`: it runs the Judge (needs `Tensor`) and
+hands the finished `ProfileReport` down via a new `fuel_dispatch::judge_cache::
+store(report)` — a downward call, no cycle, same public behavior for every
+`cached()`/`cached_oracle()`/`populate_dispatch_table()` caller. `oracle.rs`
+and `PROFILE_REPORT_VERSION`/`default_report_path` had already moved to
+`fuel_dispatch` in an earlier step (see `judge/mod.rs`'s own re-export
+comments) — this row's `oracle.rs` half was already done before this
+deviation was even noticed.
 
 #### Row 4 — serving / decode (8,926) → SPLIT
 

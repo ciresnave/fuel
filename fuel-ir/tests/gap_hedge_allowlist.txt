@@ -1,6 +1,5 @@
 fuel-aocl-cpu-backend/src/lib.rs	/// run would need a manual `set PATH=...` before invocation.
 fuel-tensor/src/inference_context.rs	//!   not yet on the pre-allocated path (grow-by-replace works without
-fuel-tensor/src/judge/cache.rs	//! not yet useful for realize-time dispatch — the router needs
 fuel-tensor/src/judge/mod.rs	// All others: not yet wired into the direct-call path. The
 fuel-tensor/src/judge/mod.rs	// FlashAttn kernel (naive SDPA, `flash_attn_{f32,f16,bf16}` in
 fuel-tensor/src/judge/mod.rs	// Reductions + ReduceTo not yet wired into the direct-call
