@@ -13,9 +13,10 @@ filtered read of this same list.
 
 ## Items
 
-- **arch.rs: a declared-but-unrecognized `general.architecture` now
+- ~~**arch.rs: a declared-but-unrecognized `general.architecture` now
   classifies as `Unknown`, never guessed from tensor names.**
-  Behavior change (same signature, same enum). PR #303.
+  Behavior change (same signature, same enum). PR #303.~~ Merged
+  2026-10-03.
 - **`fuel_formats::gguf::Value` gains a `Bytes(Vec<u8>)` variant; `read_string`
   stops its lossy UTF-8 conversion.** Breaking: `Value` is not
   `#[non_exhaustive]`, so a new variant breaks every exhaustive external
@@ -25,9 +26,22 @@ filtered read of this same list.
   `2..=255` acceptance, non-UTF-8 key/name rejection) must be resolved or
   explicitly accepted before any real consumer is repointed from `read` to
   `open`. GAP-345.
-- **`fuel-core` removed** (dissolution complete): every module relocated to
-  its destination crate; the facade (`fuel`) keeps re-exporting the moved
-  paths, but the `fuel-core` crate itself goes away. Board item 9.
+- **`fuel-core` removed** — **collision-forced**: `fuel-core` is owned on
+  crates.io by the unrelated FuelLabs blockchain project (confirmed via the
+  crates.io API, same owner as the `fuel-compression` collision above), so
+  this name could never publish under this project regardless of
+  dissolution progress. Dissolution: 6 of 7 remaining `fuel-core/src/`
+  modules are already pure compat re-export shims to a real destination
+  crate (`quantized`→`fuel_loaders`, `hf_config`→`fuel_loaders`,
+  `kv_block_pool`→`fuel_kv_pool`, `telemetry`→`fuel_dispatch`,
+  `safetensors`→`fuel_loaders`, `error`'s re-export half→`fuel_ir`); real
+  remaining content is the `bail!` macro (error.rs) and
+  `has_accelerate`/`has_mkl`/`metal_is_available` (utils.rs), both
+  already-tracked single-home follow-ups from #305/#308. NOT YET DONE —
+  tracked as GAP-347. The facade (`fuel`) will re-export directly from the
+  real destination crates once `fuel-core` itself is deleted; CireSnave's
+  standing ruling is that `fuel-core` must be fully dissolved. Board item
+  9.
 - ~~**`Tensor` moves into a new `fuel-tensor` crate** (mechanical move per
   CireSnave's ruling on #109; the semantic split, if any, is a later,
   separate decision). Board #109, PR #305 (one PR for the whole
@@ -54,10 +68,17 @@ filtered read of this same list.
   `3e3833a0`); the two duplicates themselves are NOT yet resolved to a
   single home — that follow-up is still open and un-ticketed (no GAP row
   yet), tracked only by this struck bullet until one is filed.
-- **`fuel-compression` renamed to `fuel-posttrain`** (mechanical: directory
-  `git mv`, package name, the 2 repo sites). Not a model-definition crate
-  (the `fuel-model-*` family is reserved for those); names the lifecycle
-  stage it actually performs, pairing with `fuel-training`.
+- **`fuel-compression` renamed to `fuel-posttrain`** — **collision-forced,
+  not just a naming clarity choice**: `fuel-compression` is already owned
+  on crates.io by the unrelated FuelLabs blockchain project (confirmed via
+  the crates.io API, same owner as the `fuel-core` collision below), so
+  this name could never publish under this project regardless of fit.
+  CireSnave ruled "go with fuel-posttrain for now" (2026-10-04). Mechanical:
+  directory `git mv`, package name, the 2 repo sites. Not a
+  model-definition crate (the `fuel-model-*` family is reserved for those);
+  also names the lifecycle stage it actually performs, pairing with
+  `fuel-training` — a real secondary benefit, but the rename exists because
+  the old name is unavailable, not primarily for that reason.
 - **Facade path changes:** any `pub use` the above items add, move, or
   remove in `fuel/src/lib.rs` — tracked per-item above rather than
   separately; this bullet exists so a reader checking "did anything in the
@@ -108,7 +129,11 @@ filtered read of this same list.
   already depends on the facade `fuel` (`fuel-training → fuel →
   fuel-core`), so a `fuel-core` compat re-export of `fuel-training` would
   cycle (`fuel-core → fuel-training → fuel → fuel-core`); no shim is
-  possible. `fuel` is unpublished, so no external downstream breaks.
+  possible. **Correction (2026-10-04): `fuel` IS published on crates.io
+  (v0.1.0, owned by this project, stale since 2026-04-10) — the original
+  claim here that it was unpublished was wrong.** No collision, nothing to
+  do about it on crates.io; 0.13.0 simply supersedes the stale 0.1.0 when
+  this wave publishes, so no external downstream breaks either way.
   Callers use `fuel_training::train` directly; both real consumers updated
   in the same PR. `fuel-training` gained direct `fuel-dispatch`/`fuel-ir`/
   `fuel-memory` deps (train.rs needs items not re-exported through the
@@ -117,7 +142,7 @@ filtered read of this same list.
   `training_loop`) overlaps train.rs's own — filed as GAP-346, not
   reconciled in this move per the PM's explicit instruction.~~ Merged
   2026-10-04 (PR #309).
-- **Board #106 Step A: `fuel-kernel-seam::JitRequest` gains `pub target:
+- ~~**Board #106 Step A: `fuel-kernel-seam::JitRequest` gains `pub target:
   TargetId` and becomes `#[non_exhaustive]`**, with a `JitRequest::new(region,
   operands, arch, budget)` constructor deriving `target` via
   `TargetId::from(arch)` (verified infallible for all 4 `ArchSku` variants
@@ -150,10 +175,21 @@ filtered read of this same list.
   standing rule). Edited with the identical mechanical transform as the
   other 5 verified sites (same field→positional-arg shape, same argument
   order, diff hunks compared) — strong but not compiled evidence. **Verify
-  in the first heavy-CUDA local session before this wave publishes.**
+  in the first heavy-CUDA local session before this wave publishes.**~~
+  Merged 2026-10-04 (PR #310, `c02da348`).
 
 ## Allocation
 
 The PM allocates the actual version number at gate time (CireSnave's
 ruling, 2026-09-23) — per-PR bumps do not compose across parallel PRs. This
 doc does not carry a version bump itself.
+
+**Allocated: 0.13.0** (PM, 2026-10-04) — every workspace crate keeps
+`version.workspace = true`.
+
+**Publish feasibility, named so nobody schedules it as instantaneous:**
+roughly 45 workspace crates, most never published before, so crates.io's
+new-crate rate limit (a burst of 5, then ~1 per 10 minutes) paces the
+publish itself at roughly 7 hours, on top of whatever time the actual
+build/verify steps take per crate. Needs a scheduled window; the PM runs
+the publishes.
