@@ -142,6 +142,15 @@ filtered read of this same list.
   the pin to the real crates.io version. **The 0.13.0 wave's publication is
   therefore on baracuda's critical path, not just fuel's — prioritize
   accordingly.**
+  ⚠️ **2 of the 7 `::new(...)` sites are NOT compiled by CI or by any lane
+  today**: `fuel-dispatch/tests/jit_synth_kernel_live.rs:588` and `:855`
+  sit behind the `jit-synth` feature, which requires `cuda` — compiling
+  them needs the CUDA forge (a build slot), out of scope for this PR's
+  verification and for every CI leg (CUDA is local-only per this repo's
+  standing rule). Edited with the identical mechanical transform as the
+  other 5 verified sites (same field→positional-arg shape, same argument
+  order, diff hunks compared) — strong but not compiled evidence. **Verify
+  in the first heavy-CUDA local session before this wave publishes.**
 
 ## Allocation
 
