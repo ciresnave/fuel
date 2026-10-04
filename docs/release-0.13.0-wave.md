@@ -67,7 +67,7 @@ filtered read of this same list.
   separately; this bullet exists so a reader checking "did anything in the
   facade move" knows to read every item's own note, not search for a
   facade-specific list that doesn't exist.
-- **`fuel-inference`'s multi-session scheduler widens `eos_id: Option<u32>`
+- ~~**`fuel-inference`'s multi-session scheduler widens `eos_id: Option<u32>`
   to `eos_ids: Option<Vec<u32>>`** across `SessionState::new`,
   `SessionScheduler::add_session`, `PagedSessionScheduler::add_session`, and
   `PagedSessionScheduler::add_session_sharing_prefix` — a session now stops
@@ -76,7 +76,31 @@ filtered read of this same list.
   `LlamaEosToks::Single`/`Multiple`; the scheduler couldn't express that).
   Breaking: 4 public signatures change shape. `Some(vec![])` normalizes to
   `None` at construction, so "no EOS" has one representation. No shim —
-  callers (lightbulb) adapt their call sites after this merges.
+  callers (lightbulb) adapt their call sites after this merges.~~ Merged
+  2026-10-04 (PR #307). Lightbulb notified of the exact new signature.
+- **PR-D (board #109 follow-up): `judge/cache.rs`'s storage/lookup half
+  moves to `fuel_dispatch::judge_cache`** (`cached`, `cached_oracle`,
+  `invalidate`, the process-wide slot) — the one Tensor-dependent function,
+  `populate_dispatch_table`, stays as a thin fn in `fuel-tensor` that runs
+  the Judge (needs `Tensor`) and hands the finished report down via a new
+  `fuel_dispatch::judge_cache::store(report)`, avoiding the
+  `fuel-dispatch → fuel-tensor` cycle a bare move would have recreated (see
+  `docs/restructure-migration-design.md` §5.1 Row 3's amended note for why
+  the original 2026-09-02 ruling undercounted this). Behavior-preserving —
+  no public signature changes, same `cached()`/`cached_oracle()`/
+  `populate_dispatch_table()` call sites. Not a breaking item on its own.
+- **PR-D: `fuel-core/src/backend.rs` deleted** — a pure
+  `pub use fuel_backend_contract::backend::HostStorage;` compat shim with
+  zero consumers via `fuel_core::backend::`/`fuel::backend::` module path
+  anywhere in the repo (verified with a positive-control grep: the same
+  query finds `fuel-backend-contract`'s and `fuel-ir`'s own, unrelated,
+  local `backend` modules, so a zero-hit-for-fuel-core result isn't a
+  broken query). `utils.rs`'s `has_accelerate`/`has_mkl`/
+  `metal_is_available` single-home follow-up (tracked since #305) is
+  explicitly OUT of this item's scope — it needs a feature-flag semantics
+  question answered first (does linking `fuel-metal-backend` alone imply
+  availability, or does it need its own `metal` feature) that wasn't
+  resolved here.
 
 ## Allocation
 
