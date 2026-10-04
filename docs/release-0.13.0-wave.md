@@ -13,9 +13,10 @@ filtered read of this same list.
 
 ## Items
 
-- **arch.rs: a declared-but-unrecognized `general.architecture` now
+- ~~**arch.rs: a declared-but-unrecognized `general.architecture` now
   classifies as `Unknown`, never guessed from tensor names.**
-  Behavior change (same signature, same enum). PR #303.
+  Behavior change (same signature, same enum). PR #303.~~ Merged
+  2026-10-03 (missed being struck when it landed).
 - **`fuel_formats::gguf::Value` gains a `Bytes(Vec<u8>)` variant; `read_string`
   stops its lossy UTF-8 conversion.** Breaking: `Value` is not
   `#[non_exhaustive]`, so a new variant breaks every exhaustive external
@@ -25,9 +26,17 @@ filtered read of this same list.
   `2..=255` acceptance, non-UTF-8 key/name rejection) must be resolved or
   explicitly accepted before any real consumer is repointed from `read` to
   `open`. GAP-345.
-- **`fuel-core` removed** (dissolution complete): every module relocated to
-  its destination crate; the facade (`fuel`) keeps re-exporting the moved
-  paths, but the `fuel-core` crate itself goes away. Board item 9.
+- **`fuel-core` removed** — **IN PROGRESS, not complete** (corrected here:
+  this line previously claimed "dissolution complete", which measurement
+  showed false — 7 files remain, GAP-347). **Collision-forced, not just
+  cleanup**: `fuel-core` is owned on crates.io by `fuel-service-user` (the
+  unrelated FuelLabs `fuel-vm` family, same owner as `fuel-compression`'s
+  collision), so it blocks every crate that transitively depends on it
+  from publishing under this project's names at all — this is the wave's
+  critical path. Every module relocates to its real destination crate
+  (5 of 7 already have — see GAP-347 for the exact remainder and repoint
+  order); the facade (`fuel`) will re-export directly from each
+  destination once `fuel-core` itself is deleted. Board item 9.
 - ~~**`Tensor` moves into a new `fuel-tensor` crate** (mechanical move per
   CireSnave's ruling on #109; the semantic split, if any, is a later,
   separate decision). Board #109, PR #305 (one PR for the whole
@@ -54,10 +63,15 @@ filtered read of this same list.
   `3e3833a0`); the two duplicates themselves are NOT yet resolved to a
   single home — that follow-up is still open and un-ticketed (no GAP row
   yet), tracked only by this struck bullet until one is filed.
-- **`fuel-compression` renamed to `fuel-posttrain`** (mechanical: directory
-  `git mv`, package name, the 2 repo sites). Not a model-definition crate
-  (the `fuel-model-*` family is reserved for those); names the lifecycle
-  stage it actually performs, pairing with `fuel-training`.
+- **`fuel-compression` renamed to `fuel-posttrain`** — **collision-forced,
+  not just naming clarity**: `fuel-compression` is owned on crates.io by
+  `fuel-service-user` (the unrelated FuelLabs blockchain project's
+  `fuel-vm`/`fuel-core` family), so this name could never publish under
+  this project. CireSnave ruled "go with `fuel-posttrain` for now."
+  Mechanical otherwise: directory `git mv`, package name, the 2 repo
+  sites. Not a model-definition crate (the `fuel-model-*` family is
+  reserved for those); names the lifecycle stage it actually performs,
+  pairing with `fuel-training`.
 - **Facade path changes:** any `pub use` the above items add, move, or
   remove in `fuel/src/lib.rs` — tracked per-item above rather than
   separately; this bullet exists so a reader checking "did anything in the
@@ -116,8 +130,13 @@ filtered read of this same list.
   (`lazy_training_augmentations`, already in `fuel-training` via
   `training_loop`) overlaps train.rs's own — filed as GAP-346, not
   reconciled in this move per the PM's explicit instruction.~~ Merged
-  2026-10-04 (PR #309).
-- **Board #106 Step A: `fuel-kernel-seam::JitRequest` gains `pub target:
+  2026-10-04 (PR #309). **Correction (filed during wave assembly):** the
+  struck text above says "`fuel` is unpublished" — false. `fuel` IS
+  published on crates.io, at `0.1.0`, stale since 2026-04-10, owned by
+  this project (`ciresnave`) — no collision. The 0.13.0 wave simply
+  supersedes that stale version; there is nothing to resolve on
+  crates.io's side.
+- ~~**Board #106 Step A: `fuel-kernel-seam::JitRequest` gains `pub target:
   TargetId` and becomes `#[non_exhaustive]`**, with a `JitRequest::new(region,
   operands, arch, budget)` constructor deriving `target` via
   `TargetId::from(arch)` (verified infallible for all 4 `ArchSku` variants
@@ -141,7 +160,7 @@ filtered read of this same list.
   publish ITS own change until this wave publishes and baracuda switches
   the pin to the real crates.io version. **The 0.13.0 wave's publication is
   therefore on baracuda's critical path, not just fuel's — prioritize
-  accordingly.**
+  accordingly.**~~ Merged 2026-10-04 (PR #310, `c02da348`).
   ⚠️ **2 of the 7 `::new(...)` sites are NOT compiled by CI or by any lane
   today**: `fuel-dispatch/tests/jit_synth_kernel_live.rs:588` and `:855`
   sit behind the `jit-synth` feature, which requires `cuda` — compiling
