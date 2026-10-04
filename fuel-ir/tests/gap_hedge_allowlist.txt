@@ -13,7 +13,7 @@ fuel-tensor/src/lazy.rs	/// Allocate a data-determined [`fuel_ir::SymId`] not ye
 fuel-tensor/src/lazy.rs	/// does not yet expose.
 fuel-tensor/src/lazy_latent_cache.rs	//! surface can later be re-expressed on top of it — deferred for now because
 fuel-tensor/src/persistent_decode.rs	// would need per-variant inv_freq, and no such model exists yet. Single-base	documented scope boundary with a stated trigger; not an unfinished-work admission (architect-authorised)
-fuel-core/src/train.rs	//! ## Not yet covered
+fuel-training/src/train.rs	//! ## Not yet covered
 fuel-correctness-fixtures/src/lib.rs	//! ## Not yet in v1 (deferred to follow-up sessions)
 fuel-cpu-backend/src/byte_kernels.rs	// FlashAttn — naive multi-head SDPA (math definition)
 fuel-cpu-backend/src/byte_kernels.rs	// PagedAttn — paged-KV-cache attention (naive)

@@ -2,7 +2,7 @@
 //! Training utilities: parameters, optimizers, and the training-step
 //! driver. Backend-agnostic: the loop realizes through the production
 //! pipelined executor
-//! ([`crate::pipelined_bridge::realize_split_as_with_initial`]), so
+//! ([`fuel::pipelined_bridge::realize_split_as_with_initial`]), so
 //! SGD and AdamW work on CPU, CUDA, Vulkan, and any future backend
 //! with zero code changes. (Executor-unification Session 5 ported
 //! this off the legacy `GraphExecutor<B>`.)
@@ -18,7 +18,7 @@
 //!    `Op::Const` nodes (`const_placeholder_like`); the step driver
 //!    binds each parameter's current storage Arc through the realize
 //!    call's `StorageCache` — the same persistent-state pattern
-//!    [`crate::inference_context::InferenceContext`] uses for KV
+//!    [`fuel::inference_context::InferenceContext`] uses for KV
 //!    slots.
 //! 2. The step driver calls `loss.backward()` to extend the graph
 //!    with backward nodes, fetches `grad` per parameter via the
@@ -52,8 +52,8 @@
 //!   to the step's realize-split roots — the multi-target machinery
 //!   here already supports it (eager master-plan Phase G).
 
-use crate::Device;
-use crate::lazy::Tensor;
+use fuel::Device;
+use fuel::lazy::Tensor;
 use fuel_dispatch::pipelined::StorageCache;
 use fuel_graph::{Graph, Node, NodeId, Op, SharedGraph};
 use fuel_ir::{DType, Error, Result, Shape};
@@ -251,7 +251,7 @@ pub enum GradClip {
 /// Training state: all parameters and optimizer state that must
 /// persist across steps, held as backend-erased
 /// `Arc<RwLock<Storage>>` (the same currency the
-/// [`crate::inference_context::InferenceContext`] persistent map
+/// [`fuel::inference_context::InferenceContext`] persistent map
 /// uses). The training device is fixed at construction.
 pub struct TrainState {
     params: HashMap<String, (Arc<RwLock<Storage>>, Shape)>,
@@ -384,7 +384,7 @@ impl TrainState {
         };
         let mut cache = StorageCache::new();
         cache.insert(id, Arc::clone(storage));
-        crate::pipelined_bridge::realize_one_as_with_initial::<f32>(&graph, id, &self.device, cache)
+        fuel::pipelined_bridge::realize_one_as_with_initial::<f32>(&graph, id, &self.device, cache)
     }
 
     /// Run one training step.
@@ -574,7 +574,7 @@ impl TrainState {
 
         // 6. One realize-split through the pipelined executor:
         //    loss → host, everything else stays device-resident.
-        let (host, resident) = crate::pipelined_bridge::realize_split_as_with_initial::<f32>(
+        let (host, resident) = fuel::pipelined_bridge::realize_split_as_with_initial::<f32>(
             &graph,
             &roots,
             1,
@@ -637,7 +637,7 @@ impl TrainState {
 /// Reusable loss functions. All pure Tensor graph constructors —
 /// every backend runs them via the primitives it already supports.
 pub mod loss {
-    use crate::lazy::Tensor;
+    use fuel::lazy::Tensor;
     use fuel_ir::{Error, Result, Shape};
 
     /// Mean-squared-error loss: `mean((pred - target)²)`. Returns a
@@ -747,7 +747,7 @@ pub mod loss {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy::Tensor;
+    use fuel::lazy::Tensor;
     use fuel_graph::registry::Reduction;
     use fuel_ir::DType;
 
@@ -767,7 +767,7 @@ mod tests {
     /// numerically consistent with the textbook composition.
     #[test]
     fn fused_softmax_cross_entropy_matches_primitive_composition() {
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         // 3 rows, vocab 4. Targets chosen so each row exercises a
         // different argmax position.
         let logits_data: Vec<f32> = vec![
@@ -809,7 +809,7 @@ mod tests {
     /// Reduction::None returns per-row losses with shape == targets.shape.
     #[test]
     fn fused_softmax_cross_entropy_none_returns_per_row() {
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let logits_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
         let logits = Tensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device).unwrap();
         let targets = lt_const_i64_like(&logits, vec![1_i64, 3], Shape::from_dims(&[2]));
@@ -834,7 +834,7 @@ mod tests {
     /// remaining row's loss exactly.
     #[test]
     fn fused_softmax_cross_entropy_ignore_index_masks_row() {
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let logits_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
         let logits = Tensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device).unwrap();
         let targets = lt_const_i64_like(&logits, vec![1_i64, -100], Shape::from_dims(&[2]));
@@ -854,7 +854,7 @@ mod tests {
     /// dispatch instead of calling the kernel directly.
     #[test]
     fn causal_conv1d_basic_end_to_end() {
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         // x = [0, 0, 1, 2] (single batch, single channel, pre-padded)
         let x = Tensor::from_f32(
             vec![0.0_f32, 0.0, 1.0, 2.0],
@@ -878,7 +878,7 @@ mod tests {
     /// CausalConv1d with use_silu = true through the dispatcher.
     #[test]
     fn causal_conv1d_with_silu_end_to_end() {
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let x = Tensor::from_f32(
             vec![0.0_f32, 0.0, 1.0, 2.0],
             Shape::from_dims(&[1, 1, 4]),
@@ -928,7 +928,7 @@ mod tests {
     /// → op_to_op_kind/op_to_op_params → wrapper → kernel.
     #[test]
     fn selective_scan_basic_end_to_end() {
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         // batch=1, seqlen=1, dim=1, dstate=1. Same numbers as the
         // byte-kernel single-step test: expected y = 3.0.
         let u = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1]), &device).unwrap();
@@ -952,7 +952,7 @@ mod tests {
     /// SelectiveScan with delta_softplus through the dispatcher.
     #[test]
     fn selective_scan_with_softplus_end_to_end() {
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let u = Tensor::from_f32(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]), &device).unwrap();
         let delta = u
             .const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1, 1]))
@@ -1009,7 +1009,7 @@ mod tests {
     /// → op_to_op_kind/op_to_op_params → wrapper → kernel.
     #[test]
     fn ssd_chunk_scan_basic_end_to_end() {
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         // [batch=1, seqlen=1, heads=1, head_dim=1]
         let x = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1, 1]), &device).unwrap();
         let dt = x
@@ -1060,7 +1060,7 @@ mod tests {
     /// / op_to_op_params → wrapper → kernel.
     #[test]
     fn nf4_matmul_basic_end_to_end() {
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         // m=1, n=2, k=4, block_size=2 — same hand-computed test as
         // the byte-kernel two-outputs-two-blocks check.
         let activations = Tensor::from_f32(
@@ -1146,7 +1146,7 @@ mod tests {
         let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
 
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
@@ -1201,7 +1201,7 @@ mod tests {
     fn adamw_fits_linear_regression() {
         let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
@@ -1272,7 +1272,7 @@ mod tests {
             ys_onehot[i * n_class + cls] = 1.0;
         }
 
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let params = vec![
             Parameter::new_f32(
                 "w",
@@ -1341,7 +1341,7 @@ mod tests {
             })
             .collect();
 
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[d, 1]), vec![0.1f32; d]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.0f32]),
@@ -1426,7 +1426,7 @@ mod tests {
         let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
         let x_arc: Arc<[f32]> = xs.clone().into();
         let y_arc: Arc<[f32]> = ys.into();
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
@@ -1474,7 +1474,7 @@ mod tests {
         let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
         let x_arc: Arc<[f32]> = xs.clone().into();
         let y_arc: Arc<[f32]> = ys.into();
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
@@ -1561,7 +1561,7 @@ mod tests {
         // Unclipped: this LR is wild given the input magnitude →
         // expect divergence (non-finite weights).
         {
-            let device = crate::Device::cpu();
+            let device = fuel::Device::cpu();
             let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.1)).unwrap();
             for _ in 0..10 {
                 let x_arc_step = x_arc.clone();
@@ -1593,7 +1593,7 @@ mod tests {
 
         // Clipped: global-norm clip at 1.0 keeps every step bounded.
         {
-            let device = crate::Device::cpu();
+            let device = fuel::Device::cpu();
             let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.1))
                 .unwrap()
                 .with_grad_clip(Some(GradClip::GlobalNorm(1.0)));
@@ -1631,7 +1631,7 @@ mod tests {
     fn sgd_with_warmup_cosine_converges() {
         let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
-        let device = crate::Device::cpu();
+        let device = fuel::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
