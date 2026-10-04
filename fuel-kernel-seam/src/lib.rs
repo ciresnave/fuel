@@ -22,11 +22,19 @@
 //! a `SynthArtifact` — import its FKC contract, load + bind the kernel, register
 //! the Tier-2 runtime fused-op — lives Fuel-side, in the dispatch layer, not here.
 
-use baracuda_kernels_types::{ArchSku, OperandDesc};
+use baracuda_kernels_types::{ArchSku, OperandDesc, TargetId};
 use fuel_kernel_seam_types::PatternNode;
 
 /// A request to synthesize a kernel for a Fuel-chosen region (§5.2).
+///
+/// `#[non_exhaustive]` (board #106 Step A, added alongside `target`): a
+/// synthesizer backend (e.g. Baracuda) must construct this through
+/// [`JitRequest::new`], never a struct literal, so a future field add here
+/// is a compile-time nudge at every construction site rather than a value
+/// silently defaulting to nothing. Field READS (`req.region`, etc.) are
+/// unaffected — only construction and exhaustive destructuring are.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct JitRequest {
     /// The region (subgraph sink) to build a kernel for — the §3 grammar. Fuel
     /// owns this type; the synthesizer matches against it. Also the recipe's
@@ -39,9 +47,37 @@ pub struct JitRequest {
     /// The target SM arch Fuel derived from the device — the `backend`/`device`
     /// half of §5.2's `target` (CUDA implicit for a CUDA synthesizer).
     pub arch: ArchSku,
+    /// The target, named by `unpopped-vocab`'s interned `namespace:capability-set`
+    /// token (board #106 option C) — the vendor-neutral successor to `arch`,
+    /// carried alongside it during the staging window rather than replacing it
+    /// outright. Derived from `arch` via `TargetId::from` in [`JitRequest::new`]
+    /// (infallible for all 4 `ArchSku` variants today).
+    pub target: TargetId,
     /// The compile-time / resource budget Fuel sets (§5.2). The synthesizer
     /// SHOULD decline rather than exceed it.
     pub budget: JitBudget,
+}
+
+impl JitRequest {
+    /// Construct a request, deriving `target` from `arch` so every caller
+    /// states the arch once. The only public constructor — `#[non_exhaustive]`
+    /// forbids the struct-literal form outside this crate, and this crate's
+    /// own call sites use it too, so a future field add touches one
+    /// signature instead of every construction site again.
+    pub fn new(
+        region: PatternNode,
+        operands: Vec<OperandDesc>,
+        arch: ArchSku,
+        budget: JitBudget,
+    ) -> Self {
+        Self {
+            region,
+            operands,
+            arch,
+            target: TargetId::from(arch),
+            budget,
+        }
+    }
 }
 
 /// The compile-time / resource budget the requester allows for synthesis (§5.2).
@@ -196,16 +232,41 @@ mod tests {
     }
 
     fn req() -> JitRequest {
-        JitRequest {
-            region: relu_add(),
-            operands: vec![
+        JitRequest::new(
+            relu_add(),
+            vec![
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
             ],
-            arch: ArchSku::Sm89,
-            budget: JitBudget {
+            ArchSku::Sm89,
+            JitBudget {
                 max_compile_ms: 250,
             },
+        )
+    }
+
+    /// Board #106 Step A condition: every `ArchSku` variant, not a sample —
+    /// an exhaustive `match` so a new variant upstream fails to COMPILE here
+    /// rather than silently skipping coverage. `TargetId::from` is asserted
+    /// infallible for each (it already panics internally if ever not, per
+    /// its own doc) and produces the exact `cuda:sm<N>[a]` token the §5.2
+    /// target model expects.
+    #[test]
+    fn jit_request_new_derives_target_for_every_arch_sku_variant() {
+        for arch in [ArchSku::Sm80, ArchSku::Sm89, ArchSku::Sm90, ArchSku::Sm90a] {
+            let expected_token = match arch {
+                ArchSku::Sm80 => "cuda:sm80",
+                ArchSku::Sm89 => "cuda:sm89",
+                ArchSku::Sm90 => "cuda:sm90",
+                ArchSku::Sm90a => "cuda:sm90a",
+            };
+            let req = JitRequest::new(relu_add(), vec![], arch, JitBudget { max_compile_ms: 1 });
+            assert_eq!(
+                req.target.to_string(),
+                expected_token,
+                "JitRequest::new's TargetId::from(ArchSku::{arch:?}) must match the \
+                 §5.2 target model's cuda: token"
+            );
         }
     }
 
