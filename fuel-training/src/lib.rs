@@ -18,6 +18,13 @@
 //!   metrics) for resumable training.
 //! - [`training_loop`] — Composable training loop driver that wires together
 //!   clipping, scheduling, and logging.
+//! - [`train`] — `Parameter`/`OptimizerConfig`/`TrainState`: the lazy-DAG
+//!   parameter-storage and SGD/AdamW step driver (moved from
+//!   `fuel-core::train`, board #109 follow-up — `fuel::train` is
+//!   retired, this is its new home). Ships its own `LrSchedule` trait
+//!   (`ConstLr`/`WarmupCosine`/`WarmupLinear`) distinct from
+//!   [`training_loop`]'s `fuel::lazy_training_augmentations` schedulers —
+//!   a known, tracked overlap (see `docs/gaps.md`), not reconciled here.
 //!
 //! ## What is NOT here
 //!
@@ -58,6 +65,7 @@
 //! ```
 
 pub mod checkpoint;
+pub mod train;
 pub mod training_loop;
 
 // Re-exports from the lazy training substrate in fuel-core. These used to

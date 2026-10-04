@@ -2,10 +2,11 @@
 //! Lazy-graph MLP training core for the `mnist-training` example.
 //!
 //! A minimal 2-layer MLP (`in → hidden → (ReLU) → out`) trained with AdamW on
-//! Fuel's lazy autograd — the same [`fuel::train::TrainState`] + `.backward()` +
-//! optimizer machinery the `llama-finetune-vulkan` binary demonstrates. The
-//! training logic lives here (in the library) rather than in the example binary
-//! so it is reachable from an automated test; the binary is a thin loader.
+//! Fuel's lazy autograd — the same [`fuel_training::train::TrainState`] +
+//! `.backward()` + optimizer machinery the `llama-finetune-vulkan` binary
+//! demonstrates. The training logic lives here (in the library) rather than
+//! in the example binary so it is reachable from an automated test; the
+//! binary is a thin loader.
 //!
 //! ## What the convergence gate proves — and what it does NOT
 //!
@@ -32,8 +33,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use fuel::lazy::Tensor;
-use fuel::train::{OptimizerConfig, Parameter, TrainState, loss};
 use fuel::{Device, Result, Shape};
+use fuel_training::train::{OptimizerConfig, Parameter, TrainState, loss};
 
 /// A 2-layer MLP: `in_dim → hidden → (ReLU) → out_dim`.
 #[derive(Clone, Copy, Debug)]

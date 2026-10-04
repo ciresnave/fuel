@@ -25,7 +25,7 @@
 //!
 //! ## Why this exists (memory win)
 //!
-//! `fuel-core::train::cross_entropy_with_logits` materializes ~7
+//! `fuel_training::train::loss::cross_entropy_with_logits` materializes ~7
 //! `[..., V]`-shaped intermediates (max-broadcast, shifted, exp,
 //! log-sum-broadcast, log-softmax, per-elem product). For Llama-7B
 //! with `V=32000, batch=8, seq=2048` this is ~12 GiB of transient
@@ -54,7 +54,7 @@
 //! collides with a non-negative class index, so the lowered backward
 //! is correct for the typical case. Datasets that actually use
 //! ignore-masking during training should keep using
-//! `fuel::train::loss::cross_entropy_with_logits` (the
+//! `fuel_training::train::loss::cross_entropy_with_logits` (the
 //! primitive composition path) until the in-place fused backward
 //! lands.
 
