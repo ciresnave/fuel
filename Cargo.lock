@@ -1742,6 +1742,7 @@ name = "fuel"
 version = "0.12.9"
 dependencies = [
  "fuel-core",
+ "fuel-dispatch",
  "fuel-transformers",
 ]
 

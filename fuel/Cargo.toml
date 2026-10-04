@@ -18,6 +18,10 @@ repository = "https://github.com/ciresnave/fuel"
 
 [dependencies]
 fuel-core = { path = "../fuel-core", version = "0.12.0" }
+# Added for `telemetry`'s shim retirement (fuel-core dissolution, GAP-347
+# PR 1): the facade re-exports `fuel_dispatch::telemetry::judge_sink`
+# directly now, instead of through fuel-core's (deleted) re-export module.
+fuel-dispatch = { path = "../fuel-dispatch", version = "0.12.0" }
 # Stage 2: the facade re-exports the model zoo from fuel-transformers (Models
 # tier). Added in the SAME commit that repoints fuel-transformers -> fuel-core,
 # because a facade depending on a fuel-transformers that still depends on the
@@ -35,7 +39,7 @@ fuel-transformers = { path = "../fuel-transformers", version = "0.12.0" }
 # (fuel's `cuda` is exactly `fuel-core/cuda`) — the first thing that gate protects.
 [features]
 default = []
-telemetry = ["fuel-core/telemetry"]
+telemetry = ["fuel-core/telemetry", "fuel-dispatch/telemetry"]
 cuda = ["fuel-core/cuda", "fuel-transformers/cuda"]
 cudnn = ["fuel-core/cudnn", "fuel-transformers/cudnn"]
 nccl = ["fuel-core/nccl"]
