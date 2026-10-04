@@ -54,7 +54,7 @@
 //! # Scope boundary — read this before assuming the assert is gone
 //!
 //! This module changes the vocabulary the **decode trait** speaks. It does
-//! **not** change [`fuel_core::kv_block_pool::KvGeometry`], whose own documentation
+//! **not** change [`fuel::kv_block_pool::KvGeometry`], whose own documentation
 //! commits to the vLLM shared-block-table model ("a physical block addresses the
 //! SAME slot in *every* layer's K/V buffer"), nor `ModelDims` in `fuel-inference`.
 //! [`LayerStateSpec::collapse_uniform`] exists precisely to hand those consumers
@@ -144,7 +144,7 @@ impl LayerStateSpec {
     }
 
     /// Collapse a per-layer spec list into the single `(n_kv_heads, head_dim)`
-    /// pair today's `ModelDims` / [`fuel_core::kv_block_pool::KvGeometry`] consumers
+    /// pair today's `ModelDims` / [`fuel::kv_block_pool::KvGeometry`] consumers
     /// require.
     ///
     /// **This helper is the one place the old assert is still made, so it makes

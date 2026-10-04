@@ -229,11 +229,6 @@ DISPOSITIONS = {
              "same cross-crate under --no-deps cause as "
              "`fuel_core::lazy_latent_cache::LatentCache` above; "
              "fuel-inference/src/decode_state_spec.rs module doc."),
-    "fuel_core::kv_block_pool::KvGeometry": (CORRECT,
-             "same cross-crate under --no-deps cause as "
-             "`fuel_core::lazy_latent_cache::LatentCache` above; two distinct call "
-             "sites in decode_state_spec.rs (module doc + a function doc comment)."),
-
     # ---- NOT-A-LINK: notation rustdoc misreads. Fix with a code span. ----
     "Layout::contiguous(shape)": (NOT_A_LINK,
              "a CALL EXPRESSION, not a path -- the trailing `(shape)` makes it notation. "

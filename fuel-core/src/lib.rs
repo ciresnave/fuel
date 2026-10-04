@@ -99,7 +99,13 @@ pub use fuel_tensor::{
     cuda_backend, decode_shape, factories, inference_context, judge, kv_block_pool_device, lazy,
     lazy_latent_cache, nf4, persistent_decode, pipelined_bridge, planner, scheduling, test_utils,
 };
-pub mod kv_block_pool;
+// `kv_block_pool` deleted (fuel-core dissolution, GAP-347 PR 2): it was a
+// pure `pub use fuel_kv_pool::*;` shim. Real in-workspace consumers via the
+// `fuel_core::kv_block_pool::` module path (not the facade) repointed
+// directly to `fuel_kv_pool` in the same change (fuel-model-llama, its
+// test). `fuel`'s facade now re-exports the real crate directly
+// (`fuel/src/lib.rs`) so `fuel::kv_block_pool` callers (fuel-inference,
+// and the lightbulb sibling project) are unaffected.
 // `telemetry` deleted (fuel-core dissolution, GAP-347 PR 1): it was a pure
 // `pub use fuel_dispatch::telemetry::judge_sink::*;` shim with zero real
 // external consumers. `fuel`'s facade now re-exports the real module

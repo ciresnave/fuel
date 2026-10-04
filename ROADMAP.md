@@ -603,7 +603,8 @@ nowhere; now captured so they are not forgotten):
   local/`#[ignore]`).
   No IR op, no kernel — host orchestration over the existing persistent-decode machinery.
   **Increment 2 — the block-pool allocator — SHIPPED 2026-07-29** (the confirmed-absent keystone
-  is now present): pure host-side core `fuel-core/src/kv_block_pool.rs` (`KvBlockPool` — free list +
+  is now present): pure host-side core `fuel-kv-pool/src/lib.rs` (moved from
+  `fuel-core/src/kv_block_pool.rs`, GAP-347 PR 2) (`KvBlockPool` — free list +
   refcounts + per-session block tables + refcount-aware evict/splice, model-agnostic, move-ready for
   the Q2 `fuel-inference` move) + the device-backed layer `fuel-core/src/kv_block_pool_device.rs`
   (`DeviceKvPool` — real `n_layers × 2` `[num_blocks, block_size, Hkv, D]` K/V pool buffers,

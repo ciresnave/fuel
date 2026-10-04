@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use fuel_core::Device;
 use fuel_core::inference_context::{InferenceContext, KvCache};
-use fuel_core::kv_block_pool::KvGeometry;
 use fuel_core::kv_block_pool_device::{BlockKind, DeviceKvPool};
 use fuel_core::lazy::LayerWeights;
 use fuel_ir::DType;
+use fuel_kv_pool::KvGeometry;
 use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
 
 /// Deterministic tiny weights sized to `cfg` (mirrors lazy.rs's test builder).

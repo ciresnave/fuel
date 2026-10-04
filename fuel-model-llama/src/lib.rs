@@ -899,7 +899,7 @@ impl LlamaModel {
         &self,
         token: u32,
         pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
-        session: fuel_core::kv_block_pool::SessionHandle,
+        session: fuel_kv_pool::SessionHandle,
     ) -> fuel_core::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -1056,7 +1056,7 @@ impl LlamaModel {
         &self,
         token: u32,
         pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
-        session: fuel_core::kv_block_pool::SessionHandle,
+        session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
         plan: fuel_core::inference_context::PagedDecodePlan,
         decode_session: &mut Option<fuel_core::inference_context::PagedDecodeSession>,
@@ -1141,7 +1141,7 @@ impl LlamaModel {
     /// ends before the (immutable) graph build.
     fn advance_paged_session(
         pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
-        session: fuel_core::kv_block_pool::SessionHandle,
+        session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
     ) -> fuel_core::Result<(usize, usize, fuel_core::kv_block_pool_device::PageTableHost)> {
         let block_size = pool.geometry().block_size;
@@ -1214,7 +1214,7 @@ impl LlamaModel {
         &self,
         token: u32,
         pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
-        session: fuel_core::kv_block_pool::SessionHandle,
+        session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
         decode_session: &mut Option<fuel_core::inference_context::PagedDecodeSession>,
     ) -> fuel_core::Result<Vec<f32>> {
@@ -1391,7 +1391,7 @@ impl LlamaModel {
         &self,
         token: u32,
         pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
-        session: fuel_core::kv_block_pool::SessionHandle,
+        session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
         decode_session: &fuel_core::inference_context::PagedDecodeSession,
     ) -> fuel_core::Result<Vec<f32>> {
@@ -1429,7 +1429,7 @@ impl LlamaModel {
         &self,
         tokens: &[u32],
         pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
-        sessions: &[fuel_core::kv_block_pool::SessionHandle],
+        sessions: &[fuel_kv_pool::SessionHandle],
     ) -> fuel_core::Result<Vec<Vec<f32>>> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -1506,7 +1506,7 @@ impl LlamaModel {
         }
 
         // Execute — pre-checked to fit, so no session is left partially advanced.
-        let mut writes: Vec<(fuel_core::kv_block_pool::PhysBlockId, usize)> = Vec::with_capacity(k);
+        let mut writes: Vec<(fuel_kv_pool::PhysBlockId, usize)> = Vec::with_capacity(k);
         for (bi, &s) in sessions.iter().enumerate() {
             let pos_b = positions[bi];
             pool.core_mut().append(s, 1).map_err(|e| {
@@ -1614,7 +1614,7 @@ impl LlamaModel {
         rope_sin: &Tensor,
         block_table: &Tensor,
         context_lens: &Tensor,
-        writes: &[(fuel_core::kv_block_pool::PhysBlockId, usize)],
+        writes: &[(fuel_kv_pool::PhysBlockId, usize)],
         scale: f32,
     ) -> fuel_core::Result<Tensor> {
         let cfg = &self.config;
@@ -1661,7 +1661,7 @@ impl LlamaModel {
         rope_sin: &Tensor,
         block_table: &Tensor,
         context_lens: &Tensor,
-        phys: fuel_core::kv_block_pool::PhysBlockId,
+        phys: fuel_kv_pool::PhysBlockId,
         slot: usize,
         scale: f32,
     ) -> fuel_core::Result<Tensor> {
@@ -7809,7 +7809,7 @@ mod generate_tests {
         }
 
         // Paged bf16 decode on CUDA — feed every token one at a time.
-        let geom = fuel_core::kv_block_pool::KvGeometry {
+        let geom = fuel_kv_pool::KvGeometry {
             n_layers: cfg.n_layers,
             num_blocks: 32,
             block_size: 4,
@@ -7902,7 +7902,7 @@ mod generate_tests {
         let k = histories.len();
 
         let (n_layers, n_kv_heads, head_dim) = (cfg.n_layers, cfg.n_kv_heads, cfg.head_dim);
-        let geom = || fuel_core::kv_block_pool::KvGeometry {
+        let geom = || fuel_kv_pool::KvGeometry {
             n_layers,
             num_blocks: 32,
             block_size: 4,
@@ -8551,7 +8551,7 @@ mod generate_tests {
             }
         };
 
-        let geom = fuel_core::kv_block_pool::KvGeometry {
+        let geom = fuel_kv_pool::KvGeometry {
             n_layers: cfg.n_layers,
             num_blocks: 32,
             block_size: 4,
@@ -8704,7 +8704,7 @@ mod generate_tests {
 
         // Build a real held paged session for model A on CPU.
         let dev = fuel_core::Device::cpu();
-        let geom = fuel_core::kv_block_pool::KvGeometry {
+        let geom = fuel_kv_pool::KvGeometry {
             n_layers: cfg.n_layers,
             num_blocks: 32,
             block_size: 4,
@@ -9233,7 +9233,7 @@ mod generate_tests {
         let dev = fuel_core::Device::cpu();
 
         let (n_layers, n_kv_heads, head_dim) = (cfg.n_layers, cfg.n_kv_heads, cfg.head_dim);
-        let geom = || fuel_core::kv_block_pool::KvGeometry {
+        let geom = || fuel_kv_pool::KvGeometry {
             n_layers,
             num_blocks: 32,
             block_size: 4,
@@ -9391,7 +9391,7 @@ mod generate_tests {
     }
 
     /// Build the tiny CPU f32 model + block geometry shared by the gate tests.
-    fn paged_gate_fixture() -> (LlamaModel, fuel_core::kv_block_pool::KvGeometry, Device) {
+    fn paged_gate_fixture() -> (LlamaModel, fuel_kv_pool::KvGeometry, Device) {
         let cfg = LlamaConfig {
             vocab_size: 32,
             dim: 16,
@@ -9411,7 +9411,7 @@ mod generate_tests {
             config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
-        let geom = fuel_core::kv_block_pool::KvGeometry {
+        let geom = fuel_kv_pool::KvGeometry {
             n_layers: cfg.n_layers,
             num_blocks: 32,
             block_size: 4,
@@ -9429,7 +9429,7 @@ mod generate_tests {
     #[allow(clippy::too_many_arguments)]
     fn run_paged_plan_once_gate(
         model: &LlamaModel,
-        geom: fuel_core::kv_block_pool::KvGeometry,
+        geom: fuel_kv_pool::KvGeometry,
         history: &[u32],
         decode: &[u32],
         cap: usize,
