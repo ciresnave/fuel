@@ -126,6 +126,7 @@ pub use jit_ingest::{
 };
 #[cfg(feature = "jit")]
 mod jit_ingest_probe;
+pub mod judge_cache;
 pub mod judge_report_path;
 pub mod kernel;
 #[cfg(feature = "jit")]

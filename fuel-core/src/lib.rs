@@ -73,7 +73,15 @@
 // (owner-tracked, docs/gaps.md GAP-229) and drop this allow if precision is no longer 0/N.
 #![allow(clippy::identity_op)]
 
-pub mod backend;
+// `backend.rs` deleted (PR-D, board #109 follow-up): it was a pure
+// `pub use fuel_backend_contract::backend::HostStorage;` compat re-export
+// with zero consumers via `fuel_core::backend::`/`fuel::backend::` module
+// path anywhere in this repo (every other `*::backend::` hit found was a
+// DIFFERENT crate's own local `backend` module — fuel-ir's, fuel-backend-
+// contract's — not this one). `HostStorage` itself was never re-exported
+// at this crate's root, so there is nothing to replace this module path
+// with; a caller wanting it uses `fuel_backend_contract::backend::HostStorage`
+// directly, as every real consumer already does.
 pub mod error;
 pub mod hf_config;
 // `cuda_backend`/`device`/`dtype`/`lazy`/`lazy_latent_cache`/`metal_backend`/
