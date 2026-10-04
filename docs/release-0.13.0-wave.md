@@ -67,6 +67,16 @@ filtered read of this same list.
   separately; this bullet exists so a reader checking "did anything in the
   facade move" knows to read every item's own note, not search for a
   facade-specific list that doesn't exist.
+- **`fuel-inference`'s multi-session scheduler widens `eos_id: Option<u32>`
+  to `eos_ids: Option<Vec<u32>>`** across `SessionState::new`,
+  `SessionScheduler::add_session`, `PagedSessionScheduler::add_session`, and
+  `PagedSessionScheduler::add_session_sharing_prefix` — a session now stops
+  on ANY of several configured EOS ids (LLaMA-3-instruct-style checkpoints
+  declare multiple, via `fuel-transformers`'s existing
+  `LlamaEosToks::Single`/`Multiple`; the scheduler couldn't express that).
+  Breaking: 4 public signatures change shape. `Some(vec![])` normalizes to
+  `None` at construction, so "no EOS" has one representation. No shim —
+  callers (lightbulb) adapt their call sites after this merges.
 
 ## Allocation
 
