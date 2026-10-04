@@ -476,17 +476,17 @@ mod tests {
     }
 
     fn req() -> JitRequest {
-        JitRequest {
-            region: abs_sub(),
-            operands: vec![
+        JitRequest::new(
+            abs_sub(),
+            vec![
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
             ],
-            arch: baracuda_kernels_types::ArchSku::Sm89,
-            budget: JitBudget {
+            baracuda_kernels_types::ArchSku::Sm89,
+            JitBudget {
                 max_compile_ms: 250,
             },
-        }
+        )
     }
 
     #[test]
