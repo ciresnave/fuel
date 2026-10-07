@@ -155,6 +155,14 @@ pub use fuel_tensor::cuda_backend::cudnn;
 // types ARE re-exported directly from fuel_ir below (also zero measured
 // consumers, kept anyway for API-surface stability).
 pub use error::{Context, Error, Result};
+// `bail` needs a crate-root re-export, not just the module-level one in
+// `error.rs` (`pub use fuel_ir::bail;`) -- `#[macro_export]` (the previous
+// shape, before GAP-347 PR 4's consolidation) always places a macro at the
+// crate root regardless of which module defines it, but a `pub use` of a
+// macro follows ordinary path resolution and would otherwise only resolve
+// as `fuel_core::error::bail`, breaking every existing `fuel_core::bail!`
+// call site (and, transitively, `fuel::bail!`).
+pub use error::bail;
 pub use fuel_tensor::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
 pub use fuel_tensor::{Device, DeviceLocation, NdArray};
 // `layout.rs`/`storage.rs`/`strided_index.rs`/`dyn_backend.rs`/`shape.rs`/

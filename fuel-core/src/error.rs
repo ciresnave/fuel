@@ -6,21 +6,16 @@
 //! `crate::Context`, etc. continue to resolve within fuel-core.
 pub use fuel_ir::error::{Context, Error, MatMulUnexpectedStriding, Result, zip};
 
-/// Returns early from a function with a formatted error message.
-///
-/// This is fuel-core's own `bail!` macro.  `$crate::Error` resolves to
-/// `fuel_core::Error` (which re-exports `fuel_ir::Error`), so
-/// callers inside this crate can write `bail!("oops")` and get the correct
-/// type.
-#[macro_export]
-macro_rules! bail {
-    ($msg:literal $(,)?) => {
-        return Err($crate::Error::Msg(format!($msg).into()).bt())
-    };
-    ($err:expr $(,)?) => {
-        return Err($crate::Error::Msg(format!($err).into()).bt())
-    };
-    ($fmt:expr, $($arg:tt)*) => {
-        return Err($crate::Error::Msg(format!($fmt, $($arg)*).into()).bt())
-    };
-}
+// `bail!` consolidation (fuel-core dissolution, GAP-347 PR 4): this used to
+// be a local `macro_rules! bail` duplicating `fuel_ir::error::bail!` (the
+// canonical copy, since `Error` above is itself a bare re-export of
+// `fuel_ir::Error` — not a distinct type). `$crate` inside a `macro_rules!`
+// body resolves to the crate that WROTE the macro, not the one that
+// re-exports or invokes it, so re-exporting here keeps `fuel_core::bail!`
+// (and, transitively, `fuel::bail!` and every bare `bail!` inside this
+// crate) producing byte-identical `fuel_ir::Error::Msg` values — proved,
+// not just reasoned about, by the before/after tests added across this
+// PR's consumer crate families (fuel-datasets, fuel-nn, fuel-model-llama,
+// fuel-model-phi, fuel-transformers, fuel-examples) plus fuel-tensor's
+// pre-existing `bail_tests::bail_macro_returns_a_typed_err`.
+pub use fuel_ir::bail;
