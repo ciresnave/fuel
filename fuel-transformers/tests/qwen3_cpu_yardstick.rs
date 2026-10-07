@@ -757,7 +757,6 @@ fn qwen3_cpu_speed_harness() {
 #[test]
 #[ignore = "needs network, a real CUDA device, and --features cuda; run via scripts/gpu-run.ps1"]
 fn m1_cuda_matches_cpu_reference() {
-    use fuel_core::Device;
     use fuel_core::inference_context::{DecodeSession, InferenceContext, KvCache};
     use fuel_ir::DType;
 
@@ -793,25 +792,45 @@ fn m1_cuda_matches_cpu_reference() {
 
         let mut candidate_steps: Vec<(u32, Vec<f32>)> = Vec::with_capacity(DECODE_LEN);
 
-        // Prefill: full prompt in one call, slice the LAST position's
-        // vocab_size-wide row out of the flattened (seq, vocab) result.
-        let prefill_logits_flat = model
+        // Prefill: full prompt in one call. FOUND 2026-10-07 running M1 on
+        // the real CUDA backend: unlike plain `forward()` (which returns a
+        // flattened `(seq, vocab)` tensor needing a last-position slice),
+        // `forward_with_kv_context_persistent` returns exactly `vocab_size`
+        // elements — the next-token prediction only — REGARDLESS of how
+        // many tokens were in the input slice. The precedent test this
+        // file's doc comment cites
+        // (`quantized_qwen3_windowed_decode_matches_quantized_forward` in
+        // `lazy_quantized_qwen3.rs`) never exercised this: it called
+        // `forward_with_kv_context_persistent` for prefill too, but never
+        // asserted anything about that call's OWN return shape, only
+        // about later decode steps. The original slicing code here
+        // (`off = (prompt_tokens.len() - 1) * vocab_size`) assumed the
+        // plain-`forward()` shape and panicked:
+        // "range start index 3038720 out of range for slice of length
+        // 151936" (3038720 = 20 × 151936, prompt_tokens.len() == 21).
+        let logits = model
             .forward_with_kv_context_persistent(&prompt_tokens, &mut cache, &mut ctx, &mut session)
             .expect("prefill forward_with_kv_context_persistent");
         let vocab_size = cfg.vocab_size;
-        let off = (prompt_tokens.len() - 1) * vocab_size;
-        let mut logits = prefill_logits_flat[off..off + vocab_size].to_vec();
+        assert_eq!(
+            logits.len(),
+            vocab_size,
+            "forward_with_kv_context_persistent's prefill return must be exactly \
+             vocab_size elements, not seq*vocab_size — if this assertion fires, the \
+             API shape changed and this test's decode loop below needs revisiting too"
+        );
+        let mut logits = logits;
         let mut next_token = logits
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
             .map(|(i, _)| i as u32)
             .unwrap();
-        candidate_steps.push((next_token, logits));
+        candidate_steps.push((next_token, logits.clone()));
 
         // Decode: one token at a time, `forward_with_kv_context_persistent`
         // returns exactly `vocab_size` elements per call once `session`
-        // holds a built graph — no slicing needed, unlike prefill.
+        // holds a built graph — no slicing needed, same shape as prefill.
         for _ in 1..DECODE_LEN {
             logits = model
                 .forward_with_kv_context_persistent(
