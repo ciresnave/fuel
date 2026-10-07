@@ -824,6 +824,93 @@ mod tests {
         }
     }
 
+    /// Added during the M1 investigation (2026-10-07): the apparent
+    /// real-model decode divergence turned out to be a context-free CPU
+    /// reference fixture (`run_greedy` in
+    /// `fuel-transformers/tests/qwen3_cpu_yardstick.rs`), not a decode-path
+    /// bug — this test (and its real-weight reproduction attempts) never
+    /// found anything wrong. Kept anyway as GQA coverage this module
+    /// otherwise lacks: the ONLY other test covering this API
+    /// (`quantized_qwen3_windowed_decode_matches_quantized_forward`, right
+    /// below) uses `test_cfg()`'s `num_attention_heads == num_key_value_heads`
+    /// (no GQA, `n_rep=1`), so a real GQA regression here would go
+    /// undetected without this one (`num_attention_heads: 8,
+    /// num_key_value_heads: 4`, `n_rep=2`).
+    #[test]
+    fn quantized_qwen3_gqa_decode_matches_quantized_forward() {
+        use fuel_core::Device;
+        use fuel_core::inference_context::{DecodeSession, InferenceContext, KvCache};
+        use fuel_ir::DType;
+
+        let cfg = Qwen3Config {
+            num_attention_heads: 8,
+            num_key_value_heads: 4,
+            head_dim: 8,
+            ..test_cfg()
+        };
+        assert_ne!(
+            cfg.num_attention_heads, cfg.num_key_value_heads,
+            "this test's whole point is GQA (n_rep=2); a config change here would \
+             make it stop testing the M1 divergence"
+        );
+        let model =
+            QuantizedQwen3Model::from_f32_bake(cfg.clone(), tiny_weights_decoupled_q_dim(&cfg))
+                .unwrap();
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        let prefill = 3;
+        // Cache sized with slack beyond what any single step fills (the
+        // pre-existing non-GQA precedent test uses exactly `tokens.len()`,
+        // zero slack) — closer to how a real caller sizes a KvCache with
+        // room for future decode steps.
+        let max_seq_len = tokens.len() + 16;
+
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+
+        model
+            .forward_with_kv_context_persistent(
+                &tokens[..prefill],
+                &mut cache,
+                &mut ctx,
+                &mut session,
+            )
+            .expect("prefill");
+
+        for pos in prefill..tokens.len() {
+            let got = model
+                .forward_with_kv_context_persistent(
+                    &tokens[pos..=pos],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
+                )
+                .expect("decode");
+            let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+            let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+            let worst = got
+                .iter()
+                .zip(expected.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                worst < 1e-5,
+                "GQA (n_rep=2) decode at position {pos} diverged by {worst} from plain \
+                 forward() on the SAME tiny weights — this is the M1 investigation's \
+                 red-first reproduction; see this test's doc comment",
+            );
+        }
+    }
+
     /// **GAP-029 increment 3 — the quantized wrapper's decode delegation.**
     ///
     /// The module's `test_cfg()` is deliberately dense (`sliding_window: None`),

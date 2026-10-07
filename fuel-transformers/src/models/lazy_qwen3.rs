@@ -1346,6 +1346,99 @@ mod tests {
         out
     }
 
+    /// Added during the M1 investigation (2026-10-07) as an "is this
+    /// scale-dependent?" probe — ruled that out (passed before the real
+    /// cause, a context-free CPU reference fixture, was found elsewhere;
+    /// see `fuel-transformers/tests/qwen3_cpu_yardstick.rs`'s `run_greedy`).
+    /// Kept as real-dimension GQA coverage: the control just below
+    /// (`qwen3_decode_matches_forward_when_no_layer_is_windowed`) exercises
+    /// GQA (4 heads / 2 kv heads) with F32 weights via this same shared
+    /// decode path, but only at toy scale (`hidden_size: 16, head_dim: 4`,
+    /// where `q_dim == hidden_size` by coincidence). This test is identical
+    /// in shape, at the REAL model's actual per-head dimensions
+    /// (`hidden_size: 1024, head_dim: 128, num_attention_heads: 16,
+    /// num_key_value_heads: 8` — Qwen3-0.6B's real config, GAP-279-decoupled),
+    /// with `num_hidden_layers`/`vocab_size`/token count kept small so it
+    /// stays fast.
+    #[test]
+    fn qwen3_decode_matches_forward_at_real_model_scale() {
+        let cfg = Qwen3Config {
+            vocab_size: 32,
+            hidden_size: 1024,
+            intermediate_size: 3072,
+            num_hidden_layers: 2,
+            num_attention_heads: 16,
+            num_key_value_heads: 8,
+            head_dim: 128,
+            max_position_embeddings: 64,
+            sliding_window: None,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 1_000_000.0,
+            rms_norm_eps: 1e-6,
+            attention_bias: false,
+            tie_word_embeddings: false,
+        };
+        assert_ne!(
+            cfg.num_attention_heads, cfg.num_key_value_heads,
+            "this test's whole point is GQA at real scale"
+        );
+        // Can't reuse `decode_vs_forward_max_abs` here: its `tiny_weights`
+        // hardcodes `attn_q`/`attn_o` at `h*h`, which is only valid when
+        // `q_dim == hidden_size` — real Qwen3-0.6B decouples them
+        // (q_dim = 16*128 = 2048 != hidden_size 1024, GAP-279), so this
+        // needs `tiny_weights_decoupled_q_dim` instead.
+        //
+        let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        let prefill = 3;
+        let model = Qwen3Model {
+            config: cfg.clone(),
+            weights: tiny_weights_decoupled_q_dim(&cfg),
+        };
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim,
+            tokens.len(),
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<DecodeSession> = None;
+        model
+            .forward_with_kv_context_persistent(
+                &tokens[..prefill],
+                &mut cache,
+                &mut ctx,
+                &mut session,
+            )
+            .expect("prefill");
+        for pos in prefill..tokens.len() {
+            let got = model
+                .forward_with_kv_context_persistent(
+                    &tokens[pos..=pos],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
+                )
+                .expect("decode");
+            let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
+            let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
+            let worst = got
+                .iter()
+                .zip(expected.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                worst < DECODE_ORACLE_ABS,
+                "real-scale Qwen3 decode at position {pos} diverged by {worst} from plain \
+                 forward() on the same (decoupled, real-dimension) weights",
+            );
+        }
+    }
+
     /// ⚠️ **NON-DISCRIMINATION CONTROL — what makes the sibling's red mean
     /// anything.** With `max_window_layers: 0` the plan collapses to one dense
     /// variant, so this passes under BOTH a correct windowed mask plan and one
