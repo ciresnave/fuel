@@ -249,22 +249,37 @@ fn run_greedy(
         }
     };
 
+    // FOUND 2026-10-07 (M1 investigation, reviewer-identified): plain
+    // `forward()` has NO KV cache — `Qwen3Model` holds only `config` +
+    // `weights` (no session state), so `model.forward(&[next_token], pos)`
+    // embeds and self-attends over a length-1 sequence, attending ONLY to
+    // itself, with zero context from the prompt or earlier generated
+    // tokens. The ORIGINAL code here called exactly that for every decode
+    // step, making this "CPU reference" context-free from step 1 onward —
+    // wrong, not a tolerance issue. The fix re-feeds the GROWING full
+    // token sequence every step (expensive — O(n^2) total — but correct)
+    // and takes the last position's logits, matching the pattern
+    // `fuel-model-llama/tests/paged_decode_parity.rs` and this project's
+    // other decode-vs-forward precedent tests already use for their
+    // reference side.
+    let mut all_tokens: Vec<u32> = prompt_tokens.to_vec();
     let logits_flat = model
-        .forward(prompt_tokens, 0)
+        .forward(&all_tokens, 0)
         .map_err(|e| anyhow::anyhow!("forward: {e}"))?
         .realize_f32();
-    let mut logits = slice_last(logits_flat, prompt_tokens.len());
+    let mut logits = slice_last(logits_flat, all_tokens.len());
     let mut steps = Vec::with_capacity(DECODE_LEN);
     let first = record_step(&logits);
     let mut next_token = first.token;
     steps.push(first);
 
-    for index in 1..DECODE_LEN {
+    for _ in 1..DECODE_LEN {
+        all_tokens.push(next_token);
         let logits_flat = model
-            .forward(&[next_token], prompt_tokens.len() + index - 1)
+            .forward(&all_tokens, 0)
             .map_err(|e| anyhow::anyhow!("forward: {e}"))?
             .realize_f32();
-        logits = slice_last(logits_flat, 1);
+        logits = slice_last(logits_flat, all_tokens.len());
         let step = record_step(&logits);
         next_token = step.token;
         steps.push(step);
@@ -368,7 +383,8 @@ fn compare_step(
 /// reference `PromptRun`. Used by the self-consistency test and the
 /// negative controls below, all of which work from the checked-in fixture
 /// or a deliberately mutated copy of it — never a live run (see
-/// `compare_live_run` for that). Mirrors
+/// `run_kv_context_decode_and_compare` for that, which inlines the
+/// equivalent full-logit comparison via `CandidateLogits::Full`). Mirrors
 /// `fuel-model-llama/tests/paged_decode_parity.rs`'s `assert_close` shape.
 fn compare_runs(
     candidate: &PromptRun,
@@ -394,51 +410,6 @@ fn compare_runs(
             i,
             c.token,
             &CandidateLogits::TopK(&c.top_logits),
-            r,
-            rel_bound,
-            &mut excused_near_ties,
-        )?;
-    }
-    Ok(())
-}
-
-/// Compares a LIVE candidate run — one full per-step logit vector plus its
-/// argmax token, e.g. from a real `model.forward(...)` call on a CUDA
-/// backend (M1 onward) — against a stored reference `PromptRun`. Unlike
-/// `compare_runs`, there is no "missing id" case here: every reference
-/// top-K id resolves to its REAL value in the candidate's full row, so a
-/// harmless near-cutoff rank reorder cannot false-positive, and a real
-/// divergence that moves a value far from the reference cannot hide behind
-/// truncation either way.
-///
-/// Only called from `m1_cuda_matches_cpu_reference` below, which is
-/// `#[cfg(feature = "cuda")]` — gated the same way so a default (no-cuda)
-/// build has no dead-code warning for a function whose only consumer is
-/// conditionally compiled.
-#[cfg(feature = "cuda")]
-fn compare_live_run(
-    candidate_steps: &[(u32, Vec<f32>)],
-    reference: &PromptRun,
-    tier: DtypeTier,
-) -> Result<(), String> {
-    if candidate_steps.len() != reference.steps.len() {
-        return Err(format!(
-            "step count mismatch: candidate={} reference={}",
-            candidate_steps.len(),
-            reference.steps.len()
-        ));
-    }
-    let rel_bound = tier.relative_bound();
-    let mut excused_near_ties = 0usize;
-    for (i, ((token, logits), r)) in candidate_steps
-        .iter()
-        .zip(reference.steps.iter())
-        .enumerate()
-    {
-        compare_step(
-            i,
-            *token,
-            &CandidateLogits::Full(logits),
             r,
             rel_bound,
             &mut excused_near_ties,
@@ -637,8 +608,8 @@ fn missing_reference_id_in_candidate_topk_is_rejected() {
 /// 2026-10-07): a LIVE candidate (full logit row — the shape M1 actually
 /// produces) whose ranking reorders near the top-K cutoff, by an amount
 /// WITHIN tolerance, must stay GREEN. This is what the missing-id fix
-/// above must NOT break: `compare_live_run`'s `CandidateLogits::Full`
-/// looks up every reference id by its REAL value in the full row,
+/// above must NOT break: `run_kv_context_decode_and_compare`'s
+/// `CandidateLogits::Full` looks up every reference id by its REAL value in the full row,
 /// regardless of what rank that id happens to hold in the candidate, so a
 /// harmless reorder can never be mistaken for a missing id.
 #[test]
@@ -743,33 +714,50 @@ fn qwen3_cpu_speed_harness() {
     );
 }
 
-/// M1 of the joint GPU milestone plan: "sm_89 end to end through fuel" —
-/// runs M0's model on the RTX 4070 through fuel's CUDA backend, via the
-/// persistent-KV-cache decode path (`forward_with_kv_context_persistent`;
-/// plain `forward()` is hardcoded to `Device::cpu()` in
-/// `run_backbone`/`run_backbone_embeds` and cannot reach CUDA at all), then
-/// runs it through `compare_live_run` against M0's checked-in CPU
-/// reference fixture. `#[ignore]`d: needs network (first run) AND a real
-/// CUDA device AND the `cuda` feature — take a CUDA build slot per
-/// `scripts/cuda-build.ps1` to compile this, and run it through
-/// `scripts/gpu-run.ps1` (exclusive device access), never bare `cargo test`.
-#[cfg(feature = "cuda")]
-#[test]
-#[ignore = "needs network, a real CUDA device, and --features cuda; run via scripts/gpu-run.ps1"]
-fn m1_cuda_matches_cpu_reference() {
+/// Result of running the persistent-KV-context decode path on some device
+/// and comparing it, step by step, against the CPU reference fixture.
+/// Diagnostic fields (`first_divergent_step`, per-prompt breakdown) exist
+/// so a failure can be root-caused — prefill (step 0) wrong implicates
+/// kernels/dequant; prefill right but decode drifting implicates the KV
+/// cache, RoPE position offset, or session persistence — without having
+/// to re-run anything.
+struct KvContextRunResult {
+    device_label: String,
+    max_abs_logit_diff: f32,
+    total_steps: usize,
+    total_mismatched_tokens: usize,
+    /// `(prompt_index, step_index)` of the first step whose `compare_step`
+    /// result was `Err`, if any.
+    first_divergent_step: Option<(usize, usize)>,
+}
+
+/// Runs M0's fixed prompt set through the persistent-KV-context decode
+/// path (`forward_with_kv_context_persistent` — plain `forward()` is
+/// hardcoded to `Device::cpu()` and cannot target an arbitrary device) on
+/// `dev`, and compares every step against the CPU reference fixture inline
+/// via `compare_step`/`CandidateLogits::Full`. Shared by `m1_cuda_matches_cpu_reference` and
+/// `kv_context_cpu_matches_forward_cpu_reference` — the latter is the
+/// cheap (no GPU, no `cuda` feature) diagnostic for isolating "is this a
+/// CUDA-specific bug, or a bug in this API / this harness, full stop?"
+/// (PM ruling, 2026-10-07: run the SAME harness on CPU before trusting a
+/// CUDA divergence as a backend finding).
+fn run_kv_context_decode_and_compare(
+    model: &QuantizedQwen3Model,
+    tokenizer: &tokenizers::Tokenizer,
+    cfg: &Qwen3Config,
+    fixture: &ReferenceFixture,
+    dev: fuel_core::Device,
+    device_label: &str,
+) -> KvContextRunResult {
     use fuel_core::inference_context::{DecodeSession, InferenceContext, KvCache};
     use fuel_ir::DType;
-
-    let fixture = load_fixture();
-    let (model, tokenizer, cfg) = load_model().expect("load_model");
-    let dev =
-        fuel_core::cuda_backend::new_device(0).expect("fuel_core::cuda_backend::new_device(0)");
 
     let mut max_abs_logit_diff = 0f32;
     let mut total_steps = 0usize;
     let mut total_mismatched_tokens = 0usize;
+    let mut first_divergent_step = None;
 
-    for reference_run in &fixture.runs {
+    for (prompt_idx, reference_run) in fixture.runs.iter().enumerate() {
         let formatted = format!(
             "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
             reference_run.prompt
@@ -849,6 +837,7 @@ fn m1_cuda_matches_cpu_reference() {
             candidate_steps.push((next_token, logits.clone()));
         }
 
+        let mut excused = 0usize;
         for (step, (candidate, reference)) in candidate_steps
             .iter()
             .zip(reference_run.steps.iter())
@@ -861,27 +850,99 @@ fn m1_cuda_matches_cpu_reference() {
             if candidate.0 != reference.token {
                 total_mismatched_tokens += 1;
             }
+            let step_result = compare_step(
+                step,
+                candidate.0,
+                &CandidateLogits::Full(&candidate.1),
+                reference,
+                DtypeTier::F16OrQuantized.relative_bound(),
+                &mut excused,
+            );
+            if step_result.is_err() && first_divergent_step.is_none() {
+                first_divergent_step = Some((prompt_idx, step));
+            }
             total_steps += 1;
-            let _ = step;
         }
 
-        let result = compare_live_run(&candidate_steps, reference_run, DtypeTier::F16OrQuantized);
         println!(
-            "prompt={:?} max_abs_logit_diff_so_far={max_abs_logit_diff} \
-             mismatched_tokens_so_far={total_mismatched_tokens}/{total_steps} compare_result={result:?}",
+            "device={device_label} prompt={:?} max_abs_logit_diff_so_far={max_abs_logit_diff} \
+             mismatched_tokens_so_far={total_mismatched_tokens}/{total_steps} \
+             first_divergent_step_so_far={first_divergent_step:?}",
             reference_run.prompt,
         );
-        result.unwrap_or_else(|e| {
-            panic!(
-                "M1: CUDA (sm_89) run diverged from the CPU reference for prompt {:?}: {e}",
-                reference_run.prompt
-            )
-        });
     }
 
-    println!(
-        "M1 PASS: device=cuda:0 model={MODEL_REPO}/{MODEL_FILE} \
-         max_abs_logit_diff={max_abs_logit_diff} \
-         mismatched_tokens={total_mismatched_tokens}/{total_steps}"
+    KvContextRunResult {
+        device_label: device_label.to_string(),
+        max_abs_logit_diff,
+        total_steps,
+        total_mismatched_tokens,
+        first_divergent_step,
+    }
+}
+
+impl KvContextRunResult {
+    fn assert_passes(&self) {
+        assert!(
+            self.first_divergent_step.is_none(),
+            "{} run diverged from the CPU reference at (prompt, step)={:?}: \
+             max_abs_logit_diff={} mismatched_tokens={}/{}",
+            self.device_label,
+            self.first_divergent_step,
+            self.max_abs_logit_diff,
+            self.total_mismatched_tokens,
+            self.total_steps
+        );
+        println!(
+            "PASS: device={} max_abs_logit_diff={} mismatched_tokens={}/{}",
+            self.device_label,
+            self.max_abs_logit_diff,
+            self.total_mismatched_tokens,
+            self.total_steps
+        );
+    }
+}
+
+/// Diagnostic (PM ruling, 2026-10-07): runs the EXACT SAME
+/// `forward_with_kv_context_persistent` decode path `m1_cuda_matches_cpu_reference`
+/// uses, but on `Device::cpu()` instead of CUDA. Isolates "is a CUDA
+/// divergence a real backend bug, or a bug in this API / this harness
+/// regardless of device?" — if this test ALSO fails, the fault is here or
+/// in `forward_with_kv_context_persistent` itself, not CUDA-specific. If
+/// it passes, a CUDA failure is a real CUDA-path finding. No `cuda`
+/// feature or GPU needed — cheap to run before trusting any CUDA result.
+#[test]
+#[ignore = "needs network (hf_hub) to fetch the real Qwen3-0.6B GGUF on first run"]
+fn kv_context_cpu_matches_forward_cpu_reference() {
+    let fixture = load_fixture();
+    let (model, tokenizer, cfg) = load_model().expect("load_model");
+    let result = run_kv_context_decode_and_compare(
+        &model,
+        &tokenizer,
+        &cfg,
+        &fixture,
+        fuel_core::Device::cpu(),
+        "cpu (via forward_with_kv_context_persistent)",
     );
+    result.assert_passes();
+}
+
+/// M1 of the joint GPU milestone plan: "sm_89 end to end through fuel" —
+/// runs M0's model on the RTX 4070 through fuel's CUDA backend, via the
+/// persistent-KV-cache decode path, then compares against M0's checked-in
+/// CPU reference fixture. `#[ignore]`d: needs network (first run) AND a
+/// real CUDA device AND the `cuda` feature — take a CUDA build slot per
+/// `scripts/cuda-build.ps1` to compile this, and run it through
+/// `scripts/gpu-run.ps1` (exclusive device access), never bare `cargo test`.
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "needs network, a real CUDA device, and --features cuda; run via scripts/gpu-run.ps1"]
+fn m1_cuda_matches_cpu_reference() {
+    let fixture = load_fixture();
+    let (model, tokenizer, cfg) = load_model().expect("load_model");
+    let dev =
+        fuel_core::cuda_backend::new_device(0).expect("fuel_core::cuda_backend::new_device(0)");
+    let result =
+        run_kv_context_decode_and_compare(&model, &tokenizer, &cfg, &fixture, dev, "cuda:0");
+    result.assert_passes();
 }
