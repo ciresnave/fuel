@@ -283,3 +283,25 @@ mod tests {
         );
     }
 }
+
+// GAP-347 PR 4 (bail! consolidation): before/after test for this consumer
+// crate family. `fuel::bail!` (the facade's re-export of `fuel_core::bail!`)
+// is now, transitively, `fuel_ir::bail!` re-exported twice (the fuel-core-
+// local `macro_rules!` duplicate was deleted), which can change
+// `$crate::Error` resolution silently across a macro-path swap. This
+// proves the error text/variant this crate actually relies on (the
+// `fuel::bail!` sites in this file and token_output_stream.rs) is unchanged.
+#[cfg(test)]
+mod bail_consolidation_tests {
+    fn always_bails() -> fuel::Result<()> {
+        fuel::bail!("deliberate failure for the fuel-core dissolution bail! consolidation test");
+        #[allow(unreachable_code)]
+        Ok(())
+    }
+
+    #[test]
+    fn facade_bail_still_produces_a_typed_err_with_the_message() {
+        let err = always_bails().expect_err("bail! must produce an Err, never panic");
+        assert!(err.to_string().contains("deliberate failure"));
+    }
+}

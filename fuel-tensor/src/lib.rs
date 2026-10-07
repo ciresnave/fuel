@@ -101,33 +101,24 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-/// Returns early from a function with a formatted error message.
-///
-/// A LOCAL copy of `fuel_core::bail!` (fuel-core/src/error.rs): the
-/// macro's `$crate::Error` resolves to whichever crate it is invoked
-/// from, and `fuel-tensor` needing `fuel_core::bail!` directly would
-/// create a `fuel-tensor` <-> `fuel-core` cargo cycle (`fuel-core`
-/// still needs `fuel-tensor` for `train.rs`'s references into this
-/// crate). Duplicating this 12-line macro verbatim avoids the cycle
-/// without inventing a new shared-macro crate for one move. Tracked as
-/// a follow-up (single home, most likely alongside `Error`/`Result` in
-/// `fuel_ir::error`) in `docs/release-0.13.0-wave.md` so the duplicate
-/// can't drift silently.
-#[macro_export]
-macro_rules! bail {
-    ($msg:literal $(,)?) => {
-        return Err($crate::Error::Msg(format!($msg).into()).bt())
-    };
-    ($err:expr $(,)?) => {
-        return Err($crate::Error::Msg(format!($err).into()).bt())
-    };
-    ($fmt:expr, $($arg:tt)*) => {
-        return Err($crate::Error::Msg(format!($fmt, $($arg)*).into()).bt())
-    };
-}
+// `bail!` consolidation (fuel-core dissolution, GAP-347 PR 4): this used to
+// be a LOCAL duplicate of `fuel_core::bail!`, kept separate only because
+// depending on `fuel_core::bail!` directly would have created a
+// `fuel-tensor` <-> `fuel-core` cargo cycle (`fuel-core` needs
+// `fuel-tensor` for `train.rs`). That reasoning never applied to
+// `fuel_ir`: this crate already depends on it directly (`Error`/`Result`
+// above are a bare re-export of `fuel_ir::error::{Error, Result}`, not a
+// distinct type), and `fuel_ir` is tier 10 — below everything. `$crate`
+// inside a `macro_rules!` body resolves to the crate that WROTE the
+// macro, not the one that re-exports or invokes it, so re-exporting here
+// keeps `fuel_tensor::bail!` producing byte-identical `fuel_ir::Error::Msg`
+// values — proved by the pre-existing `bail_tests::bail_macro_returns_a_typed_err`
+// below, which is unchanged and still exercises this re-export.
+pub use fuel_ir::bail;
 
 #[cfg(test)]
 mod bail_tests {
+    use crate::bail;
     use fuel_ir::error::Result;
 
     fn always_bails() -> Result<()> {
