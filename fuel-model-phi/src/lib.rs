@@ -3264,3 +3264,26 @@ mod phi_kv_context_tests {
         }
     }
 }
+
+// GAP-347 PR 4 (bail! consolidation): before/after test for this consumer
+// crate family. `fuel_core::bail!` is now `fuel_ir::bail!` re-exported
+// (the fuel-core-local `macro_rules!` duplicate was deleted), which can
+// change `$crate::Error` resolution silently across a macro-path swap.
+// This proves the error text/variant this crate actually relies on
+// (src/lib.rs's `fuel_core::bail!`) is unchanged.
+#[cfg(test)]
+mod bail_consolidation_tests {
+    fn always_bails() -> fuel_core::Result<()> {
+        fuel_core::bail!(
+            "deliberate failure for the fuel-core dissolution bail! consolidation test"
+        );
+        #[allow(unreachable_code)]
+        Ok(())
+    }
+
+    #[test]
+    fn fuel_core_bail_still_produces_a_typed_err_with_the_message() {
+        let err = always_bails().expect_err("bail! must produce an Err, never panic");
+        assert!(err.to_string().contains("deliberate failure"));
+    }
+}
