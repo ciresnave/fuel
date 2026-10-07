@@ -2467,6 +2467,7 @@ name = "fuel-transformers"
 version = "0.12.9"
 dependencies = [
  "accelerate-src",
+ "anyhow",
  "byteorder",
  "fancy-regex 0.19.2",
  "fuel-core",

@@ -153,15 +153,22 @@ impl QuantizedQwen3Model {
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
+        // GAP-279: Qwen3 architecturally decouples head_dim from hidden_size
+        // (confirmed decoupler — e.g. Qwen3-0.6B is 16 heads x 128 head_dim =
+        // 2048 against hidden_size 1024), so attn_q's out_features and
+        // attn_o's in_features are q_dim, NOT hidden_size. Mirrors the
+        // already-correct `lazy_quantized_qwen3_moe.rs::from_f32_bake`.
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
         // Gate exactly the dims that serve as a Linear in_features —
         // Q4_0 blocks run along K only. kv (= num_key_value_heads *
         // head_dim) is only ever an out_features (attn_k / attn_v)
         // and needs no divisibility (mirrors the gemma3 gate).
         check_q4_0_divisible(
-            "hidden_size (attn_q/k/v/o, ffn_gate/up, output in-features)",
+            "hidden_size (attn_q/k/v, ffn_gate/up, output in-features)",
             h,
         )?;
         check_q4_0_divisible("intermediate_size (ffn_down in-features)", i)?;
+        check_q4_0_divisible("num_attention_heads * head_dim (attn_o in-features)", q_dim)?;
 
         let quantize_linear =
             |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
@@ -194,14 +201,14 @@ impl QuantizedQwen3Model {
 
         let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for (idx, layer) in src.layers.into_iter().enumerate() {
-            let attn_q =
-                quantize_linear(&layer.attn_q, h, h).map_err(|e| layer_err(idx, "attn_q", e))?;
+            let attn_q = quantize_linear(&layer.attn_q, h, q_dim)
+                .map_err(|e| layer_err(idx, "attn_q", e))?;
             let attn_k =
                 quantize_linear(&layer.attn_k, h, kv).map_err(|e| layer_err(idx, "attn_k", e))?;
             let attn_v =
                 quantize_linear(&layer.attn_v, h, kv).map_err(|e| layer_err(idx, "attn_v", e))?;
-            let attn_o =
-                quantize_linear(&layer.attn_o, h, h).map_err(|e| layer_err(idx, "attn_o", e))?;
+            let attn_o = quantize_linear(&layer.attn_o, q_dim, h)
+                .map_err(|e| layer_err(idx, "attn_o", e))?;
             let ffn_gate = quantize_linear(&layer.ffn_gate, h, i)
                 .map_err(|e| layer_err(idx, "ffn_gate", e))?;
             let ffn_up =
@@ -348,6 +355,11 @@ impl QuantizedQwen3Model {
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
+        // GAP-279: see from_f32_bake's comment above — Qwen3 decouples
+        // head_dim from hidden_size, so attn_q/attn_o are q_dim-wide, not
+        // hidden_size-wide. Mirrors `lazy_quantized_qwen3_moe.rs`'s
+        // already-correct GGUF loader.
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
 
         let token_embedding = load_f32("token_embd.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
@@ -364,10 +376,10 @@ impl QuantizedQwen3Model {
         let mut layer_extras: Vec<Qwen3LayerExtras> = Vec::with_capacity(cfg.num_hidden_layers);
         for idx in 0..cfg.num_hidden_layers {
             let prefix = format!("blk.{idx}");
-            let attn_q = load_weight(&format!("{prefix}.attn_q.weight"), h, h)?;
+            let attn_q = load_weight(&format!("{prefix}.attn_q.weight"), q_dim, h)?;
             let attn_k = load_weight(&format!("{prefix}.attn_k.weight"), kv, h)?;
             let attn_v = load_weight(&format!("{prefix}.attn_v.weight"), kv, h)?;
-            let attn_o = load_weight(&format!("{prefix}.attn_output.weight"), h, h)?;
+            let attn_o = load_weight(&format!("{prefix}.attn_output.weight"), h, q_dim)?;
             let ffn_gate = load_weight(&format!("{prefix}.ffn_gate.weight"), i, h)?;
             let ffn_up = load_weight(&format!("{prefix}.ffn_up.weight"), i, h)?;
             let ffn_down = load_weight(&format!("{prefix}.ffn_down.weight"), h, i)?;
@@ -390,7 +402,7 @@ impl QuantizedQwen3Model {
             };
             let (attn_q_bias, attn_k_bias, attn_v_bias) = if cfg.attention_bias {
                 (
-                    bias(&format!("{prefix}.attn_q.bias"), h),
+                    bias(&format!("{prefix}.attn_q.bias"), q_dim),
                     bias(&format!("{prefix}.attn_k.bias"), kv),
                     bias(&format!("{prefix}.attn_v.bias"), kv),
                 )
@@ -708,6 +720,107 @@ mod tests {
             layer_extras,
             final_norm_gain,
             output,
+        }
+    }
+
+    /// GAP-279: `test_cfg()`'s default (`4 heads x 8 head_dim = 32 == hidden_size
+    /// 32`) is coupled, which is exactly why the loader bug this test exists
+    /// for (`load_weight`/`quantize_linear` calling `attn_q`/`attn_o` at
+    /// `h, h` instead of `q_dim, h` / `h, q_dim`) was invisible to every
+    /// existing test in this file. Builds weights sized to the real
+    /// `q_dim = num_attention_heads * head_dim`, which `tiny_weights` above
+    /// (hardcoded at `h*h`) cannot produce.
+    fn tiny_weights_decoupled_q_dim(cfg: &Qwen3Config) -> Qwen3Weights {
+        let mut s: u32 = 314159;
+        let mut next = move || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
+        let h = cfg.hidden_size;
+        let i = cfg.intermediate_size;
+        let kv = cfg.num_key_value_heads * cfg.head_dim;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let token_embedding = vec_of(cfg.vocab_size * h);
+        let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        let mut layer_extras: Vec<Qwen3LayerExtras> = Vec::with_capacity(cfg.num_hidden_layers);
+        for _ in 0..cfg.num_hidden_layers {
+            layers.push(LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * q_dim)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(q_dim * h)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i)),
+                ffn_up: WeightStorage::F32(vec_of(h * i)),
+                ffn_down: WeightStorage::F32(vec_of(i * h)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            });
+            layer_extras.push(Qwen3LayerExtras {
+                q_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+                k_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+            });
+        }
+        let final_norm_gain = Arc::from(vec![1.0_f32; h]);
+        let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
+        Qwen3Weights {
+            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            layer_extras,
+            final_norm_gain,
+            output,
+        }
+    }
+
+    /// Before this fix, `from_f32_bake` called `quantize_linear(&layer.attn_q,
+    /// h, h)` / `quantize_linear(&layer.attn_o, h, h)`, which on a decoupled
+    /// config rejects the weight outright: `tiny_weights_decoupled_q_dim`
+    /// sizes `attn_q` at `h * q_dim` elements, so the old call's
+    /// `in_features * out_features = h * h` check fails to match whenever
+    /// `q_dim != h` — exactly the real-checkpoint failure this test
+    /// reproduces red-first (see `fuel-transformers/tests/qwen3_cpu_yardstick.rs`
+    /// for the real Qwen3-0.6B GGUF hitting the analogous `load_weight` check).
+    ///
+    /// `hidden_size`/`intermediate_size`/`q_dim` are all chosen as
+    /// multiples of 32 (the Q4_0 block size `check_q4_0_divisible` enforces
+    /// on every in_features dimension) — the smallest values that are both
+    /// Q4_0-legal AND decoupled (`q_dim=64 != hidden_size=32`).
+    #[test]
+    fn from_f32_bake_handles_decoupled_head_dim() {
+        let cfg = Qwen3Config {
+            vocab_size: 24,
+            hidden_size: 32,
+            intermediate_size: 64,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 16,
+            max_position_embeddings: 32,
+            sliding_window: None,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            attention_bias: false,
+            tie_word_embeddings: false,
+        };
+        assert_ne!(
+            cfg.num_attention_heads * cfg.head_dim,
+            cfg.hidden_size,
+            "this test's whole point is a decoupled head_dim (64 != 32)"
+        );
+        let model =
+            QuantizedQwen3Model::from_f32_bake(cfg.clone(), tiny_weights_decoupled_q_dim(&cfg))
+                .expect("GAP-279: the quantized loader must accept a decoupled head_dim config");
+        let logits = model.forward(&[1, 2, 3], 0).expect("forward").realize_f32();
+        assert_eq!(logits.len(), 3 * cfg.vocab_size);
+        for &v in &logits {
+            assert!(v.is_finite());
         }
     }
 

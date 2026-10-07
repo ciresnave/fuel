@@ -223,6 +223,14 @@ impl Qwen3Model {
         self.run_backbone_embeds(&h, start_pos)
     }
 
+    // GAP-279 (fixed): this used to reject any config where
+    // `num_attention_heads * head_dim != hidden_size` — a guard that was
+    // FALSE for real Qwen3 checkpoints (Qwen3 architecturally decouples
+    // head_dim from hidden_size; e.g. Qwen3-0.6B is 16 heads x 128
+    // head_dim = 2048 against hidden_size 1024). `apply_layer`'s Q/O
+    // projections now use `q_dim = num_attention_heads * head_dim`
+    // directly (not `hidden_size`), so there is no longer anything this
+    // function needs to assert about the relationship between the two.
     fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -240,12 +248,6 @@ impl Qwen3Model {
         if seq == 0 {
             return Err(fuel_core::Error::Msg(
                 "Qwen3Model::forward_embeds: seq must be > 0".into(),
-            )
-            .bt());
-        }
-        if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
-                "Qwen3Config: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
         }
@@ -314,6 +316,10 @@ impl Qwen3Model {
         let batch = dims[0];
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        // GAP-279: Qwen3 decouples head_dim from hidden_size, so Q's
+        // projected width is q_dim, not hidden_size — see
+        // `run_backbone_embeds`'s comment for the real-checkpoint shape.
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
 
         let x_norm = x.rms_norm_affine(
             std::sync::Arc::clone(&layer.attn_norm_gain),
@@ -322,7 +328,7 @@ impl Qwen3Model {
 
         let q = layer
             .attn_q
-            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .apply_linear(&x_norm, cfg.hidden_size, q_dim)?
             .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
         let k = layer
             .attn_k
@@ -359,9 +365,7 @@ impl Qwen3Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer
-            .attn_o
-            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.rms_norm_affine(
@@ -441,13 +445,15 @@ pub(crate) fn qwen3_attn_with_kv_writes(
     let batch = dims[0];
     let seq = dims[1];
     let kv_dim = blk.num_key_value_heads * blk.head_dim;
+    // GAP-279: same decoupling as the prefill `apply_layer` above.
+    let q_dim = blk.num_attention_heads * blk.head_dim;
     let act_dtype = x.dtype();
 
     let x_norm = x.rms_norm_affine(Arc::clone(blk.attn_norm_gain), blk.rms_norm_eps)?;
 
     let q = blk
         .attn_q
-        .apply_linear(&x_norm, blk.hidden_size, blk.hidden_size)?
+        .apply_linear(&x_norm, blk.hidden_size, q_dim)?
         .add_optional_trailing_bias(blk.attn_q_bias)?;
     let k = blk
         .attn_k
@@ -542,9 +548,7 @@ pub(crate) fn qwen3_attn_with_kv_writes(
         seq,
         blk.num_attention_heads * blk.head_dim,
     ]))?;
-    let attn_out = blk
-        .attn_o
-        .apply_linear(&merged, blk.hidden_size, blk.hidden_size)?;
+    let attn_out = blk.attn_o.apply_linear(&merged, q_dim, blk.hidden_size)?;
     x.add(&attn_out)
 }
 
@@ -979,6 +983,112 @@ mod tests {
             layer_extras,
             final_norm_gain,
             output,
+        }
+    }
+
+    /// GAP-279: Qwen3 architecturally decouples `head_dim` from
+    /// `hidden_size` (real Qwen3-0.6B: 16 heads x 128 head_dim = 2048,
+    /// against hidden_size 1024) — this is a RED-FIRST reproduction of the
+    /// bug with a small synthetic config, so it runs in CI, which the real
+    /// GGUF checkpoint cannot (see `fuel-transformers/tests/qwen3_cpu_yardstick.rs`
+    /// for the real-checkpoint measured evidence). `tiny_weights` above
+    /// hardcodes `attn_q`/`attn_o` at `h*h`, which is only valid when
+    /// `q_dim == h` — this test builds its own weights sized to the real
+    /// `q_dim = num_attention_heads * head_dim` instead, so it exercises
+    /// the decoupled case `tiny_weights` cannot.
+    fn tiny_weights_decoupled_q_dim(cfg: &Qwen3Config) -> Qwen3Weights {
+        let mut s: u32 = 192837;
+        let next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
+            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
+        };
+        let h = cfg.hidden_size;
+        let i = cfg.intermediate_size;
+        let kv = cfg.num_key_value_heads * cfg.head_dim;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
+        let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
+        let mut layers = Vec::new();
+        let mut layer_extras = Vec::new();
+        for _ in 0..cfg.num_hidden_layers {
+            layers.push(LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * q_dim, &mut *nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(q_dim * h, &mut *nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            });
+            layer_extras.push(Qwen3LayerExtras {
+                q_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+                k_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+            });
+        }
+        let final_norm_gain = Arc::from(vec![1.0_f32; h]);
+        let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
+        Qwen3Weights {
+            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            layer_extras,
+            final_norm_gain,
+            output,
+        }
+    }
+
+    /// Before GAP-279's fix, this config was rejected outright by
+    /// `run_backbone_embeds`'s now-deleted guard ("num_attention_heads *
+    /// head_dim must equal hidden_size"); with the guard merely deleted and
+    /// `apply_layer`'s projections left at `hidden_size`, this instead fails
+    /// with an `apply_linear` shape-mismatch error (q_dim=16 weights fed
+    /// through a hidden_size=8-wide projection). Both failure modes are
+    /// fixed by the same change (SPELLING THE Q/O WIDTH AS `q_dim`), so
+    /// this one test is red for either half of the bug and green only when
+    /// both are fixed together.
+    #[test]
+    fn forward_handles_decoupled_head_dim() {
+        let cfg = Qwen3Config {
+            vocab_size: 24,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            max_position_embeddings: 32,
+            sliding_window: None,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            attention_bias: false,
+            tie_word_embeddings: false,
+        };
+        assert_ne!(
+            cfg.num_attention_heads * cfg.head_dim,
+            cfg.hidden_size,
+            "this test's whole point is a decoupled head_dim (16 != 8); \
+             a config change here would make it stop testing GAP-279"
+        );
+        let model = Qwen3Model {
+            config: cfg.clone(),
+            weights: tiny_weights_decoupled_q_dim(&cfg),
+        };
+        let logits = model
+            .forward(&[1, 2, 3], 0)
+            .expect("GAP-279: Qwen3 must run forward on a decoupled head_dim config");
+        assert_eq!(logits.shape().dims(), &[1, 3, cfg.vocab_size]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite());
         }
     }
 
