@@ -264,6 +264,11 @@ impl Qwen3MoeModel {
         self.run_backbone_embeds(&h, start_pos)
     }
 
+    // GAP-279 (fixed): see `lazy_qwen3.rs::Qwen3Model::run_backbone_embeds`'s
+    // comment — this used to reject any config where
+    // `num_attention_heads * head_dim != hidden_size`, which is FALSE for
+    // real Qwen3-MoE checkpoints. `apply_layer`'s Q/O projections now use
+    // `q_dim` directly.
     fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -279,12 +284,6 @@ impl Qwen3MoeModel {
         if seq == 0 {
             return Err(fuel_core::Error::Msg(
                 "Qwen3MoeModel::forward_embeds: seq must be > 0".into(),
-            )
-            .bt());
-        }
-        if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
-                "Qwen3MoeConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
         }
@@ -339,6 +338,8 @@ impl Qwen3MoeModel {
         let batch = dims[0];
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        // GAP-279: see `lazy_qwen3.rs::apply_layer`'s comment.
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
 
         let x_norm = x.rms_norm_affine(
             std::sync::Arc::clone(&layer.attn_norm_gain),
@@ -347,7 +348,7 @@ impl Qwen3MoeModel {
 
         let q = layer
             .attn_q
-            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .apply_linear(&x_norm, cfg.hidden_size, q_dim)?
             .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
         let k = layer
             .attn_k
@@ -384,9 +385,7 @@ impl Qwen3MoeModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer
-            .attn_o
-            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.rms_norm_affine(
@@ -978,6 +977,101 @@ mod tests {
             layers,
             final_norm_gain,
             output,
+        }
+    }
+
+    /// GAP-279, Qwen3Moe half: see `lazy_qwen3.rs`'s
+    /// `tiny_weights_decoupled_q_dim` for the full rationale. `tiny_weights`
+    /// above hardcodes `attn_q`/`attn_o` at `h*h`; this builds dense-FFN-only
+    /// weights (no MoE routing needed to exercise the attention bug) sized
+    /// to the real `q_dim = num_attention_heads * head_dim`.
+    fn tiny_weights_decoupled_q_dim(cfg: &Qwen3MoeConfig) -> Qwen3MoeWeights {
+        let mut s: u32 = 918273;
+        let next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
+            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
+        };
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+        let kv = cfg.num_key_value_heads * cfg.head_dim;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
+        let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
+        let layers: Vec<Qwen3MoeLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| Qwen3MoeLayerWeights {
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                attn_q: WeightStorage::F32(vec_of(h * q_dim, &mut *nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(q_dim * h, &mut *nb)),
+                q_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+                k_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+                ffn: Qwen3MoeFfn::Dense {
+                    gate_w: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
+                    up_w: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
+                    down_w: WeightStorage::F32(vec_of(inter * h, &mut *nb)),
+                },
+            })
+            .collect();
+        let final_norm_gain = Arc::from(vec![1.0_f32; h]);
+        let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
+        Qwen3MoeWeights {
+            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
+    }
+
+    /// See `lazy_qwen3.rs::forward_handles_decoupled_head_dim`'s doc —
+    /// same bug class (GAP-279), same fix, applied to the shared
+    /// `apply_layer`/`run_backbone_embeds` this model type also uses.
+    #[test]
+    fn forward_handles_decoupled_head_dim() {
+        let cfg = Qwen3MoeConfig {
+            vocab_size: 24,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            head_dim: 4,
+            attention_bias: false,
+            num_key_value_heads: 2,
+            max_position_embeddings: 32,
+            sliding_window: None,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            decoder_sparse_step: 0,
+            moe_intermediate_size: 8,
+            num_experts: 1,
+            num_experts_per_tok: 1,
+        };
+        assert_ne!(
+            cfg.num_attention_heads * cfg.head_dim,
+            cfg.hidden_size,
+            "this test's whole point is a decoupled head_dim (16 != 8); \
+             a config change here would make it stop testing GAP-279"
+        );
+        let model = Qwen3MoeModel {
+            config: cfg.clone(),
+            weights: tiny_weights_decoupled_q_dim(&cfg),
+        };
+        let logits = model
+            .forward(&[1, 2, 3], 0)
+            .expect("GAP-279: Qwen3Moe must run forward on a decoupled head_dim config");
+        assert_eq!(logits.shape().dims(), &[1, 3, cfg.vocab_size]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite());
         }
     }
 
