@@ -2,9 +2,12 @@
 //! Thin wrapper preserving the historical `load_imatrix` entry point.
 //!
 //! Format-parsing logic lives in [`fuel_formats::imatrix`]. This file
-//! exists only for back-compat — callers who imported
-//! `fuel_core::quantized::imatrix_file::load_imatrix` continue to
-//! work. New code should depend on `fuel-formats` directly.
+//! exists only for back-compat — callers who import
+//! `fuel_loaders::quantized::imatrix_file::load_imatrix` (or, via the
+//! facade, `fuel::quantized::imatrix_file::load_imatrix`) continue to
+//! work. The `fuel_core::quantized::` path this once served was removed
+//! (fuel-core dissolution, GAP-347 PR 6). New code should depend on
+//! `fuel-formats` directly.
 
 use std::collections::HashMap;
 use std::path::Path;

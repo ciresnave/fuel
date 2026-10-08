@@ -32,11 +32,14 @@ Splitting the parser surface from the transport adapter unlocks several concrete
 
 ## Where Tensor-construction lives
 
-The wrappers that turn parsed metadata into a `Tensor` (e.g. `fuel_core::safetensors::load`,
-`fuel_core::pickle::PthTensors::get`, `fuel_core::quantized::ggml_file::Content::read`) live
-in `fuel-core` because each calls `Tensor::from_*` or `Storage::*` constructors. When work
-item E of Phase 7.5 lands and `Tensor` moves into `fuel-tensor`, those wrappers migrate to
-a small `fuel-loaders` crate that depends on `fuel-formats` + `fuel-tensor`.
+Phase 7.5's work item E has landed: the wrappers that turn parsed metadata into a `Tensor`
+no longer live in `fuel-core`. `fuel_core::safetensors`/`fuel_core::quantized` were pure
+compat shims to `fuel_loaders` (fuel-core dissolution, GAP-347 PR 5/6) and have since been
+retired outright — current call sites are `fuel_loaders::safetensors::load` and
+`fuel_loaders::quantized::gguf_file::Content::read` (the `ggml_file` module they once
+discussed was deleted entirely; see `fuel-loaders/src/quantized/mod.rs`). `PthTensors::get`
+took a different path: pickle's Tensor-construction layer was absorbed directly into
+`fuel_formats::pickle`, with no separate `fuel-loaders` wrapper needed.
 
 ## Pattern for new transports
 
