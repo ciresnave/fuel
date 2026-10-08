@@ -384,7 +384,7 @@ fn fuse_weight_norm(
 /// (`weight_g`, `weight_v`) and pre-fused (`weight`) checkpoints —
 /// matches the eager port's `vb.contains_tensor("weight")` branching.
 fn load_mimi_norm_conv_weight(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     conv_prefix: &str,
     leading: usize,
     inner_per_leading: usize,
@@ -404,7 +404,7 @@ fn load_mimi_norm_conv_weight(
 /// PyTorch 1.x weight-norm). `conv_prefix` already includes the
 /// `.conv` suffix when called from a `NormConv1d`.
 fn load_mimi_conv1d(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     conv_prefix: &str,
     in_channels: usize,
     out_channels: usize,
@@ -455,7 +455,7 @@ fn load_mimi_conv1d(
 /// PyTorch ConvTranspose1d weight has shape `[in_c, out_c / groups,
 /// k]`, with weight-norm normalizing along `in_c`.
 fn load_mimi_conv_transpose1d(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     conv_prefix: &str,
     in_channels: usize,
     out_channels: usize,
@@ -505,7 +505,7 @@ fn load_mimi_conv_transpose1d(
 /// dilated convs (skipping `block.{0, 2}` activations), plus
 /// optional `shortcut.conv` when `true_skip = false`.
 fn load_seanet_resnet_block(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     dim: usize,
     residual_kernel_size: usize,
@@ -568,7 +568,7 @@ impl SeaNetEncoderWeights {
     /// `layers.{idx}` slot but carry no params; each conv lives at
     /// `layers.{idx}.conv.{weight, bias}`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         cfg: &SeaNetConfig,
     ) -> Result<Self> {
@@ -653,7 +653,7 @@ impl SeaNetDecoderWeights {
     /// upsample at `layer_idx + 1`, then `n_residual_layers`
     /// residuals.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         cfg: &SeaNetConfig,
     ) -> Result<Self> {

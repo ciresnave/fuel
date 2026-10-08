@@ -834,7 +834,7 @@ impl Glm4Weights {
     /// GLM-4 has split sandwich-norm structure: input_norm + post-self-attn
     /// + post-attn + post-mlp; fused gate_up_proj in MLP.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Glm4Config,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};

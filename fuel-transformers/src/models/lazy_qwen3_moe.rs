@@ -651,7 +651,7 @@ impl Qwen3MoeWeights {
     /// Load Qwen3-MoE (Qwen/Qwen3-MoE-A*) weights from HF safetensors.
     /// Layer FFN selects Dense vs MoE per `cfg.layer_uses_moe(i)`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen3MoeConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{

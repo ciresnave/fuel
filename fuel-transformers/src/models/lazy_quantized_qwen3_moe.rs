@@ -148,7 +148,7 @@ impl QuantizedQwen3MoeModel {
     /// and quantize each Linear weight to Q4_0. Equivalent to
     /// `Self::from_f32_bake(cfg, Qwen3MoeWeights::load_from_mmapped(st, &cfg)?)`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: Qwen3MoeConfig,
     ) -> Result<Self> {
         let src = Qwen3MoeWeights::load_from_mmapped(st, &cfg)?;

@@ -331,7 +331,7 @@ pub fn split_rvq_decode(codes: &Tensor, w: &SplitResidualVectorQuantizerWeights)
 /// c2        = sum(embedding · embedding, dim=-1) / 2
 /// ```
 fn load_euclidean_codebook(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     codebook_size: usize,
     codebook_dim: usize,
@@ -378,7 +378,7 @@ fn load_euclidean_codebook(
 /// passes `codebook_dim = None` (defaults to `dim`), so the
 /// `project_in / project_out` linear layers are skipped at this level.
 fn load_vector_quantization(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     dim: usize,
     codebook_size: usize,
@@ -399,7 +399,7 @@ fn load_vector_quantization(
 /// `input_proj` / `output_proj` 1×1 convs are always present even
 /// when `dim == input_dim == output_dim`.
 fn load_residual_vector_quantizer(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     dim: usize,
     input_dim: usize,
@@ -458,7 +458,7 @@ impl SplitResidualVectorQuantizerWeights {
     /// = 256` for Mimi v0.1); `input_dim` / `output_dim` are the
     /// outside-facing dims (typically `cfg.seanet.dimension = 512`).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         dim: usize,
         input_dim: usize,

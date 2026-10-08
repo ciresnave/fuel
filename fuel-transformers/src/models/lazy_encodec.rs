@@ -786,7 +786,7 @@ pub fn pad1d(
 // flat buffer (base = i*inner + j), which .iter() cannot express.
 #[allow(clippy::needless_range_loop)]
 fn fuse_weight_norm_conv1d(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name_prefix: &str,
     out_c: usize,
     in_c: usize,
@@ -825,7 +825,7 @@ fn fuse_weight_norm_conv1d(
 }
 
 fn load_encodec_conv1d(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name_prefix: &str,
     c_in: usize,
     c_out: usize,
@@ -850,7 +850,7 @@ fn load_encodec_conv1d(
 }
 
 fn load_encodec_conv_transpose1d(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name_prefix: &str,
     c_in: usize,
     c_out: usize,
@@ -883,7 +883,7 @@ fn load_encodec_conv_transpose1d(
 /// `[i, f, g, o]` along the leading axis — which matches the layout
 /// `LstmCellWeights` documents, so we copy without re-shuffling.
 fn load_encodec_lstm(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name_prefix: &str,
     dim: usize,
     num_layers: usize,
@@ -980,7 +980,7 @@ impl EncodecWeights {
     /// and the count is derived from the maximum target bandwidth via
     /// [`encodec_num_quantizers`].
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &EncodecConfig,
         sampling_rate: usize,
         target_bandwidths: &[f64],
@@ -1131,7 +1131,7 @@ impl EncodecWeights {
 /// emits the per-stage `[resnets..., ELU, downsampling Conv1d]`
 /// pattern that eager `Encoder::new` builds.
 fn load_encoder_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     cfg: &EncodecConfig,
 ) -> Result<EncoderWeights> {
     // encoder.layers.0 — audio_channels → num_filters, k=kernel_size.

@@ -189,7 +189,7 @@ impl MimiWeights {
     /// to size the down/upsample kernels (`2 · stride`) but does
     /// not re-derive it.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MimiConfig,
         resampler_stride: usize,
     ) -> Result<Self> {

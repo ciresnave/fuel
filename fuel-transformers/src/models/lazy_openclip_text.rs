@@ -271,7 +271,7 @@ impl OpenClipTextWeights {
     /// `[3*embed_dim, embed_dim]` plus `in_proj_bias`; this loader chunks
     /// the fused weight at load time.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &OpenClipTextConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{

@@ -567,7 +567,7 @@ fn apply_linear(x: &Tensor, lw: &LinearWeights, anchor: &Tensor) -> Result<Tenso
 impl DebertaV2Weights {
     /// Load DeBERTa-v2/v3 (microsoft/deberta-v3-*) weights from HF safetensors.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &DebertaV2Config,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
@@ -750,7 +750,7 @@ impl DebertaV2NERWeights {
     ///   are substituted when absent — matches HF's `linear_no_bias`
     ///   variant in the older code paths).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &DebertaV2Config,
         num_labels: usize,
     ) -> Result<Self> {
@@ -844,7 +844,7 @@ impl DebertaV2SeqClassificationWeights {
     /// - `classifier.bias`       — `[num_labels]` (optional; zeros
     ///   substituted on absence)
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &DebertaV2Config,
         num_labels: usize,
     ) -> Result<Self> {
@@ -1256,7 +1256,7 @@ mod tests {
         );
 
         let tmp = build_safetensors_file(owned, "ner");
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&tmp) }
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&tmp) }
             .expect("MmapedSafetensors::new");
 
         let weights = DebertaV2NERWeights::load_from_mmapped(&st, &cfg, num_labels)
@@ -1296,7 +1296,7 @@ mod tests {
         );
 
         let tmp = build_safetensors_file(owned, "seqcls");
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&tmp) }
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&tmp) }
             .expect("MmapedSafetensors::new");
 
         let weights = DebertaV2SeqClassificationWeights::load_from_mmapped(&st, &cfg, num_labels)

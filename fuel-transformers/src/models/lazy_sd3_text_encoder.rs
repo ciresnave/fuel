@@ -385,9 +385,9 @@ impl Sd3TripleClipWeights {
     /// the CLIP-G text projection) is what matters for
     /// downstream pipeline composition.
     pub fn load_from_mmapped(
-        st_clip_l: &fuel_core::safetensors::MmapedSafetensors,
-        st_clip_g: &fuel_core::safetensors::MmapedSafetensors,
-        st_t5: &fuel_core::safetensors::MmapedSafetensors,
+        st_clip_l: &fuel_loaders::safetensors::MmapedSafetensors,
+        st_clip_g: &fuel_loaders::safetensors::MmapedSafetensors,
+        st_t5: &fuel_loaders::safetensors::MmapedSafetensors,
         config: &Sd3TripleClipConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::load_transposed_matrix_preserve_dtype;

@@ -119,7 +119,7 @@ impl BlipWeights {
     /// `Salesforce/blip-*` checkpoint layout (vision tower under
     /// `vision_model.`, text decoder under `text_decoder.`).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &BlipConfig,
     ) -> Result<Self> {
         let vision = BlipVisionWeights::load_from_mmapped(st, &cfg.vision_config, "vision_model.")?;

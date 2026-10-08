@@ -339,7 +339,7 @@ impl ResNetWeights {
     ///
     /// Eps for BatchNorm baking is the torchvision default `1e-5`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ResNetConfig,
     ) -> fuel_core::Result<Self> {
         const EPS: f64 = 1e-5;
@@ -386,7 +386,7 @@ impl ResNetWeights {
 }
 
 fn resnet_load_stage(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     stage_idx: usize,
     kind: ResNetKind,
     c_in: usize,
@@ -411,7 +411,7 @@ fn resnet_load_stage(
 }
 
 fn resnet_load_block(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     stage_idx: usize,
     block_idx: usize,
     kind: ResNetKind,
@@ -471,7 +471,7 @@ fn resnet_load_block(
 }
 
 fn resnet_load_bn(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     channels: usize,
     eps: f64,
@@ -505,7 +505,7 @@ fn resnet_load_bn(
 }
 
 fn resnet_load_f32(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
 ) -> fuel_core::Result<Vec<f32>> {
     use safetensors::Dtype;
@@ -545,7 +545,7 @@ fn resnet_load_f32(
 }
 
 fn resnet_load_transposed(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     out_features: usize,
     in_features: usize,
@@ -601,7 +601,7 @@ impl ResNetModel {
         let weights_path = repo
             .get(filename)
             .map_err(|e| fuel_core::Error::Msg(format!("hf-hub resnet safetensors: {e}")))?;
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&weights_path) }?;
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&weights_path) }?;
         let weights = ResNetWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })
     }

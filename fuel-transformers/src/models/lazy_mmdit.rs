@@ -579,7 +579,7 @@ impl SingleStreamBlock {
 // ---- Safetensors loader ----------------------------------------------------
 
 fn load_stream_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     dim: usize,
     mlp_hidden: usize,
@@ -628,7 +628,7 @@ fn load_stream_weights(
 }
 
 fn load_single_stream_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     dim: usize,
     mlp_hidden: usize,
@@ -695,7 +695,7 @@ impl MmDitWeights {
     /// - `joint_blocks.{i}.x_block.*` → `double_blocks[i].image.*`
     /// - `single_blocks.{i}.*` → `single_blocks[i].*`
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MmDitConfig,
         adm_in_channels: usize,
         frequency_embedding_size: usize,
@@ -1353,7 +1353,7 @@ fn unpatchify(
 // ---- Safetensors loader for the full wrapper -------------------------------
 
 fn load_context_qkv_only_block_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     dim: usize,
     mlp_hidden: usize,
@@ -1402,7 +1402,7 @@ impl MmDitFullWeights {
     ///   attn.qkv.*}` — context-qkv-only context side.
     /// - `final_layer.{adaLN_modulation.1.*,linear.*}` — final layer.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MmDitFullConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
@@ -1900,7 +1900,7 @@ mod tests {
         }
 
         let path = write_tmp_safetensors(&tensors);
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path).unwrap() };
         let weights = MmDitWeights::load_from_mmapped(&st, &cfg, adm_in, freq_embed).unwrap();
         assert_eq!(weights.double_blocks.len(), 1);
         assert_eq!(weights.single_blocks.len(), 0);
@@ -2311,7 +2311,7 @@ mod tests {
         ));
 
         let path = write_tmp_safetensors(&tensors);
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path).unwrap() };
         let weights = MmDitFullWeights::load_from_mmapped(&st, &cfg).unwrap();
         assert_eq!(weights.joint_blocks.len(), 1);
         assert_eq!(

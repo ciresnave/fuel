@@ -558,13 +558,16 @@ fn apply_bn(x: &Tensor, bn: &BatchNormParams, channels: usize) -> Result<Tensor>
 // ---- Safetensors loaders ---------------------------------------------------
 
 /// Load a 1-D F32 tensor as `Arc<[f32]>`.
-fn load_arc_f32(st: &fuel_core::safetensors::MmapedSafetensors, name: &str) -> Result<Arc<[f32]>> {
+fn load_arc_f32(
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
+    name: &str,
+) -> Result<Arc<[f32]>> {
     Ok(Arc::from(fuel_core::lazy::load_tensor_as_f32(st, name)?))
 }
 
 /// Load a HuggingFace LayerNorm (`<prefix>.weight`, `<prefix>.bias`).
 fn load_ln(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
 ) -> Result<LayerNormWeights> {
     Ok(LayerNormWeights {
@@ -577,7 +580,7 @@ fn load_ln(
 /// The on-disk layout `[c_out, c_in / groups, k, k]` is the same as ours,
 /// so this is a flat F32 read.
 fn load_conv2d(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c_in: usize,
     c_out: usize,
@@ -627,7 +630,7 @@ fn load_conv2d(
 /// `[out, in]`; we transpose to `[in, out]` to match
 /// `WeightStorage::apply_linear`'s convention.
 fn load_linear(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     in_features: usize,
     out_features: usize,
@@ -652,7 +655,7 @@ fn load_linear(
 /// Load a HuggingFace BatchNorm prefix (`{weight,bias,running_mean,
 /// running_var}`) and bake into our fused-affine form.
 fn load_bn(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     channels: usize,
     eps: f64,
@@ -681,7 +684,7 @@ fn load_bn(
 
 impl OverlapPatchEmbeddingWeights {
     fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         c_in: usize,
         c_out: usize,
@@ -707,7 +710,7 @@ impl OverlapPatchEmbeddingWeights {
 
 impl EfficientSelfAttentionWeights {
     fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         hidden_size: usize,
         sr_ratio: usize,
@@ -748,7 +751,7 @@ impl EfficientSelfAttentionWeights {
 
 impl AttentionOutputWeights {
     fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         hidden_size: usize,
     ) -> Result<Self> {
@@ -762,7 +765,7 @@ impl AttentionOutputWeights {
 
 impl MixFfnWeights {
     fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         hidden_size: usize,
         mlp_ratio: usize,
@@ -806,7 +809,7 @@ impl MixFfnWeights {
 
 impl SegformerLayerWeights {
     fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         hidden_size: usize,
         num_heads: usize,
@@ -850,7 +853,7 @@ impl SegformerEncoderWeights {
     /// `patch_embeddings.{i}.*`, `block.{i}.{j}.*`, and `layer_norm.{i}.*`
     /// after the supplied prefix.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SegformerConfig,
         prefix: &str,
     ) -> Result<Self> {
@@ -898,7 +901,7 @@ impl SegformerDecodeHeadWeights {
     /// checkpoints. `num_labels` is the output class count (e.g. 150
     /// for ADE20K, 19 for Cityscapes).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SegformerConfig,
         prefix: &str,
         num_labels: usize,
@@ -959,7 +962,7 @@ impl SegformerClassifierWeights {
     /// `classifier.{weight,bias}` at the top level of a
     /// `SegformerForImageClassification` checkpoint.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SegformerConfig,
         prefix: &str,
         num_labels: usize,
@@ -975,7 +978,7 @@ impl ImageClassificationModel {
     /// Naming: `segformer.encoder.*` for the backbone and `classifier.*`
     /// for the head.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: SegformerConfig,
         num_labels: usize,
     ) -> Result<Self> {
@@ -993,7 +996,7 @@ impl SemanticSegmentationModel {
     /// Load a full `SegformerForSemanticSegmentation` HF checkpoint.
     /// Naming: `segformer.encoder.*` and `decode_head.*`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: SegformerConfig,
         num_labels: usize,
     ) -> Result<Self> {
@@ -1630,7 +1633,7 @@ mod tests {
         push_linear(&mut owned, "classifier", c_last, n_labels, &mut nb);
 
         let tmp = build_safetensors_file(owned, "cls");
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&tmp) }
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&tmp) }
             .expect("MmapedSafetensors::new");
 
         let model = ImageClassificationModel::load_from_mmapped(&st, cfg, n_labels)
@@ -1701,7 +1704,7 @@ mod tests {
         );
 
         let tmp = build_safetensors_file(owned, "seg");
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&tmp) }
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&tmp) }
             .expect("MmapedSafetensors::new");
 
         let model = SemanticSegmentationModel::load_from_mmapped(&st, cfg, n_labels)

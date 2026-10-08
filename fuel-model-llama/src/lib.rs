@@ -3122,7 +3122,7 @@ impl LlamaWeights {
     /// - `model.norm.weight` → final RmsNorm gain
     /// - `lm_head.weight` → output projection (transposed)
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &LlamaConfig,
     ) -> fuel_core::Result<Self> {
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
@@ -3892,7 +3892,7 @@ impl LlamaModel {
         };
 
         // 3. Memory-map the safetensors files and load the weights.
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
         let weights = LlamaWeights::load_from_mmapped(&st, &config)?;
 
         Ok(LlamaModel { config, weights })
@@ -10206,7 +10206,7 @@ mod generate_tests {
         );
         let weights_path = dir.join("model.safetensors");
         let t0 = std::time::Instant::now();
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&weights_path) }
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&weights_path) }
             .unwrap_or_else(|e| panic!("mmap {weights_path:?}: {e}"));
         // Report the source dtype of a representative projection so the
         // deviation (bf16 source → f32 in-memory) is visible in the log.

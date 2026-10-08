@@ -605,7 +605,7 @@ fn conv2d_depthwise_k7_s1_p3(
 
 impl ConvNextWeights {
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ConvNextConfig,
     ) -> fuel_core::Result<Self> {
         assert_eq!(
@@ -722,7 +722,7 @@ impl ConvNextWeights {
 }
 
 fn load_f32(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
 ) -> fuel_core::Result<Vec<f32>> {
     use safetensors::Dtype;
@@ -759,7 +759,7 @@ fn load_f32(
 }
 
 fn load_transposed(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     out_features: usize,
     in_features: usize,
@@ -799,7 +799,7 @@ impl ConvNextModel {
         let weights_path = repo
             .get("model.safetensors")
             .map_err(|e| fuel_core::Error::Msg(format!("hf-hub convnext safetensors: {e}")))?;
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&weights_path) }?;
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&weights_path) }?;
         let weights = ConvNextWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })
     }
