@@ -137,7 +137,12 @@ pub use fuel_hardware::transfer_cost;
 // `fuel_training::train` directly. Both former consumers
 // (fuel-examples/src/mnist_train.rs, fuel-lazy-examples's
 // llama-finetune-vulkan.rs) updated in the same change.
-pub mod quantized;
+// `quantized` deleted (fuel-core dissolution, GAP-347 PR 6): it was a pure
+// `pub use fuel_loaders::quantized::*;` shim. Real in-workspace consumers via
+// `fuel_core::quantized::` directly (fuel-model-phi, fuel-transformers's
+// quantized model files and qwen3_cpu_yardstick test) repointed to
+// `fuel_loaders` in the same change. `fuel`'s facade now re-exports the real
+// crate directly (`fuel/src/lib.rs`) for any `fuel::quantized` caller.
 pub mod utils;
 
 #[cfg(feature = "cudnn")]

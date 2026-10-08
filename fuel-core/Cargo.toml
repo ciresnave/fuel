@@ -11,7 +11,6 @@ readme = "README.md"
 
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
-byteorder = { workspace = true }
 fuel-aocl-cpu-backend = { workspace = true, optional = true }
 fuel-mkl-cpu-backend = { workspace = true, optional = true }
 fuel-ir = { workspace = true, features = ["serde"] }
@@ -26,7 +25,6 @@ fuel-memory = { workspace = true }
 bytemuck = { workspace = true }
 fuel-formats = { workspace = true }
 fuel-loaders = { workspace = true }
-fuel-quantized = { workspace = true }
 fuel-graph = { workspace = true }
 # board #109: Tensor/Device/pipelined_bridge/judge/etc moved here; this crate
 # keeps re-exporting their old paths (lib.rs), and train.rs/kv_block_pool.rs
@@ -77,6 +75,9 @@ criterion = { workspace = true }
 tempfile = { workspace = true }
 # Direct-conv parity oracle for the CV1 im2col-recipe realize test.
 fuel-conv = { workspace = true }
+# Q4_0 dequantize-then-matmul oracle (incc_qmatmul_q4_0_oracle) — used
+# directly, not through the (now-deleted) `fuel_core::quantized` shim.
+fuel-quantized = { workspace = true }
 # GAP-157: `require`/`required` — a missing device is a FAILURE, not a silent
 # early return that reports `ok` having asserted nothing.
 fuel-test-support = { workspace = true }
