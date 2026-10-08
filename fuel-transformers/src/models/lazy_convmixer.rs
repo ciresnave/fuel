@@ -270,7 +270,7 @@ impl ConvMixerWeights {
     /// blocks at `blocks.{i}.0.{0,1,3}.{...}` (depthwise+BN) and
     /// `blocks.{i}.{2,3,5}.{...}` (pointwise+BN), classifier at `head.{...}`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ConvMixerConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};

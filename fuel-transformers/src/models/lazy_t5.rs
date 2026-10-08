@@ -638,7 +638,7 @@ fn compute_position_bias(
 
 impl T5AttentionWeights {
     fn load(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         d_model: usize,
         inner_dim: usize,
@@ -654,7 +654,7 @@ impl T5AttentionWeights {
 
 impl T5FfnWeights {
     fn load(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         d_model: usize,
         d_ff: usize,
@@ -678,7 +678,7 @@ impl T5Weights {
     /// Load T5 (t5-small/base/large/Flan-T5) weights from a HuggingFace
     /// safetensors file.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &T5Config,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};

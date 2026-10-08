@@ -416,7 +416,7 @@ impl Dinov2Reg4Weights {
     /// Load DINOv2-with-Registers (facebook/dinov2-with-registers-*) weights
     /// from HF safetensors. Wrapper prefix `dinov2.`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Dinov2Reg4Config,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};

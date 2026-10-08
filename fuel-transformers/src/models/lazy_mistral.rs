@@ -490,7 +490,7 @@ impl MistralModel {
 /// for all three. Output projection falls back to tied embeddings
 /// when `lm_head.weight` is absent.
 pub fn load_mistral_weights_with_prefix(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     cfg: &MistralConfig,
     prefix: &str,
 ) -> Result<MistralWeights> {
@@ -604,7 +604,7 @@ impl MistralWeights {
     /// `lm_head.*`). See [`load_mistral_weights_with_prefix`] for
     /// the multimodal-embedded form.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MistralConfig,
     ) -> Result<Self> {
         load_mistral_weights_with_prefix(st, cfg, "")

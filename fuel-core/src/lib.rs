@@ -138,7 +138,6 @@ pub use fuel_hardware::transfer_cost;
 // (fuel-examples/src/mnist_train.rs, fuel-lazy-examples's
 // llama-finetune-vulkan.rs) updated in the same change.
 pub mod quantized;
-pub mod safetensors;
 pub mod utils;
 
 #[cfg(feature = "cudnn")]

@@ -481,7 +481,7 @@ impl ParlerDecoderWeights {
     /// `text_d_model` is only consulted when `cfg.has_enc_proj` is
     /// true. Pass any value (e.g. `0`) when the projection is absent.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ParlerDecoderConfig,
         text_d_model: usize,
     ) -> fuel_core::Result<Self> {

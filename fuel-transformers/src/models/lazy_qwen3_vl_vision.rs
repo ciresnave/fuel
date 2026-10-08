@@ -374,7 +374,7 @@ impl Qwen3VlVisionWeights {
     /// DeepStack projection is mapped from the merger's final
     /// `linear_fc2` and the final LN comes from `merger.norm`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen3VlVisionConfig,
     ) -> Result<Self> {
         use crate::models::lazy_conv3d::{Conv3dTemporal2Config, Conv3dTemporal2Weights};

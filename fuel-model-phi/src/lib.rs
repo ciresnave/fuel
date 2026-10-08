@@ -1349,7 +1349,7 @@ impl PhiModel {
             }
         };
 
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
         let weights = PhiWeights::load_from_mmapped(&st, &config)?;
         Ok(PhiModel { config, weights })
     }
@@ -1423,7 +1423,7 @@ impl PhiModel {
 
 impl PhiWeights {
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &PhiConfig,
     ) -> fuel_core::Result<Self> {
         let kv_dim = cfg.n_heads * cfg.head_dim;

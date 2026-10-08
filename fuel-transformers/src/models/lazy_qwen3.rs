@@ -792,7 +792,7 @@ impl Qwen3Weights {
     ///   post_attention_layernorm}.weight + model.layers.{i}.mlp.{gate,up,down}_proj
     ///   + model.norm + lm_head (or tied).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen3Config,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};

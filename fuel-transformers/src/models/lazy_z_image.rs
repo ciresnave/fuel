@@ -1584,7 +1584,7 @@ impl ZImageTransformerWeights {
     /// - `all_final_layer.2-1.{linear,adaLN_modulation.1}.{weight,bias}`
     /// - `noise_refiner.{i}.*`, `context_refiner.{i}.*` mirror `layers`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ZImageConfig,
     ) -> fuel_core::Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
@@ -1753,7 +1753,7 @@ impl TextEncoderWeights {
     /// text encoder weight bag. Z-Image uses Qwen3 weights with the
     /// canonical HF Qwen3 names under the `model.` prefix.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &TextEncoderConfig,
     ) -> fuel_core::Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
@@ -1855,7 +1855,7 @@ impl VaeWeights {
     /// the Z-Image VAE weight bag. Names mirror the standard diffusers
     /// VAE state-dict layout.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &VaeConfig,
     ) -> fuel_core::Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
@@ -2599,7 +2599,7 @@ mod tests {
             ));
         }
         let path = write_tmp_safetensors_z(&t);
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path).unwrap() };
         let w = TextEncoderWeights::load_from_mmapped(&st, &cfg).unwrap();
         assert_eq!(w.layers.len(), cfg.num_hidden_layers);
         assert_eq!(w.token_embedding.len(), cfg.vocab_size * h);

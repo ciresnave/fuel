@@ -468,7 +468,7 @@ fn fuse_weight_norm(
 /// Load a weight-norm Conv1d (`parametrizations.weight.original0/1`
 /// + optional `bias`) at safetensors path `prefix`.
 fn load_conv1d_weight_norm(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c_in: usize,
     c_out: usize,
@@ -510,7 +510,7 @@ fn load_conv1d_weight_norm(
 /// Load a weight-norm ConvTranspose1d. PyTorch stores
 /// `weight_v` as `[c_in, c_out, k]` and `weight_g` as `[c_in, 1, 1]`.
 fn load_conv_transpose1d_weight_norm(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c_in: usize,
     c_out: usize,
@@ -545,7 +545,7 @@ fn load_conv_transpose1d_weight_norm(
 }
 
 fn load_snake1d(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     channels: usize,
 ) -> fuel_core::Result<Snake1dWeights> {
@@ -565,7 +565,7 @@ fn load_snake1d(
 }
 
 fn load_residual_unit(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     dim: usize,
     dilation: usize,
@@ -603,7 +603,7 @@ fn load_residual_unit(
 }
 
 fn load_decoder_block(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     in_dim: usize,
     out_dim: usize,
@@ -664,7 +664,7 @@ fn load_decoder_block(
 }
 
 fn load_local_mha(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     dim: usize,
     dim_head: usize,
@@ -688,7 +688,7 @@ fn load_local_mha(
 }
 
 fn load_vector_quantizer(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     in_dim: usize,
     codebook_size: usize,
@@ -757,7 +757,7 @@ impl SnacWeights {
     /// doesn't need them. The encoder branch is also skipped (v1 is
     /// decode-only).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SnacConfig,
     ) -> fuel_core::Result<Self> {
         let num_strides = cfg.decoder_rates.len();

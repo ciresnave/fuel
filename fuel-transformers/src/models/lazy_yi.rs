@@ -320,7 +320,7 @@ impl YiWeights {
     /// Load Yi weights from HF safetensors (e.g. `01-ai/Yi-6B`).
     /// Standard LLaMA-shape naming. No biases on attention projections.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &YiConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};

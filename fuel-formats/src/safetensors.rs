@@ -20,9 +20,9 @@
 //!   `fuel-formats`: it owns the bytes, and the parser surface
 //!   above sits on top.
 //!
-//! The mmap/view wrappers `fuel_core::safetensors::MmapedSafetensors`
-//! and `fuel_core::safetensors::BufferedSafetensors` sit downstream in
-//! `fuel-core`. They hand out `TensorView`s and nothing more — the
+//! The mmap/view wrappers `fuel_loaders::safetensors::MmapedSafetensors`
+//! and `fuel_loaders::safetensors::BufferedSafetensors` sit downstream in
+//! `fuel-loaders`. They hand out `TensorView`s and nothing more — the
 //! caller decodes the bytes.
 //!
 //! B6 deleted the eager tensor-construction half that used to live

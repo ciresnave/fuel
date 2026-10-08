@@ -71,7 +71,7 @@ impl Gemma4MmEmbedWeights {
     /// Convention: `model.embed_vision.embedding_projection.weight`
     /// `[text_hidden, multimodal_hidden]` (HF stores `[out, in]`).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Gemma4MmEmbedConfig,
     ) -> fuel_core::Result<Self> {
         use fuel_core::lazy::load_transposed_matrix_preserve_dtype as ltm;

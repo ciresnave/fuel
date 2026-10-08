@@ -470,7 +470,7 @@ impl Gemma4TextWeights {
     /// layers use `cfg.global_head_dim` + `cfg.num_global_kv()`. The
     /// q_norm/k_norm weights are sized to the layer-effective head_dim.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Gemma4TextConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};

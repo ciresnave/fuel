@@ -334,7 +334,7 @@ fn apply_attention(
 ///   - `encoder.layer.{i}.layernorm_after.{weight,bias}`
 ///   - `layernorm.{weight,bias}` (final post-encoder LN)
 pub fn load_vit_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     cfg: &VitConfig,
     prefix: &str,
 ) -> Result<VitWeights> {
@@ -469,7 +469,7 @@ pub fn load_vit_weights(
 ///   - `layers.{i}.final_layer_norm.{weight,bias}`
 ///   - `decoder.output_projection.weight` (when tie_word_embeddings is false)
 pub fn load_trocr_decoder_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     cfg: &TrocrDecoderConfig,
 ) -> Result<TrocrDecoderWeights> {
     let pfx = "decoder.model.decoder.";
@@ -590,7 +590,7 @@ impl TrocrModel {
     /// `encoder.*` and decoder under `decoder.model.decoder.*` per the
     /// `microsoft/trocr-*` convention.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         encoder_config: VitConfig,
         decoder_config: TrocrDecoderConfig,
     ) -> Result<Self> {
@@ -1132,7 +1132,7 @@ mod tests {
             let v_cfg = tiny_vit_config();
             let d_cfg = tiny_trocr_config(v_cfg.hidden_size);
             let path = build_tiny_safetensors(&v_cfg, &d_cfg);
-            let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path) }
+            let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path) }
                 .expect("mmap safetensors");
             let model = TrocrModel::load_from_mmapped(&st, v_cfg.clone(), d_cfg.clone())
                 .expect("TrocrModel::load_from_mmapped");

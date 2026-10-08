@@ -122,7 +122,7 @@ impl QuantizedPhi3Model {
     /// quantize each Linear weight to Q4_0. Equivalent to
     /// `Self::from_f32_bake(cfg, Phi3Weights::load_from_mmapped(st, &cfg)?)`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: Phi3Config,
     ) -> Result<Self> {
         let src = Phi3Weights::load_from_mmapped(st, &cfg)?;

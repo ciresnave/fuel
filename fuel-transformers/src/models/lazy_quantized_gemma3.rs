@@ -137,7 +137,7 @@ impl QuantizedGemma3Model {
     /// quantize each Linear weight to Q4_0. Equivalent to
     /// `Self::from_f32_bake(cfg, Gemma3Weights::load_from_mmapped(st, &cfg)?)`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: Gemma3Config,
     ) -> Result<Self> {
         let src = Gemma3Weights::load_from_mmapped(st, &cfg)?;

@@ -739,7 +739,7 @@ impl Phi3Weights {
     /// Load Phi-3 weights from HF safetensors (e.g. `microsoft/Phi-3-mini-4k-instruct`).
     /// Phi-3 uses fused qkv_proj + fused gate_up_proj — split at load time.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Phi3Config,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};

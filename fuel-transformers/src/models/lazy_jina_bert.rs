@@ -413,7 +413,7 @@ impl JinaBertWeights {
     /// Load Jina-BERT (jinaai/jina-embeddings-v2-base-*) weights from HuggingFace
     /// safetensors. Tensor names: `embeddings.*` + `encoder.layer.{i}.*`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &JinaBertConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};

@@ -473,7 +473,7 @@ impl BertWeights {
     ///   bert.encoder.layer.{i}.output.dense.{weight,bias}
     ///   bert.encoder.layer.{i}.output.LayerNorm.{weight,bias}
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &BertConfig,
     ) -> fuel_core::Result<Self> {
         let h = cfg.hidden_size;
@@ -559,7 +559,7 @@ impl BertWeights {
     }
 }
 
-fn detect_prefix(st: &fuel_core::safetensors::MmapedSafetensors) -> String {
+fn detect_prefix(st: &fuel_loaders::safetensors::MmapedSafetensors) -> String {
     // Probe for the usual wrapper names. If the checkpoint was saved
     // without a module wrapper (common for task-finetuned models trained
     // from scratch), fall through to the empty prefix.
@@ -581,7 +581,7 @@ fn detect_prefix(st: &fuel_core::safetensors::MmapedSafetensors) -> String {
 /// (e.g. `"bert.embeddings.LayerNorm"`); `is_weight=true` looks for the
 /// gain, `false` for the bias.
 fn load_layer_norm_param(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     stem: &str,
     is_weight: bool,
 ) -> fuel_core::Result<Vec<f32>> {
@@ -602,7 +602,7 @@ fn load_layer_norm_param(
 }
 
 fn load_f32(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
 ) -> fuel_core::Result<Vec<f32>> {
     use safetensors::Dtype;
@@ -650,7 +650,7 @@ fn load_f32(
 /// `[out_features, in_features]` storage order to Fuel's `[in, out]` so
 /// the forward path's `matmul` matches `x @ W` directly.
 fn load_transposed(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     out_features: usize,
     in_features: usize,
@@ -728,7 +728,7 @@ impl BertModel {
             }
         };
 
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
         let weights = BertWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })
     }

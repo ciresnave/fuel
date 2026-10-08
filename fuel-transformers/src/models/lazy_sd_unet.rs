@@ -695,7 +695,7 @@ fn linear(
 
 impl SdUnetWeights {
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SdUnetConfig,
     ) -> fuel_core::Result<Self> {
         let c_first = cfg.block_out_channels[0];
@@ -873,7 +873,7 @@ impl SdUnetWeights {
 }
 
 fn load_u_resnet(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c_in: usize,
     c_out: usize,
@@ -918,7 +918,7 @@ fn load_u_resnet(
 }
 
 fn load_spatial_transformer(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c: usize,
     cross_dim: usize,
@@ -1015,7 +1015,7 @@ fn load_spatial_transformer(
 }
 
 fn load_f32(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
 ) -> fuel_core::Result<Vec<f32>> {
     use safetensors::Dtype;
@@ -1044,7 +1044,7 @@ fn load_f32(
 }
 
 fn load_transposed(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     out_features: usize,
     in_features: usize,
@@ -1077,7 +1077,7 @@ impl SdUnet {
         let path = repo
             .get("unet/diffusion_pytorch_model.safetensors")
             .map_err(|e| fuel_core::Error::Msg(format!("hf-hub unet safetensors: {e}")))?;
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path) }?;
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path) }?;
         let weights = SdUnetWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })
     }

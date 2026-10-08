@@ -2,8 +2,9 @@
 //! Safetensors file reading — the mmap/view surface.
 //!
 //! Moved here from `fuel-core` (fuel-core dissolution Slice 3,
-//! `docs/session-prompts/fuel-core-dissolution-b1.md`). `fuel-core` keeps a re-export shim so
-//! existing `fuel_core::safetensors` / `fuel::safetensors` call sites keep compiling.
+//! `docs/session-prompts/fuel-core-dissolution-b1.md`). The `fuel-core` re-export shim was
+//! retired (fuel-core dissolution, GAP-347 PR 5): direct consumers were repointed here, and
+//! `fuel::safetensors` is re-exported straight from this module by the `fuel` facade.
 //!
 //! - [`MmapedSafetensors`] — memory-maps one or more files and hands out
 //!   `safetensors::TensorView`s via `get`/`tensors`. This is what the lazy stack uses: it reads

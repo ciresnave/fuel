@@ -299,7 +299,7 @@ impl GraniteWeights {
     /// Load Granite (ibm-granite/granite-*-instruct) weights from HF safetensors.
     /// Standard LLaMA-shape naming, no biases.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &GraniteConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};

@@ -383,7 +383,7 @@ impl DepthAnythingV2Weights {
     /// for the backbone and loads DPT-specific scratch / feature-fusion
     /// blocks from the wrapper prefix.
     pub fn load_from_mmapped(
-        _st: &fuel_core::safetensors::MmapedSafetensors,
+        _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &DepthAnythingV2Config,
     ) -> Result<Self> {
         Err(fuel_core::Error::Msg(

@@ -663,7 +663,7 @@ fn add_bias_3d(x: Tensor, bias: &Arc<[f32]>, n: usize) -> Result<Tensor> {
 
 impl MarianAttentionWeights {
     fn load(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         d_model: usize,
     ) -> Result<Self> {
@@ -692,7 +692,7 @@ impl MarianAttentionWeights {
 impl MarianWeights {
     /// Load Marian (Helsinki-NLP/opus-mt-*) weights from HuggingFace safetensors.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MarianConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};

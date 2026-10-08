@@ -139,7 +139,7 @@ impl SpeakerEncoderWeights {
     /// along the leading axis — same as [`LstmCellWeights`], so no
     /// re-shuffle is needed.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SpeakerEncoderConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};

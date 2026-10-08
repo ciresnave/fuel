@@ -571,7 +571,7 @@ impl Gemma4AudioWeights {
     /// scheme, so `rel_pos_bias` is initialised to zeros — bit-exact
     /// parity with eager checkpoints isn't expected for v1.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Gemma4AudioConfig,
     ) -> Result<Self> {
         Self::load_from_mmapped_with_prefix(st, cfg, "")
@@ -581,7 +581,7 @@ impl Gemma4AudioWeights {
     /// `"audio_tower."` (note the trailing dot) when loading from a
     /// full Gemma 4 multimodal checkpoint.
     pub fn load_from_mmapped_with_prefix(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Gemma4AudioConfig,
         prefix: &str,
     ) -> Result<Self> {

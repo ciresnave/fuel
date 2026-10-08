@@ -378,7 +378,7 @@ impl MoondreamWeights {
     /// Moondream composes a SigLIP-like vision encoder with a Phi-2 text
     /// decoder; this loader stub is pending the multimodal projector mapping.
     pub fn load_from_mmapped(
-        _st: &fuel_core::safetensors::MmapedSafetensors,
+        _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &MoondreamConfig,
     ) -> fuel_core::Result<Self> {
         Err(fuel_core::Error::Msg(

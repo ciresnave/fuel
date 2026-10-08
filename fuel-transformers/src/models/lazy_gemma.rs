@@ -441,7 +441,7 @@ impl GemmaWeights {
     ///   - `model.norm.weight` → `final_norm_gain`
     ///   - `lm_head.weight` (optional, fallback to tied embeddings) → `output`
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &GemmaConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};

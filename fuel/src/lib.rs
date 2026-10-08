@@ -49,6 +49,17 @@ pub use fuel_kv_pool as kv_block_pool;
 // above no longer carries it, so this keeps the path alive regardless.
 pub use fuel_loaders::hf_config;
 
+// `safetensors` retired from fuel-core (fuel-core dissolution, GAP-347 PR 5):
+// the module was already a pure `pub use fuel_loaders::safetensors::*;` shim.
+// Real consumers reaching it via `fuel_core::safetensors::` directly (not
+// through this facade) were repointed to `fuel_loaders::safetensors`
+// directly in the same change (fuel-model-llama, fuel-model-phi,
+// fuel-transformers's model files). Re-exported here, unconditionally
+// (never feature-gated in fuel-core), so `fuel::safetensors` callers
+// (fuel-examples, fuel-tensor-tools) are unaffected by the module leaving
+// fuel-core — `fuel_core::*` above no longer carries it.
+pub use fuel_loaders::safetensors;
+
 // `#[macro_export]` macros are placed at the CRATE ROOT in the MACRO namespace,
 // which a glob re-export (`pub use fuel_core::*`) does NOT carry. `bail!` is the
 // framework's one exported macro (used in ~60 consumer files), so it is

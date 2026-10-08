@@ -572,7 +572,7 @@ impl BasedWeights {
     /// Mixer kind per layer is driven entirely by config — the loader
     /// dispatches on `cfg.mixer_kind(i)`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &BasedConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};

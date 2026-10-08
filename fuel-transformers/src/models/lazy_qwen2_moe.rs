@@ -473,7 +473,7 @@ impl Qwen2MoeWeights {
     /// Tensor names follow the LLaMA layout under `model.*` with MoE FFNs at
     /// `model.layers.{i}.mlp.{gate,experts.{e}.{gate,up,down}_proj,shared_expert.*}.weight`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen2MoeConfig,
     ) -> fuel_core::Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};

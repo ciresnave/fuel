@@ -615,7 +615,7 @@ fn activate(x: &Tensor, kind: SiglipActivation) -> Tensor {
 // ---- HuggingFace safetensors loaders ---------------------------------------
 
 fn load_siglip_encoder_layer(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     hidden: usize,
     intermediate: usize,
@@ -700,7 +700,7 @@ impl SiglipVisionWeights {
     /// `prefix` is typically `""` for vision-only checkpoints or
     /// `"vision_model."` for full SigLIP / PaliGemma checkpoints.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SiglipVisionConfig,
         prefix: &str,
         include_head: bool,
@@ -816,7 +816,7 @@ impl SiglipTextWeights {
     /// Load SigLIP text-tower weights from HF safetensors.
     /// `prefix` typically `""` or `"text_model."`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SiglipTextConfig,
         prefix: &str,
     ) -> Result<Self> {
@@ -864,7 +864,7 @@ impl SiglipModelWeights {
     /// Load a full SigLIP checkpoint (text + vision + logit
     /// scale/bias) from `google/siglip-*` HF safetensors.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         text_cfg: &SiglipTextConfig,
         vision_cfg: &SiglipVisionConfig,
     ) -> Result<Self> {

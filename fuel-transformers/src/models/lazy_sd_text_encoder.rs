@@ -495,7 +495,7 @@ impl ClipTextWeights {
     /// weight`, `text_model.encoder.layers.{i}.…`, `text_model.
     /// final_layer_norm.{weight,bias}`).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ClipTextConfig,
     ) -> fuel_core::Result<Self> {
         let h = cfg.hidden_size;
@@ -556,7 +556,7 @@ impl ClipTextWeights {
 }
 
 fn load_f32(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
 ) -> fuel_core::Result<Vec<f32>> {
     use safetensors::Dtype;
@@ -593,7 +593,7 @@ fn load_f32(
 }
 
 fn load_transposed(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     out_features: usize,
     in_features: usize,
@@ -635,7 +635,7 @@ impl SdTextEncoder {
         let path = repo.get("text_encoder/model.safetensors").map_err(|e| {
             fuel_core::Error::Msg(format!("hf-hub text_encoder/model.safetensors: {e}"))
         })?;
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path) }?;
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path) }?;
         let weights = ClipTextWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })
     }

@@ -101,7 +101,7 @@ impl QuantizedGlm4Model {
     /// quantize each Linear weight to Q4_0. Equivalent to
     /// `Self::from_f32_bake(cfg, Glm4Weights::load_from_mmapped(st, &cfg)?)`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: Glm4Config,
     ) -> Result<Self> {
         let src = Glm4Weights::load_from_mmapped(st, &cfg)?;
