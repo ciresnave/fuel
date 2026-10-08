@@ -226,7 +226,7 @@ impl QuantizedGlm4Model {
     /// doubled shape is present we use it as-is (some converters emit
     /// the fused form directly).
     pub fn from_gguf<P: AsRef<std::path::Path>>(path: P, cfg: &Glm4Config) -> Result<Self> {
-        use fuel_core::quantized::gguf_mmap::MmapedContent;
+        use fuel_loaders::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(path)?;
         let content = mc.content();
         let mmap_arc = mc.mmap();
@@ -234,7 +234,7 @@ impl QuantizedGlm4Model {
         let data_off = content.tensor_data_offset as usize;
 
         let get_tensor_bytes =
-            |name: &str| -> Result<(&[u8], fuel_core::quantized::GgmlDType, Vec<usize>)> {
+            |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
                     fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
@@ -267,7 +267,7 @@ impl QuantizedGlm4Model {
                 )).bt());
             }
             match dt {
-                fuel_core::quantized::GgmlDType::Q4_0 => Ok(WeightStorage::Q4_0 {
+                fuel_loaders::quantized::GgmlDType::Q4_0 => Ok(WeightStorage::Q4_0 {
                     words: bytes_to_u32_arc(bytes),
                     bytes_len: bytes.len(),
                     in_features,
@@ -417,7 +417,10 @@ impl QuantizedGlm4Model {
 ///      `Glm4Model::apply_layer` slice order
 ///      (`slice(2, 0, inter)` = gate, `slice(2, inter, inter)` = up).
 fn load_fused_or_split_gate_up<F>(
-    tensor_infos: &std::collections::HashMap<String, fuel_core::quantized::gguf_file::TensorInfo>,
+    tensor_infos: &std::collections::HashMap<
+        String,
+        fuel_loaders::quantized::gguf_file::TensorInfo,
+    >,
     load_weight: &F,
     prefix: &str,
     h: usize,
@@ -501,7 +504,7 @@ fn weight_storage_to_f32_in_out(
             let bytes = &bytes[..*bytes_len];
             let dq_out_in = fuel_quantized::dequant_ggml_bytes(
                 bytes,
-                fuel_core::quantized::GgmlDType::Q4_0,
+                fuel_loaders::quantized::GgmlDType::Q4_0,
                 name,
             )?;
             if dq_out_in.len() != out_features * in_features {
@@ -614,7 +617,7 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
 /// independent of the SmolLM3 internals.
 fn dequant_bytes_to_f32(
     bytes: &[u8],
-    dt: fuel_core::quantized::GgmlDType,
+    dt: fuel_loaders::quantized::GgmlDType,
     name: &str,
 ) -> Result<Vec<f32>> {
     fuel_quantized::dequant_ggml_bytes(bytes, dt, name)

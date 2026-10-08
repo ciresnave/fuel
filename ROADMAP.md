@@ -977,8 +977,9 @@ stack flow downward only. No lower layer may depend on a higher one.
   `fuel-core` does not depend on `fuel-nn`, which does not depend on
   `fuel-transformers`. The early-exit property is structurally present.
 - `fuel-core` has a reasonable backend abstraction (CPU, CUDA, Metal).
-- Quantization has a meaningful home in `fuel-core::quantized`, better
-  centralized than most frameworks at a comparable stage.
+- Quantization has a meaningful home in `fuel_loaders::quantized` (moved from
+  `fuel-core::quantized`, retired GAP-347 PR 6), better centralized than most
+  frameworks at a comparable stage.
 - The breadth of model implementations in `fuel-transformers` is genuinely
   impressive and is a key asset.
 

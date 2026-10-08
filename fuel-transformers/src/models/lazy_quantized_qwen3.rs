@@ -267,7 +267,7 @@ impl QuantizedQwen3Model {
     ///   `blk.{i}.ffn_down.weight`
     /// - `blk.{i}.attn_norm.weight`  / `blk.{i}.ffn_norm.weight`
     pub fn from_gguf<P: AsRef<std::path::Path>>(path: P, cfg: &Qwen3Config) -> Result<Self> {
-        use fuel_core::quantized::gguf_mmap::MmapedContent;
+        use fuel_loaders::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(path)?;
         let mmap_arc = mc.mmap();
         let mmap_bytes: &[u8] = &mmap_arc[..];
@@ -281,7 +281,7 @@ impl QuantizedQwen3Model {
     /// buffer must contain the complete GGUF file (header + tensor
     /// data).
     pub fn from_gguf_bytes(bytes: &[u8], cfg: &Qwen3Config) -> Result<Self> {
-        use fuel_core::quantized::gguf_file::Content;
+        use fuel_loaders::quantized::gguf_file::Content;
         use std::io::Cursor;
         let mut cursor = Cursor::new(bytes);
         let content = Content::read(&mut cursor)?;
@@ -292,14 +292,14 @@ impl QuantizedQwen3Model {
     /// must cover the entire GGUF file starting at byte 0 — tensor
     /// offsets are interpreted relative to `content.tensor_data_offset`.
     fn from_gguf_content_and_bytes(
-        content: &fuel_core::quantized::gguf_file::Content,
+        content: &fuel_loaders::quantized::gguf_file::Content,
         bytes: &[u8],
         cfg: &Qwen3Config,
     ) -> Result<Self> {
         let data_off = content.tensor_data_offset as usize;
 
         let get_tensor_bytes =
-            |name: &str| -> Result<(&[u8], fuel_core::quantized::GgmlDType, Vec<usize>)> {
+            |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
                     fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
@@ -332,7 +332,7 @@ impl QuantizedQwen3Model {
                 )).bt());
             }
             match dt {
-                fuel_core::quantized::GgmlDType::Q4_0 => Ok(WeightStorage::Q4_0 {
+                fuel_loaders::quantized::GgmlDType::Q4_0 => Ok(WeightStorage::Q4_0 {
                     words: bytes_to_u32_arc(bytes),
                     bytes_len: bytes.len(),
                     in_features,
@@ -499,10 +499,10 @@ fn layer_err(idx: usize, name: &str, e: fuel_core::Error) -> fuel_core::Error {
 /// `dims[0]` is the vocabulary axis). Tied-embedding status is
 /// inferred from the presence of `output.weight`.
 pub fn qwen3_config_from_gguf_content(
-    content: &fuel_core::quantized::gguf_file::Content,
+    content: &fuel_loaders::quantized::gguf_file::Content,
 ) -> Result<Qwen3Config> {
     let md = &content.metadata;
-    let get = |k: &str| -> Result<&fuel_core::quantized::gguf_file::Value> {
+    let get = |k: &str| -> Result<&fuel_loaders::quantized::gguf_file::Value> {
         md.get(k)
             .ok_or_else(|| fuel_core::Error::Msg(format!("gguf metadata: missing key {k:?}")).bt())
     };
@@ -635,7 +635,7 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
 /// stays independent of the SmolLM3 internals.
 fn dequant_bytes_to_f32(
     bytes: &[u8],
-    dt: fuel_core::quantized::GgmlDType,
+    dt: fuel_loaders::quantized::GgmlDType,
     name: &str,
 ) -> Result<Vec<f32>> {
     fuel_quantized::dequant_ggml_bytes(bytes, dt, name)

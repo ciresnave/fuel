@@ -1359,7 +1359,7 @@ impl PhiModel {
     /// other dtypes dequantize to F32 at load time. Config is derived
     /// from the GGUF metadata.
     pub fn from_gguf<P: AsRef<std::path::Path>>(path: P) -> fuel_core::Result<Self> {
-        use fuel_core::quantized::gguf_mmap::MmapedContent;
+        use fuel_loaders::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(&path)?;
         let meta = mc.metadata();
         let get_u32 = |k: &str| -> fuel_core::Result<u32> {
@@ -1576,7 +1576,7 @@ impl PhiWeights {
         path: P,
         cfg: &PhiConfig,
     ) -> fuel_core::Result<Self> {
-        use fuel_core::quantized::gguf_mmap::MmapedContent;
+        use fuel_loaders::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(path)?;
         let content = mc.content();
         let (mmap_arc, _) = (mc.mmap(), ());
@@ -1586,7 +1586,7 @@ impl PhiWeights {
         // Extract a raw byte slice for a tensor.
         let get_tensor_bytes = |name: &str| -> fuel_core::Result<(
             &[u8],
-            fuel_core::quantized::GgmlDType,
+            fuel_loaders::quantized::GgmlDType,
             Vec<usize>,
         )> {
             let info = content
@@ -1633,7 +1633,7 @@ impl PhiWeights {
             // known-good computation path.
             let force_f32 = std::env::var("FUEL_FORCE_F32").is_ok();
             match dt {
-                fuel_core::quantized::GgmlDType::Q4_0 if !force_f32 => Ok(WeightStorage::Q4_0 {
+                fuel_loaders::quantized::GgmlDType::Q4_0 if !force_f32 => Ok(WeightStorage::Q4_0 {
                     words: bytes_to_u32_arc(bytes),
                     bytes_len: bytes.len(),
                     in_features,
@@ -1745,10 +1745,10 @@ impl PhiWeights {
 /// lacks a fused on-device dequant path).
 fn dequant_gguf_bytes_to_f32(
     bytes: &[u8],
-    dt: fuel_core::quantized::GgmlDType,
+    dt: fuel_loaders::quantized::GgmlDType,
     name: &str,
 ) -> fuel_core::Result<Vec<f32>> {
-    use fuel_core::quantized::GgmlDType;
+    use fuel_loaders::quantized::GgmlDType;
     use half::{bf16, f16};
     match dt {
         GgmlDType::F32 => {
