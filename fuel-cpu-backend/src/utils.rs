@@ -3,6 +3,40 @@ use fuel_cpu_kernels::VecOps;
 /// Helper functions to write CPU kernels.
 use fuel_ir::{Error, HostBuffer, Layout, Result, WithDType};
 
+/// Returns `true` if this crate was compiled with Apple Accelerate support.
+///
+/// Moved from `fuel_core::utils::has_accelerate` (fuel-core dissolution,
+/// GAP-347 PR 7) — `cfg!(feature = "accelerate")` here means exactly what
+/// it meant in `fuel-core`, since `fuel-core`'s own `accelerate` feature
+/// forwards 1:1 to this crate's (`fuel-core/Cargo.toml`: `accelerate =
+/// ["dep:libc", "dep:accelerate-src", "fuel-cpu-backend/accelerate", ...]`).
+///
+/// # Example
+///
+/// ```rust
+/// use fuel_cpu_backend::has_accelerate;
+/// // Returns true only when built with the `accelerate` feature.
+/// let _ = has_accelerate();
+/// ```
+pub fn has_accelerate() -> bool {
+    cfg!(feature = "accelerate")
+}
+
+/// Returns `true` if this crate was compiled with Intel MKL support.
+///
+/// Moved from `fuel_core::utils::has_mkl` (fuel-core dissolution, GAP-347
+/// PR 7) — same 1:1 feature-forwarding rationale as [`has_accelerate`].
+///
+/// # Example
+///
+/// ```rust
+/// use fuel_cpu_backend::has_mkl;
+/// let _ = has_mkl();
+/// ```
+pub fn has_mkl() -> bool {
+    cfg!(feature = "mkl")
+}
+
 type C = HostBuffer;
 pub trait Map1 {
     fn f<T: WithDType + VecOps>(&self, vs: &[T], layout: &Layout) -> Result<Vec<T>>;
@@ -418,5 +452,29 @@ pub fn unary_map_vec<T: Copy, U: Copy, F: FnMut(T) -> U, FV: FnMut(&[T], &mut [U
                 ys
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod feature_flag_tests {
+    // Only brought in by a test below; under default features (neither
+    // accelerate nor mkl on) every test here is cfg'd out, and an
+    // unconditional `use super::*;` would then be unused.
+    #[cfg(any(feature = "accelerate", feature = "mkl"))]
+    use super::*;
+
+    // Positive-control tripwires (moved from fuel-core's utils.rs, same
+    // shape): each function must read `true` under its OWN feature, not
+    // some unrelated or absent one.
+    #[cfg(feature = "accelerate")]
+    #[test]
+    fn has_accelerate_is_true_under_its_own_feature() {
+        assert!(has_accelerate());
+    }
+
+    #[cfg(feature = "mkl")]
+    #[test]
+    fn has_mkl_is_true_under_its_own_feature() {
+        assert!(has_mkl());
     }
 }
