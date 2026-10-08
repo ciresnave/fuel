@@ -263,7 +263,7 @@ impl QuantizedLlama3Model {
     /// (`blk.{i}.attn_q.bias` / `attn_k.bias` / `attn_v.bias`) are
     /// loaded as F32 when present and ignored otherwise.
     pub fn from_gguf<P: AsRef<std::path::Path>>(path: P, cfg: &LlamaFullConfig) -> Result<Self> {
-        use fuel_core::quantized::gguf_mmap::MmapedContent;
+        use fuel_loaders::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(path)?;
         let content = mc.content();
         let mmap_arc = mc.mmap();
@@ -271,7 +271,7 @@ impl QuantizedLlama3Model {
         let data_off = content.tensor_data_offset as usize;
 
         let get_tensor_bytes =
-            |name: &str| -> Result<(&[u8], fuel_core::quantized::GgmlDType, Vec<usize>)> {
+            |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
                     fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
@@ -304,7 +304,7 @@ impl QuantizedLlama3Model {
                 )).bt());
             }
             match dt {
-                fuel_core::quantized::GgmlDType::Q4_0 => Ok(WeightStorage::Q4_0 {
+                fuel_loaders::quantized::GgmlDType::Q4_0 => Ok(WeightStorage::Q4_0 {
                     words: bytes_to_u32_arc(bytes),
                     bytes_len: bytes.len(),
                     in_features,
@@ -497,7 +497,7 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
 /// stays independent of those modules' internals.
 fn dequant_bytes_to_f32(
     bytes: &[u8],
-    dt: fuel_core::quantized::GgmlDType,
+    dt: fuel_loaders::quantized::GgmlDType,
     name: &str,
 ) -> Result<Vec<f32>> {
     fuel_quantized::dequant_ggml_bytes(bytes, dt, name)

@@ -41,8 +41,8 @@
 
 use std::path::PathBuf;
 
-use fuel_core::quantized::gguf_file::Value as GgufValue;
-use fuel_core::quantized::gguf_mmap::MmapedContent;
+use fuel_loaders::quantized::gguf_file::Value as GgufValue;
+use fuel_loaders::quantized::gguf_mmap::MmapedContent;
 use fuel_transformers::models::lazy_quantized_qwen3::QuantizedQwen3Model;
 use fuel_transformers::models::lazy_qwen3::Qwen3Config;
 use serde::{Deserialize, Serialize};

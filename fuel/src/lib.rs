@@ -60,6 +60,17 @@ pub use fuel_loaders::hf_config;
 // fuel-core — `fuel_core::*` above no longer carries it.
 pub use fuel_loaders::safetensors;
 
+// `quantized` retired from fuel-core (fuel-core dissolution, GAP-347 PR 6):
+// the module was already a pure `pub use fuel_loaders::quantized::*;` shim.
+// Real consumers reaching it via `fuel_core::quantized::` directly (not
+// through this facade) were repointed to `fuel_loaders::quantized` directly
+// in the same change (fuel-model-phi, fuel-transformers's quantized model
+// files and qwen3_cpu_yardstick test). Re-exported here, unconditionally
+// (never feature-gated in fuel-core), so `fuel::quantized` callers
+// (fuel-examples, fuel-lazy-examples) are unaffected by the module leaving
+// fuel-core — `fuel_core::*` above no longer carries it.
+pub use fuel_loaders::quantized;
+
 // `#[macro_export]` macros are placed at the CRATE ROOT in the MACRO namespace,
 // which a glob re-export (`pub use fuel_core::*`) does NOT carry. `bail!` is the
 // framework's one exported macro (used in ~60 consumer files), so it is

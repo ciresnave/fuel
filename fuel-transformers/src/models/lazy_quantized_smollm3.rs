@@ -187,7 +187,7 @@ impl QuantizedSmolLm3Model {
     /// the Phi-2 loader policy. Embedding and `lm_head` share storage
     /// when `output.weight` is absent (tied embeddings).
     pub fn from_gguf<P: AsRef<std::path::Path>>(path: P, cfg: &SmolLm3Config) -> Result<Self> {
-        use fuel_core::quantized::gguf_mmap::MmapedContent;
+        use fuel_loaders::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(path)?;
         let content = mc.content();
         let mmap_arc = mc.mmap();
@@ -195,7 +195,7 @@ impl QuantizedSmolLm3Model {
         let data_off = content.tensor_data_offset as usize;
 
         let get_tensor_bytes =
-            |name: &str| -> Result<(&[u8], fuel_core::quantized::GgmlDType, Vec<usize>)> {
+            |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
                     fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
@@ -228,7 +228,7 @@ impl QuantizedSmolLm3Model {
                 )).bt());
             }
             match dt {
-                fuel_core::quantized::GgmlDType::Q4_0 => Ok(WeightStorage::Q4_0 {
+                fuel_loaders::quantized::GgmlDType::Q4_0 => Ok(WeightStorage::Q4_0 {
                     words: bytes_to_u32_arc(bytes),
                     bytes_len: bytes.len(),
                     in_features,
@@ -419,7 +419,7 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
 /// independent of the Phi internals.
 fn dequant_bytes_to_f32(
     bytes: &[u8],
-    dt: fuel_core::quantized::GgmlDType,
+    dt: fuel_loaders::quantized::GgmlDType,
     name: &str,
 ) -> Result<Vec<f32>> {
     fuel_quantized::dequant_ggml_bytes(bytes, dt, name)
@@ -535,9 +535,12 @@ mod tests {
             bytes[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
         }
         let bytes = &bytes[..bytes_len];
-        let dq_out_in =
-            fuel_quantized::dequant_ggml_bytes(bytes, fuel_core::quantized::GgmlDType::Q4_0, "t")
-                .unwrap();
+        let dq_out_in = fuel_quantized::dequant_ggml_bytes(
+            bytes,
+            fuel_loaders::quantized::GgmlDType::Q4_0,
+            "t",
+        )
+        .unwrap();
         assert_eq!(dq_out_in.len(), n);
 
         // Compare per-element after transposing original [in, out] to
