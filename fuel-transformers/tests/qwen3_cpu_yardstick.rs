@@ -970,7 +970,19 @@ fn m1_cuda_speed_harness() {
     let prompt_tokens = encoding.get_ids().to_vec();
     let max_seq_len = prompt_tokens.len() + DECODE_LEN;
 
-    let run_once = || -> (std::time::Duration, std::time::Duration) {
+    // Reports THREE durations rather than two (Sourcery + PM, 2026-10-07):
+    // `forward_with_kv_context_persistent` builds/optimizes the persistent
+    // decode graph on the FIRST `seq == 1` call per session
+    // (`build_and_realize_first_decode_token`), then skips optimize on
+    // every later call. Each `run_once` starts a FRESH session, so a
+    // separate throwaway "warm-up" call does NOT warm this cost away — it
+    // only warms CUDA context / allocator / first-touch costs, which is a
+    // DIFFERENT one-time cost from the per-session graph build. Folding
+    // the graph-build latency into "decode tok/s" (the original form of
+    // this harness) silently mixed a one-time setup cost into a
+    // steady-state throughput number. Split here: `first_decode_dt` is
+    // that one call alone; `steady_decode_dt` is every call after it.
+    let run_once = || -> (std::time::Duration, std::time::Duration, std::time::Duration) {
         let mut cache = KvCache::with_capacity(
             cfg.num_hidden_layers,
             cfg.num_key_value_heads,
@@ -995,8 +1007,20 @@ fn m1_cuda_speed_harness() {
             .map(|(i, _)| i as u32)
             .unwrap();
 
-        let decode_start = std::time::Instant::now();
-        for _ in 1..DECODE_LEN {
+        let first_decode_start = std::time::Instant::now();
+        let logits = model
+            .forward_with_kv_context_persistent(&[next_token], &mut cache, &mut ctx, &mut session)
+            .expect("first decode forward_with_kv_context_persistent");
+        let first_decode_dt = first_decode_start.elapsed();
+        next_token = logits
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i as u32)
+            .unwrap();
+
+        let steady_decode_start = std::time::Instant::now();
+        for _ in 2..DECODE_LEN {
             let logits = model
                 .forward_with_kv_context_persistent(
                     &[next_token],
@@ -1012,24 +1036,28 @@ fn m1_cuda_speed_harness() {
                 .map(|(i, _)| i as u32)
                 .unwrap();
         }
-        let decode_dt = decode_start.elapsed();
-        (prefill_dt, decode_dt)
+        let steady_decode_dt = steady_decode_start.elapsed();
+        (prefill_dt, first_decode_dt, steady_decode_dt)
     };
 
     // Warm-up: discarded, so the timed run isn't paying for CUDA context /
-    // allocator / first-touch page-fault costs.
+    // allocator / first-touch page-fault costs. Does NOT warm the
+    // persistent-decode graph build (see above) -- that is measured
+    // separately below, every run, because it is per-session.
     let _ = run_once();
 
-    let (prefill_dt, decode_dt) = run_once();
-    let decode_steps = (DECODE_LEN - 1) as f64;
+    let (prefill_dt, first_decode_dt, steady_decode_dt) = run_once();
+    let steady_decode_steps = (DECODE_LEN - 2) as f64;
     println!(
         "device=cuda:0 model={MODEL_REPO}/{MODEL_FILE} \
          prefill: {} tokens in {:.3}s ({:.2} tok/s) \
-         decode: {decode_steps} tokens in {:.3}s ({:.2} tok/s)",
+         first_decode_call (session build + 1 token): {:.3}s \
+         steady_state_decode: {steady_decode_steps} tokens in {:.3}s ({:.2} tok/s)",
         prompt_tokens.len(),
         prefill_dt.as_secs_f64(),
         prompt_tokens.len() as f64 / prefill_dt.as_secs_f64(),
-        decode_dt.as_secs_f64(),
-        decode_steps / decode_dt.as_secs_f64(),
+        first_decode_dt.as_secs_f64(),
+        steady_decode_dt.as_secs_f64(),
+        steady_decode_steps / steady_decode_dt.as_secs_f64(),
     );
 }
