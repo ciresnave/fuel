@@ -132,7 +132,7 @@ impl CsmWeights {
     ///   audio_vocab_size]` (no transpose; sliced per codebook at
     ///   call-time).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &CsmConfig,
     ) -> fuel_core::Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
@@ -691,7 +691,7 @@ mod tests {
         ];
 
         let path = write_tmp_safetensors(&tensors);
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path).unwrap() };
         let weights = CsmWeights::load_from_mmapped(&st, &cfg).unwrap();
 
         // Embeddings preserved as-is.
@@ -814,7 +814,7 @@ mod tests {
             ),
         ];
         let path = write_tmp_safetensors(&tensors);
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path).unwrap() };
         let weights = CsmWeights::load_from_mmapped(&st, &cfg).unwrap();
         let model = CsmModel {
             config: cfg.clone(),

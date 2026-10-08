@@ -106,7 +106,7 @@ impl ConvDownsample1dWeights {
     /// `vb` sees. Matches the path already used by
     /// `MimiWeights::load_from_mmapped` (`"downsample.conv.weight"`).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         dim: usize,
         stride: usize,
@@ -144,7 +144,7 @@ impl ConvTrUpsample1dWeights {
     /// (`"upsample.convtr.weight"`) and the HuggingFace
     /// `kyutai/mimi` checkpoint.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         dim: usize,
         stride: usize,

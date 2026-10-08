@@ -429,7 +429,7 @@ fn fuse_weight_norm_conv_transpose1d(
 /// prefix. Reads `<prefix>.weight_g`, `<prefix>.weight_v`, `<prefix>.bias`
 /// and fuses them into a plain conv weight.
 fn load_wn_conv1d(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c_in: usize,
     c_out: usize,
@@ -462,7 +462,7 @@ fn load_wn_conv1d(
 
 /// Load one weight-normed `ConvTranspose1dWeights` at the given prefix.
 fn load_wn_conv_transpose1d(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c_in: usize,
     c_out: usize,
@@ -492,7 +492,7 @@ fn load_wn_conv_transpose1d(
 }
 
 fn load_snake(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     channels: usize,
 ) -> fuel_core::Result<Snake1dWeights> {
@@ -510,7 +510,7 @@ fn load_snake(
 }
 
 fn load_residual_unit(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     dim: usize,
     dilation: usize,
@@ -528,7 +528,7 @@ fn load_residual_unit(
 }
 
 fn load_decoder_block(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     in_dim: usize,
     out_dim: usize,
@@ -579,7 +579,7 @@ impl DacWeights {
     /// tensor at load-time — same trick the eager port uses to keep
     /// inference paths un-cluttered by weight-norm bookkeeping.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &DacConfig,
     ) -> Result<Self> {
         // RVQ: one VectorQuantizer per codebook.
@@ -1169,7 +1169,7 @@ mod tests {
         ));
 
         let path = write_tmp_safetensors(&tensors);
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path).unwrap() };
         let weights = DacWeights::load_from_mmapped(&st, &cfg).unwrap();
         assert_eq!(weights.quantizers.len(), cfg.num_codebooks);
         for (i, q) in weights.quantizers.iter().enumerate() {
@@ -1268,7 +1268,7 @@ mod tests {
         ));
 
         let path = write_tmp_safetensors(&tensors);
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path).unwrap() };
         let weights = DacWeights::load_from_mmapped(&st, &cfg).unwrap();
         let model = DacModel {
             config: cfg.clone(),

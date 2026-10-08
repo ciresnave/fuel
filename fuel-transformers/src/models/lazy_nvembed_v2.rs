@@ -327,7 +327,7 @@ impl NvEmbedV2Weights {
     ///     GeGLU's fused up-projection sits at `.fn.net.0.proj.weight`
     ///     and the down-projection at `.fn.net.2.weight`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &NvEmbedV2Config,
     ) -> Result<Self> {
         use fuel_core::lazy::{

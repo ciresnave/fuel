@@ -208,7 +208,7 @@ impl StellaV5Weights {
     /// backbone with a Matryoshka dense projection head sized at
     /// `cfg.embed_dim.out_features()`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &StellaV5Config,
     ) -> Result<Self> {
         use fuel_core::lazy::load_transposed_matrix_preserve_dtype as ltm;

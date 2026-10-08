@@ -577,7 +577,7 @@ pub fn partition_image(
 ///   - `{projector_prefix}pre_norm.{weight,bias}`
 ///   - `{projector_prefix}linear_{1,2}.{weight,bias}`
 pub fn load_paddleocr_vl_vision_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     cfg: &PaddleOcrVlVisionConfig,
     text_hidden_size: usize,
     vision_prefix: &str,
@@ -734,7 +734,7 @@ impl PaddleOcrVlVisionWeights {
     /// language model's hidden size — the projector's `linear_2`
     /// projects into it.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &PaddleOcrVlVisionConfig,
         text_hidden_size: usize,
     ) -> Result<Self> {
@@ -1320,7 +1320,7 @@ fn bilinear_interpolate_position_embedding(
 /// `packing_position_embedding` fallback at eager line 122-124 is
 /// not used by the lazy port and is skipped.
 pub fn load_paddleocr_vl_navit_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     cfg: &PaddleOcrVlNaVitConfig,
     text_hidden_size: usize,
     vision_prefix: &str,
@@ -1478,7 +1478,7 @@ impl PaddleOcrVlNaVitWeights {
     /// the top level; `text_hidden_size` is the language model's
     /// hidden size (projector `linear_2` projects into it).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &PaddleOcrVlNaVitConfig,
         text_hidden_size: usize,
     ) -> Result<Self> {
@@ -1886,7 +1886,7 @@ mod tests {
             let cfg = tiny_cfg();
             let text_hidden = 16;
             let path = build_tiny_safetensors(&cfg, text_hidden);
-            let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path) }
+            let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path) }
                 .expect("mmap safetensors");
             let weights = PaddleOcrVlVisionWeights::load_from_mmapped(&st, &cfg, text_hidden)
                 .expect("PaddleOcrVlVisionWeights::load_from_mmapped");
@@ -2530,7 +2530,7 @@ mod tests {
             ));
             std::fs::write(&path, bytes).expect("write tempfile");
 
-            let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path) }
+            let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path) }
                 .expect("mmap safetensors");
             let weights = PaddleOcrVlNaVitWeights::load_from_mmapped(&st, &cfg, text_hidden)
                 .expect("PaddleOcrVlNaVitWeights::load_from_mmapped");

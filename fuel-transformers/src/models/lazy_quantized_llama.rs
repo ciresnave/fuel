@@ -129,7 +129,7 @@ impl QuantizedLlama3Model {
     /// quantize each Linear weight to Q4_0. Equivalent to
     /// `Self::from_f32_bake(cfg, LlamaWeights::load_from_mmapped(st, &cfg.to_lazy_config())?)`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: LlamaFullConfig,
     ) -> Result<Self> {
         let lazy_cfg = cfg.to_lazy_config();

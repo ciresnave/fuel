@@ -1774,7 +1774,7 @@ impl SamImageEncoderWeights {
     /// Load SAM image encoder (Meta SAM ViT-B/L/H) from HF safetensors.
     /// Stub: ViT backbone naming pending.
     pub fn load_from_mmapped(
-        _st: &fuel_core::safetensors::MmapedSafetensors,
+        _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &SamImageEncoderConfig,
     ) -> Result<Self> {
         Err(fuel_core::Error::Msg(
@@ -1789,7 +1789,7 @@ impl SamImageEncoderWeights {
 
 impl SamPromptEncoderWeights {
     pub fn load_from_mmapped(
-        _st: &fuel_core::safetensors::MmapedSafetensors,
+        _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &SamPromptEncoderConfig,
     ) -> Result<Self> {
         Err(fuel_core::Error::Msg(
@@ -1801,7 +1801,7 @@ impl SamPromptEncoderWeights {
 
 impl SamMaskDecoderWeights {
     pub fn load_from_mmapped(
-        _st: &fuel_core::safetensors::MmapedSafetensors,
+        _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &SamMaskDecoderConfig,
     ) -> Result<Self> {
         Err(fuel_core::Error::Msg(

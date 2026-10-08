@@ -423,7 +423,7 @@ fn build_pixtral_2d_rope_tables(
 ///   - `transformer.layers.{i}.ffn_norm.weight`
 ///   - `transformer.layers.{i}.feed_forward.{gate,up,down}_proj.weight`
 pub fn load_pixtral_vision_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     cfg: &PixtralVisionConfig,
     prefix: &str,
 ) -> Result<PixtralVisionWeights> {
@@ -519,7 +519,7 @@ pub fn load_pixtral_vision_weights(
 /// biases) under the given HF prefix (typically
 /// `"multi_modal_projector."`).
 pub fn load_pixtral_projector_weights(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     cfg: &PixtralProjectorConfig,
     prefix: &str,
 ) -> Result<PixtralProjectorWeights> {
@@ -566,7 +566,7 @@ impl PixtralWeights {
     ///   - `multi_modal_projector.linear_{1,2}.*` — 2-layer MLP
     ///   - `language_model.*` — Mistral decoder
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &PixtralConfig,
     ) -> Result<Self> {
         let vision = load_pixtral_vision_weights(st, &cfg.vision, "vision_tower.")?;
@@ -979,7 +979,7 @@ mod tests {
             let t_cfg = tiny_text_cfg();
             let p_cfg = tiny_projector_cfg(t_cfg.hidden_size);
             let path = build_tiny_safetensors(&v_cfg, &t_cfg, &p_cfg);
-            let st = unsafe { fuel_core::safetensors::MmapedSafetensors::new(&path) }
+            let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path) }
                 .expect("mmap safetensors");
             let cfg = PixtralConfig {
                 vision: v_cfg.clone(),

@@ -586,7 +586,7 @@ impl TinyVitModel {
 /// Helper: load Conv2dBN from `prefix` (conv at `prefix.c`, BN at `prefix.bn`),
 /// folding BN into per-channel affine.
 fn load_conv2d_bn(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c_in: usize,
     c_out: usize,
@@ -619,7 +619,7 @@ impl TinyVitWeights {
     /// Load TinyViT (MobileSAM image encoder) weights from HF safetensors.
     /// Matches the upstream `eager` Conv2dBN / MBConv / TinyViTBlock layout.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &TinyVitConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};

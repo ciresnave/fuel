@@ -325,7 +325,7 @@ impl DistilBertWeights {
     /// the 2× memory tax of an f32 copy; all other tensors (1-D
     /// gains/biases, embedding tables) round-trip through f32.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &DistilBertConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};

@@ -655,7 +655,7 @@ fn quick_gelu(x: &Tensor) -> Tensor {
 // ---- HuggingFace safetensors loaders ---------------------------------------
 
 fn load_clip_encoder_layer(
-    st: &fuel_core::safetensors::MmapedSafetensors,
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     embed_dim: usize,
     intermediate_size: usize,
@@ -748,7 +748,7 @@ impl ClipTextWeights {
     /// (`embeddings.token_embedding.weight` etc.) to pass `""`. Standard
     /// `CLIPModel` checkpoints use `"text_model."`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ClipTextConfig,
         prefix: &str,
     ) -> Result<Self> {
@@ -798,7 +798,7 @@ impl ClipVisionWeights {
     ///   - `vision_model.encoder.layers.{i}.*` (same shape as text tower)
     ///   - `vision_model.post_layernorm.{weight,bias}`
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ClipVisionConfig,
         prefix: &str,
     ) -> Result<Self> {
@@ -857,7 +857,7 @@ impl ClipModelWeights {
     /// and `text_projection.weight` / `visual_projection.weight` at
     /// the top level.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         text_cfg: &ClipTextConfig,
         vision_cfg: &ClipVisionConfig,
     ) -> Result<Self> {

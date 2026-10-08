@@ -355,7 +355,7 @@ impl BigCodeWeights {
     ///   when absent (the GPT-BigCode reference ties `lm_head` to
     ///   `transformer.wte`).
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &BigCodeConfig,
     ) -> Result<Self> {
         let h = cfg.hidden_size;

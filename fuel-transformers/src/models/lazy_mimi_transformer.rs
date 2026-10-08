@@ -380,7 +380,7 @@ impl ProjectedTransformerWeights {
     /// surrounding `MimiModel` build; the optional projections are
     /// emitted iff the corresponding safetensor key exists.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         prefix: &str,
         cfg: &MimiTransformerConfig,
         input_dim: usize,

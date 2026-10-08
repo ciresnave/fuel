@@ -486,7 +486,7 @@ impl Gemma2Weights {
     /// checkpoints (`attention_bias=false`), so q/k/v/o biases are
     /// always loaded as `None`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Gemma2Config,
     ) -> fuel_core::Result<Self> {
         let h = cfg.hidden_size;
@@ -589,7 +589,7 @@ impl Gemma2Model {
             ],
         };
 
-        let st = unsafe { fuel_core::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
         let weights = Gemma2Weights::load_from_mmapped(&st, &config)?;
 
         Ok(Gemma2Model { config, weights })

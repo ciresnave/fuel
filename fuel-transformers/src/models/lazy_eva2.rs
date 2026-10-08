@@ -377,7 +377,7 @@ impl EvaWeights {
     /// safetensors. Q/V have biases; K has none. MLP uses SwiGLU with
     /// separate gate/x projections and a sub-LayerNorm between them.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &EvaConfig,
     ) -> Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};

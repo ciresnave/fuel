@@ -148,7 +148,7 @@ impl QuantizedT5Model {
     /// quantize each Linear weight to Q4_0. Equivalent to
     /// `Self::from_f32_bake(cfg, T5Weights::load_from_mmapped(st, &cfg)?)`.
     pub fn load_from_mmapped(
-        st: &fuel_core::safetensors::MmapedSafetensors,
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: T5Config,
     ) -> Result<Self> {
         let src = T5Weights::load_from_mmapped(st, &cfg)?;
