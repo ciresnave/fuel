@@ -946,3 +946,90 @@ fn m1_cuda_matches_cpu_reference() {
         run_kv_context_decode_and_compare(&model, &tokenizer, &cfg, &fixture, dev, "cuda:0");
     result.assert_passes();
 }
+
+/// Timed CUDA run for M1's reporting requirement (PM, 2026-10-07): prefill
+/// and decode tok/s, measured separately, warm (a discarded warm-up run
+/// pays for first-touch CUDA context / allocator init so the timed run
+/// isn't charged for it). Mirrors `qwen3_cpu_speed_harness`'s shape but
+/// over `forward_with_kv_context_persistent` on `cuda:0` (plain `forward()`
+/// is hardcoded to `Device::cpu()` and cannot reach CUDA at all). Not a
+/// correctness assertion — a recorded number, like its CPU counterpart.
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "needs network, a real CUDA device, and --features cuda; run via scripts/gpu-run.ps1"]
+fn m1_cuda_speed_harness() {
+    use fuel_core::inference_context::{DecodeSession, InferenceContext, KvCache};
+    use fuel_ir::DType;
+
+    let (model, tokenizer, cfg) = load_model().expect("load_model");
+    let dev =
+        fuel_core::cuda_backend::new_device(0).expect("fuel_core::cuda_backend::new_device(0)");
+    let prompt = PROMPTS[0];
+    let formatted = format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n");
+    let encoding = tokenizer.encode(formatted, true).expect("encode");
+    let prompt_tokens = encoding.get_ids().to_vec();
+    let max_seq_len = prompt_tokens.len() + DECODE_LEN;
+
+    let run_once = || -> (std::time::Duration, std::time::Duration) {
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .expect("KvCache::with_capacity");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut session: Option<DecodeSession> = None;
+
+        let prefill_start = std::time::Instant::now();
+        let logits = model
+            .forward_with_kv_context_persistent(&prompt_tokens, &mut cache, &mut ctx, &mut session)
+            .expect("prefill forward_with_kv_context_persistent");
+        let prefill_dt = prefill_start.elapsed();
+        let mut next_token = logits
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i as u32)
+            .unwrap();
+
+        let decode_start = std::time::Instant::now();
+        for _ in 1..DECODE_LEN {
+            let logits = model
+                .forward_with_kv_context_persistent(
+                    &[next_token],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
+                )
+                .expect("decode forward_with_kv_context_persistent");
+            next_token = logits
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .map(|(i, _)| i as u32)
+                .unwrap();
+        }
+        let decode_dt = decode_start.elapsed();
+        (prefill_dt, decode_dt)
+    };
+
+    // Warm-up: discarded, so the timed run isn't paying for CUDA context /
+    // allocator / first-touch page-fault costs.
+    let _ = run_once();
+
+    let (prefill_dt, decode_dt) = run_once();
+    let decode_steps = (DECODE_LEN - 1) as f64;
+    println!(
+        "device=cuda:0 model={MODEL_REPO}/{MODEL_FILE} \
+         prefill: {} tokens in {:.3}s ({:.2} tok/s) \
+         decode: {decode_steps} tokens in {:.3}s ({:.2} tok/s)",
+        prompt_tokens.len(),
+        prefill_dt.as_secs_f64(),
+        prompt_tokens.len() as f64 / prefill_dt.as_secs_f64(),
+        decode_dt.as_secs_f64(),
+        decode_steps / decode_dt.as_secs_f64(),
+    );
+}
