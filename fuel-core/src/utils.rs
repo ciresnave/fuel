@@ -4,51 +4,36 @@
 //! `get_num_threads`/`with_avx`/`with_neon`/`with_f16c`/`cuda_is_available`
 //! moved to [`fuel_hardware::utils`] (fuel-core dissolution step 2, Part 5
 //! item 2) and are re-exported below so `fuel_core::utils::*` / `fuel::utils::*`
-//! call sites are unchanged. `has_accelerate`/`has_mkl`/`metal_is_available`
-//! stay here deliberately: fuel-hardware has no matching
-//! `accelerate`/`mkl`/`metal` feature, so moving them would make their
-//! `cfg!(feature = ...)` check silently and permanently evaluate to
-//! `false` regardless of how `fuel`/`fuel-core` was actually built. Final
-//! home TBD — most likely the backend crate that owns each feature
-//! (fuel-cpu-backend for accelerate/mkl, fuel-metal-backend for metal) once
-//! that census is done; tracked, not resolved, here.
+//! call sites are unchanged.
+//!
+//! `has_accelerate`/`has_mkl` moved to `fuel-cpu-backend` (fuel-core
+//! dissolution, GAP-347 PR 7): that crate is a REQUIRED (non-optional)
+//! dependency of this one, and its own `accelerate`/`mkl` features are
+//! exactly what this crate's `accelerate`/`mkl` features forward to
+//! (`fuel-core/Cargo.toml`), so re-exporting unconditionally preserves
+//! `cfg!(feature = ...)` parity with the pre-move behavior.
+//!
+//! `metal_is_available` moved to `fuel-metal-backend`, which — unlike
+//! `fuel-cpu-backend` — is an OPTIONAL dependency gated behind this
+//! crate's own `metal` feature (`dep:fuel-metal-backend`). A plain
+//! unconditional `pub use` would fail to resolve whenever `metal` is off,
+//! so the re-export is itself feature-gated, with a `false`-returning stub
+//! for the off case — together they reproduce the exact
+//! `cfg!(feature = "metal")` truth table the original local function had.
 pub use fuel_hardware::utils::*;
 
-/// Returns `true` if the crate was compiled with Apple Accelerate support.
-///
-/// # Example
-///
-/// ```rust
-/// use fuel_core::utils::has_accelerate;
-/// // Returns true only when built with the `accelerate` feature on macOS.
-/// let _ = has_accelerate();
-/// ```
-pub fn has_accelerate() -> bool {
-    cfg!(feature = "accelerate")
-}
+pub use fuel_cpu_backend::{has_accelerate, has_mkl};
 
-/// Returns `true` if the crate was compiled with Intel MKL support.
-///
-/// # Example
-///
-/// ```rust
-/// use fuel_core::utils::has_mkl;
-/// let _ = has_mkl();
-/// ```
-pub fn has_mkl() -> bool {
-    cfg!(feature = "mkl")
-}
+#[cfg(feature = "metal")]
+pub use fuel_metal_backend::metal_is_available;
 
-/// Returns `true` if the crate was compiled with Apple Metal support.
-///
-/// # Example
-///
-/// ```rust
-/// use fuel_core::utils::metal_is_available;
-/// let _ = metal_is_available();
-/// ```
+/// `fuel-metal-backend` isn't in the dependency graph at all without the
+/// `metal` feature (it's an `optional = true`, `dep:`-gated dependency),
+/// so there is no real implementation to call here — `false` is correct
+/// by construction, not a guess.
+#[cfg(not(feature = "metal"))]
 pub fn metal_is_available() -> bool {
-    cfg!(feature = "metal")
+    false
 }
 
 #[cfg(test)]
@@ -61,12 +46,13 @@ mod tests {
     use super::*;
 
     // Positive-control tripwires for the feature landmine this move surfaced
-    // (fuel-core dissolution step 2): each of these three functions must read
-    // `true` when its OWN feature is the one enabling the build, not some
-    // unrelated or absent feature on whatever crate hosts the check. Each
-    // test only compiles under its matching feature, so it is silent (not
-    // false) when that feature is off — same shape as the rest of this
-    // crate's feature-gated test modules.
+    // (fuel-core dissolution step 2, carried through GAP-347 PR 7): each of
+    // these three functions must read `true` when its OWN feature is the
+    // one enabling the build, not some unrelated or absent feature on
+    // whatever crate hosts the check. Each test only compiles under its
+    // matching feature, so it is silent (not false) when that feature is
+    // off — same shape as the rest of this crate's feature-gated test
+    // modules.
     #[cfg(feature = "accelerate")]
     #[test]
     fn has_accelerate_is_true_under_its_own_feature() {
