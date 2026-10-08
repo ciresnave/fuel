@@ -214,22 +214,6 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-pub trait ToUsize2 {
-    fn to_usize2(self) -> (usize, usize);
-}
-
-impl ToUsize2 for usize {
-    fn to_usize2(self) -> (usize, usize) {
-        (self, self)
-    }
-}
-
-impl ToUsize2 for (usize, usize) {
-    fn to_usize2(self) -> (usize, usize) {
-        self
-    }
-}
-
 // `Module` / `ModuleT` were REMOVED in B6. Both were defined over the eager
 // `crate::tensor::Tensor` (`forward(&self, xs: &Tensor) -> Result<Tensor>`), so
 // they could not survive its deletion. The lazy stack never adopted them — lazy
