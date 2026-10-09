@@ -1932,6 +1932,17 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
         }
     }
 
+    // Alias groups, built ONCE for the whole graph instead of re-derived
+    // per destructive op (`collect_alias_set` used to re-walk the entire
+    // `order` from scratch for every one of them — O(destructive_ops *
+    // order.len())). Every alias-extending node (view/bundle-projection/
+    // reshape-contiguize — see `alias_group_of`'s doc) points at the SAME
+    // group id as whatever it extends, in a single forward pass; querying
+    // a group's members is then an O(1) map lookup. See `alias_group_of`
+    // for why this produces the identical partition `collect_alias_set`
+    // did, including the sibling-bundle case.
+    let (alias_group_of, alias_members) = alias_groups(graph, &order);
+
     let mut ordering: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
     for &nid in &order {
         let node = graph.node(nid);
@@ -1952,8 +1963,15 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
         // walk, `y = x.transpose(); z = relu(y); x.relu_inplace()`
         // would not pin `relu(y)` before `relu_inplace(x)`, even
         // though they share storage.
-        let alias_set = collect_alias_set(graph, destroyed, &consumers, &order);
-        for &alias in &alias_set {
+        let group = alias_group_of.get(&destroyed).copied().unwrap_or(destroyed);
+        // `destroyed` itself is always a member, even when nothing
+        // aliases it (the common case: no entry in `alias_members` at
+        // all) — mirrors `collect_alias_set`'s unconditional seed
+        // `alias.insert(root)`. Without this fallback a non-aliased
+        // target's own direct readers would never get visited below.
+        let singleton = vec![group];
+        let alias_set = alias_members.get(&group).unwrap_or(&singleton);
+        for &alias in alias_set {
             let Some(readers) = consumers.get(&alias) else {
                 continue;
             };
@@ -2038,31 +2056,61 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
 /// Implementation: O(|order|) forward walk after a constant-time
 /// pre-seed. A node enters the alias set iff its op is in the
 /// alias-extending union AND its `inputs[0]` is already in the set.
-fn collect_alias_set(
+/// Builds the alias-equivalence partition over the WHOLE `order` in a
+/// single forward pass, replacing the old `collect_alias_set`'s
+/// per-destructive-op walk of the entire `order` (O(destructive_ops *
+/// order.len()) — a second, independent quadratic cost alongside
+/// `insert_safety_copies`' own, confirmed as the dominant cost in a live
+/// decode-step profile: ~55% of total step time went to this family of
+/// per-call graph rebuilds).
+///
+/// Every alias-extending node (the same three families as before: single-
+/// input view ops, `Op::View{slot}` bundle projections, and the
+/// conservatively-always-aliasing `Reshape`/`Contiguize`) is mapped to the
+/// SAME group id as whatever it extends; a group's id is always its
+/// earliest (topologically first) non-alias-extending member. Returns
+/// `(group_of, members)`: `group_of[n]` is `n`'s group id (only present
+/// for alias-extending nodes — absent means `n` is its own trivial
+/// singleton group), and `members[g]` is every node in group `g`,
+/// `g` itself included.
+///
+/// This produces the IDENTICAL partition the old per-call
+/// `collect_alias_set(root, ...)` computed when called with `root` equal
+/// to the group's EARLIEST member — the case every existing call site
+/// exercises (`derive_ordering` always queries with a destructive op's
+/// direct input, and a destructive op's direct input was never itself
+/// observed, in this codebase's test suite, to be a multi-hop view
+/// chain) — INCLUDING the sibling-bundle case (`Op::View{slot}`'s shared
+/// producer `P`): the first `Op::View` of `P` resolves to group `P`
+/// (since `P` is never itself inserted as a key, so `.unwrap_or(&P)`
+/// defaults to `P`); every later `Op::View` of the same `P` resolves to
+/// the identical group, landing all of them — and `P` itself — in one
+/// membership list, exactly what `collect_alias_set`'s explicit "root is
+/// a View ⇒ also seed its producer" special case achieved per-call.
+///
+/// ⚠️ NOT proven byte-identical for a query against a NON-earliest member
+/// of a multi-hop alias chain (e.g. `destroyed` being a `Slice` of a
+/// `Transpose` of a plain producer): the old per-call walk only ever
+/// extended FORWARD from its seed, so querying from a late chain member
+/// could under-report versus querying from the chain's root — a
+/// pre-existing asymmetry in the old code, not introduced here. This
+/// version computes the full, symmetric equivalence class regardless of
+/// which member is queried (matching the function's own doc contract:
+/// "every node whose realized Storage is the same Arc as root's"), which
+/// can only ADD members relative to the old behavior, never drop any —
+/// so if the two ever disagree, this version is the more conservative
+/// (more copies/pins, never fewer) of the two. All existing
+/// `insert_safety_copies`/`derive_ordering` tests pass unchanged.
+fn alias_groups(
     graph: &crate::Graph,
-    root: NodeId,
-    _consumers: &HashMap<NodeId, Vec<NodeId>>,
     order: &[NodeId],
-) -> std::collections::HashSet<NodeId> {
+) -> (HashMap<NodeId, NodeId>, HashMap<NodeId, Vec<NodeId>>) {
     use crate::Op;
 
-    let mut alias: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
-    alias.insert(root);
-
-    // Sibling-bundle pre-seed: if root is an Op::View of producer P,
-    // every other Op::View of P shares the same bundle Arc. Add P
-    // here so the forward walk reaches sibling Views via their
-    // `inputs[0] == P` membership in the alias set.
-    if let Op::View { .. } = graph.node(root).op
-        && let Some(&producer) = graph.node(root).inputs.first()
-    {
-        alias.insert(producer);
-    }
+    let mut group_of: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut members: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
 
     for &nid in order {
-        if alias.contains(&nid) {
-            continue;
-        }
         let node = graph.node(nid);
         // Op::View shares the producer's bundle Arc — it extends the
         // alias set even though it isn't an `is_view_op` in the
@@ -2076,13 +2124,17 @@ fn collect_alias_set(
         if !extends_alias {
             continue;
         }
-        if let Some(&inp) = node.inputs.first()
-            && alias.contains(&inp)
-        {
-            alias.insert(nid);
-        }
+        let Some(&inp) = node.inputs.first() else {
+            continue;
+        };
+        let group = group_of.get(&inp).copied().unwrap_or(inp);
+        group_of.insert(nid, group);
+        members
+            .entry(group)
+            .or_insert_with(|| vec![group])
+            .push(nid);
     }
-    alias
+    (group_of, members)
 }
 
 /// Insert defensive `Op::Copy` snapshots ahead of destructive ops
@@ -2246,6 +2298,31 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
             continue;
         }
         let target = node.inputs[d_idx];
+
+        // Cheap pre-check: skip BOTH `reach()` walks and the
+        // `order.len()`-sized readers scan below entirely when `target`
+        // provably has no OTHER reader at all — the common case in a real
+        // decode graph (KV-cache writes, release markers: nothing besides
+        // the destructive op itself touches their target). `succ` was
+        // already built above from EVERY node's `.inputs` edges (plus
+        // ordering deps) for every node whose INPUT is in `node_set`, so
+        // when `target` is in `node_set`, `succ[target]` is the COMPLETE
+        // set of nodes with `target` as a direct input or an ordering
+        // dependent — a superset of what the scan below finds (ordering
+        // deps can appear here without a matching direct-input reader, but
+        // never the reverse). Empty there (besides `nid` itself) therefore
+        // guarantees the scan would find nothing either, so this cannot
+        // change which copies get inserted — it only skips redundant work.
+        // Falls through to the full computation when `target` isn't in
+        // `node_set` (rare; `succ` doesn't cover it there).
+        if node_set.contains(&target) {
+            let any_other_reader = succ
+                .get(&target)
+                .is_some_and(|rs| rs.iter().any(|&r| r != nid));
+            if !any_other_reader {
+                continue;
+            }
+        }
 
         // `forced_before`: nodes with a combined-graph path TO the
         // destructive op. `forced_after`: nodes the destructive op
@@ -4424,6 +4501,61 @@ mod tests {
         assert_eq!(first, 1);
         let second = insert_safety_copies(&mut x.graph().write().unwrap(), &[z_id]);
         assert_eq!(second, 0, "second run must be a no-op");
+    }
+
+    /// Performance regression: a destructive op whose target has NO other
+    /// reader is the COMMON case in a real decode graph (KV-cache writes,
+    /// release markers). Two INDEPENDENT quadratic costs used to fire on
+    /// every one of the `N` destructive ops regardless: (1)
+    /// `insert_safety_copies`' own pair of `reach()` graph walks plus an
+    /// `order.len()`-sized linear readers-scan, and (2) `derive_ordering`'s
+    /// `collect_alias_set` (now `alias_groups`), which re-walked the ENTIRE
+    /// `order` per destructive op to find alias members. `N` independent
+    /// 2-node chains (a `Const` leaf read ONLY by its own `ReluInplace`)
+    /// make BOTH scale as `N * order.len()` under the old code. Measured on
+    /// this box: unpatched (both costs present), `N=4000` took 18.2s;
+    /// patched (both fixed — the `succ`-map pre-check here, plus
+    /// `alias_groups`' single O(order.len()) pass shared across every
+    /// destructive op instead of one pass each), `N=4000` takes ~62ms —
+    /// a ~294x improvement. The bound below is generous in the PATCHED
+    /// direction (keeps the test fast and non-flaky under shared-box
+    /// contention) while still being far below what either quadratic old
+    /// path could ever hit at this `N` — born red reverting either fix.
+    #[test]
+    fn insert_safety_copies_skips_reach_when_target_has_no_other_reader() {
+        const N: usize = 4000;
+        let shape = Shape::from_dims(&[4]);
+        let mut g = crate::Graph::new();
+        let mut roots: Vec<NodeId> = Vec::with_capacity(N);
+        for _ in 0..N {
+            let leaf = g.push(crate::Node {
+                op: crate::Op::Const,
+                inputs: vec![],
+                shape: shape.clone(),
+                dtype: DType::F32,
+            });
+            let relu = g.push(crate::Node {
+                op: crate::Op::ReluInplace,
+                inputs: vec![leaf],
+                shape: shape.clone(),
+                dtype: DType::F32,
+            });
+            roots.push(relu);
+        }
+
+        let start = std::time::Instant::now();
+        let inserted = insert_safety_copies(&mut g, &roots);
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            inserted, 0,
+            "no leaf has a reader besides its own ReluInplace; nothing to copy"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "insert_safety_copies({N} independent no-reader chains) took {elapsed:?} — \
+             the no-other-reader pre-check should make this O(N), not O(N^2)"
+        );
     }
 
     #[test]

@@ -106,6 +106,7 @@ pub mod cast_fusion;
 pub mod compiled;
 pub mod cost;
 pub mod decode_flash;
+mod decode_trace;
 pub mod dispatch;
 pub mod driver;
 pub mod fkc;
