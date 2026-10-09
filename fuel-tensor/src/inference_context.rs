@@ -1285,6 +1285,17 @@ pub struct DecodeSession {
     /// replacement that lives anywhere else. `None` when the source could not
     /// prove it, which is likewise a refusal.
     kv_location: Option<DeviceLocation>,
+    /// `order_for` fix track (`docs/design/incremental-consumer-index.md`
+    /// §5): the memoized dispatch order for this session's
+    /// `(graph, effective_target, optimized)` triple, computed once on the
+    /// first `realize_token` call and reused on every later one — measured
+    /// as the single largest named per-token sub-cost prior to this cache
+    /// (`extract_runs_multi` + `non_chosen_arm_nodes`, ~56ms/step on an RTX
+    /// 4070). Empty at construction; `realize_token` never resets it, since
+    /// a `DecodeSession` holds one shape-keyed graph for its whole lifetime
+    /// (see `is_valid_for` — any mismatch rebuilds a fresh session with a
+    /// fresh, empty cache, never reuses this one against a different graph).
+    order_cache: std::sync::OnceLock<Vec<NodeId>>,
 }
 
 impl DecodeSession {
@@ -1339,6 +1350,7 @@ impl DecodeSession {
             max_seq_len,
             n_layers,
             cache_dtype,
+            order_cache: std::sync::OnceLock::new(),
         }
     }
 
@@ -1368,10 +1380,11 @@ impl DecodeSession {
         if let (Some(offset_node), Some(offset)) = (self.offset_node, data.offset) {
             cache.insert(offset_node, offset);
         }
-        crate::pipelined_bridge::realize_one_prebuilt_env::<f32>(
+        crate::pipelined_bridge::realize_one_prebuilt_cached_env::<f32>(
             &self.graph,
             self.effective_target,
             &self.optimized,
+            &self.order_cache,
             device,
             cache,
             sym_env,
@@ -1835,6 +1848,10 @@ pub struct PagedDecodeSession {
     /// token reused the plan" on any backend. Interior-mutable (`realize_token`
     /// takes `&self`); `Relaxed` — it is telemetry, ordered by the caller.
     realize_count: AtomicUsize,
+    /// `order_for` fix track (`docs/design/incremental-consumer-index.md`
+    /// §5) — see [`DecodeSession::order_cache`]'s doc for the full
+    /// argument; identical role here for the paged path.
+    order_cache: std::sync::OnceLock<Vec<NodeId>>,
 }
 
 impl PagedDecodeSession {
@@ -1884,6 +1901,7 @@ impl PagedDecodeSession {
             cache_dtype,
             shape_key,
             realize_count: AtomicUsize::new(0),
+            order_cache: std::sync::OnceLock::new(),
         }
     }
 
@@ -1913,10 +1931,11 @@ impl PagedDecodeSession {
         // (the prebuild seam below SKIPs optimize). Bumped BEFORE the realize
         // so a realize error still records the attempted rebind.
         self.realize_count.fetch_add(1, Ordering::Relaxed);
-        crate::pipelined_bridge::realize_one_prebuilt_env::<f32>(
+        crate::pipelined_bridge::realize_one_prebuilt_cached_env::<f32>(
             &self.graph,
             self.effective_target,
             &self.optimized,
+            &self.order_cache,
             device,
             cache,
             sym_env,
