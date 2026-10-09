@@ -1,5 +1,5 @@
 # Changelog
-This documents the main changes to the `candle` crate.
+This documents the main changes to the `fuel` workspace.
 
 ## v0.15.1 - 2026-10-09
 
