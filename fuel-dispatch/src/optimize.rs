@@ -1768,6 +1768,43 @@ mod tests {
         );
     }
 
+    /// Shared setup for the two `cached_env_*` tests below: a single-fork
+    /// graph, a two-backend `OptimizedGraph`, a seeded `StorageCache`, a
+    /// fresh `order_cache`, and a real (non-stub) `WinnerSelector`.
+    /// Factored out purely to keep each test under Codacy's method-length
+    /// bound — no behavior lives here that either test's own body needs to
+    /// see inline.
+    fn cached_env_test_fixture() -> (
+        Arc<RwLock<Graph>>,
+        crate::pipelined::StorageCache,
+        OptimizedGraph,
+        std::sync::OnceLock<Vec<NodeId>>,
+        Arc<dyn crate::ranker::RuntimeSelector>,
+        NodeId,
+    ) {
+        use crate::pipelined::StorageCache;
+        use crate::ranker::runtime_selector::WinnerSelector;
+
+        let mut table = KernelBindingTable::new();
+        let (mut g, _prod, _fork, _tail, root) = build_single_fork_graph(&mut table);
+        let opts = two_backend_opts();
+        let optimized =
+            optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph succeeds");
+        assert_eq!(optimized.branch_count(&g), 1, "exactly one branch");
+
+        let graph = Arc::new(RwLock::new(g));
+        let mut cache = StorageCache::new();
+        cache.insert(
+            NodeId(0), // the leaf Const build_single_fork_graph pushes first.
+            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+                1.0_f32, 2.0, 3.0, 4.0,
+            ]))),
+        );
+        let order_cache: std::sync::OnceLock<Vec<NodeId>> = std::sync::OnceLock::new();
+        let selector: Arc<dyn crate::ranker::RuntimeSelector> = Arc::new(WinnerSelector);
+        (graph, cache, optimized, order_cache, selector, root)
+    }
+
     /// `order_for` fix track (`docs/design/incremental-consumer-index.md`
     /// §5), answering the PM's review question directly: on a graph with a
     /// REAL `Op::Branch` and a REAL selector (so the executor's picking
@@ -1796,37 +1833,19 @@ mod tests {
     /// only `pipelined_bridge`'s wrapper does (by design, so a low-level
     /// `PipelinedExecutor` caller sees the typed error, not a silent stall).
     /// A real retry would need a fresh `optimize_graph` call, which would
-    /// defeat this test's actual subject (whether the SAME `OptimizedGraph`
-    /// + `order_cache` stays empty across repeat calls), so instead of
-    /// retrying we just don't fail on the one outcome this test was never
-    /// about. The `order_cache`-emptiness assertions stay unconditional:
-    /// the `Streaming` path never touches `order_cache` regardless of
-    /// whether the realize that invoked it succeeded or hit this race.
+    /// defeat this test's actual subject (whether the same `OptimizedGraph`
+    /// and `order_cache` stay consistent across repeat calls), so instead
+    /// of retrying we just don't fail on the one outcome this test was
+    /// never about. The `order_cache`-emptiness assertions stay
+    /// unconditional: the `Streaming` path never touches `order_cache`
+    /// regardless of whether the realize that invoked it succeeded or hit
+    /// this race.
     #[test]
     fn cached_env_never_caches_a_branched_graph_with_a_real_selector() {
         use crate::PipelinedExecutor;
-        use crate::pipelined::StorageCache;
-        use crate::ranker::runtime_selector::WinnerSelector;
         use fuel_ir::{Error, SymEnv};
-        use std::sync::OnceLock;
 
-        let mut table = KernelBindingTable::new();
-        let (mut g, _prod, _fork, _tail, root) = build_single_fork_graph(&mut table);
-        let opts = two_backend_opts();
-        let optimized =
-            optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph succeeds");
-        assert_eq!(optimized.branch_count(&g), 1, "exactly one branch");
-
-        let graph = Arc::new(RwLock::new(g));
-        let mut cache = StorageCache::new();
-        cache.insert(
-            NodeId(0), // the leaf Const build_single_fork_graph pushes first.
-            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
-                1.0_f32, 2.0, 3.0, 4.0,
-            ]))),
-        );
-        let order_cache: OnceLock<Vec<NodeId>> = OnceLock::new();
-        let selector: Arc<dyn crate::ranker::RuntimeSelector> = Arc::new(WinnerSelector);
+        let (graph, cache, optimized, order_cache, selector, root) = cached_env_test_fixture();
 
         let result = PipelinedExecutor::realize_with_optimized_picking_cached_env(
             graph.clone(),
@@ -1885,27 +1904,9 @@ mod tests {
     #[test]
     fn cached_env_tolerates_a_concurrent_topology_generation_bump() {
         use crate::PipelinedExecutor;
-        use crate::pipelined::StorageCache;
-        use crate::ranker::runtime_selector::WinnerSelector;
         use fuel_ir::{Error, SymEnv};
-        use std::sync::OnceLock;
 
-        let mut table = KernelBindingTable::new();
-        let (mut g, _prod, _fork, _tail, root) = build_single_fork_graph(&mut table);
-        let opts = two_backend_opts();
-        let optimized =
-            optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph succeeds");
-
-        let graph = Arc::new(RwLock::new(g));
-        let mut cache = StorageCache::new();
-        cache.insert(
-            NodeId(0),
-            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
-                1.0_f32, 2.0, 3.0, 4.0,
-            ]))),
-        );
-        let order_cache: OnceLock<Vec<NodeId>> = OnceLock::new();
-        let selector: Arc<dyn crate::ranker::RuntimeSelector> = Arc::new(WinnerSelector);
+        let (graph, cache, optimized, order_cache, selector, root) = cached_env_test_fixture();
 
         // Simulate a sibling test's legitimate `register_runtime_kernel`/
         // `extend_global_bindings` call landing between `optimize_graph`
