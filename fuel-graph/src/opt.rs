@@ -4558,6 +4558,198 @@ mod tests {
         );
     }
 
+    // ===== Differential safety-analysis harness (docs/design/incremental-consumer-index.md
+    //       §4 step 1) =====
+    //
+    // Step 1 of the staged redesign plan: build the comparison machinery and a
+    // corpus of representative graphs BEFORE any new incremental-index
+    // production code exists (that's step 2). The "new" side below calls the
+    // SAME old pass on an INDEPENDENTLY-constructed graph instance (not a
+    // clone of the old one -- `Graph` deliberately isn't `Clone`, and this
+    // harness doesn't need it to be: it never touches production code to get
+    // there). That makes today's differential assertion validate the thing
+    // step 1 actually needs validated — the comparison logic itself, and that
+    // every corpus factory is deterministic (same NodeId assignments on every
+    // call, since NodeId is push-order, not globally counted) — ready for
+    // step 2 to swap `run_new_safety_analysis` for the real incremental index
+    // without touching this file again.
+    //
+    // NOT done here (tracked, not silently skipped): the design doc's step 1
+    // also calls for the live decode harness's ACTUAL graph in the corpus.
+    // That needs a graph-capture hook in the live CUDA harness; out of scope
+    // for this PR, which is corpus-of-unit-test-shapes + harness plumbing
+    // only. Also not done: porting ALL nine existing insert_safety_copies/
+    // derive_ordering tests into the corpus (design doc open item #2) — five
+    // representative shapes are ported below; full porting is tracked for
+    // the step-4 PR (view/alias resolution), where open item #2 is due.
+
+    /// One differential-corpus entry: builds a FRESH graph + its realize
+    /// roots. Called twice per comparison (once per side) rather than
+    /// cloned, so the harness never needs `Graph: Clone`.
+    type SafetyCorpusFactory = fn() -> (SharedGraph, Vec<NodeId>);
+
+    /// A snapshotted, comparable view of "what insert_safety_copies (which
+    /// internally calls derive_ordering) did to this graph" — the
+    /// observable contract the differential test checks. `nodes` compares
+    /// the WHOLE resulting graph structurally (op + inputs, Debug-formatted
+    /// since `Op` has no blanket `PartialEq`) rather than just the inserted
+    /// count, so a divergence that inserts the SAME NUMBER of copies in a
+    /// DIFFERENT place is still caught.
+    #[derive(Debug, PartialEq)]
+    struct SafetyAnalysisResult {
+        inserted: usize,
+        node_count: usize,
+        nodes: Vec<(String, Vec<NodeId>)>,
+    }
+
+    fn run_old_safety_analysis(graph: &SharedGraph, roots: &[NodeId]) -> SafetyAnalysisResult {
+        let inserted = insert_safety_copies(&mut graph.write().unwrap(), roots);
+        let g = graph.read().unwrap();
+        let nodes = (0..g.len())
+            .map(|i| {
+                let n = g.node(NodeId(i));
+                (format!("{:?}", n.op), n.inputs.clone())
+            })
+            .collect();
+        SafetyAnalysisResult {
+            inserted,
+            node_count: g.len(),
+            nodes,
+        }
+    }
+
+    /// STEP 1 PLACEHOLDER — see the module note above. Step 2 (`consumers`
+    /// side-table, push-only) replaces this body with the real incremental
+    /// logic; nothing else in this harness needs to change when it does.
+    fn run_new_safety_analysis(graph: &SharedGraph, roots: &[NodeId]) -> SafetyAnalysisResult {
+        run_old_safety_analysis(graph, roots)
+    }
+
+    fn assert_safety_analysis_matches(name: &str, factory: SafetyCorpusFactory) {
+        let (old_graph, old_roots) = factory();
+        let (new_graph, new_roots) = factory();
+        assert_eq!(
+            old_roots, new_roots,
+            "{name}: factory produced different roots across two calls -- corpus factory \
+             must be deterministic (same pushes, same order) or this harness can't compare"
+        );
+        let old = run_old_safety_analysis(&old_graph, &old_roots);
+        let new = run_new_safety_analysis(&new_graph, &new_roots);
+        assert_eq!(old, new, "{name}: old vs new safety analysis diverged");
+    }
+
+    fn corpus_no_destructive_conflicts() -> (SharedGraph, Vec<NodeId>) {
+        // a + b, no in-place op anywhere -- insert_safety_copies must be a
+        // pure no-op (mirrors insert_safety_copies_noop_when_no_destructive_conflicts).
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
+        let b = a
+            .const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]))
+            .unwrap();
+        let c = a.add(&b);
+        (c.graph().clone(), vec![c.id()])
+    }
+
+    fn corpus_residual_connection() -> (SharedGraph, Vec<NodeId>) {
+        // y = x.relu_inplace(); z = y + x -- the canonical cycle-breaking
+        // case (mirrors insert_safety_copies_residual_connection_breaks_cycle).
+        let x = NodeHandle::from_f32(
+            vec![1.0_f32, -2.0, 3.0, -4.0],
+            Shape::from_dims(&[4]),
+            cpu_dev(),
+        )
+        .unwrap();
+        let x_shape = x.shape();
+        let x_dtype = x.dtype();
+        let x_id = x.id();
+        let z_id = {
+            let mut g = x.graph().write().unwrap();
+            let y_id = g.push(crate::Node {
+                op: crate::Op::ReluInplace,
+                inputs: vec![x_id],
+                shape: x_shape.clone(),
+                dtype: x_dtype,
+            });
+            g.push(crate::Node {
+                op: crate::Op::Add,
+                inputs: vec![y_id, x_id],
+                shape: x_shape,
+                dtype: x_dtype,
+            })
+        };
+        (x.graph().clone(), vec![z_id])
+    }
+
+    fn corpus_independent_reader_of_move_needs_no_copy() -> (SharedGraph, Vec<NodeId>) {
+        // relu(a) pinned before move(a); an unrelated reader needs no copy
+        // (mirrors insert_safety_copies_no_spurious_copy_for_independent_reader_of_move,
+        // flip_roots=false arm: roots=[b, m], DFS visits m's subtree first
+        // so b lands positionally after the Move).
+        let a =
+            NodeHandle::from_f32(vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
+        let b = a.relu();
+        let a_shape = a.shape();
+        let a_dtype = a.dtype();
+        let a_id = a.id();
+        let m_id = a.graph().write().unwrap().push(crate::Node {
+            op: crate::Op::Move {
+                target: DeviceLocation::Cpu,
+            },
+            inputs: vec![a_id],
+            shape: a_shape,
+            dtype: a_dtype,
+        });
+        (a.graph().clone(), vec![b.id(), m_id])
+    }
+
+    fn corpus_many_independent_no_reader_chains() -> (SharedGraph, Vec<NodeId>) {
+        // A small-N version of the perf regression shape above: many
+        // independent 2-node chains, none with an extra reader. Exercises
+        // the common case (most destructive ops in a real decode graph have
+        // no other reader at all) at a size small enough that the
+        // differential comparison's O(graph) structural equality check
+        // stays cheap in a correctness-focused test, not a perf one.
+        const N: usize = 25;
+        let shape = Shape::from_dims(&[4]);
+        let mut g = crate::Graph::new();
+        let mut roots: Vec<NodeId> = Vec::with_capacity(N);
+        for _ in 0..N {
+            let leaf = g.push(crate::Node {
+                op: crate::Op::Const,
+                inputs: vec![],
+                shape: shape.clone(),
+                dtype: DType::F32,
+            });
+            let relu = g.push(crate::Node {
+                op: crate::Op::ReluInplace,
+                inputs: vec![leaf],
+                shape: shape.clone(),
+                dtype: DType::F32,
+            });
+            roots.push(relu);
+        }
+        (Arc::new(std::sync::RwLock::new(g)), roots)
+    }
+
+    const SAFETY_CORPUS: &[(&str, SafetyCorpusFactory)] = &[
+        ("no_destructive_conflicts", corpus_no_destructive_conflicts),
+        ("residual_connection", corpus_residual_connection),
+        (
+            "independent_reader_of_move_needs_no_copy",
+            corpus_independent_reader_of_move_needs_no_copy,
+        ),
+        (
+            "many_independent_no_reader_chains",
+            corpus_many_independent_no_reader_chains,
+        ),
+    ];
+
+    #[test]
+    fn differential_safety_analysis_matches_on_corpus() {
+        for &(name, factory) in SAFETY_CORPUS {
+            assert_safety_analysis_matches(name, factory);
+        }
+    }
+
     #[test]
     fn derive_ordering_release_of_multi_reader_input() {
         // a read by relu AND neg, then released. Both relu and neg

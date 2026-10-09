@@ -1,6 +1,21 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.15.2 - 2026-10-09
+
+### Added
+
+- test(fuel-graph): differential safety-analysis harness — step 1 of the
+  staged incremental-consumer-index redesign
+  (`docs/design/incremental-consumer-index.md` §4). Runs
+  `insert_safety_copies`/`derive_ordering` against a corpus of
+  representative graph shapes and asserts the result is structurally
+  byte-identical whichever side of the comparison it's called from; the
+  "new" side is a step-2 placeholder for now (calls the same old pass on
+  an independently-built graph instance), so this PR validates the
+  comparison machinery and corpus determinism, ready for step 2 to drop
+  in the real incremental logic without touching this harness again.
+
 ## v0.15.1 - 2026-10-09
 
 ### Modified
