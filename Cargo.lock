@@ -522,9 +522,9 @@ dependencies = [
 
 [[package]]
 name = "baracuda-curand-sys"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.84"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "741d3d3a2b8aa053d3fc7c3d275f89c4bd9da368d5afc947cb10791cd666af82"
+checksum = "8fd3c37d8289fab3c041f81205559e6a71abb4c333024f5100ed7c2743287dea"
 dependencies = [
  "baracuda-build",
  "baracuda-core",
