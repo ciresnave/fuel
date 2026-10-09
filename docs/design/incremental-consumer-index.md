@@ -1,11 +1,16 @@
 # Incremental consumer/dependents index — replacing per-call safety-copy analysis
 
-**Status:** design proposal, no code. CireSnave has confirmed this is the real
-target, not a fallback (relayed via PM, 2026-10-09 — see §0). Sequencing
-(PM, 2026-10-08/09): narrow fixes first (fuel#326, merged pending green CI),
-measure the residual, write this doc, implement as staged PRs with a
-differential test gate before the old passes are ever removed. This document
-is step 2; no implementation PR exists yet.
+**Status:** DESIGN PROPOSAL, no code. Rides fuel#326 (the narrow fix this
+doc's measurements are the "after" side of) and fuel#321 (the original
+decode-slowness measurement this traces back to) — this doc is the
+write-up those two PRs' own descriptions point to for the structural
+follow-on. CireSnave has confirmed this is the real target, not a fallback
+(relayed via PM, 2026-10-09 — see §0). Sequencing (PM, 2026-10-08/09):
+narrow fixes first (fuel#326 — merge status: check the PR, not this line,
+which will go stale the moment it merges), measure the residual, write
+this doc, implement as staged PRs with a differential test gate before the
+old passes are ever removed. This document is step 2; no implementation
+PR exists yet.
 
 ## 0. Why this exists
 
