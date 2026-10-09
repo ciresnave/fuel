@@ -495,9 +495,9 @@ dependencies = [
 
 [[package]]
 name = "baracuda-cudnn-sys"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.84"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4355cb69eff3ce42641e0dc9269d43c7ef7ea60db213bc8b07dc361feb8db63"
+checksum = "5df65642e78ad24e7923ce8181522c40f05f011584382b7662f3b4ecd27e61f9"
 dependencies = [
  "baracuda-build",
  "baracuda-core",
