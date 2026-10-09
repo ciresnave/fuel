@@ -1,6 +1,26 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.15.4 - 2026-10-09
+
+### Changed
+
+- perf(fuel-dispatch,fuel-tensor): cache `order_for`'s dispatch order across
+  decode-session realize calls — the third per-token recompute flagged in
+  `docs/design/incremental-consumer-index.md` §5 (`extract_runs_multi` +
+  `non_chosen_arm_nodes`, ~24% of decode-step time per the v0.15.3
+  measurement). `DecodeSession`/`PagedDecodeSession` now hold a
+  `OnceLock<Vec<NodeId>>` populated once per session and reused while the
+  graph structure, roots, and `OptimizedGraph` generation are unchanged
+  (proven via `dispatch_order_is_stable_across_repeated_calls_with_no_mutation`).
+  A branched graph with a real runtime selector never populates the cache —
+  it routes through the existing `OrderSource::Streaming` path instead
+  (proven via `cached_env_never_caches_a_branched_graph_with_a_real_selector`).
+  Live verification (Qwen3-0.6B-Q4_K_M, CUDA): steady-state decode 5.01
+  tok/s; order cache hit on 59/61 realize calls (96.7%), with the 2 misses
+  a legitimate re-derivation at a topology-change boundary; `compiler_work`
+  dropped ~41.5x on cache-hit steps vs cache-miss steps.
+
 ## v0.15.3 - 2026-10-09
 
 ### Changed

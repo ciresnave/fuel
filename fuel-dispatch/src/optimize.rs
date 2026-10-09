@@ -1768,6 +1768,191 @@ mod tests {
         );
     }
 
+    /// Return type of [`cached_env_test_fixture`] — named purely to dodge
+    /// `clippy::type_complexity`, not because any caller needs the alias.
+    type CachedEnvTestFixture = (
+        Arc<RwLock<Graph>>,
+        crate::pipelined::StorageCache,
+        OptimizedGraph,
+        std::sync::OnceLock<Vec<NodeId>>,
+        Arc<dyn crate::ranker::RuntimeSelector>,
+        NodeId,
+    );
+
+    /// Shared setup for the two `cached_env_*` tests below: a single-fork
+    /// graph, a two-backend `OptimizedGraph`, a seeded `StorageCache`, a
+    /// fresh `order_cache`, and a real (non-stub) `WinnerSelector`.
+    /// Factored out purely to keep each test under Codacy's method-length
+    /// bound — no behavior lives here that either test's own body needs to
+    /// see inline.
+    fn cached_env_test_fixture() -> CachedEnvTestFixture {
+        use crate::pipelined::StorageCache;
+        use crate::ranker::runtime_selector::WinnerSelector;
+
+        let mut table = KernelBindingTable::new();
+        let (mut g, _prod, _fork, _tail, root) = build_single_fork_graph(&mut table);
+        let opts = two_backend_opts();
+        let optimized =
+            optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph succeeds");
+        assert_eq!(optimized.branch_count(&g), 1, "exactly one branch");
+
+        let graph = Arc::new(RwLock::new(g));
+        let mut cache = StorageCache::new();
+        cache.insert(
+            NodeId(0), // the leaf Const build_single_fork_graph pushes first.
+            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+                1.0_f32, 2.0, 3.0, 4.0,
+            ]))),
+        );
+        let order_cache: std::sync::OnceLock<Vec<NodeId>> = std::sync::OnceLock::new();
+        let selector: Arc<dyn crate::ranker::RuntimeSelector> = Arc::new(WinnerSelector);
+        (graph, cache, optimized, order_cache, selector, root)
+    }
+
+    /// `order_for` fix track (`docs/design/incremental-consumer-index.md`
+    /// §5), answering the PM's review question directly: on a graph with a
+    /// REAL `Op::Branch` and a REAL selector (so the executor's picking
+    /// entry point resolves a genuine pick, not just "no branches to
+    /// pick"), `realize_with_optimized_picking_cached_env` must route
+    /// through `OrderSource::Streaming`, NEVER through `OrderSource::Cached`
+    /// — proven here by checking `order_cache` stays EMPTY across two
+    /// separate picking realizes, not merely by reading the routing code.
+    /// This is the stronger property PR review asked for: the fix doesn't
+    /// need a cache key that "covers the pick" because picked graphs never
+    /// reach the cache in the first place — `realize_with_optimized_picking_env`'s
+    /// OWN routing (`streaming_pick_for` returning `Some` whenever a
+    /// selector is given over a branched graph) already excludes them, and
+    /// this test is what proves that exclusion actually holds for the
+    /// cached sibling too, not just the uncached original.
+    ///
+    /// `result`/`result2` tolerate `Error::TopologyChanged` as a passing
+    /// outcome, not just `Ok`: `optimized.generation` is stamped once, from
+    /// the process-wide `topology_generation()` counter, at `optimize_graph`
+    /// time above — and that counter is shared by every test in this binary
+    /// (`register_runtime_kernel`/`extend_global_bindings`'s own doc admits
+    /// this; see `register_runtime_kernel_into`'s test-only escape hatch).
+    /// A sibling test registering a runtime-fused kernel between here and
+    /// either realize call bumps it, and `realize_inner`'s chunk-boundary
+    /// check (pipelined.rs) deliberately does NOT retry at this layer —
+    /// only `pipelined_bridge`'s wrapper does (by design, so a low-level
+    /// `PipelinedExecutor` caller sees the typed error, not a silent stall).
+    /// A real retry would need a fresh `optimize_graph` call, which would
+    /// defeat this test's actual subject (whether the same `OptimizedGraph`
+    /// and `order_cache` stay consistent across repeat calls), so instead
+    /// of retrying we just don't fail on the one outcome this test was
+    /// never about. The `order_cache`-emptiness assertions stay
+    /// unconditional: the `Streaming` path never touches `order_cache`
+    /// regardless of whether the realize that invoked it succeeded or hit
+    /// this race.
+    #[test]
+    fn cached_env_never_caches_a_branched_graph_with_a_real_selector() {
+        use crate::PipelinedExecutor;
+        use fuel_ir::{Error, SymEnv};
+
+        let (graph, cache, optimized, order_cache, selector, root) = cached_env_test_fixture();
+
+        let result = PipelinedExecutor::realize_with_optimized_picking_cached_env(
+            graph.clone(),
+            root,
+            cache.clone(),
+            &optimized,
+            &order_cache,
+            Some(selector.clone()),
+            None,
+            SymEnv::default(),
+        );
+        assert!(
+            result.is_ok() || matches!(result, Err(Error::TopologyChanged { .. })),
+            "a picked realize over a branched graph must either succeed or hit the \
+             (unrelated, expected-under-concurrency) TopologyChanged race: {:?}",
+            result.err()
+        );
+        assert!(
+            order_cache.get().is_none(),
+            "a branched graph with a real selector pick must NEVER populate order_cache — \
+             it must route through OrderSource::Streaming, not OrderSource::Cached",
+        );
+
+        // A second call, same cache slot: still must not populate it.
+        let result2 = PipelinedExecutor::realize_with_optimized_picking_cached_env(
+            graph,
+            root,
+            cache,
+            &optimized,
+            &order_cache,
+            Some(selector),
+            None,
+            SymEnv::default(),
+        );
+        assert!(
+            result2.is_ok() || matches!(result2, Err(Error::TopologyChanged { .. })),
+            "second picked realize must either succeed or hit the same expected-under- \
+             concurrency TopologyChanged race: {:?}",
+            result2.err()
+        );
+        assert!(
+            order_cache.get().is_none(),
+            "order_cache must still be empty after a second picked realize",
+        );
+    }
+
+    /// Deterministic sibling of the test above: forces the EXACT race
+    /// `Error::TopologyChanged` tolerance was added for, instead of relying
+    /// on another test in the binary to collide by chance. Proves two
+    /// things the flaky-under-`-j4` observation alone couldn't: (1) that a
+    /// stale `optimized.generation` is SUFFICIENT to reproduce the exact
+    /// failure this test's sibling hit (confirming the root cause, not
+    /// just a plausible story), and (2) that `order_cache` stays empty
+    /// even on the `Err` branch (the property this test file is actually
+    /// about, independent of the race).
+    ///
+    /// Deliberately does NOT call the real, process-wide
+    /// `bump_topology_generation()` to force this — that would inflict the
+    /// exact `-j4` cross-test hazard this test documents onto every OTHER
+    /// concurrently-running test in the binary that assumes a stable
+    /// generation (an earlier draft of this test did exactly that, and
+    /// broke `realize_with_optimized_picking_cached_env_matches_arm0_cold_and_warm`
+    /// under `-j4`). `OptimizedGraph::generation` is `pub`, so mutating
+    /// this test's own LOCAL copy to a value that can't match the live
+    /// counter reproduces the identical code path with zero blast radius.
+    #[test]
+    fn cached_env_tolerates_a_concurrent_topology_generation_bump() {
+        use crate::PipelinedExecutor;
+        use fuel_ir::{Error, SymEnv};
+
+        let (graph, cache, mut optimized, order_cache, selector, root) = cached_env_test_fixture();
+
+        // Simulate a sibling test's legitimate `register_runtime_kernel`/
+        // `extend_global_bindings` call landing between `optimize_graph`
+        // (which stamped `optimized.generation` above) and this realize —
+        // exactly the collision `cached_env_never_caches_a_branched_graph_with_a_real_selector`
+        // hit under `-j4` — by staling THIS test's own copy of the stamp,
+        // not the shared live counter every other test also reads.
+        optimized.generation = optimized.generation.wrapping_add(1);
+
+        let result = PipelinedExecutor::realize_with_optimized_picking_cached_env(
+            graph,
+            root,
+            cache,
+            &optimized,
+            &order_cache,
+            Some(selector),
+            None,
+            SymEnv::default(),
+        );
+        assert!(
+            matches!(result, Err(Error::TopologyChanged { .. })),
+            "a forced generation bump before realize must surface as TopologyChanged, \
+             not silently succeed or fail some other way: {:?}",
+            result
+        );
+        assert!(
+            order_cache.get().is_none(),
+            "order_cache must stay empty even when the realize that would have \
+             populated it (if it were ever going to) failed with TopologyChanged",
+        );
+    }
+
     /// (d) No `DEFAULT_MAX_N` truncation: the fork records the winner +
     /// a runner-up without a fixed top-N cap stranding placements. Both
     /// arms survive; the per-device frontier — not a fixed N — bounds
@@ -1876,6 +2061,45 @@ mod tests {
             order_first, order_second,
             "the lowered dispatch order is stable across repeated optimize",
         );
+    }
+
+    /// Identity proof for `docs/design/incremental-consumer-index.md` §5's
+    /// `order_for` fix track: that fix proposes memoizing `dispatch_order`'s
+    /// output WHOLESALE once per plan-once session, instead of recomputing
+    /// it (via `extract_runs_multi` + `non_chosen_arm_nodes`, measured
+    /// ~56ms/step, the single largest named sub-cost in a live decode step)
+    /// on every `realize_inner` call. That's only valid if calling
+    /// `dispatch_order` repeatedly on the SAME `OptimizedGraph` view with NO
+    /// intervening graph mutation — exactly the plan-once decode shape,
+    /// where only leaf values are rebound between tokens, never the graph's
+    /// structure — yields a byte-identical `Vec<NodeId>` every time. Proven
+    /// here, not assumed: five repeated calls, two structurally different
+    /// branchless graphs (a fan-in boundary and a plain chain), zero
+    /// mutation between calls (deliberately — this is NOT the existing
+    /// `optimize_graph_branchless_is_idempotent_and_adds_no_nodes` test
+    /// above, which re-runs `optimize_graph` itself between its two
+    /// `dispatch_order` calls; this one proves `dispatch_order` is pure on
+    /// its own, independent of re-optimizing).
+    #[test]
+    fn dispatch_order_is_stable_across_repeated_calls_with_no_mutation() {
+        for build in [
+            build_branchless_graph as fn(&mut KernelBindingTable) -> (Graph, NodeId),
+            build_straight_line_graph,
+        ] {
+            let mut table = KernelBindingTable::new();
+            let (mut g, root) = build(&mut table);
+            let opts = cpu_opts();
+            let optimized = optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph");
+
+            let orders: Vec<Vec<NodeId>> = (0..5).map(|_| optimized.dispatch_order(&g)).collect();
+            for (i, order) in orders.iter().enumerate().skip(1) {
+                assert_eq!(
+                    &orders[0], order,
+                    "dispatch_order call {i} diverged from call 0 with no intervening \
+                     mutation — the order_for memoization fix would be UNSAFE if this failed",
+                );
+            }
+        }
     }
 
     /// Build-time validation: optimize_graph fails fast (Result, never
