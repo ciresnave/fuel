@@ -1,6 +1,22 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.15.5 - 2026-10-09
+
+### Fixed
+
+- docs(gaps): close GAP-048 (KISS-Ops §6.15 fmax_ieee/fmin_ieee/rem_trunc) and
+  GAP-300 (`trunc` floor-op conformance) — both rows read OPEN/NOT FIXED but
+  the fix had already landed 2026-09-06 in #137 (`80def2467`); the rows were
+  never flipped. Re-verified at `36302fe5`: `cargo test -p fuel-tensor --lib --
+  fmax_fmin_ieee_suppress_nan_where_prop_propagates
+  rem_trunc_diverges_from_floored_rem_on_opposite_signs
+  trunc_edges_signed_zero_nan_inf_bitwise` — 3 passed, 0 failed. No code
+  change; registry-currency only.
+- also: rustls 0.23.45 lock bump #330, fsspec pin #329 (lane-merged before the
+  PM-gate rule took effect; reviewed after the fact as harmless, no version
+  bump needed at the time — riding this entry per HANDOFF).
+
 ## v0.15.4 - 2026-10-09
 
 ### Changed
