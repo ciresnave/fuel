@@ -108,6 +108,26 @@ enum OrderSource<'a> {
         optimized: &'a OptimizedGraph,
         pick: &'a StreamingPick,
     },
+    /// `order_for` fix track (`docs/design/incremental-consumer-index.md`
+    /// §5): memoizes the `Optimized { route: None }` arm's dispatch order
+    /// WHOLESALE in `order_cache`, computed once and reused by the caller
+    /// across repeated calls over an unchanged graph/roots — the plan-once
+    /// persistent-decode shape, where only leaf values are rebound between
+    /// tokens, never the graph's structure. Safe because that recompute is
+    /// a pure function of (graph structure, roots, generation) when none of
+    /// those change — proven, not assumed, by
+    /// `dispatch_order_is_stable_across_repeated_calls_with_no_mutation`
+    /// (`fuel-dispatch/src/optimize.rs`). A cache miss falls back to the
+    /// exact `Optimized { route: None }` computation and populates the
+    /// cache for next time; `generation_for` still reports `optimized`'s
+    /// generation, so the existing `TopologyChanged` chunk-boundary check
+    /// fires exactly as it would for `Optimized` — if the topology changes
+    /// underneath a cached session, realize fails loudly (the existing
+    /// contract), it does not silently serve a stale order.
+    Cached {
+        optimized: &'a OptimizedGraph,
+        order_cache: &'a std::sync::OnceLock<Vec<NodeId>>,
+    },
 }
 
 /// Owned arm-resolution config threaded into the compiler thread for the
@@ -1078,6 +1098,54 @@ impl PipelinedExecutor {
             )
             .map(|(s, l, _produced)| (s, l)),
             None => Self::realize_with_optimized_env(graph, target, inputs, optimized, sym_env),
+        }
+    }
+
+    /// `order_for` fix track (`docs/design/incremental-consumer-index.md`
+    /// §5) — cached sibling of [`Self::realize_with_optimized_picking_env`]
+    /// for the plan-once persistent-decode caller, which holds `order_cache`
+    /// across repeated calls over the SAME graph/roots/`optimized` (one per
+    /// `DecodeSession`, initially empty). On a branchless graph with no
+    /// selector pressure (the decode shape this is for), dispatches via
+    /// [`OrderSource::Cached`] — computed once, reused thereafter, see that
+    /// variant's doc for the safety argument. A branched graph WITH a
+    /// resolved selector pick falls back to the uncached
+    /// [`OrderSource::Streaming`] path unchanged (caching doesn't apply
+    /// there; this entry point exists for the decode case, not to cover
+    /// every caller).
+    pub fn realize_with_optimized_picking_cached_env(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        optimized: &OptimizedGraph,
+        order_cache: &std::sync::OnceLock<Vec<NodeId>>,
+        selector: Option<Arc<dyn RuntimeSelector>>,
+        lookup: Option<BackendRuntimeLookup>,
+        sym_env: SymEnv,
+    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        match Self::streaming_pick_for(&graph, selector, lookup)? {
+            Some(pick) => Self::realize_inner(
+                graph,
+                target,
+                inputs,
+                OrderSource::Streaming {
+                    optimized,
+                    pick: &pick,
+                },
+                sym_env,
+            )
+            .map(|(s, l, _produced)| (s, l)),
+            None => Self::realize_inner(
+                graph,
+                target,
+                inputs,
+                OrderSource::Cached {
+                    optimized,
+                    order_cache,
+                },
+                sym_env,
+            )
+            .map(|(s, l, _produced)| (s, l)),
         }
     }
 
@@ -2142,6 +2210,13 @@ fn order_for(
                 }
             }
         }
+        // Resolved by `compiler_work_and_wait_set_for` before delegating
+        // here (the whole point of `Cached` is to skip this computation
+        // on a hit) — never reached. Kept exhaustive rather than wildcarded
+        // so a future `OrderSource` variant can't silently fall through.
+        OrderSource::Cached { .. } => {
+            unreachable!("OrderSource::Cached is resolved before order_for is called")
+        }
     }
 }
 
@@ -2217,6 +2292,23 @@ fn compiler_work_and_wait_set_for(
             },
             None,
         ),
+        OrderSource::Cached {
+            optimized,
+            order_cache,
+        } => {
+            let order = order_cache.get_or_init(|| {
+                order_for(
+                    graph,
+                    effective_roots,
+                    &OrderSource::Optimized {
+                        optimized,
+                        route: None,
+                    },
+                )
+            });
+            let wait_set = build_wait_set(graph, order);
+            (CompilerWork::Order(order.clone()), Some(wait_set))
+        }
         other => {
             let order = order_for(graph, effective_roots, other);
             let wait_set = build_wait_set(graph, &order);
@@ -2233,6 +2325,7 @@ fn generation_for(order_source: &OrderSource<'_>) -> Option<u64> {
     match order_source {
         OrderSource::Optimized { optimized, .. } => Some(optimized.generation),
         OrderSource::Streaming { optimized, .. } => Some(optimized.generation),
+        OrderSource::Cached { optimized, .. } => Some(optimized.generation),
         OrderSource::Default => None,
     }
 }
@@ -9025,6 +9118,182 @@ mod tests {
         assert_eq!(
             routed, arm0,
             "an empty route realizes byte-identically to arm-0 (Phase B contract)",
+        );
+    }
+
+    /// `order_for` fix track (`docs/design/incremental-consumer-index.md`
+    /// §5): [`PipelinedExecutor::realize_with_optimized_picking_cached_env`]
+    /// over a shared `order_cache` must (a) realize byte-identically to the
+    /// uncached arm-0 path, on both the cold (empty cache) and warm
+    /// (populated cache) call, and (b) actually populate the cache on the
+    /// first call rather than silently never using it.
+    #[test]
+    fn realize_with_optimized_picking_cached_env_matches_arm0_cold_and_warm() {
+        use crate::optimize::OptimizedGraph;
+        use std::sync::OnceLock;
+
+        let build = || {
+            let graph = Arc::new(RwLock::new(Graph::new()));
+            let (lhs_id, rhs_id, add_id) = {
+                let mut g = graph.write().unwrap();
+                let lhs_id = g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[3]),
+                    dtype: DType::F32,
+                });
+                let rhs_id = g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[3]),
+                    dtype: DType::F32,
+                });
+                let add_id = g.push(Node {
+                    op: Op::Add,
+                    inputs: vec![lhs_id, rhs_id],
+                    shape: Shape::from_dims(&[3]),
+                    dtype: DType::F32,
+                });
+                g.set_target_backend(add_id, BackendId::Cpu);
+                (lhs_id, rhs_id, add_id)
+            };
+            let mut inputs = StorageCache::new();
+            inputs.insert(
+                lhs_id,
+                Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+                    1.0_f32, 2.0, 3.0,
+                ]))),
+            );
+            inputs.insert(
+                rhs_id,
+                Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+                    10.0_f32, 20.0, 30.0,
+                ]))),
+            );
+            (graph, add_id, inputs)
+        };
+        let read_bytes = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
+            let guard = arc.read().unwrap();
+            match &guard.inner {
+                fuel_memory::BackendStorage::Cpu(c) => {
+                    c.as_slice::<f32>().expect("f32 cast").to_vec()
+                }
+                _ => panic!("expected CPU output"),
+            }
+        };
+
+        drop(global_bindings());
+        let live_gen = crate::dispatch::topology_generation();
+
+        let (g, add, inputs) = build();
+        let optimized = OptimizedGraph {
+            roots: vec![add],
+            generation: live_gen,
+            placements: None,
+        };
+        let order_cache: OnceLock<Vec<NodeId>> = OnceLock::new();
+        assert!(order_cache.get().is_none(), "sanity: cache starts empty");
+
+        // Cold call: cache miss, must compute AND populate.
+        let (cold_arc, _) = PipelinedExecutor::realize_with_optimized_picking_cached_env(
+            g.clone(),
+            add,
+            inputs,
+            &optimized,
+            &order_cache,
+            None,
+            None,
+            SymEnv::default(),
+        )
+        .expect("cold cached realize");
+        assert_eq!(read_bytes(&cold_arc), vec![11.0, 22.0, 33.0]);
+        assert!(
+            order_cache.get().is_some(),
+            "the cold call must populate order_cache, not leave it empty"
+        );
+        let cached_order_after_cold = order_cache.get().unwrap().clone();
+
+        // Warm call: cache hit. Fresh inputs (same graph, new values) so the
+        // realized OUTPUT differs from the cold call while the dispatch
+        // ORDER (what's cached) must not change.
+        let mut warm_inputs = StorageCache::new();
+        warm_inputs.insert(
+            g.read().unwrap().node(add).inputs[0],
+            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+                100.0_f32, 200.0, 300.0,
+            ]))),
+        );
+        warm_inputs.insert(
+            g.read().unwrap().node(add).inputs[1],
+            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+                1.0_f32, 2.0, 3.0,
+            ]))),
+        );
+        let (warm_arc, _) = PipelinedExecutor::realize_with_optimized_picking_cached_env(
+            g,
+            add,
+            warm_inputs,
+            &optimized,
+            &order_cache,
+            None,
+            None,
+            SymEnv::default(),
+        )
+        .expect("warm cached realize");
+        assert_eq!(
+            read_bytes(&warm_arc),
+            vec![101.0, 202.0, 303.0],
+            "warm call must realize its OWN rebound inputs, not replay stale output",
+        );
+        assert_eq!(
+            order_cache.get().unwrap(),
+            &cached_order_after_cold,
+            "the warm call must reuse the SAME cached order, not recompute a different one",
+        );
+    }
+
+    /// `order_for` fix track (`docs/design/incremental-consumer-index.md`
+    /// §5), PM review question: does `OrderSource::Cached` weaken the
+    /// existing `TopologyChanged` chunk-boundary check? No — proven at the
+    /// unit level (not a live topology-bump integration test, deliberately:
+    /// `bump_topology_generation()` mutates a process-wide atomic shared by
+    /// every concurrently-running test in this binary, including the cold/
+    /// warm cache test above, which reads it into a local at the start of
+    /// ITS OWN body and would flake if another test's bump landed mid-call;
+    /// introducing that cross-test hazard isn't worth it when the two arms'
+    /// `generation_for` expressions are provably identical). `generation_for`
+    /// is private to this module, so it's tested directly here: given the
+    /// SAME `&OptimizedGraph`, `Cached` and `Optimized` must report the
+    /// IDENTICAL generation — the chunk-boundary check that compares this
+    /// value against the LIVE `topology_generation()` fires exactly the
+    /// same way for both, so caching cannot silently skip or weaken it.
+    #[test]
+    fn cached_generation_for_matches_optimized_generation_for() {
+        let optimized = OptimizedGraph {
+            roots: vec![NodeId(0)],
+            generation: 42,
+            placements: None,
+        };
+        let order_cache: std::sync::OnceLock<Vec<NodeId>> = std::sync::OnceLock::new();
+
+        let optimized_gen = generation_for(&OrderSource::Optimized {
+            optimized: &optimized,
+            route: None,
+        });
+        let cached_gen = generation_for(&OrderSource::Cached {
+            optimized: &optimized,
+            order_cache: &order_cache,
+        });
+        assert_eq!(
+            optimized_gen,
+            Some(42),
+            "sanity: Optimized reports the OptimizedGraph's own generation",
+        );
+        assert_eq!(
+            cached_gen, optimized_gen,
+            "Cached must report the SAME generation as Optimized for the same \
+             OptimizedGraph -- the TopologyChanged check cannot tell the two apart, \
+             by construction, so caching cannot silently weaken it",
         );
     }
 
