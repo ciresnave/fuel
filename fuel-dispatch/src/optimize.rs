@@ -1841,7 +1841,11 @@ mod tests {
             None,
             SymEnv::default(),
         );
-        assert!(result2.is_ok(), "second picked realize must also succeed");
+        assert!(
+            result2.is_ok(),
+            "second picked realize must also succeed: {:?}",
+            result2.err()
+        );
         assert!(
             order_cache.get().is_none(),
             "order_cache must still be empty after a second picked realize",
