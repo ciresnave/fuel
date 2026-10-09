@@ -1783,12 +1783,31 @@ mod tests {
     /// selector is given over a branched graph) already excludes them, and
     /// this test is what proves that exclusion actually holds for the
     /// cached sibling too, not just the uncached original.
+    ///
+    /// `result`/`result2` tolerate `Error::TopologyChanged` as a passing
+    /// outcome, not just `Ok`: `optimized.generation` is stamped once, from
+    /// the process-wide `topology_generation()` counter, at `optimize_graph`
+    /// time above — and that counter is shared by every test in this binary
+    /// (`register_runtime_kernel`/`extend_global_bindings`'s own doc admits
+    /// this; see `register_runtime_kernel_into`'s test-only escape hatch).
+    /// A sibling test registering a runtime-fused kernel between here and
+    /// either realize call bumps it, and `realize_inner`'s chunk-boundary
+    /// check (pipelined.rs) deliberately does NOT retry at this layer —
+    /// only `pipelined_bridge`'s wrapper does (by design, so a low-level
+    /// `PipelinedExecutor` caller sees the typed error, not a silent stall).
+    /// A real retry would need a fresh `optimize_graph` call, which would
+    /// defeat this test's actual subject (whether the SAME `OptimizedGraph`
+    /// + `order_cache` stays empty across repeat calls), so instead of
+    /// retrying we just don't fail on the one outcome this test was never
+    /// about. The `order_cache`-emptiness assertions stay unconditional:
+    /// the `Streaming` path never touches `order_cache` regardless of
+    /// whether the realize that invoked it succeeded or hit this race.
     #[test]
     fn cached_env_never_caches_a_branched_graph_with_a_real_selector() {
         use crate::PipelinedExecutor;
         use crate::pipelined::StorageCache;
         use crate::ranker::runtime_selector::WinnerSelector;
-        use fuel_ir::SymEnv;
+        use fuel_ir::{Error, SymEnv};
         use std::sync::OnceLock;
 
         let mut table = KernelBindingTable::new();
@@ -1820,8 +1839,9 @@ mod tests {
             SymEnv::default(),
         );
         assert!(
-            result.is_ok(),
-            "a picked realize over a branched graph must still succeed: {:?}",
+            result.is_ok() || matches!(result, Err(Error::TopologyChanged { .. })),
+            "a picked realize over a branched graph must either succeed or hit the \
+             (unrelated, expected-under-concurrency) TopologyChanged race: {:?}",
             result.err()
         );
         assert!(
@@ -1842,13 +1862,78 @@ mod tests {
             SymEnv::default(),
         );
         assert!(
-            result2.is_ok(),
-            "second picked realize must also succeed: {:?}",
+            result2.is_ok() || matches!(result2, Err(Error::TopologyChanged { .. })),
+            "second picked realize must either succeed or hit the same expected-under- \
+             concurrency TopologyChanged race: {:?}",
             result2.err()
         );
         assert!(
             order_cache.get().is_none(),
             "order_cache must still be empty after a second picked realize",
+        );
+    }
+
+    /// Deterministic sibling of the test above: forces the EXACT race
+    /// `Error::TopologyChanged` tolerance was added for, instead of relying
+    /// on another test in the binary to collide by chance. Proves two
+    /// things the flaky-under-`-j4` observation alone couldn't: (1) that a
+    /// concurrent `bump_topology_generation()` is SUFFICIENT to reproduce
+    /// the exact failure this test's sibling hit (confirming the root
+    /// cause, not just a plausible story), and (2) that `order_cache` stays
+    /// empty even on the `Err` branch (the property this test file is
+    /// actually about, independent of the race).
+    #[test]
+    fn cached_env_tolerates_a_concurrent_topology_generation_bump() {
+        use crate::PipelinedExecutor;
+        use crate::pipelined::StorageCache;
+        use crate::ranker::runtime_selector::WinnerSelector;
+        use fuel_ir::{Error, SymEnv};
+        use std::sync::OnceLock;
+
+        let mut table = KernelBindingTable::new();
+        let (mut g, _prod, _fork, _tail, root) = build_single_fork_graph(&mut table);
+        let opts = two_backend_opts();
+        let optimized =
+            optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph succeeds");
+
+        let graph = Arc::new(RwLock::new(g));
+        let mut cache = StorageCache::new();
+        cache.insert(
+            NodeId(0),
+            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
+                1.0_f32, 2.0, 3.0, 4.0,
+            ]))),
+        );
+        let order_cache: OnceLock<Vec<NodeId>> = OnceLock::new();
+        let selector: Arc<dyn crate::ranker::RuntimeSelector> = Arc::new(WinnerSelector);
+
+        // Simulate a sibling test's legitimate `register_runtime_kernel`/
+        // `extend_global_bindings` call landing between `optimize_graph`
+        // (which stamped `optimized.generation` above) and this realize —
+        // exactly the collision `cached_env_never_caches_a_branched_graph_with_a_real_selector`
+        // hit under `-j4`, forced here instead of waited for.
+        crate::dispatch::bump_topology_generation();
+
+        let result = PipelinedExecutor::realize_with_optimized_picking_cached_env(
+            graph,
+            root,
+            cache,
+            &optimized,
+            &order_cache,
+            Some(selector),
+            None,
+            SymEnv::default(),
+        );
+        assert!(
+            matches!(result, Err(Error::TopologyChanged { .. })),
+            "a forced generation bump before realize must surface as TopologyChanged, \
+             not silently succeed or fail some other way: {:?}",
+            result
+        );
+        assert!(
+            order_cache.get().is_none(),
+            "order_cache must stay empty even when the realize that would have \
+             populated it (if it were ever going to) failed with TopologyChanged",
         );
     }
 
