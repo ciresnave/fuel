@@ -1,6 +1,24 @@
 # Changelog
 This documents the main changes to the `candle` crate.
 
+## v0.15.1 - 2026-10-09
+
+### Modified
+
+- perf(fuel-graph): removed two independent per-decode-token O(n²) costs in
+  `insert_safety_copies` and `derive_ordering` (`collect_alias_set`) — both
+  re-derived their state from scratch, over the full per-token graph, on
+  every `realize_inner` call, including the "plan-once" persistent-decode
+  fast path. Measured ~2.7–3x steady-state decode throughput on an RTX
+  4070 (Qwen3-0.6B, Q4_K_M), going from 1.81–2.03 tok/s to 5.36 tok/s; the
+  two costs' combined share of per-token wall time fell from ~64% to ~36%.
+  See fuel#326.
+- The `alias_groups` replacement for `collect_alias_set` computes the full
+  symmetric alias-equivalence partition rather than the old function's
+  one-sided (forward-from-query-root-only) walk; wherever the two could
+  disagree, the new version is strictly more conservative (more copies/
+  pins, never a missed one). Tracked as fuel#327.
+
 ## v0.3.1 - Unreleased
 
 ### Added
