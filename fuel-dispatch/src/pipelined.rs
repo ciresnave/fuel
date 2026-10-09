@@ -1412,14 +1412,18 @@ impl PipelinedExecutor {
         order_source: OrderSource<'_>,
         sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout, SymEnv)> {
+        let decode_trace_setup_start = std::time::Instant::now();
+        crate::decode_trace::begin_step();
         // Auto-insert safety copies for in-place ops whose target
         // has additional readers in this realize set (residual-
         // connection cycle break). No-op when no destructive ops
         // are present.
         {
+            let decode_trace_sc_start = std::time::Instant::now();
             let mut g = graph.write().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
             insert_safety_copies(&mut g, &effective_roots);
+            crate::decode_trace::record_setup_safety_copies(decode_trace_sc_start.elapsed());
         }
 
         // Execution plan + initial layouts for the input cache
@@ -1436,6 +1440,7 @@ impl PipelinedExecutor {
             WaitSet,
             HashMap<NodeId, Layout>,
         ) = {
+            let decode_trace_cw_start = std::time::Instant::now();
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
             // PR-A3b-1: the OptimizedGraph path lowers via
@@ -1459,8 +1464,10 @@ impl PipelinedExecutor {
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
             }
+            crate::decode_trace::record_setup_compiler_work(decode_trace_cw_start.elapsed());
             (work, wait_set, layouts)
         };
+        crate::decode_trace::record_setup(decode_trace_setup_start.elapsed());
 
         let (tx, rx) = channel::<Result<WorkItem>>();
         let graph_for_compiler = Arc::clone(&graph);
@@ -1518,7 +1525,13 @@ impl PipelinedExecutor {
         // switch, so this stays false and the eager-submit / in-flight machinery is
         // unreachable (single-device byte-identical + throughput-neutral, §5).
         let mut multi_backend = false;
-        for item in rx {
+        loop {
+            let decode_trace_recv_start = std::time::Instant::now();
+            let item = match rx.recv() {
+                Ok(item) => item,
+                Err(_) => break,
+            };
+            crate::decode_trace::record_recv(decode_trace_recv_start.elapsed());
             let item = item?;
             // Chunk-boundary hook (target_backend change). Existing duty: the
             // `TopologyChanged` generation check. Step E A4b-4 adds two duties:
@@ -1602,6 +1615,21 @@ impl PipelinedExecutor {
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
+            // Classified BEFORE the call (not from its result): the
+            // breakdown is about what was dispatched, not what came back.
+            let decode_trace_h2d_bytes = match item.kind {
+                WorkItemKind::Copy {
+                    target_location: DeviceLocation::Cuda { .. },
+                } if item.target_backend == BackendId::Cpu => {
+                    Some(item.elem_count as u64 * item.dtype.size_in_bytes() as u64)
+                }
+                _ => None,
+            };
+            let decode_trace_is_gemm = matches!(
+                item.compiled.as_ref().map(|c| c.op),
+                Some(OpKind::MatMul) | Some(OpKind::QMatMul)
+            );
+            let decode_trace_start = std::time::Instant::now();
             let handle = execute_work_item(
                 &item,
                 &mut cache,
@@ -1613,6 +1641,14 @@ impl PipelinedExecutor {
                 None,
             )
             .map_err(|e| with_node_location(&graph, item.node_id, e))?;
+            let decode_trace_dt = decode_trace_start.elapsed();
+            if let Some(bytes) = decode_trace_h2d_bytes {
+                crate::decode_trace::record_h2d(bytes, decode_trace_dt);
+            } else if matches!(item.kind, WorkItemKind::Kernel) {
+                crate::decode_trace::record_kernel(decode_trace_is_gemm, decode_trace_dt);
+            } else {
+                crate::decode_trace::record_other(decode_trace_dt);
+            }
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input
                 && let Some(&destroyed) = item.inputs.get(d_idx)
@@ -1659,6 +1695,7 @@ impl PipelinedExecutor {
             .join()
             .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
 
+        let decode_trace_sync_start = std::time::Instant::now();
         // Step E A4b-1: drain every outstanding async handle before the result is
         // read / the cache drops (freeing intermediates). For CUDA this waits the
         // recorded events (one stream/device ⇒ waiting the latest drains all prior
@@ -1681,6 +1718,7 @@ impl PipelinedExecutor {
         // batch then waits it via a `VulkanCompletion` handle. Byte-identical to
         // A2 for pure-Vulkan (one submission at realize-end, just split).
         drain_vulkan_pending(&cache)?;
+        crate::decode_trace::record_sync(decode_trace_sync_start.elapsed());
         debug_assert!(
             inflight_vulkan.is_empty(),
             "A4b-4: in-flight Vulkan batch list must be empty after realize-end drain",
@@ -1700,6 +1738,7 @@ impl PipelinedExecutor {
             ))
             .bt()
         })?;
+        crate::decode_trace::end_step_and_report();
         Ok((storage, layout, produced_syms))
     }
 
