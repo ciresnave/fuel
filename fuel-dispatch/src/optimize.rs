@@ -1768,20 +1768,24 @@ mod tests {
         );
     }
 
-    /// Shared setup for the two `cached_env_*` tests below: a single-fork
-    /// graph, a two-backend `OptimizedGraph`, a seeded `StorageCache`, a
-    /// fresh `order_cache`, and a real (non-stub) `WinnerSelector`.
-    /// Factored out purely to keep each test under Codacy's method-length
-    /// bound — no behavior lives here that either test's own body needs to
-    /// see inline.
-    fn cached_env_test_fixture() -> (
+    /// Return type of [`cached_env_test_fixture`] — named purely to dodge
+    /// `clippy::type_complexity`, not because any caller needs the alias.
+    type CachedEnvTestFixture = (
         Arc<RwLock<Graph>>,
         crate::pipelined::StorageCache,
         OptimizedGraph,
         std::sync::OnceLock<Vec<NodeId>>,
         Arc<dyn crate::ranker::RuntimeSelector>,
         NodeId,
-    ) {
+    );
+
+    /// Shared setup for the two `cached_env_*` tests below: a single-fork
+    /// graph, a two-backend `OptimizedGraph`, a seeded `StorageCache`, a
+    /// fresh `order_cache`, and a real (non-stub) `WinnerSelector`.
+    /// Factored out purely to keep each test under Codacy's method-length
+    /// bound — no behavior lives here that either test's own body needs to
+    /// see inline.
+    fn cached_env_test_fixture() -> CachedEnvTestFixture {
         use crate::pipelined::StorageCache;
         use crate::ranker::runtime_selector::WinnerSelector;
 
@@ -1896,24 +1900,35 @@ mod tests {
     /// `Error::TopologyChanged` tolerance was added for, instead of relying
     /// on another test in the binary to collide by chance. Proves two
     /// things the flaky-under-`-j4` observation alone couldn't: (1) that a
-    /// concurrent `bump_topology_generation()` is SUFFICIENT to reproduce
-    /// the exact failure this test's sibling hit (confirming the root
-    /// cause, not just a plausible story), and (2) that `order_cache` stays
-    /// empty even on the `Err` branch (the property this test file is
-    /// actually about, independent of the race).
+    /// stale `optimized.generation` is SUFFICIENT to reproduce the exact
+    /// failure this test's sibling hit (confirming the root cause, not
+    /// just a plausible story), and (2) that `order_cache` stays empty
+    /// even on the `Err` branch (the property this test file is actually
+    /// about, independent of the race).
+    ///
+    /// Deliberately does NOT call the real, process-wide
+    /// `bump_topology_generation()` to force this — that would inflict the
+    /// exact `-j4` cross-test hazard this test documents onto every OTHER
+    /// concurrently-running test in the binary that assumes a stable
+    /// generation (an earlier draft of this test did exactly that, and
+    /// broke `realize_with_optimized_picking_cached_env_matches_arm0_cold_and_warm`
+    /// under `-j4`). `OptimizedGraph::generation` is `pub`, so mutating
+    /// this test's own LOCAL copy to a value that can't match the live
+    /// counter reproduces the identical code path with zero blast radius.
     #[test]
     fn cached_env_tolerates_a_concurrent_topology_generation_bump() {
         use crate::PipelinedExecutor;
         use fuel_ir::{Error, SymEnv};
 
-        let (graph, cache, optimized, order_cache, selector, root) = cached_env_test_fixture();
+        let (graph, cache, mut optimized, order_cache, selector, root) = cached_env_test_fixture();
 
         // Simulate a sibling test's legitimate `register_runtime_kernel`/
         // `extend_global_bindings` call landing between `optimize_graph`
         // (which stamped `optimized.generation` above) and this realize —
         // exactly the collision `cached_env_never_caches_a_branched_graph_with_a_real_selector`
-        // hit under `-j4`, forced here instead of waited for.
-        crate::dispatch::bump_topology_generation();
+        // hit under `-j4` — by staling THIS test's own copy of the stamp,
+        // not the shared live counter every other test also reads.
+        optimized.generation = optimized.generation.wrapping_add(1);
 
         let result = PipelinedExecutor::realize_with_optimized_picking_cached_env(
             graph,
