@@ -1,6 +1,55 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.15.4 - 2026-10-09
+
+### Changed
+
+- perf(fuel-dispatch,fuel-tensor): cache `order_for`'s dispatch order across
+  decode-session realize calls — the third per-token recompute flagged in
+  `docs/design/incremental-consumer-index.md` §5 (`extract_runs_multi` +
+  `non_chosen_arm_nodes`, ~24% of decode-step time per the v0.15.3
+  measurement). `DecodeSession`/`PagedDecodeSession` now hold a
+  `OnceLock<Vec<NodeId>>` populated once per session and reused while the
+  graph structure, roots, and `OptimizedGraph` generation are unchanged
+  (proven via `dispatch_order_is_stable_across_repeated_calls_with_no_mutation`).
+  A branched graph with a real runtime selector never populates the cache —
+  it routes through the existing `OrderSource::Streaming` path instead
+  (proven via `cached_env_never_caches_a_branched_graph_with_a_real_selector`).
+  Live verification (Qwen3-0.6B-Q4_K_M, CUDA): steady-state decode 5.01
+  tok/s; order cache hit on 59/61 realize calls (96.7%), with the 2 misses
+  a legitimate re-derivation at a topology-change boundary; `compiler_work`
+  dropped ~41.5x on cache-hit steps vs cache-miss steps.
+
+## v0.15.3 - 2026-10-09
+
+### Changed
+
+- docs(design): revised `docs/design/incremental-consumer-index.md`'s
+  scope — measurement after fuel#326 found a THIRD per-token recompute
+  (`order_for`'s `extract_runs_multi`/`non_chosen_arm_nodes`, ~24% of
+  decode-step time, now the single largest named sub-cost) that the
+  consumer/dependents index does NOT fix (different structure needed:
+  a run/branch-arm partition, not a reverse-dependency index). Tracked
+  as its own, separately-scoped fix track (§5), not folded into the
+  consumer-index migration. Also records fuel#331 (differential harness)
+  as landed.
+
+## v0.15.2 - 2026-10-09
+
+### Added
+
+- test(fuel-graph): differential safety-analysis harness — step 1 of the
+  staged incremental-consumer-index redesign
+  (`docs/design/incremental-consumer-index.md` §4). Runs
+  `insert_safety_copies`/`derive_ordering` against a corpus of
+  representative graph shapes and asserts the result is structurally
+  byte-identical whichever side of the comparison it's called from; the
+  "new" side is a step-2 placeholder for now (calls the same old pass on
+  an independently-built graph instance), so this PR validates the
+  comparison machinery and corpus determinism, ready for step 2 to drop
+  in the real incremental logic without touching this harness again.
+
 ## v0.15.1 - 2026-10-09
 
 ### Modified

@@ -577,6 +577,41 @@ pub fn realize_one_prebuilt_env<T: bytemuck::Pod + WithDType>(
     extract_cpu_bytes_typed::<T>(&storage)
 }
 
+/// Cached sibling of [`realize_one_prebuilt_env`] — `order_for` fix track
+/// (`docs/design/incremental-consumer-index.md` §5). `order_cache` is owned
+/// by the caller (one per `DecodeSession`, living exactly as long as the
+/// session's held graph/`optimized`) and threaded through unchanged across
+/// repeated calls: empty on the session's first realize, computed once
+/// there, reused on every later token without re-deriving the dispatch
+/// order from scratch. See
+/// [`PipelinedExecutor::realize_with_optimized_picking_cached_env`] for the
+/// safety argument and the `TopologyChanged` interaction.
+pub fn realize_one_prebuilt_cached_env<T: bytemuck::Pod + WithDType>(
+    graph: &Arc<RwLock<Graph>>,
+    effective_target: NodeId,
+    optimized: &OptimizedGraph,
+    order_cache: &std::sync::OnceLock<Vec<NodeId>>,
+    device: &Device,
+    cache: StorageCache,
+    sym_env: &SymEnv,
+) -> Result<Vec<T>> {
+    let (selector, lookup) = match production_selector_for(device) {
+        Some((s, l)) => (Some(s), Some(l)),
+        None => (None, None),
+    };
+    let (storage, _layout) = PipelinedExecutor::realize_with_optimized_picking_cached_env(
+        graph.clone(),
+        effective_target,
+        cache,
+        optimized,
+        order_cache,
+        selector,
+        lookup,
+        sym_env.clone(),
+    )?;
+    extract_cpu_bytes_typed::<T>(&storage)
+}
+
 /// Capturing sibling of [`dispatch_with_plan_retry`] used by
 /// [`prebuild_optimized_env`]: identical retry-on-`TopologyChanged` loop, but
 /// returns the FINAL successful [`OptimizedGraph`] view alongside the storage
