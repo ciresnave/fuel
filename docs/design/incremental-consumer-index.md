@@ -1,16 +1,15 @@
 # Incremental consumer/dependents index — replacing per-call safety-copy analysis
 
-**Status:** DESIGN PROPOSAL, no code. Rides fuel#326 (the narrow fix this
-doc's measurements are the "after" side of) and fuel#321 (the original
-decode-slowness measurement this traces back to) — this doc is the
-write-up those two PRs' own descriptions point to for the structural
-follow-on. CireSnave has confirmed this is the real target, not a fallback
-(relayed via PM, 2026-10-09 — see §0). Sequencing (PM, 2026-10-08/09):
-narrow fixes first (fuel#326 — merge status: check the PR, not this line,
-which will go stale the moment it merges), measure the residual, write
-this doc, implement as staged PRs with a differential test gate before the
-old passes are ever removed. This document is step 2; no implementation
-PR exists yet.
+**Status:** DESIGN PROPOSAL, scope revised 2026-10-09 (see §0.1 — a THIRD
+per-token recompute was found, and it is NOT fixed by this document's
+design). Rides fuel#326 and fuel#331 (both merged: the narrow fix this
+doc's §0 measurements are the "after" side of, and the differential
+harness that is this plan's step 1) and fuel#321 (the original
+decode-slowness measurement this traces back to). CireSnave has confirmed
+the consumer-index redesign is the real target for the two passes it
+actually covers, not a fallback (relayed via PM, 2026-10-09 — see §0).
+Merge status for anything cited here: check the PR, not this line, which
+goes stale the moment something merges.
 
 ## 0. Why this exists
 
@@ -40,6 +39,70 @@ that a relayed ruling isn't trusted on trust — the PM has it directly.
 (who reads what) do not change between decode tokens — only leaf *values*
 change via `cache.insert`. #326 made each rebuild cheaper; it did not stop
 the rebuilding.
+
+### 0.1 Scope revision (2026-10-09) — a THIRD per-token recompute, NOT fixed by §1
+
+After #326, `setup`'s remaining share of decode-step time was split
+further (same `FUEL_DECODE_TRACE` method, clean run, steady-state 30
+steps, RTX 4070, prefill 3.66 tok/s / steady_state_decode 4.20 tok/s —
+237.97ms/step actual):
+
+| sub-cost | ms/step | % of actual step |
+|---|---|---|
+| `setup` (total) | 84.1 | 35.4% |
+| — `safety_copies` (`insert_safety_copies`, incl. `derive_ordering`) | 26.4 | 11.1% |
+| — `compiler_work` (`compiler_work_and_wait_set_for`) | 57.7 | 24.3% |
+| —— `order_for` | 56.3 | 23.7% |
+| ——— `extract_runs_multi` | 22.4 | 9.4% |
+| ——— `non_chosen_arm_nodes` | 14.3 | 6.0% |
+| ——— *(remainder: `device_alternating_order` + `lower_run` concat, not sub-instrumented)* | ~19.6 | ~8.3% |
+| —— `build_wait_set` | 1.4 | 0.6% |
+
+`order_for` is now the **single largest named sub-cost in the whole
+step** — bigger than `safety_copies`, the thing #326 already fixed. On
+the plan-once path it resolves to `OptimizedGraph::dispatch_order` →
+`lower_runs_arm0` → `lower_picked_route`, which calls `extract_runs_multi`
+(partitions the WHOLE graph into backend-contiguous "runs" via a fresh
+topological walk) and `non_chosen_arm_nodes` (another full walk, finding
+which nodes sit in a non-chosen `Op::Branch` arm) — both **from scratch,
+every `realize_inner` call**, against a transient `OptimizedGraph` view
+built fresh each time that the codebase's own comment says "does no
+planning." Same character as the two passes §1 already covers: the
+graph's run-partition and chosen-arm set don't change between decode
+tokens (only leaf values do), so recomputing them every token is the same
+species of redundant work.
+
+**Does the §1 consumer/dependents index fix this too? No — plainly:
+different structure needed, not the same cure.** The reasoning:
+
+- `insert_safety_copies`/`derive_ordering` need a **reverse dependency
+  edge** ("who reads this node") to decide safety-copy/ordering questions.
+  That's what §1's `consumers` side-table provides.
+- `extract_runs_multi` needs a **backend-contiguous run partition** — a
+  grouping of nodes by which device executes them, in topological order,
+  for dispatch chunking. `non_chosen_arm_nodes` needs a **non-chosen-arm
+  membership set**, derived from `Op::Branch` structure and the picked
+  route. Neither is a "who consumes me" question; both are orthogonal
+  derived views of the same graph that the §1 index does not compute and
+  would not help answer.
+
+**What WOULD fix `order_for`, and why it's a different (and actually
+simpler) job:** its whole output — the `Vec<NodeId>` dispatch order — is
+a pure, deterministic function of the graph's structure, backend stamps,
+and chosen route, none of which change between decode tokens on the
+plan-once path. Unlike `insert_safety_copies` (whose useful effect is a
+graph MUTATION, so caching "the decision" still requires re-applying it),
+`order_for`'s result can be memoized WHOLESALE — compute it once when the
+plan-once session is built, store the `Vec<NodeId>`, and reuse it on every
+later token, invalidated by the same `OptimizedGraph.generation` /
+`TopologyChanged` staleness signal this codebase already uses elsewhere
+(see `fuel-dispatch/src/pipelined.rs`'s existing per-chunk generation
+check). This needs its own proposal and its own PR — tracked as a
+separate, narrower track from §1-§4 below, not folded into the consumer
+index. **Not yet measured:** whether the transient `OptimizedGraph` view
+`order_for` builds is ACTUALLY structurally identical across tokens in
+every case (plan-once's whole premise) — that needs its own identity
+test before any caching PR, not assumed.
 
 ## 1. The core idea
 
@@ -151,15 +214,17 @@ code yet.
 
 ## 4. Implementation plan (staged, no code until the PM/CireSnave sign off on this doc)
 
-1. **Differential harness first.** Before any production code changes:
-   build a test harness that runs BOTH the old (`insert_safety_copies` +
-   `derive_ordering`, post-#326) and the new incremental-index logic
-   side-by-side against every existing `fuel-graph` test graph plus the
-   live decode harness's actual graph, asserting identical output
-   (`OrderingEdges`, copy-insertion count and placement). This differential
-   test is the gate for every later step — it must stay green through the
-   whole migration, and the old passes are not removed until it has run
-   clean against real decode traffic, not just unit-test graphs.
+1. **Differential harness first — LANDED, fuel#331.** The comparison
+   machinery + a 4-shape corpus exist; the "new" side is still a
+   placeholder (calls the same old pass on an independently-built graph —
+   there is no real incremental-index implementation yet, that's step 2).
+   Still outstanding, tracked in #331's own description, required before
+   any old pass is removed: the live decode harness's actual graph is not
+   yet in the corpus, and only 4 of the 9 existing
+   `insert_safety_copies`/`derive_ordering` tests are ported (full porting
+   is open item #2, due at step 4). This harness's scope is the §1-§4
+   consumer-index redesign ONLY — it does not cover `order_for` (§0.1),
+   which needs its own, separately-tracked fix and its own test.
 2. **Add the `consumers` side-table to `Graph`**, maintained incrementally
    at `push` only (rewiring/fusion/removal deferred) — the common,
    low-risk case. Differential-test against old behavior.
@@ -176,3 +241,17 @@ code yet.
 
 Each numbered step above is its own PR. No step starts before the
 previous one's differential test is green.
+
+## 5. `order_for` track (§0.1) — separate from the plan above
+
+Not part of the consumer-index migration; a narrower, independent fix
+with its own PR and its own test, because the cure is different (whole-
+result memoization, not an incremental index). Minimum shape: (a) a test
+proving the transient `OptimizedGraph` view `order_for` builds — and its
+resulting `Vec<NodeId>` — is identical across repeated calls on the
+plan-once path's actual graph/roots/route, since caching is only valid if
+that identity genuinely holds (not assumed here); (b) if it holds, cache
+the computed order on the `DecodeSession`/prebuilt-plan, invalidated by
+the existing `OptimizedGraph.generation` signal; (c) if it does NOT hold
+in some case, say so and scope the fix to whatever subset of cases it
+does hold for, rather than caching something that silently goes stale.

@@ -1,6 +1,20 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.15.3 - 2026-10-09
+
+### Changed
+
+- docs(design): revised `docs/design/incremental-consumer-index.md`'s
+  scope — measurement after fuel#326 found a THIRD per-token recompute
+  (`order_for`'s `extract_runs_multi`/`non_chosen_arm_nodes`, ~24% of
+  decode-step time, now the single largest named sub-cost) that the
+  consumer/dependents index does NOT fix (different structure needed:
+  a run/branch-arm partition, not a reverse-dependency index). Tracked
+  as its own, separately-scoped fix track (§5), not folded into the
+  consumer-index migration. Also records fuel#331 (differential harness)
+  as landed.
+
 ## v0.15.2 - 2026-10-09
 
 ### Added
