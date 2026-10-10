@@ -480,9 +480,9 @@ dependencies = [
 
 [[package]]
 name = "baracuda-cudnn"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.84"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ebeb482dc407fbeaef76e7cc012804bc136208775e20b773c0d949584b4ec0d"
+checksum = "26ccc09a728c024a285cce7152f061d8f3da5dfe9c6c56d1090ab3ac85d5eac5"
 dependencies = [
  "baracuda-core",
  "baracuda-cuda-sys",
@@ -495,9 +495,9 @@ dependencies = [
 
 [[package]]
 name = "baracuda-cudnn-sys"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.84"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4355cb69eff3ce42641e0dc9269d43c7ef7ea60db213bc8b07dc361feb8db63"
+checksum = "5df65642e78ad24e7923ce8181522c40f05f011584382b7662f3b4ecd27e61f9"
 dependencies = [
  "baracuda-build",
  "baracuda-core",
@@ -522,9 +522,9 @@ dependencies = [
 
 [[package]]
 name = "baracuda-curand-sys"
-version = "0.0.1-alpha.81"
+version = "0.0.1-alpha.84"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "741d3d3a2b8aa053d3fc7c3d275f89c4bd9da368d5afc947cb10791cd666af82"
+checksum = "8fd3c37d8289fab3c041f81205559e6a71abb4c333024f5100ed7c2743287dea"
 dependencies = [
  "baracuda-build",
  "baracuda-core",
@@ -1561,7 +1561,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4753,7 +4753,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5431,7 +5431,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5577,9 +5577,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
 dependencies = [
  "bytes",
  "libc",
@@ -6276,7 +6276,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
