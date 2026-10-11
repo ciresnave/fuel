@@ -1366,7 +1366,7 @@ impl VulkanBackend {
         })
     }
 
-    fn download_slice<T: Copy + Default + 'static>(
+    fn download_slice<T: bytemuck::Pod + Default>(
         &self,
         storage: &VulkanStorage,
     ) -> fuel_ir::Result<Vec<T>> {
@@ -1403,12 +1403,9 @@ impl VulkanBackend {
         }
         let _s = debug_span!("vk_download_memcpy").entered();
         let mut out = vec![T::default(); n];
-        let out_byte_len = n * std::mem::size_of::<T>();
-        // Safety: viewing the freshly-initialized Vec<T> as bytes for
-        // the staging read; T is Copy and the byte length matches.
-        let out_bytes =
-            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, out_byte_len) };
-        staging.read_into(out_bytes)?;
+        // `T: Pod`: every bit pattern the device wrote is a valid `T`, and the
+        // byte length is `n * size_of::<T>()` by construction of the view.
+        staging.read_into(bytemuck::cast_slice_mut::<T, u8>(&mut out))?;
         drop(staging);
         Ok(out)
     }
@@ -1589,12 +1586,12 @@ impl VulkanBackend {
 
     /// Upload a small params struct as a uniform buffer. Sub-allocated
     /// from the shared allocator's host-visible pool.
-    fn upload_params<T: Copy + 'static>(
+    fn upload_params<T: bytemuck::NoUninit>(
         &self,
         params: &T,
     ) -> fuel_ir::Result<(Buffer, Allocation)> {
         let _span = debug_span!("vk_upload_params", bytes = std::mem::size_of::<T>()).entered();
-        let bytes = unsafe { as_bytes(params) };
+        let bytes = bytemuck::bytes_of(params);
         let size = (bytes.len().max(16)) as u64;
         let (buf, alloc) = self
             .allocator
@@ -1983,7 +1980,7 @@ impl VulkanBackend {
         let flags = (a_contig as u32) | ((b_contig as u32) << 1);
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct BParams {
             out_size: u32,
             op_id: u32,
@@ -2135,7 +2132,7 @@ impl VulkanBackend {
         let flags = (a_contig as u32) | ((b_contig as u32) << 1);
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct BParams {
             out_size: u32,
             op_id: u32,
@@ -2274,7 +2271,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct SoftParams {
             n_rows: u32,
             n_cols: u32,
@@ -2355,7 +2352,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct SoftParams {
             n_rows: u32,
             n_cols: u32,
@@ -2439,7 +2436,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct SoftParams {
             n_rows: u32,
             n_cols: u32,
@@ -2516,7 +2513,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct SoftParams {
             n_rows: u32,
             n_cols: u32,
@@ -2596,7 +2593,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct RmsParams {
             n_rows: u32,
             n_cols: u32,
@@ -2680,7 +2677,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct RmsParams {
             n_rows: u32,
             n_cols: u32,
@@ -2771,7 +2768,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct RmsParams {
             n_rows: u32,
             n_cols: u32,
@@ -2855,7 +2852,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct RmsParamsF64 {
             n_rows: u32,
             n_cols: u32,
@@ -3031,7 +3028,7 @@ impl VulkanBackend {
             _ => n_src,
         };
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct WsParams {
             n: u32,
             rank: u32,
@@ -3181,7 +3178,7 @@ impl VulkanBackend {
         };
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct CastParams {
             n: u32,
             _pad: u32,
@@ -3286,7 +3283,7 @@ impl VulkanBackend {
         };
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct CastParams {
             n: u32,
             _pad: u32,
@@ -3406,7 +3403,7 @@ impl VulkanBackend {
         }
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct MatmulParams {
             m: u32,
             n: u32,
@@ -3700,7 +3697,7 @@ impl VulkanBackend {
         }
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct MatmulParams {
             m: u32,
             n: u32,
@@ -3899,7 +3896,7 @@ impl VulkanBackend {
         }
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct MatmulParams {
             m: u32,
             n: u32,
@@ -4144,7 +4141,7 @@ impl VulkanBackend {
         }
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct MatmulParams {
             m: u32,
             n: u32,
@@ -4260,7 +4257,7 @@ impl VulkanBackend {
         let flags = in_contig as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct PowiParams {
             out_size: u32,
             flags: u32,
@@ -4373,7 +4370,7 @@ impl VulkanBackend {
         let flags = in_contig as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct ClampParams {
             out_size: u32,
             flags: u32,
@@ -4487,7 +4484,7 @@ impl VulkanBackend {
         let flags = in_contig as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct AffParams {
             out_size: u32,
             flags: u32,
@@ -4601,7 +4598,7 @@ impl VulkanBackend {
         let flags = in_contig as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct AffParams {
             out_size: u32,
             flags: u32,
@@ -4693,7 +4690,7 @@ impl VulkanBackend {
         let n_pairs = out_elem / 2;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct AffParams {
             n_pairs: u32,
             _pad0: u32,
@@ -4799,7 +4796,7 @@ impl VulkanBackend {
         let flags = in_contig as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct AffParams {
             out_size: u32,
             flags: u32,
@@ -4964,7 +4961,7 @@ impl VulkanBackend {
         }
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct MatmulParams {
             m: u32,
             n: u32,
@@ -5138,7 +5135,7 @@ impl VulkanBackend {
         }
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct MatmulParams {
             m: u32,
             n: u32,
@@ -5302,7 +5299,7 @@ impl VulkanBackend {
         if m == 1 {
             // qmatvec path: one dispatch per batch row.
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct QmvParams {
                 n: u32,
                 k: u32,
@@ -5362,7 +5359,7 @@ impl VulkanBackend {
             // tiled path: one dispatch per batch, grid (n, n_tiles_m).
             const TM: usize = 8;
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct TiledParams {
                 m: u32,
                 n: u32,
@@ -5450,7 +5447,7 @@ impl VulkanBackend {
 
         // Dequantize: 2-buffer dispatch (input W bytes, output f32 bytes).
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct Q4KMParams {
             n_blocks: u32,
             out_elements: u32,
@@ -5551,7 +5548,7 @@ impl VulkanBackend {
         let w_f32 = self.alloc_bytes(w_f32_bytes)?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct Q8Params {
             n_blocks: u32,
             out_elements: u32,
@@ -5700,7 +5697,7 @@ impl VulkanBackend {
 
         // -------- im2col dispatch --------
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct Im2ColParams {
             batch: u32,
             c_in: u32,
@@ -5781,7 +5778,7 @@ impl VulkanBackend {
 
         // -------- matmul dispatch --------
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct MatmulParams {
             m: u32,
             n: u32,
@@ -6116,7 +6113,7 @@ impl VulkanBackend {
         let alibi_bind_len = ((alibi_bind_len as usize + 3) & !3) as u64;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct FaParams {
             b: u32,
             hq: u32,
@@ -6448,7 +6445,7 @@ impl VulkanBackend {
         let alibi_bind_len = ((alibi_bind_len as usize + 3) & !3) as u64;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct FaParams {
             b: u32,
             hq: u32,
@@ -6623,7 +6620,7 @@ impl VulkanBackend {
 
         // -------- im2col_bf16 dispatch --------
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct Im2ColParams {
             batch: u32,
             c_in: u32,
@@ -6703,7 +6700,7 @@ impl VulkanBackend {
 
         // -------- matmul_coop_bf16_bf16_bf16 dispatch --------
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct MatmulParams {
             m: u32,
             n: u32,
@@ -6874,7 +6871,7 @@ impl VulkanBackend {
 
         // -------- im2col dispatch (shared bf16/f16 2-byte shuffle) --------
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct Im2ColParams {
             batch: u32,
             c_in: u32,
@@ -6953,7 +6950,7 @@ impl VulkanBackend {
 
         // -------- matmul_coop_f16_f16_f16 dispatch --------
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct MatmulParams {
             m: u32,
             n: u32,
@@ -7096,7 +7093,7 @@ impl VulkanBackend {
         let concat_dim_padded = (pad + dim) as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct CParams {
             out_d0: u32,
             out_d1: u32,
@@ -7346,7 +7343,7 @@ impl VulkanBackend {
 
         let (pbuf, pmem) = if eps_is_f64 {
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct LnBwdParamsF64 {
                 n_rows: u32,
                 n_cols: u32,
@@ -7360,7 +7357,7 @@ impl VulkanBackend {
             self.upload_params(&p)?
         } else {
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct LnBwdParams {
                 n_rows: u32,
                 n_cols: u32,
@@ -7553,7 +7550,7 @@ impl VulkanBackend {
 
         let (pbuf, pmem) = if eps_is_f64 {
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct LnParamsF64 {
                 n_rows: u32,
                 n_cols: u32,
@@ -7567,7 +7564,7 @@ impl VulkanBackend {
             self.upload_params(&p)?
         } else {
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct LnParams {
                 n_rows: u32,
                 n_cols: u32,
@@ -7688,7 +7685,7 @@ impl VulkanBackend {
         let sd_byte_size = (sd.len() * 4) as u64;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct GParams {
             n_out: u32,
             rank: u32,
@@ -7886,7 +7883,7 @@ impl VulkanBackend {
         let sd_byte_size = (sd.len() * 4) as u64;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct SAParams {
             n_src: u32,
             rank: u32,
@@ -8118,7 +8115,7 @@ impl VulkanBackend {
         let sd_byte_size = (sd.len() * 4) as u64;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct SAParams {
             n_src: u32,
             rank: u32,
@@ -8289,7 +8286,7 @@ impl VulkanBackend {
         let sd_byte_size = (sd.len() * 4) as u64;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct SAParams {
             n_src: u32,
             rank: u32,
@@ -8422,7 +8419,7 @@ impl VulkanBackend {
         };
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct ARParams {
             n_rows: u32,
             n_cols: u32,
@@ -8679,7 +8676,7 @@ impl VulkanBackend {
             .map_err(vk_err)?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct IAParams {
             outer_count: u32,
             base_dim_size: u32,
@@ -8805,7 +8802,7 @@ impl VulkanBackend {
         };
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct ARParams {
             n_outer: u32,
             n_inner: u32,
@@ -8941,7 +8938,7 @@ impl VulkanBackend {
         })?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct PBRParams {
             n_out: u32,
             rank: u32,
@@ -9109,7 +9106,7 @@ impl VulkanBackend {
         })?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct PBParams {
             n_in: u32,
             rank: u32,
@@ -9263,7 +9260,7 @@ impl VulkanBackend {
         })?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct PParams {
             n_out: u32,
             rank: u32,
@@ -9440,7 +9437,7 @@ impl VulkanBackend {
         })?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct PRParams {
             n_out: u32,
             rank: u32,
@@ -9585,7 +9582,7 @@ impl VulkanBackend {
             1 => {
                 let fill_u32 = fill_bytes[0] as u32;
                 #[repr(C)]
-                #[derive(Clone, Copy)]
+                #[derive(Clone, Copy, bytemuck::NoUninit)]
                 struct MFParams {
                     n: u32,
                     fill_value: u32,
@@ -9607,7 +9604,7 @@ impl VulkanBackend {
             2 => {
                 let fill_u32 = u16::from_le_bytes([fill_bytes[0], fill_bytes[1]]) as u32;
                 #[repr(C)]
-                #[derive(Clone, Copy)]
+                #[derive(Clone, Copy, bytemuck::NoUninit)]
                 struct MFParams {
                     n: u32,
                     fill_value: u32,
@@ -9631,7 +9628,7 @@ impl VulkanBackend {
                 a.copy_from_slice(&fill_bytes[..4]);
                 let fill_u32 = u32::from_le_bytes(a);
                 #[repr(C)]
-                #[derive(Clone, Copy)]
+                #[derive(Clone, Copy, bytemuck::NoUninit)]
                 struct MFParams {
                     n: u32,
                     fill_value: u32,
@@ -9655,7 +9652,7 @@ impl VulkanBackend {
                 a.copy_from_slice(&fill_bytes[..8]);
                 let fill_u64 = u64::from_le_bytes(a);
                 #[repr(C)]
-                #[derive(Clone, Copy)]
+                #[derive(Clone, Copy, bytemuck::NoUninit)]
                 struct MFParams {
                     n: u32,
                     _pad: u32,
@@ -9817,7 +9814,7 @@ impl VulkanBackend {
             1 => {
                 let fill_u32 = fill_bytes[0] as u32;
                 #[repr(C)]
-                #[derive(Clone, Copy)]
+                #[derive(Clone, Copy, bytemuck::NoUninit)]
                 struct PParams {
                     n_out: u32,
                     rank: u32,
@@ -9843,7 +9840,7 @@ impl VulkanBackend {
             2 => {
                 let fill_u32 = u16::from_le_bytes([fill_bytes[0], fill_bytes[1]]) as u32;
                 #[repr(C)]
-                #[derive(Clone, Copy)]
+                #[derive(Clone, Copy, bytemuck::NoUninit)]
                 struct PParams {
                     n_out: u32,
                     rank: u32,
@@ -9871,7 +9868,7 @@ impl VulkanBackend {
                 a.copy_from_slice(&fill_bytes[..4]);
                 let fill_u32 = u32::from_le_bytes(a);
                 #[repr(C)]
-                #[derive(Clone, Copy)]
+                #[derive(Clone, Copy, bytemuck::NoUninit)]
                 struct PParams {
                     n_out: u32,
                     rank: u32,
@@ -9899,7 +9896,7 @@ impl VulkanBackend {
                 a.copy_from_slice(&fill_bytes[..8]);
                 let fill_u64 = u64::from_le_bytes(a);
                 #[repr(C)]
-                #[derive(Clone, Copy)]
+                #[derive(Clone, Copy, bytemuck::NoUninit)]
                 struct PParams {
                     n_out: u32,
                     rank: u32,
@@ -10087,7 +10084,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct SBwdParams {
             n_rows: u32,
             n_cols: u32,
@@ -10323,7 +10320,7 @@ impl VulkanBackend {
         let concat_dim_padded = (pad + dim) as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct CParams {
             out_d0: u32,
             out_d1: u32,
@@ -10466,7 +10463,7 @@ impl VulkanBackend {
                 );
             }
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct RParams {
                 n: u32,
                 op_id: u32,
@@ -10529,7 +10526,7 @@ impl VulkanBackend {
                 );
             }
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct RLParams {
                 n_rows: u32,
                 n_cols: u32,
@@ -10628,7 +10625,7 @@ impl VulkanBackend {
                 );
             }
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct RParams {
                 n: u32,
                 op_id: u32,
@@ -10690,7 +10687,7 @@ impl VulkanBackend {
                 );
             }
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct RLParams {
                 n_rows: u32,
                 n_cols: u32,
@@ -10787,7 +10784,7 @@ impl VulkanBackend {
                 );
             }
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct RParams {
                 n: u32,
                 op_id: u32,
@@ -10852,7 +10849,7 @@ impl VulkanBackend {
             self.fill_bytes_zero(out)?;
 
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct RLParams {
                 n_rows: u32,
                 n_cols: u32,
@@ -10930,7 +10927,7 @@ impl VulkanBackend {
                 );
             }
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct RParams {
                 n: u32,
                 op_id: u32,
@@ -10992,7 +10989,7 @@ impl VulkanBackend {
                 );
             }
             #[repr(C)]
-            #[derive(Clone, Copy)]
+            #[derive(Clone, Copy, bytemuck::NoUninit)]
             struct RLParams {
                 n_rows: u32,
                 n_cols: u32,
@@ -11082,7 +11079,7 @@ impl VulkanBackend {
         }
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct IParams {
             out_size: u32,
             outer: u32,
@@ -11293,7 +11290,7 @@ impl VulkanBackend {
         }
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct IParams {
             out_size: u32,
             outer: u32,
@@ -11458,7 +11455,7 @@ impl VulkanBackend {
         };
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct RopeParams {
             outer: u32,
             seq: u32,
@@ -11651,7 +11648,7 @@ impl VulkanBackend {
         };
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct RopeBf16Params {
             outer: u32,
             seq: u32,
@@ -11841,7 +11838,7 @@ impl VulkanBackend {
         };
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct RopeParams {
             outer: u32,
             seq: u32,
@@ -12025,7 +12022,7 @@ impl VulkanBackend {
         let flags = in_contig as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct UParams {
             out_size: u32,
             op_id: u32,
@@ -12135,7 +12132,7 @@ impl VulkanBackend {
         }
         let n_pairs = n / 2;
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct UParams {
             n_pairs: u32,
             op_id: u32,
@@ -12246,7 +12243,7 @@ impl VulkanBackend {
         let flags = (a_contig as u32) | ((b_contig as u32) << 1);
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct BParams {
             out_size: u32,
             op_id: u32,
@@ -12383,7 +12380,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct TParams {
             batch_count: u32,
             rows: u32,
@@ -12522,7 +12519,7 @@ impl VulkanBackend {
         let axis_padded = (axis + pad) as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct FParams {
             out_size: u32,
             axis: u32,
@@ -12668,7 +12665,7 @@ impl VulkanBackend {
         let axis_padded = (axis + pad) as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct RParams {
             out_size: u32,
             axis: u32,
@@ -12887,7 +12884,7 @@ impl VulkanBackend {
         let axis_padded = (axis + pad) as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct CParams {
             slice_count: u32,
             axis: u32,
@@ -13016,7 +13013,7 @@ impl VulkanBackend {
         })?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct SParams {
             out_size: u32,
             rank: u32,
@@ -13132,7 +13129,7 @@ impl VulkanBackend {
             );
         }
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct CParams {
             n: u32,
             _pad: u32,
@@ -13273,7 +13270,7 @@ impl VulkanBackend {
         let flags = in_contig as u32;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct UParams {
             out_size: u32,
             op_id: u32,
@@ -13379,7 +13376,7 @@ impl VulkanBackend {
         let input = self.upload_slice(blocks, DType::U32)?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct Q4Params {
             n_blocks: u32,
             out_elements: u32,
@@ -13813,7 +13810,7 @@ impl VulkanBackend {
         let out = self.alloc_device((n_elements * 4) as u64, n_elements, DType::F32)?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct Q8Params {
             n_blocks: u32,
             out_elements: u32,
@@ -13864,7 +13861,7 @@ impl VulkanBackend {
         let out = self.alloc_device((n_elements * 4) as u64, n_elements, DType::F32)?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct Q4KMParams {
             n_blocks: u32,
             out_elements: u32,
@@ -13928,7 +13925,7 @@ impl VulkanBackend {
         let out = self.alloc_device((out_u32_len * 4) as u64, out_u32_len, DType::U32)?;
 
         #[repr(C)]
-        #[derive(Clone, Copy)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
         struct QQParams {
             n_elements: u32,
             n_blocks: u32,
@@ -13981,11 +13978,6 @@ fn dtype_size(dtype: DType) -> usize {
 
 fn vk_err(e: impl std::fmt::Debug) -> fuel_ir::Error {
     fuel_ir::Error::Msg(format!("Vulkan: {e:?}"))
-}
-
-/// Reinterpret a #[repr(C)] struct as a byte slice for push constants.
-unsafe fn as_bytes<T: Sized>(p: &T) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(p as *const T as *const u8, std::mem::size_of::<T>()) }
 }
 
 #[cfg(test)]

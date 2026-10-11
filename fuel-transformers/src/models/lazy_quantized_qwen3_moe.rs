@@ -573,8 +573,7 @@ fn quantize_in_out_to_q4_0(
 
     // BlockQ4_0 is repr(C) and exactly 18 bytes; reinterpret as bytes.
     let bytes_len = n_blocks * std::mem::size_of::<BlockQ4_0>();
-    let byte_slice: &[u8] =
-        unsafe { std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len) };
+    let byte_slice: &[u8] = fuel_quantized::blocks_as_bytes(&blocks);
     // Q4_0 storage holds u32 words; pad bytes to a multiple of 4 by
     // copying into a Vec<u8> first.
     let padded_len = bytes_len.div_ceil(4) * 4;

@@ -1825,12 +1825,17 @@ fn cpu_dequant_via_trait<T: fuel_quantized::GgmlType>(bytes: &[u8]) -> Vec<f32> 
         block_bytes
     );
     let n_blocks = bytes.len() / block_bytes;
-    // SAFETY: T is #[repr(C)]; GGUF bytes are laid out as a dense array
-    // of T structs. The source mmap is 8-byte aligned per memmap2, which
-    // satisfies every block struct's alignment (≤ 4 in practice).
-    let blocks: &[T] = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const T, n_blocks) };
+    // `bytes` is a sub-slice at a GGUF tensor offset inside the mmap, so the
+    // mmap's own alignment says nothing about THIS slice's: a tensor can start
+    // at any 1-byte offset the file format allows. `blocks_from_bytes_cow`
+    // borrows when the address happens to be aligned for `T` and copies into
+    // an aligned `Vec<T>` when it is not, so neither case is undefined
+    // behaviour. (This site used to cast unconditionally on the strength of
+    // "the mmap is 8-byte aligned".)
+    let blocks = fuel_quantized::blocks_from_bytes_cow::<T>(bytes);
+    debug_assert_eq!(blocks.len(), n_blocks);
     let mut out = vec![0.0_f32; n_blocks * T::BLCK_SIZE];
-    T::to_float(blocks, &mut out);
+    T::to_float(&blocks, &mut out);
     out
 }
 

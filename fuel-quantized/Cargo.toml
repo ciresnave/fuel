@@ -31,4 +31,5 @@
     fuel-backend-contract = { workspace = true }
     byteorder        = { workspace = true }
     half             = { workspace = true }
+    bytemuck         = { workspace = true, features = ["derive"] }
     rayon            = { workspace = true }

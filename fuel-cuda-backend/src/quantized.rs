@@ -398,15 +398,13 @@ impl QCudaStorage {
         /// correct length.
         fn deq<T: GgmlType>(buffer: &[u8], n: usize, dst: &mut [f32]) {
             let size = std::mem::size_of::<T>();
-            let blocks: Vec<T> = buffer
-                .chunks_exact(size)
-                .take(n)
-                // SAFETY: each chunk is exactly `size_of::<T>()` bytes, and
-                // every `T` this is called with below is plain data (`f32`,
-                // `f16`, `bf16`, or a block of `f16`/`f32` and integer
-                // arrays), so any byte pattern is a valid `T`.
-                .map(|c| unsafe { std::ptr::read_unaligned(c.as_ptr().cast::<T>()) })
-                .collect();
+            // At most `n` whole blocks. `blocks_from_bytes_cow` borrows when
+            // `buffer` happens to be aligned for `T` and copies into an aligned
+            // `Vec<T>` otherwise (`T: Pod`, a supertrait of `GgmlType`, makes both
+            // paths safe), and drops a trailing partial block, as the
+            // `chunks_exact(size).take(n)` it replaces did.
+            let take = buffer.len().min(n.saturating_mul(size));
+            let blocks = fuel_quantized::blocks_from_bytes_cow::<T>(&buffer[..take]);
             T::to_float(&blocks, dst)
         }
 

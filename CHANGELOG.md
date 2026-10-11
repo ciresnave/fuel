@@ -1,6 +1,31 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.17.0 - 2026-10-11
+
+### Breaking
+
+- `fuel-quantized`: `GgmlType` gains a `bytemuck::Pod` supertrait, so a downstream
+  `impl GgmlType` for a non-`Pod` type no longer compiles (all 15 in-tree implementors are
+  `Pod`). The 12 `Block*` structs derive `Pod` + `Zeroable` and gain `Copy`.
+
+### Added
+
+- `fuel_quantized::{blocks_as_bytes, blocks_from_bytes_cow}`: safe block/byte views.
+
+### Fixed
+
+- `fuel-vulkan-backend`: `upload_params` / `as_bytes` no longer expose uninitialized padding
+  bytes of a param struct (`T: NoUninit`; the 90 param structs derive it, compiler-verified
+  padding-free); `download_slice` is `T: Pod`.
+- `fuel-model-phi`: the k-quant dequant cast no longer assumes a tensor sub-slice of the mmap
+  is block-aligned.
+
+### Changed
+
+- Hand-written `unsafe` byte casts in `fuel-quantized`, `fuel-cpu-backend`, `fuel-cuda-backend`,
+  `fuel-nn` and `fuel-transformers` are checked `bytemuck` / `blocks_*` calls.
+
 ## v0.16.1 - 2026-10-11
 
 ### Fixed
