@@ -208,7 +208,8 @@ determinism: bitwise
 ## masked_fill  (per-element select data-vs-constant by a Bool mask; f32/f16/bf16/f64/u8/u32)
 
 Two inputs (`data`, `mask`) → one output: where `mask != 0` the output takes the constant fill bytes,
-else it copies `data` through (a per-element byte select, no arithmetic). The mask is `U8`, contiguous;
+else it copies `data` through (a per-element byte select, no arithmetic). The mask is `Bool`
+(one byte per element, 0/1; `U8` before GAP-168(c)), contiguous;
 the fill constant rides in `OpParams::MaskedFill.fill_bytes`. ONE dtype-agnostic wrapper
 (`masked_fill::masked_fill` → `VulkanBackend::masked_fill_bytes`) picks its element byte-width from
 the OUTPUT dtype at the shim, so every fanned dtype key resolves to the SAME `KernelRef` (synthetic-
