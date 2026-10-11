@@ -5241,14 +5241,17 @@ pub fn matmul_f64(
 /// fuel-quantized's `matmul` takes (m, k, n) + slices and computes
 /// the inner products via SIMD-friendly per-column dot products.
 /// This kernel iterates batches and calls into it.
-/// SAFETY-WRAPPER: reinterpret a `&[u8]` byte stream as `&[T]`
-/// where `T` is a GGML block type (`#[repr(C)]` with all-Pod
-/// fields, so the cast is sound). Used by the quantized matmul
+/// Reinterpret a `&[u8]` byte stream as `&[T]` where `T` is a GGML
+/// block type (`T: GgmlType` implies `bytemuck::Pod`, so the cast is
+/// checked rather than asserted). Used by the quantized matmul
 /// kernels. The borrow keeps the returned slice tied to `bytes`, which
 /// is what makes this sound (GAP-336: fuel-quantized's former
 /// `as_t_slice` took an owned `Cow` and returned a dangling slice).
 /// Returns `Err` on length or alignment mismatch.
-fn block_slice_from_bytes<'a, T>(name: &str, bytes: &'a [u8]) -> Result<&'a [T]> {
+fn block_slice_from_bytes<'a, T: fuel_quantized::GgmlType>(
+    name: &str,
+    bytes: &'a [u8],
+) -> Result<&'a [T]> {
     let size = std::mem::size_of::<T>();
     if size == 0 {
         return Err(Error::Msg(format!("{name}: zero-sized block type")).bt());
@@ -5260,19 +5263,16 @@ fn block_slice_from_bytes<'a, T>(name: &str, bytes: &'a [u8]) -> Result<&'a [T]>
         ))
         .bt());
     }
-    let ptr = bytes.as_ptr();
-    let align = std::mem::align_of::<T>();
-    if !(ptr as usize).is_multiple_of(align) {
-        return Err(Error::Msg(format!(
+    // `T: GgmlType` implies `T: Pod`, so this is a checked reinterpretation:
+    // it fails (never UB) on a misaligned pointer, and the length multiple was
+    // validated above.
+    bytemuck::try_cast_slice::<u8, T>(bytes).map_err(|_| {
+        let align = std::mem::align_of::<T>();
+        Error::Msg(format!(
             "{name}: byte pointer not aligned to block type's alignment {align}",
         ))
-        .bt());
-    }
-    // Safety: `bytes` lifetime extends through this function's
-    // borrow; T is a GGML block type which is `#[repr(C)]` with
-    // only-Pod fields (f16/u8/u8 arrays), so any byte pattern is
-    // a valid T. Length and alignment have just been validated.
-    Ok(unsafe { std::slice::from_raw_parts(ptr as *const T, bytes.len() / size) })
+        .bt()
+    })
 }
 
 fn qmatmul_generic_f32<T: fuel_quantized::GgmlType>(

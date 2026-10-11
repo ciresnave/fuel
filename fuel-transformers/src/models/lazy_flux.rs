@@ -829,8 +829,7 @@ fn quantize_in_out_to_q4_0(
     let mut blocks: Vec<BlockQ4_0> = vec![BlockQ4_0::zeros(); n_blocks];
     BlockQ4_0::from_float(&f32_out_in, &mut blocks);
     let bytes_len = n_blocks * std::mem::size_of::<BlockQ4_0>();
-    let byte_slice: &[u8] =
-        unsafe { std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len) };
+    let byte_slice: &[u8] = fuel_quantized::blocks_as_bytes(&blocks);
     let padded_len = bytes_len.div_ceil(4) * 4;
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes_len].copy_from_slice(byte_slice);

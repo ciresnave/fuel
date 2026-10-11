@@ -401,11 +401,10 @@ impl QCudaStorage {
             let blocks: Vec<T> = buffer
                 .chunks_exact(size)
                 .take(n)
-                // SAFETY: each chunk is exactly `size_of::<T>()` bytes, and
-                // every `T` this is called with below is plain data (`f32`,
-                // `f16`, `bf16`, or a block of `f16`/`f32` and integer
-                // arrays), so any byte pattern is a valid `T`.
-                .map(|c| unsafe { std::ptr::read_unaligned(c.as_ptr().cast::<T>()) })
+                // Each chunk is exactly `size_of::<T>()` bytes and `T: Pod`
+                // (a supertrait of `GgmlType`), so any byte pattern is a valid
+                // `T` and no alignment is assumed.
+                .map(bytemuck::pod_read_unaligned::<T>)
                 .collect();
             T::to_float(&blocks, dst)
         }

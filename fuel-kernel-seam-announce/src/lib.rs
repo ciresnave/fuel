@@ -292,20 +292,29 @@ mod tests {
     #[test]
     fn advertise_zeroes_all_reserved_padding() {
         // The 6 bytes between `profiles` (ends at 42) and `capabilities` (48)
-        // are real struct storage; advertise() MUST zero them so a struct-as-
-        // wire envelope never carries uninitialized garbage a foreign reader
-        // rejects. Inspect the raw bytes to prove it.
+        // are the EXPLICIT `reserved1` field, so a struct-as-wire envelope can
+        // never carry uninitialized garbage a foreign reader rejects:
+        // advertise() MUST zero them. Asserted structurally rather than by
+        // viewing the struct's bytes through a raw pointer (that view read
+        // every byte of the struct as `u8`, which is only sound if there is no
+        // implicit padding — and proving that is exactly what the layout
+        // assertions below do, with no `unsafe`).
         let hello = SeamHello::fuel(SEAM_CAP_FDX_V1);
-        let raw: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                &hello as *const SeamHello as *const u8,
-                size_of::<SeamHello>(),
-            )
-        };
-        assert!(
-            raw[42..48].iter().all(|&b| b == 0),
-            "reserved1 alignment padding (bytes 42..48) must be all-zero, got {:?}",
-            &raw[42..48]
+        assert_eq!(std::mem::offset_of!(SeamHello, profiles), 10);
+        assert_eq!(
+            std::mem::offset_of!(SeamHello, reserved1),
+            42,
+            "reserved1 must start exactly where `profiles` ends"
+        );
+        assert_eq!(
+            std::mem::offset_of!(SeamHello, capabilities),
+            42 + std::mem::size_of_val(&hello.reserved1),
+            "no implicit padding between reserved1 and capabilities"
+        );
+        assert_eq!(std::mem::size_of::<SeamHello>(), 56, "no trailing padding");
+        assert_eq!(
+            hello.reserved1, [0u8; 6],
+            "reserved1 alignment padding (bytes 42..48) must be all-zero"
         );
     }
 

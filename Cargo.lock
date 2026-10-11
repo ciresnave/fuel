@@ -2401,6 +2401,7 @@ dependencies = [
 name = "fuel-quantized"
 version = "0.16.1"
 dependencies = [
+ "bytemuck",
  "byteorder",
  "fuel-backend-contract",
  "fuel-cpu-kernels",
@@ -2542,6 +2543,7 @@ dependencies = [
 name = "fuel-vulkan-backend"
 version = "0.16.1"
 dependencies = [
+ "bytemuck",
  "fuel-backend-contract",
  "fuel-conv",
  "fuel-core",

@@ -33,7 +33,7 @@ pub use dequant::dequant_ggml_bytes;
 pub use k_quants::{
     BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K, BlockQ6K,
     BlockQ8_0, BlockQ8_1, BlockQ8K, GgmlType, K_SCALE_SIZE, QK_K, QK4_0, QK4_1, QK5_0, QK5_1,
-    QK8_0, QK8_1, matmul, matmul_f16,
+    QK8_0, QK8_1, blocks_as_bytes, blocks_from_bytes_cow, matmul, matmul_f16,
 };
 
 // Re-export GgmlDType so downstream callers can write

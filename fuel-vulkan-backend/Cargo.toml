@@ -13,6 +13,7 @@
     fuel-ir        = { workspace = true }
     fuel-backend-contract = { workspace = true }
     fuel-graph             = { workspace = true }
+    bytemuck               = { workspace = true, features = ["derive"] }
     # Precompiled SPIR-V kernels. Sources live in fuel-kernels-source
     # and are compiled ahead of time (see
     # `fuel-kernels-source/kernels/compile.sh`) — vulkane does NOT

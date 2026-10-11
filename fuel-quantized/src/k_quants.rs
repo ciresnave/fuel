@@ -20,15 +20,23 @@ pub const QK5_1: usize = 32;
 pub const QK8_0: usize = 32;
 pub const QK8_1: usize = 32;
 
-pub trait GgmlType: Sized + Clone + Send + Sync {
+/// A GGML block type (or a dense scalar standing in for one).
+///
+/// `bytemuck::Pod` is a supertrait on purpose: every implementor is
+/// `#[repr(C)]` plain data with no padding and no invalid bit pattern, so a
+/// byte slice of the right length and alignment IS a valid `[Self]`, and
+/// all-zero bytes ARE a valid `Self`. Making that a bound the compiler checks
+/// (the derive refuses a type with padding) replaces the hand-written
+/// `unsafe` casts that each asserted it in a comment.
+pub trait GgmlType: Sized + Clone + Send + Sync + bytemuck::Pod {
     const DTYPE: GgmlDType;
     const BLCK_SIZE: usize;
     const DIRECT_COPY: bool = false;
     type VecDotType: GgmlType;
 
-    // This is only safe for types that include immediate values such as float/int/...
+    /// The all-zero value. Safe by construction: `Self: Pod` implies `Zeroable`.
     fn zeros() -> Self {
-        unsafe { std::mem::MaybeUninit::zeroed().assume_init() }
+        <Self as bytemuck::Zeroable>::zeroed()
     }
     fn to_float(xs: &[Self], ys: &mut [f32]);
     fn from_float(xs: &[f32], ys: &mut [Self]);
@@ -54,7 +62,7 @@ pub trait GgmlType: Sized + Clone + Send + Sync {
     fn vec_dot_unopt(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32;
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ4_0 {
     pub(crate) d: f16,
@@ -62,7 +70,7 @@ pub struct BlockQ4_0 {
 }
 const _: () = assert!(std::mem::size_of::<BlockQ4_0>() == 18);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ4_1 {
     pub(crate) d: f16,
@@ -71,7 +79,7 @@ pub struct BlockQ4_1 {
 }
 const _: () = assert!(std::mem::size_of::<BlockQ4_1>() == 20);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ5_0 {
     pub(crate) d: f16,
@@ -80,7 +88,7 @@ pub struct BlockQ5_0 {
 }
 const _: () = assert!(std::mem::size_of::<BlockQ5_0>() == 22);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ5_1 {
     pub(crate) d: f16,
@@ -90,7 +98,7 @@ pub struct BlockQ5_1 {
 }
 const _: () = assert!(std::mem::size_of::<BlockQ5_1>() == 24);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ8_0 {
     pub(crate) d: f16,
@@ -98,7 +106,7 @@ pub struct BlockQ8_0 {
 }
 const _: () = assert!(std::mem::size_of::<BlockQ8_0>() == 34);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ8_1 {
     pub(crate) d: f16,
@@ -107,7 +115,7 @@ pub struct BlockQ8_1 {
 }
 const _: () = assert!(std::mem::size_of::<BlockQ8_1>() == 36);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ2K {
     pub(crate) scales: [u8; QK_K / 16],
@@ -117,7 +125,7 @@ pub struct BlockQ2K {
 }
 const _: () = assert!(QK_K / 16 + QK_K / 4 + 2 * 2 == std::mem::size_of::<BlockQ2K>());
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ3K {
     pub(crate) hmask: [u8; QK_K / 8],
@@ -127,7 +135,7 @@ pub struct BlockQ3K {
 }
 const _: () = assert!(QK_K / 8 + QK_K / 4 + 12 + 2 == std::mem::size_of::<BlockQ3K>());
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 // https://github.com/ggerganov/llama.cpp/blob/468ea24fb4633a0d681f7ac84089566c1c6190cb/k_quants.h#L82
 #[repr(C)]
 pub struct BlockQ4K {
@@ -138,7 +146,7 @@ pub struct BlockQ4K {
 }
 const _: () = assert!(QK_K / 2 + K_SCALE_SIZE + 2 * 2 == std::mem::size_of::<BlockQ4K>());
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ5K {
     pub(crate) d: f16,
@@ -150,7 +158,7 @@ pub struct BlockQ5K {
 const _: () =
     assert!(QK_K / 8 + QK_K / 2 + 2 * 2 + K_SCALE_SIZE == std::mem::size_of::<BlockQ5K>());
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ6K {
     pub(crate) ql: [u8; QK_K / 2],
@@ -160,7 +168,7 @@ pub struct BlockQ6K {
 }
 const _: () = assert!(3 * QK_K / 4 + QK_K / 16 + 2 == std::mem::size_of::<BlockQ6K>());
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct BlockQ8K {
     pub(crate) d: f32,
@@ -168,6 +176,38 @@ pub struct BlockQ8K {
     pub(crate) bsums: [i16; QK_K / 16],
 }
 const _: () = assert!(4 + QK_K + QK_K / 16 * 2 == std::mem::size_of::<BlockQ8K>());
+
+/// View a block slice as its raw bytes: GGUF's on-disk layout, byte for byte.
+///
+/// Infallible: `u8` has alignment 1 and every `T: GgmlType` is `Pod`, so this
+/// is a plain reinterpretation with no length or alignment condition.
+pub fn blocks_as_bytes<T: GgmlType>(blocks: &[T]) -> &[u8] {
+    bytemuck::cast_slice(blocks)
+}
+
+/// Reinterpret GGUF bytes as a dense `[T]` array.
+///
+/// Borrowed when `bytes` happens to be aligned for `T`, **copied** into an
+/// aligned `Vec<T>` otherwise: a `&[u8]` guarantees only 1-byte alignment, and
+/// a sub-slice taken at a tensor offset inside an mmap need not be aligned for
+/// the `f16`/`f32` fields of a block, so assuming it is would be unsound.
+///
+/// A trailing partial block is dropped, matching the pre-existing
+/// per-model `cpu_dequant_*_bytes` callers; callers that must reject a ragged
+/// length check `bytes.len() % size_of::<T>()` themselves.
+pub fn blocks_from_bytes_cow<T: GgmlType>(bytes: &[u8]) -> std::borrow::Cow<'_, [T]> {
+    let size = std::mem::size_of::<T>();
+    let whole = &bytes[..(bytes.len() / size) * size];
+    match bytemuck::try_cast_slice::<u8, T>(whole) {
+        Ok(blocks) => std::borrow::Cow::Borrowed(blocks),
+        Err(_) => std::borrow::Cow::Owned(
+            whole
+                .chunks_exact(size)
+                .map(bytemuck::pod_read_unaligned::<T>)
+                .collect(),
+        ),
+    }
+}
 
 impl GgmlType for BlockQ4_0 {
     const DTYPE: GgmlDType = GgmlDType::Q4_0;
