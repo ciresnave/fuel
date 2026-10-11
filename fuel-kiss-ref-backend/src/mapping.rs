@@ -63,12 +63,16 @@ pub fn op_to_kiss(op: OpTag) -> Option<Op> {
 /// stopped being true at kiss-classify-vocab 0.3:
 ///
 /// - `F6E2M3` / `F6E3M2` / `F4` — kiss-classify has no such token at all.
-/// - `F8E8M0` / `F8E6M2` — kiss-classify 0.3 DOES define `F8e8m0` / `F8e6m2`,
-///   so "no equivalent" is no longer why these decline. They are MX shared-
-///   exponent *scale* types, never element-value dtypes: kiss-classify states
-///   they decline compute in a value position, and this adapter feeds a
-///   compute oracle. Mapping them would hand the differential target a scale
-///   operand as if it were an element value.
+/// - `F8E8M0` / `F8E6M2` — kiss-classify (0.3 and 0.4) DOES define `F8e8m0` /
+///   `F8e6m2`, so "no equivalent" is no longer why these decline. Neither has
+///   compute semantics in a value position (`Dtype::declines_compute`), and
+///   this adapter feeds a compute oracle. `F8E8M0` is an MX shared-exponent
+///   *scale* (`Dtype::is_mx_scale`), a per-block sibling operand, never an
+///   element value; mapping it would hand the differential target a scale as
+///   if it were an element. `F8E6M2` was described the same way at 0.3 but is
+///   **reserved** at 0.4 (KISS #517, `Dtype::is_reserved`): recognized on
+///   parse, no encoding pinned. Either way the decline is a choice, and
+///   `_ => None` below carries both.
 pub fn dtype_to_kiss(d: DType) -> Option<Dtype> {
     use DType as D;
     Some(match d {
@@ -170,15 +174,16 @@ mod tests {
         ));
     }
 
-    /// The MX shared-exponent SCALE types decline -- and after the 0.3 bump they
-    /// decline for a DIFFERENT REASON than they used to, which is why this is
-    /// asserted rather than left to follow from absence.
+    /// The MX scale and the reserved 8-bit dtype decline -- and after the 0.3
+    /// bump they decline for a DIFFERENT REASON than they used to, which is why
+    /// this is asserted rather than left to follow from absence.
     ///
     /// Under kiss-classify 0.2 these declined because the vocabulary had no such
-    /// token: the outcome was forced. 0.3 DOES define `F8e8m0` and `F8e6m2`, so
-    /// declining is now a CHOICE -- they are per-block scale operands, never
-    /// element values, and this adapter feeds a compute oracle. Mapping one
-    /// would hand the differential target a scale as if it were an element.
+    /// token: the outcome was forced. 0.3 defined `F8e8m0` and `F8e6m2`, so
+    /// declining became a CHOICE; at 0.4 `F8e6m2` is additionally RESERVED
+    /// (KISS #517) while `F8e8m0` stays the per-block scale. This adapter feeds
+    /// a compute oracle, and mapping either would hand the differential target
+    /// an operand with no element-value semantics.
     #[test]
     fn mx_scale_dtypes_decline_even_though_kiss_now_defines_them() {
         assert!(dtype_to_kiss(DType::F8E8M0).is_none());

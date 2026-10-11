@@ -1,6 +1,26 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.16.0 - 2026-10-11
+
+### Breaking
+
+- `fuel-dispatch` (optional `telemetry` feature): the independent `structure_key` deriver
+  (`telemetry::structure_key_derive`) now derives KISS **sk5**. `FuelOpCategory` and
+  `derive_structure_key_token_with_acc_mp` are removed, and `derive_structure_key_token` takes
+  `(&DeclaredFacts, &[CellOperand], target, Option<AccMp>)`. The cell class is derived from
+  declared facts (M/N/K roles, index slot, reduced set), not chosen by the caller. New:
+  `CellClass`, `DeclaredFacts`, `CellOperand`, `OperandRole`, `DequantForm`, `derive_cell_class`,
+  `sk5_dtype_token`.
+
+### Changed
+
+- deps: `kiss-ref-core` / `kiss-ops-vocab` / `kiss-classify-vocab` 0.3 -> 0.4.
+- `f8e6m2` is declined by the deriver in every keyed dtype position (reserved at sk5, KISS #517);
+  `fuel-ir`'s dtype table is unchanged (GAP-349).
+- Vendored KISS corpus: `structure_key_vectors.json` + `dtype_manifest.json` at KISS `5b28bf51`
+  (per-file pins in `fuel-dispatch/fixtures/kiss-corpus/PROVENANCE.md`).
+
 ## v0.15.7 - 2026-10-11
 
 ### Changed
