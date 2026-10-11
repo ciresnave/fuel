@@ -4987,6 +4987,14 @@ fn vulkan_dispatch_gather_bf16_dim1() {
 }
 
 // ---- MaskedFill (V.3.G.masked_fill, 2026-05-30) ----
+//
+// GAP-168(c): the mask is `Bool`, not `U8`. These three tests kept a `U8` mask
+// storage dtype and a `[T, U8, T]` lookup key after that ruling, so
+// `lookup_alternatives` returned nothing and `[0]` panicked "index out of
+// bounds: the len is 0" — which reads as a missing kernel registration, and is
+// not one: the kernel is registered under `(MaskedFill, [T, BOOL, T], Vulkan)`
+// (see `docs/kernel-contracts/vulkan/select.fkc.md`). The mask BYTES (0/1) are
+// unchanged; `Bool` is one byte per element.
 
 #[test]
 #[ignore]
@@ -5009,7 +5017,7 @@ fn vulkan_dispatch_masked_fill_f32() {
                 .upload_bytes_handle(mask_bytes_u)
                 .expect("mask upload"),
         ),
-        DType::U8,
+        DType::Bool,
     );
     let out_bytes = backend.alloc_bytes_handle(8 * 4).expect("alloc");
     let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
@@ -5019,7 +5027,7 @@ fn vulkan_dispatch_masked_fill_f32() {
 
     let kernel = table.lookup_alternatives(
         OpKind::MaskedFill,
-        &[DType::F32, DType::U8, DType::F32],
+        &[DType::F32, DType::Bool, DType::F32],
         BackendId::Vulkan,
     )[0]
     .kernel;
@@ -5063,7 +5071,7 @@ fn vulkan_dispatch_masked_fill_bf16() {
                 .upload_bytes_handle(mask_bytes_u)
                 .expect("mask upload"),
         ),
-        DType::U8,
+        DType::Bool,
     );
     let out_bytes = backend.alloc_bytes_handle(8 * 2).expect("alloc");
     let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::BF16);
@@ -5073,7 +5081,7 @@ fn vulkan_dispatch_masked_fill_bf16() {
 
     let kernel = table.lookup_alternatives(
         OpKind::MaskedFill,
-        &[DType::BF16, DType::U8, DType::BF16],
+        &[DType::BF16, DType::Bool, DType::BF16],
         BackendId::Vulkan,
     )[0]
     .kernel;
@@ -5121,7 +5129,7 @@ fn vulkan_dispatch_masked_fill_f64() {
                 .upload_bytes_handle(mask_bytes_u)
                 .expect("mask upload"),
         ),
-        DType::U8,
+        DType::Bool,
     );
     let out_bytes = backend.alloc_bytes_handle(4 * 8).expect("alloc");
     let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F64);
@@ -5131,7 +5139,7 @@ fn vulkan_dispatch_masked_fill_f64() {
 
     let kernel = table.lookup_alternatives(
         OpKind::MaskedFill,
-        &[DType::F64, DType::U8, DType::F64],
+        &[DType::F64, DType::Bool, DType::F64],
         BackendId::Vulkan,
     )[0]
     .kernel;

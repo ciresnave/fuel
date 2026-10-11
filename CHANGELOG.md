@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.17.1 - 2026-10-11
+
+### Fixed
+
+- Tests only, no kernel change: the three Vulkan `masked_fill` live tests and the CUDA
+  indexing registration test keyed a `U8` mask after GAP-168(c) made the MaskedFill mask
+  `Bool`, so they looked up a binding that does not exist and read as a missing kernel
+  registration. Stale `U8` mask prose in the Vulkan select and CUDA indexing contracts
+  corrected.
+
 ## v0.17.0 - 2026-10-11
 
 ### Breaking
