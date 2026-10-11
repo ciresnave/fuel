@@ -11,7 +11,7 @@ provider:
 # fuel-cuda-backend — indexing / gather / scatter kernel contracts
 
 CUDA (baracuda) indexing kernels: `IndexSelect` / `Gather` (pick/gather by a `U32` index tensor),
-`MaskedFill` (fill where a `U8` mask is nonzero), and `ScatterAdd` (accumulate `src` into a `base`
+`MaskedFill` (fill where a `Bool` mask is nonzero), and `ScatterAdd` (accumulate `src` into a `base`
 copy at `U32` indices — the functional inverse of gather). Bound in `baracuda_dispatch.rs` (`mod
 indexing`) to the baracuda FFI (`fuel_cuda_backend::baracuda::indexing`). Every kernel here is a
 **per-dtype typed wrapper** — unlike the CPU indexing family's dtype-agnostic byte-copy umbrella, the
@@ -24,7 +24,7 @@ precedent, not the cast/shape synthetic-base umbrella); `ScatterAdd` is authored
 split).
 
 **The index operand is a FIXED single-dtype slot.** `IndexSelect` / `Gather` / `ScatterAdd` take a
-`U32` index tensor; `MaskedFill` takes a `U8` mask. That slot carries exactly ONE dtype in every
+`U32` index tensor; `MaskedFill` takes a `Bool` mask (GAP-168(c); `U8` before). That slot carries exactly ONE dtype in every
 section, so it is NOT an independent fan axis (the compare `U8`-mask / paged `U32` block-table
 precedent) — the fan varies only the DATA dtype and the fixed index/mask rides through unfanned.
 There is therefore no multi-axis `FanoutDtypeMismatch`; the whole family migrates. Binding keys
@@ -33,7 +33,7 @@ There is therefore no multi-axis `FanoutDtypeMismatch`; the whole family migrate
   passthrough(source)`.
 - **Gather** `[T, U32, T]` — `source` (data, fanned), `indices` (U32, fixed), `out:
   passthrough(source)`.
-- **MaskedFill** `[T, U8, T]` — `source` (data, fanned), `mask` (U8, fixed), `out:
+- **MaskedFill** `[T, Bool, T]` — `source` (data, fanned), `mask` (Bool, fixed), `out:
   passthrough(source)`.
 - **ScatterAdd** `[T, U32, T, T]` — `base` (data), `indices` (U32, fixed), `src` (data), `out:
   passthrough(base)` — accumulated (out seeded from `base`, then `+= src`).
@@ -207,14 +207,14 @@ determinism: bitwise
 
 ---
 
-## masked_fill  (MaskedFill — fill source where a U8 mask is nonzero; data-dtype fan)
+## masked_fill  (MaskedFill — fill source where a Bool mask is nonzero; data-dtype fan)
 
-Elementwise masked fill: for every position where the `U8` `mask` is nonzero, write the pre-encoded
+Elementwise masked fill: for every position where the `Bool` `mask` is nonzero, write the pre-encoded
 `fill_bytes` value; elsewhere copy `source`. `mask` shares the element count with `source` (the kernel
 reads the count from the layout); `fill_bytes` is one element's worth of the fill value, pre-encoded
 in the output dtype and carried in `OpParams::MaskedFill`. Output is the **same dtype as the source**,
 contiguous row-major, fully written. The `source` operand fans over `{F32, F64, I32}` (§3.4), so the
-importer resolves `masked_fill_<dtype>` and keys `[T, U8, T]` (the `U8` mask is the fixed index-slot
+importer resolves `masked_fill_<dtype>` and keys `[T, Bool, T]` (the `Bool` mask is the fixed index-slot
 analogue — the compare-mask precedent). Backs `OpKind::MaskedFill`.
 
 ```fkc
