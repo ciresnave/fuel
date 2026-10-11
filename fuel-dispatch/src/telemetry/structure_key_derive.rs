@@ -530,17 +530,39 @@ pub fn derive_cell_class(facts: &DeclaredFacts, operands: &[CellOperand]) -> Opt
     cell_class_in_frame(facts, operands, &frame)
 }
 
+/// §6.6-0014 canonical order: every input / in-place operand precedes every
+/// output. A violating cell is ill-formed, not "other".
+fn is_canonical_order(operands: &[CellOperand]) -> bool {
+    match operands.iter().position(|o| o.role == OperandRole::Output) {
+        Some(p) => operands[p..].iter().all(|o| o.role == OperandRole::Output),
+        None => true,
+    }
+}
+
+/// §6.5-0015 rule 4's pointwise predicate: at every iteration-frame axis every
+/// operand's extent there (its own, or 1 at an axis it does not have) is 1 or
+/// the frame extent, and every WRITTEN operand (an output, or an in-place
+/// operand) has exactly the frame extent at every axis and the iteration rank.
+fn is_pointwise(operands: &[CellOperand], frame: &[i64]) -> bool {
+    let rank = frame.len();
+    operands.iter().all(|o| {
+        let off = rank - o.desc.shape.len();
+        let extents_ok = frame.iter().enumerate().all(|(i, &f)| {
+            let e = if i < off { 1 } else { o.desc.shape[i - off] };
+            e == 1 || e == f
+        });
+        let written = matches!(o.role, OperandRole::Output | OperandRole::InPlace);
+        let written_ok = !written || o.desc.shape == frame;
+        extents_ok && written_ok
+    })
+}
+
 fn cell_class_in_frame(
     facts: &DeclaredFacts,
     operands: &[CellOperand],
     frame: &[i64],
 ) -> Option<CellClass> {
-    // §6.6-0014 canonical order: every input / in-place operand precedes every
-    // output. A violating cell is ill-formed, not "other".
-    let first_output = operands.iter().position(|o| o.role == OperandRole::Output);
-    if let Some(p) = first_output
-        && operands[p..].iter().any(|o| o.role != OperandRole::Output)
-    {
+    if !is_canonical_order(operands) {
         return None;
     }
     if let Some(slot) = facts.index_operand {
@@ -552,7 +574,6 @@ fn cell_class_in_frame(
         }
     }
 
-    let rank = frame.len();
     if facts.contraction.is_some() {
         return Some(CellClass::DenseContraction);
     }
@@ -560,30 +581,16 @@ fn cell_class_in_frame(
         return Some(CellClass::IndexedAccess);
     }
     if let Some(axes) = facts.reduced_axes
-        && axes.mask(rank) != 0
+        && axes.mask(frame.len()) != 0
     {
         return Some(CellClass::Reduction);
     }
 
-    // §6.5-0015 rule 4: pointwise iff, at every frame axis, every operand's
-    // extent there (its own, or 1 at an axis it does not have) is 1 or the
-    // frame extent, and every WRITTEN operand has exactly the frame extent at
-    // every axis and the iteration rank.
-    let pointwise = operands.iter().all(|o| {
-        let off = rank - o.desc.shape.len();
-        let extents_ok = frame.iter().enumerate().all(|(i, &f)| {
-            let e = if i < off { 1 } else { o.desc.shape[i - off] };
-            e == 1 || e == f
-        });
-        let written = matches!(o.role, OperandRole::Output | OperandRole::InPlace);
-        let written_ok = !written || (o.desc.shape.len() == rank && o.desc.shape == frame);
-        extents_ok && written_ok
-    });
     let n_inputs = operands
         .iter()
         .filter(|o| o.role != OperandRole::Output)
         .count();
-    Some(match (pointwise, n_inputs) {
+    Some(match (is_pointwise(operands, frame), n_inputs) {
         (true, 1) => CellClass::ElementwiseOne,
         (true, 2) => CellClass::ElementwiseTwo,
         (true, 3) => CellClass::ElementwiseThree,
