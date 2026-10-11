@@ -1,6 +1,13 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.15.6 - 2026-10-11
+
+### Changed
+
+- deps: tokio 1.53.2 and baracuda-cudnn-sys / baracuda-cudnn / baracuda-curand-sys alpha.84
+  (lock-only; supersedes #336 to #339). No manifest dependency or source change.
+
 ## v0.15.5 - 2026-10-09
 
 ### Fixed
