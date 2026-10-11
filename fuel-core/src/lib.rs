@@ -145,9 +145,6 @@ pub use fuel_hardware::transfer_cost;
 // crate directly (`fuel/src/lib.rs`) for any `fuel::quantized` caller.
 pub mod utils;
 
-#[cfg(feature = "cudnn")]
-pub use fuel_tensor::cuda_backend::cudnn;
-
 // `cpu_backend/mod.rs` deleted (fuel-core dissolution, Part 1 shims): zero
 // consumers via fuel_core::cpu_backend::/fuel::cpu_backend:: (module path)
 // or the root re-export below, anywhere in this repo or across 5 sibling
