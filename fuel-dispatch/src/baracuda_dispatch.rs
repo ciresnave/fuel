@@ -6638,10 +6638,13 @@ mod cast_contract_tests {
     /// regs are DELETED.
     ///
     /// IndexSelect / Gather / MaskedFill fan their DATA operand (§3.4 base
-    /// `entry_point` → `<op>_<dtype>`) with the `U32` index / `U8` mask a FIXED
+    /// `entry_point` → `<op>_<dtype>`) with the `U32` index / `Bool` mask a FIXED
     /// single-dtype slot (no fan axis), each fanned symbol resolving to its OWN
     /// per-dtype baracuda wrapper; ScatterAdd is per-dtype (entry_point AS-IS).
-    /// Keys `[T, U32, T]` / `[T, U8, T]` / `[T, U32, T, T]`. Asserts the EXACT
+    /// Keys `[T, U32, T]` / `[T, Bool, T]` / `[T, U32, T, T]`. (The MaskedFill mask
+    /// was `U8` before GAP-168(c); this test kept the `U8` key after the contract
+    /// moved to `[BOOL]`, so it asserted a binding that no longer exists. Measured:
+    /// it failed with "found 0 alternative(s)" for `[F32, U8, F32]`.) Asserts the EXACT
     /// production wrapper is bound, `kernel_source == "baracuda"` (RED while the
     /// deleted hand-written regs stamp `""`), and `caps.strided_input == false`
     /// (contiguous-only, plain-register default caps).
@@ -6651,7 +6654,8 @@ mod cast_contract_tests {
         register_baracuda_cuda_kernels(&mut table);
         let cuda = BackendId::Cuda;
         let u32 = DType::U32;
-        let u8 = DType::U8;
+        // GAP-168(c): the MaskedFill mask is Bool (the contract block says `[BOOL]`).
+        let mask = DType::Bool;
         let cases: &[(OpKind, &[DType], KernelRef)] = &[
             (
                 OpKind::IndexSelect,
@@ -6685,17 +6689,17 @@ mod cast_contract_tests {
             ),
             (
                 OpKind::MaskedFill,
-                &[DType::F32, u8, DType::F32][..],
+                &[DType::F32, mask, DType::F32][..],
                 indexing::masked_fill_f32 as KernelRef,
             ),
             (
                 OpKind::MaskedFill,
-                &[DType::F64, u8, DType::F64][..],
+                &[DType::F64, mask, DType::F64][..],
                 indexing::masked_fill_f64 as KernelRef,
             ),
             (
                 OpKind::MaskedFill,
-                &[DType::I32, u8, DType::I32][..],
+                &[DType::I32, mask, DType::I32][..],
                 indexing::masked_fill_i32 as KernelRef,
             ),
             (
