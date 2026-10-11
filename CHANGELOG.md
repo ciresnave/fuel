@@ -1,6 +1,15 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.15.7 - 2026-10-11
+
+### Changed
+
+- deps: full `cargo update` lock refresh: baracuda-* alpha.86 (alpha.81 to alpha.86 across the
+  family), 126 lock entries updated and 11 added transitively (sha2 0.11 / digest 0.11 stack).
+  Lock-only; no manifest dependency or source change. `baracuda-cuda-emit` stays on 0.11.x
+  (0.14.3 is outside the workspace `^0.11` requirement).
+
 ## v0.15.6 - 2026-10-11
 
 ### Changed
