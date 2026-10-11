@@ -48,41 +48,14 @@ use half::{bf16, f16};
 /// isn't aligned for `T`, this copies into a `Vec<T>` (whose allocator-provided memory *is*
 /// aligned for `T`) instead of casting the borrowed bytes directly.
 fn cast_and_dequant<T: GgmlType>(bytes: &[u8]) -> Vec<f32> {
-    let block_size = std::mem::size_of::<T>();
-    let n_blocks = bytes.len() / block_size;
-    let owned_blocks;
-    let blocks: &[T] = if bytes.as_ptr().align_offset(std::mem::align_of::<T>()) == 0 {
-        // SAFETY: T is #[repr(C)] (every GgmlType impl in this crate); GGUF bytes are laid out
-        // as a dense array of T structs; n_blocks is computed from bytes.len() so the slice
-        // never reads past the end of `bytes`; and this branch is guarded by `align_offset ==
-        // 0`, so `bytes.as_ptr()` is confirmed aligned for `T` right here, not assumed from the
-        // file format.
-        unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<T>(), n_blocks) }
-    } else {
-        // Misaligned: copy block-by-block into a `Vec<T>`, whose allocation IS aligned for `T`
-        // (the allocator guarantees this for any `Vec<T>`), then read through that instead of
-        // the original unaligned bytes.
-        let mut v: Vec<T> = Vec::with_capacity(n_blocks);
-        // SAFETY: `v`'s buffer holds `n_blocks` uninitialized `T`s at this point (from
-        // `with_capacity`, correctly aligned for `T` by the allocator); `bytes` has at least
-        // `n_blocks * block_size` bytes (n_blocks was computed as the floor of that division);
-        // `T` has no padding assumption here beyond what `copy_nonoverlapping` needs (a raw
-        // byte copy, not a typed one), and every field of every `BlockQX` is bit-pattern-valid
-        // for arbitrary bytes (integer/float fields, no enums or references). `set_len` follows
-        // the copy that actually initializes those bytes, so no uninitialized memory is read.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                v.as_mut_ptr().cast::<u8>(),
-                n_blocks * block_size,
-            );
-            v.set_len(n_blocks);
-        }
-        owned_blocks = v;
-        &owned_blocks
-    };
-    let mut out = vec![0.0_f32; n_blocks * T::BLCK_SIZE];
-    T::to_float(blocks, &mut out);
+    // `blocks_from_bytes_cow` borrows when `bytes` is aligned for `T` and copies
+    // into an aligned `Vec<T>` otherwise. `T: Pod` (a supertrait of `GgmlType`)
+    // makes both paths safe code, where this function used to hand-write the
+    // `from_raw_parts` / `copy_nonoverlapping` + `set_len` pair and justify
+    // each in a comment.
+    let blocks = crate::k_quants::blocks_from_bytes_cow::<T>(bytes);
+    let mut out = vec![0.0_f32; blocks.len() * T::BLCK_SIZE];
+    T::to_float(&blocks, &mut out);
     out
 }
 

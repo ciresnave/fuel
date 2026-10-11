@@ -170,8 +170,7 @@ fn quantize_in_out_to_q4_0(
     // SAFETY: BlockQ4_0 is #[repr(C)] with size_of == 18; reinterpreting
     // a contiguous slice as a packed byte stream gives the exact byte
     // representation a GGUF file would store on disk.
-    let bytes_view: &[u8] =
-        unsafe { std::slice::from_raw_parts(blocks.as_ptr() as *const u8, total_bytes) };
+    let bytes_view: &[u8] = fuel_quantized::blocks_as_bytes(&blocks);
     // The Q4_0 byte stream has 18-byte blocks; for the u32 reinterpretation
     // to be exact, the total byte length must be a multiple of 4. That
     // requires `n_blocks` to be even (since 18 mod 4 == 2). Pad with one
