@@ -1,6 +1,14 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.17.2 - 2026-10-11
+
+### Documentation
+
+- Docs only, no code change: `docs/gaps.md` GAP-351 records why dependabot #335 (`rand` 0.9 -> 0.10)
+  cannot merge. `rand_distr` is left at 0.5.1 (0.6.0 exists), and `half` 2.7.1 / `float8` 0.7.0 implement
+  sampling only against `rand` 0.9 / `rand_distr` 0.5, so `bf16`/`f16`/`F8E4M3` are not samplable under 0.10.
+
 ## v0.17.1 - 2026-10-11
 
 ### Fixed
