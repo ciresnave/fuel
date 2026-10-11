@@ -1,6 +1,14 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.16.1 - 2026-10-11
+
+### Fixed
+
+- `fuel-tensor` / `fuel-core`: the `cudnn` cfg compiles again. Removed two re-exports of
+  `cuda_backend::cudnn` (retired 2026-05-25) and five `?` in `()`-returning `cuda_executor_*`
+  tests. No public API change in any default build; no CI job compiles this cfg (#343).
+
 ## v0.16.0 - 2026-10-11
 
 ### Breaking

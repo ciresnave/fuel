@@ -4521,7 +4521,9 @@ mod tests {
     fn cuda_executor_matches_cpu_on_add_mul() {
         let a =
             Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]))?;
+        let b = a
+            .const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]))
+            .unwrap();
         let c = a.add(&b).unwrap().mul(&a).unwrap();
         let cpu_result = c.realize_f32();
         let executor = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4567,7 +4569,9 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let b = a.const_f32_like(vec![1.0, f32::NAN, 2.0, f32::NAN], Shape::from_dims(&[4]))?;
+        let b = a
+            .const_f32_like(vec![1.0, f32::NAN, 2.0, f32::NAN], Shape::from_dims(&[4]))
+            .unwrap();
 
         let max_lazy = a.maximum(&b).unwrap();
         let cpu_max = max_lazy.realize_f32();
@@ -4672,10 +4676,12 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let b = a.const_f32_like(
-            vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
-            Shape::from_dims(&[3, 2]),
-        )?;
+        let b = a
+            .const_f32_like(
+                vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+                Shape::from_dims(&[3, 2]),
+            )
+            .unwrap();
         let c = a.matmul(&b).unwrap();
         let cpu = c.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4697,10 +4703,12 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let w = x.const_f32_like(
-            (0..8).map(|i| i as f32 * 0.2).collect::<Vec<_>>(),
-            Shape::from_dims(&[4, 2]),
-        )?;
+        let w = x
+            .const_f32_like(
+                (0..8).map(|i| i as f32 * 0.2).collect::<Vec<_>>(),
+                Shape::from_dims(&[4, 2]),
+            )
+            .unwrap();
         let y = x.matmul(&w).unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4814,7 +4822,9 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]))?;
+        let b = a
+            .const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]))
+            .unwrap();
         let cat = a.concat(&b, 1).unwrap(); // [2, 4]
         let sliced = cat.slice(1, 1, 2).unwrap(); // [2, 2]
         let cpu = sliced.realize_f32();
