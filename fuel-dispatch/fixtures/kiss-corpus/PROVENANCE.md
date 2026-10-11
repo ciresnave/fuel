@@ -1,27 +1,73 @@
 # Vendored KISS conformance corpus — provenance
 
 **Source repo:** KISS (ThinkersJournal/KISS, private) — `conformance/corpus/`
-**Pinned commit:** `f4952b4c` (KISS `main`)
-**Vendored on:** 2026-09-02
-**Vendored by:** fuel GAP-236 Step 0 (re-vendor + loader extension)
+**Pinned commit:** **per file** — see the table. Two files are pinned at KISS
+`5b28bf51` (sk5 / `contract_version` 3, conformance 0.2.1, vendored 2026-10-11);
+the other four are still at `f4952b4c` (2026-09-02). Three of those four have
+the same blob at `5b28bf51`; `op_manifest.json` does not, and was deliberately
+left at `f4952b4c` (see below).
+**Vendored by:** fuel GAP-236 Step 0 (re-vendor + loader extension, 2026-09-02);
+the sk5 deriver binding (2026-10-11) re-vendored the two files marked below.
 **Supersedes:** the `c9153b2` pin of 2026-07-23 (2 files)
 
 ## Files (copied verbatim — DO NOT EDIT)
 
-| file | KISS blob (`git ls-tree f4952b4c conformance/corpus/`) | schema |
-|------|-------------------------------------------------------|--------|
-| `op_manifest.json` | `9c7176ed4c16e34844f01abd826b0c9a74a6c461` | `kiss-op-manifest-v1` |
-| `ops-arith.json` | `aee2de79a709e722f3c439047bf90c638aec9b24` | `kiss-oracle-vectors-v1.json` |
-| `ops-minmax-ordinary.json` | `7bd6cc394bd247f9ca34edfc957d70a37432af97` | `kiss-oracle-vectors-v1.json` |
-| `ops-minmax-signed-zero.json` | `d06bdb85c8e626750318b61585b4af3ea5c8d4b4` | `kiss-oracle-vectors-v1.json` |
-| `dtype_manifest.json` | `f49641070f3cda0871d9793c68e2b0e847650425` | `kiss-dtype-manifest` |
-| `structure_key_vectors.json` | `fd08f7f2dc6a6f3ee441447ac50e84d01cfd1d0a` | `kiss-structure-key-vectors` |
+| file | pinned at | KISS blob (`git ls-tree <pin> conformance/corpus/`) | schema |
+|------|-----------|-------------------------------------------------------|--------|
+| `op_manifest.json` | `f4952b4c` | `9c7176ed4c16e34844f01abd826b0c9a74a6c461` | `kiss-op-manifest-v1` |
+| `ops-arith.json` | `f4952b4c` (same blob at `5b28bf51`) | `aee2de79a709e722f3c439047bf90c638aec9b24` | `kiss-oracle-vectors-v1.json` |
+| `ops-minmax-ordinary.json` | `f4952b4c` (same blob at `5b28bf51`) | `7bd6cc394bd247f9ca34edfc957d70a37432af97` | `kiss-oracle-vectors-v1.json` |
+| `ops-minmax-signed-zero.json` | `f4952b4c` (same blob at `5b28bf51`) | `d06bdb85c8e626750318b61585b4af3ea5c8d4b4` | `kiss-oracle-vectors-v1.json` |
+| `dtype_manifest.json` | **`5b28bf51`** (same blob at `a33282c`) | `24ff38f068aa18be723c07d307c86ae572c1333f` | `kiss-dtype-manifest` |
+| `structure_key_vectors.json` | **`5b28bf51`** | `e5eec85c82754f030f1ee2f0ab4bf7829fa7e5d2` | `kiss-structure-key-vectors` |
 
-Blob hashes were verified by computing `git hash-object` on each vendored file
-and matching the value the KISS API reported for that path at `f4952b4c`. The
+Blob hashes were verified by computing `git hash-object --no-filters` on each
+vendored file and matching the value `git rev-parse <pin>:conformance/corpus/<file>`
+reports in the KISS checkout (positive control: the unchanged `ops-arith.json`
+hashes to the same blob at both pins). For the two `5b28bf51` files the bytes were
+taken with `git show 5b28bf51:<path>` (a commit object, never the working tree).
+The `f4952b4c` files were read through the GitHub API at the pinned SHA rather
+than from the local KISS checkout, whose `origin/main` was stale (`9d36c0a` vs
+the true tip `f4952b4c`) — and fetching in a shared checkout moves refs under
+other lanes. The
 files were read through the GitHub API at the pinned SHA rather than from the
 local KISS checkout, whose `origin/main` was stale (`9d36c0a` vs the true tip
 `f4952b4c`) — and fetching in a shared checkout moves refs under other lanes.
+
+## The sk5 re-vendor (2026-10-11): sk4 -> sk5, `contract_version` 3, at `5b28bf51`
+
+KISS `a33282c` ("derive a 7-class cell_class, drop the 24 op-family codes (#263
+ruling D) + dequant_form + extent-1 mask + math_fidelity (#535)") is one schema
+event on two axes. **The pin is its follow-up `5b28bf51` (#536)**, not
+`a33282c`: at `a33282c` seven reduction vectors still spelled the keepdim
+OUTPUT broadcast mask `00` although KISS's own `derive_bcast_mask_in_frame`
+derives the bit (`[4,1]` in a `[4,8]` frame is `0b10`); Fuel reported that, and
+#536 regenerated them as `02`/`03`/`01`/`0a` (plus the two decline vectors that
+embed those sub-keys). `a33282c` is the commit that CHANGED the schema; it is
+not a vendorable corpus. What the event changes in the two files re-vendored here:
+
+- `structure_key_vectors.json`: `token_prefix` `sk4` -> `sk5`,
+  `structure_key_schema_version` 4 -> 5; field 1 is the derived `cell_class`
+  (`ctr ndx rdc ew1 ew2 ew3 oth`), not one of 24 op-family codes; positives
+  21 -> 26, declines 17 -> 21, `usable_count` 22 -> 21 (`f8e6m2` moved from
+  usable to **reserved**, KISS #517); a new `target_match_vectors` axis (8
+  rows, §6.8-0002) that the deriver does not exercise.
+- `dtype_manifest.json`: `f8e6m2` is now in the `reserved` column.
+
+⚠️ **`source_commit` inside `structure_key_vectors.json` is still `19c3ad7`** —
+KISS's own hand-written stamp (KISS #218), unchanged by this event. It is NOT
+the pin of this vendoring; the table above is. The leg's own provenance test
+asserts both so a swap of either cannot pass quietly.
+
+**Left at `f4952b4c` on purpose:** `op_manifest.json` differs at `a33282c`
+(blob `f656b625…`), but nothing in the structure-key deriver reads it; moving it
+would change `kiss_corpus.rs`'s inputs, which is a different change with a
+different gate. Likewise the six NEW corpus files at `a33282c`
+(`announce_vectors`, `contract_vectors`, `grammar_vectors`, `opattrs_vectors`,
+`ops-narrow-*-nan`, `ops-transcendental-nan`) are **not** vendored here and
+have **not been read** for this change: whether they close the NaN-vector ask in
+the "does not cover" section below is unmeasured, and adopting them is its own
+change with its own gate.
 
 ## Drift since the `c9153b2` pin — smaller than "six weeks stale" suggests
 

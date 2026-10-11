@@ -659,13 +659,13 @@ jobs:
         if: always() && runner.os == 'Linux'
         # `cargo test --workspace` above uses DEFAULT features, so the
         # telemetry-gated tests — notably
-        # `fuel_emits_only_recognized_sk4_dtype_spellings` — BUILD but never RUN
+        # `fuel_emits_only_recognized_sk5_dtype_spellings` — BUILD but never RUN
         # there. Compiling telemetry-gated code proves it BUILDS, never that its
         # assertions HOLD: "the feature is compiled" (the Check job's
         # `check -p fuel-dispatch --features telemetry --all-targets`, which we
         # KEEP — it compiles benches/examples this step does not) and "the
         # feature's tests ran" are DIFFERENT claims, and only the second catches
-        # `FUEL_SK4_SPELLINGS` drifting. That is exactly how a red sk4 spelling
+        # `FUEL_SK5_SPELLINGS` drifting. That is exactly how a red sk4 spelling
         # test reached main (the Bool cut was gated with `--lib`, which does not
         # build `tests/`). This step makes the second claim; the test is
         # OS-independent so one platform suffices. It ALSO fails on a ZERO test
@@ -688,8 +688,8 @@ jobs:
           # lib's number alone — the exact drift this step exists to catch, one
           # level in. So also require the specific test by name. A legitimate
           # RENAME of the test is a valid reason to update this line.
-          grep -q 'fuel_emits_only_recognized_sk4_dtype_spellings' "$out" \
-            || { echo '::error::the sk4 byte-match test (fuel_emits_only_recognized_sk4_dtype_spellings) did not run — its integration target was gated away, renamed, or excluded. If it was RENAMED, update this grep; otherwise re-enable the target. See GAP-173.'; exit 1; }
+          grep -q 'fuel_emits_only_recognized_sk5_dtype_spellings' "$out" \
+            || { echo '::error::the sk5 byte-match test (fuel_emits_only_recognized_sk5_dtype_spellings) did not run — its integration target was gated away, renamed, or excluded. If it was RENAMED, update this grep; otherwise re-enable the target. See GAP-173.'; exit 1; }
       - name: Run dlpack-gated fuel-ir tests (GAP-299; FDX wire codec)
         # SAME SHAPE AS THE TELEMETRY STEP ABOVE, one crate over, for the same
         # reason. `cargo test --workspace` uses DEFAULT features and fuel-ir's
