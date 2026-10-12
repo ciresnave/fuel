@@ -1,6 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.17.3 - 2026-10-12
+
+### Documentation
+
+- Docs only, no code change: the remaining stale `U8` mask wording left after GAP-168(c) made the
+  comparison output, the Where condition and the MaskedFill mask `Bool` is corrected in
+  `cuda/indexing.fkc.md`, `dispatch/elementwise-binary.fkc.md` (comparison family and Where) and
+  `cpu/shape-ops.fkc.md` (masked_fill). Prose, blurbs and a binding-key note only; each block's
+  machine-readable `dtype_rule`/`dtypes` already said `Bool`, and `blurb` is not an input to
+  `kernel_revision_hash`.
+
 ## v0.17.2 - 2026-10-11
 
 ### Documentation

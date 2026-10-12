@@ -717,13 +717,13 @@ determinism: bitwise
 
 ---
 
-## masked_fill  (write a fill value where a U8 mask is set)
+## masked_fill  (write a fill value where a Bool mask is set)
 
 Where the mask is non-zero, write a fixed `fill` value; elsewhere copy the input.
 
 `masked_fill_cpu` (`byte_kernels.rs:1148`) walks `count = input.len_bytes() / dtype_size` elements:
 where `mask[i] != 0` it writes `fill_bytes` (one element's worth of dtype bytes), else it copies the
-input element. The **mask is U8, one byte per element** (validated `mask.len == count`, i.e. element
+input element. The **mask is `Bool` (GAP-168(c)), one byte per element** (validated `mask.len == count`, i.e. element
 count, not byte count); `fill_bytes.len()` must equal `dtype_size`; input and output byte lengths must
 match. **Dtype-agnostic** for the data (the fill value arrives pre-encoded as `dtype_size` bytes).
 Pure select-and-copy — bit-exact, deterministic. No broadcasting (mask, input, output all have the
@@ -732,7 +732,7 @@ same element count). Perf: bandwidth-bound, output fully written once.
 ```fkc
 kernel: masked_fill
 op_kind: MaskedFill
-blurb: "Write a fixed fill value where a U8 mask is set, else copy input; dtype-agnostic data, U8 mask."
+blurb: "Write a fixed fill value where a Bool mask is set, else copy input; dtype-agnostic data, Bool mask."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::masked_fill_cpu"
@@ -743,7 +743,7 @@ accept:
     - name: input
       # Byte-dtype-agnostic data; REGISTRATION trimmed to the 6 production dtypes.
       # `input` is the sole varying operand, so it drives the fan; `mask` stays the
-      # fixed Bool slot (GAP-168(c); byte-identical to U8) and `out` is
+      # fixed Bool slot (GAP-168(c); byte-identical to the former U8) and `out` is
       # passthrough(input) — key `[T, Bool, T]` per dtype,
       # ALL → `masked_fill_cpu_wrapper`. Matches the deleted
       # `table.register(MaskedFill, &masked_dtypes(t), …)` regs.

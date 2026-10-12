@@ -54,7 +54,7 @@ per-`(op, dtype)` wrapper for the representative dtype and the link registry res
   has **no** Pow / Rem / comparison / Where wrapper in this crate.
 - **Output: pre-allocated, fully overwritten, not in-place.** The executor pre-allocates the
   output Storage; no kernel allocates. Output dtype follows the per-op `dtype_rule` (arithmetic /
-  extrema / Pow / Rem → same dtype as inputs; comparisons → U8; Where → the a/b dtype T). Output
+  extrema / Pow / Rem → same dtype as inputs; comparisons → Bool; Where → the a/b dtype T). Output
   shape is the broadcast of the inputs (realized by auto-Contiguize on CPU, by stride-0 on the
   strided GPU paths). No operand aliases the output.
 
@@ -64,8 +64,8 @@ the op, the cost block carries the **formula hints** an elementwise kernel admit
 bandwidth-bound, touching `n` output elements while reading the inputs and writing the output, with
 one scalar op per element (`flops ≈ n`). For a two-input arithmetic/extremum/Pow/Rem op
 `bytes_moved ≈ 3 · n · dtype_bytes` (read lhs + rhs, write out); for a comparison
-`bytes_moved ≈ 2 · n · dtype_bytes + n · 1` (read two T inputs, write a U8 mask); for Where
-`bytes_moved ≈ n · 1 + 3 · n · dtype_bytes` (read the U8 cond + a + b, write out). These hints are
+`bytes_moved ≈ 2 · n · dtype_bytes + n · 1` (read two T inputs, write a Bool mask); for Where
+`bytes_moved ≈ n · 1 + 3 · n · dtype_bytes` (read the Bool cond + a + b, write out). These hints are
 structural facts of the loop, not fabricated coefficients; launch overhead and absolute timing are
 left for the Judge to populate (no placeholder numbers). `dtype_bytes` is the byte width of the
 arithmetic dtype T (F32→4, F64→8, BF16→2, F16→2).
@@ -1559,13 +1559,13 @@ determinism: same_hardware_bitwise
 
 ---
 
-## equal_elementwise  (EqualElementwise — out = (lhs == rhs) ? 1 : 0, U8 mask, broadcast)
+## equal_elementwise  (EqualElementwise — out = (lhs == rhs) ? 1 : 0, Bool mask, broadcast)
 
-Elementwise equality predicate producing a U8 mask; CPU only.
+Elementwise equality predicate producing a Bool mask; CPU only.
 
 `EqualElementwise` is registered on CPU only (`eq_elementwise_f32_cpu_wrapper` and f64/bf16/f16
-siblings, `dispatch.rs:4271`); the binding-table dtype key is `[T, T, U8]` (two T inputs, a U8
-output). Output dtype is **always U8** (1 byte/element) regardless of input T: `1` where
+siblings, `dispatch.rs:4271`); the binding-table dtype key is `[T, T, Bool]` (two T inputs, a Bool
+output). Output dtype is **always Bool** (1 byte/element) regardless of input T: `1` where
 `lhs == rhs`, `0` otherwise. Output shape = broadcast of the inputs; not in-place. No CUDA or Vulkan
 registration for the comparison family in this crate. Comparison uses the IEEE `==` (NaN compares
 unequal to everything, including itself).
@@ -1573,7 +1573,7 @@ unequal to everything, including itself).
 ```fkc
 kernel: equal_elementwise_cpu
 op_kind: EqualElementwise
-blurb: "Elementwise equality out=(lhs==rhs)?1:0 producing a U8 mask (broadcast); CPU only."
+blurb: "Elementwise equality out=(lhs==rhs)?1:0 producing a Bool mask (broadcast); CPU only."
 backend: Cpu
 kernel_source: "dispatch-cpu"
 entry_point: "fuel_dispatch::dispatch::eq_elementwise_f32_cpu_wrapper"
@@ -1613,7 +1613,7 @@ cost:
   provenance: judge_measured
   class: cheap_elementwise
   flops: "n"                            # one compare per output element
-  bytes_moved: "2 * n * dtype_bytes + n"  # read two T inputs, write n bytes of U8 mask
+  bytes_moved: "2 * n * dtype_bytes + n"  # read two T inputs, write n bytes of Bool mask
   memory: { device_bytes: 0, host_bytes: "n", disk_bytes: 0 }
 
 precision:
@@ -1622,26 +1622,26 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact boolean predicate; output is an exact 0/1 U8 mask. IEEE == (NaN != NaN). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
+  notes: "Exact boolean predicate; output is an exact 0/1 Bool mask. IEEE == (NaN != NaN). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
 
 ---
 
-## not_equal_elementwise  (NotEqualElementwise — out = (lhs != rhs) ? 1 : 0, U8 mask, broadcast)
+## not_equal_elementwise  (NotEqualElementwise — out = (lhs != rhs) ? 1 : 0, Bool mask, broadcast)
 
-Elementwise inequality predicate producing a U8 mask; CPU only.
+Elementwise inequality predicate producing a Bool mask; CPU only.
 
 `NotEqualElementwise` is registered on CPU only (`ne_elementwise_f32_cpu_wrapper` and f64/bf16/f16
-siblings, `dispatch.rs:4276`); key `[T, T, U8]`. Output dtype always U8: `1` where `lhs != rhs`,
+siblings, `dispatch.rs:4276`); key `[T, T, Bool]`. Output dtype always Bool: `1` where `lhs != rhs`,
 `0` otherwise. Broadcast shape; not in-place. IEEE `!=` (NaN compares unequal to everything, so
 `NaN != NaN` is true). No CUDA / Vulkan registration.
 
 ```fkc
 kernel: not_equal_elementwise_cpu
 op_kind: NotEqualElementwise
-blurb: "Elementwise inequality out=(lhs!=rhs)?1:0 producing a U8 mask (broadcast); CPU only."
+blurb: "Elementwise inequality out=(lhs!=rhs)?1:0 producing a Bool mask (broadcast); CPU only."
 backend: Cpu
 kernel_source: "dispatch-cpu"
 entry_point: "fuel_dispatch::dispatch::ne_elementwise_f32_cpu_wrapper"
@@ -1690,26 +1690,26 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact boolean predicate; 0/1 U8 mask. IEEE != (NaN != NaN is true). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
+  notes: "Exact boolean predicate; 0/1 Bool mask. IEEE != (NaN != NaN is true). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
 
 ---
 
-## less_elementwise  (LessElementwise — out = (lhs < rhs) ? 1 : 0, U8 mask, broadcast)
+## less_elementwise  (LessElementwise — out = (lhs < rhs) ? 1 : 0, Bool mask, broadcast)
 
-Elementwise less-than predicate producing a U8 mask; CPU only.
+Elementwise less-than predicate producing a Bool mask; CPU only.
 
 `LessElementwise` is registered on CPU only (`lt_elementwise_f32_cpu_wrapper` and f64/bf16/f16
-siblings, `dispatch.rs:4281`); key `[T, T, U8]`. Output dtype always U8: `1` where `lhs < rhs`, `0`
+siblings, `dispatch.rs:4281`); key `[T, T, Bool]`. Output dtype always Bool: `1` where `lhs < rhs`, `0`
 otherwise. Broadcast shape; not in-place. IEEE ordering (any comparison involving NaN is false). No
 CUDA / Vulkan registration.
 
 ```fkc
 kernel: less_elementwise_cpu
 op_kind: LessElementwise
-blurb: "Elementwise less-than out=(lhs<rhs)?1:0 producing a U8 mask (broadcast); CPU only."
+blurb: "Elementwise less-than out=(lhs<rhs)?1:0 producing a Bool mask (broadcast); CPU only."
 backend: Cpu
 kernel_source: "dispatch-cpu"
 entry_point: "fuel_dispatch::dispatch::lt_elementwise_f32_cpu_wrapper"
@@ -1758,26 +1758,26 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact boolean predicate; 0/1 U8 mask. IEEE < (any NaN comparison is false). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
+  notes: "Exact boolean predicate; 0/1 Bool mask. IEEE < (any NaN comparison is false). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
 
 ---
 
-## less_equal_elementwise  (LessEqualElementwise — out = (lhs <= rhs) ? 1 : 0, U8 mask, broadcast)
+## less_equal_elementwise  (LessEqualElementwise — out = (lhs <= rhs) ? 1 : 0, Bool mask, broadcast)
 
-Elementwise less-than-or-equal predicate producing a U8 mask; CPU only.
+Elementwise less-than-or-equal predicate producing a Bool mask; CPU only.
 
 `LessEqualElementwise` is registered on CPU only (`le_elementwise_f32_cpu_wrapper` and f64/bf16/f16
-siblings, `dispatch.rs:4286`); key `[T, T, U8]`. Output dtype always U8: `1` where `lhs <= rhs`,
+siblings, `dispatch.rs:4286`); key `[T, T, Bool]`. Output dtype always Bool: `1` where `lhs <= rhs`,
 `0` otherwise. Broadcast shape; not in-place. IEEE ordering (NaN comparisons false). No CUDA /
 Vulkan registration.
 
 ```fkc
 kernel: less_equal_elementwise_cpu
 op_kind: LessEqualElementwise
-blurb: "Elementwise less-or-equal out=(lhs<=rhs)?1:0 producing a U8 mask (broadcast); CPU only."
+blurb: "Elementwise less-or-equal out=(lhs<=rhs)?1:0 producing a Bool mask (broadcast); CPU only."
 backend: Cpu
 kernel_source: "dispatch-cpu"
 entry_point: "fuel_dispatch::dispatch::le_elementwise_f32_cpu_wrapper"
@@ -1826,26 +1826,26 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact boolean predicate; 0/1 U8 mask. IEEE <= (any NaN comparison is false). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
+  notes: "Exact boolean predicate; 0/1 Bool mask. IEEE <= (any NaN comparison is false). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
 
 ---
 
-## greater_elementwise  (GreaterElementwise — out = (lhs > rhs) ? 1 : 0, U8 mask, broadcast)
+## greater_elementwise  (GreaterElementwise — out = (lhs > rhs) ? 1 : 0, Bool mask, broadcast)
 
-Elementwise greater-than predicate producing a U8 mask; CPU only.
+Elementwise greater-than predicate producing a Bool mask; CPU only.
 
 `GreaterElementwise` is registered on CPU only (`gt_elementwise_f32_cpu_wrapper` and f64/bf16/f16
-siblings, `dispatch.rs:4291`); key `[T, T, U8]`. Output dtype always U8: `1` where `lhs > rhs`, `0`
+siblings, `dispatch.rs:4291`); key `[T, T, Bool]`. Output dtype always Bool: `1` where `lhs > rhs`, `0`
 otherwise. Broadcast shape; not in-place. IEEE ordering (NaN comparisons false). No CUDA / Vulkan
 registration.
 
 ```fkc
 kernel: greater_elementwise_cpu
 op_kind: GreaterElementwise
-blurb: "Elementwise greater-than out=(lhs>rhs)?1:0 producing a U8 mask (broadcast); CPU only."
+blurb: "Elementwise greater-than out=(lhs>rhs)?1:0 producing a Bool mask (broadcast); CPU only."
 backend: Cpu
 kernel_source: "dispatch-cpu"
 entry_point: "fuel_dispatch::dispatch::gt_elementwise_f32_cpu_wrapper"
@@ -1894,26 +1894,26 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact boolean predicate; 0/1 U8 mask. IEEE > (any NaN comparison is false). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
+  notes: "Exact boolean predicate; 0/1 Bool mask. IEEE > (any NaN comparison is false). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
 
 ---
 
-## greater_equal_elementwise  (GreaterEqualElementwise — out = (lhs >= rhs) ? 1 : 0, U8 mask, broadcast)
+## greater_equal_elementwise  (GreaterEqualElementwise — out = (lhs >= rhs) ? 1 : 0, Bool mask, broadcast)
 
-Elementwise greater-than-or-equal predicate producing a U8 mask; CPU only.
+Elementwise greater-than-or-equal predicate producing a Bool mask; CPU only.
 
 `GreaterEqualElementwise` is registered on CPU only (`ge_elementwise_f32_cpu_wrapper` and
-f64/bf16/f16 siblings, `dispatch.rs:4296`); key `[T, T, U8]`. Output dtype always U8: `1` where
+f64/bf16/f16 siblings, `dispatch.rs:4296`); key `[T, T, Bool]`. Output dtype always Bool: `1` where
 `lhs >= rhs`, `0` otherwise. Broadcast shape; not in-place. IEEE ordering (NaN comparisons false).
 No CUDA / Vulkan registration.
 
 ```fkc
 kernel: greater_equal_elementwise_cpu
 op_kind: GreaterEqualElementwise
-blurb: "Elementwise greater-or-equal out=(lhs>=rhs)?1:0 producing a U8 mask (broadcast); CPU only."
+blurb: "Elementwise greater-or-equal out=(lhs>=rhs)?1:0 producing a Bool mask (broadcast); CPU only."
 backend: Cpu
 kernel_source: "dispatch-cpu"
 entry_point: "fuel_dispatch::dispatch::ge_elementwise_f32_cpu_wrapper"
@@ -1962,7 +1962,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact boolean predicate; 0/1 U8 mask. IEEE >= (any NaN comparison is false). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
+  notes: "Exact boolean predicate; 0/1 Bool mask. IEEE >= (any NaN comparison is false). bf16/f16 compared via their f32 value. Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1971,20 +1971,20 @@ determinism: same_hardware_bitwise
 
 ## where_select  (Where — out = cond ? a : b, ternary select, broadcast)
 
-Ternary select `out = cond ? a : b`: a U8 condition mask selects between two same-dtype tensors;
+Ternary select `out = cond ? a : b`: a Bool condition mask selects between two same-dtype tensors;
 CPU only.
 
 `Where` is registered on CPU only (`where_f32_cpu_wrapper` and f64/bf16/f16 siblings,
-`dispatch.rs:4304`). The binding-table dtype key is `[U8, T, T, T]` = `(cond, a, b, out)` — three
-input operands plus the output. The wrapper validates `cond.dtype == U8` (`dispatch.rs:483`); where
+`dispatch.rs:4304`). The binding-table dtype key is `[Bool, T, T, T]` = `(cond, a, b, out)` — three
+input operands plus the output. The wrapper validates `cond.dtype == Bool`; where
 the condition byte is non-zero the corresponding `a` element is selected, else `b`. Output dtype =
-the a/b dtype T (NOT U8); output shape = broadcast of the three inputs; not in-place. No CUDA /
+the a/b dtype T (NOT Bool); output shape = broadcast of the three inputs; not in-place. No CUDA /
 Vulkan registration for Where in this crate.
 
 ```fkc
 kernel: where_select_cpu
 op_kind: Where
-blurb: "Ternary select out=cond?a:b with a U8 condition mask (broadcast); CPU only."
+blurb: "Ternary select out=cond?a:b with a Bool condition mask (broadcast); CPU only."
 backend: Cpu
 kernel_source: "dispatch-cpu"
 entry_point: "fuel_dispatch::dispatch::where_f32_cpu_wrapper"
