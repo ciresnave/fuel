@@ -25,7 +25,7 @@ split).
 
 **The index operand is a FIXED single-dtype slot.** `IndexSelect` / `Gather` / `ScatterAdd` take a
 `U32` index tensor; `MaskedFill` takes a `Bool` mask (GAP-168(c); `U8` before). That slot carries exactly ONE dtype in every
-section, so it is NOT an independent fan axis (the compare `U8`-mask / paged `U32` block-table
+section, so it is NOT an independent fan axis (the compare `Bool`-mask / paged `U32` block-table
 precedent) — the fan varies only the DATA dtype and the fixed index/mask rides through unfanned.
 There is therefore no multi-axis `FanoutDtypeMismatch`; the whole family migrates. Binding keys
 (inputs then output, §3.2):
@@ -220,7 +220,7 @@ analogue — the compare-mask precedent). Backs `OpKind::MaskedFill`.
 ```fkc
 kernel: masked_fill
 op_kind: MaskedFill
-blurb: "Fill source where a U8 mask is nonzero (CUDA/baracuda) {F32, F64, I32}; contiguous; per-(op,dtype)."
+blurb: "Fill source where a Bool mask is nonzero (CUDA/baracuda) {F32, F64, I32}; contiguous; per-(op,dtype)."
 backend: Cuda
 kernel_source: "baracuda"
 entry_point: "fuel_cuda_backend::fkc::masked_fill"
