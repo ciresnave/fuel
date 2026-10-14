@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuel × KISS `structure_key` **derivation** vectors: Fuel's sk5 deriver
-//! against the 32 cell-carrying vectors in
+//! against the 33 cell-carrying vectors in
 //! `fixtures/kiss-corpus/structure_key_derivation_vectors.json`.
 //!
-//! **Provenance (a recorded stamp, not an enforced check):** KISS `0af5d3b6`
-//! (conformance 0.2.8), `conformance/corpus/structure_key_derivation_vectors.json`,
-//! blob `86c1f3bee8b452ac84ea1794d6f14a5c6d75fc68`, 22455 bytes, vendored
-//! 2026-10-14 with `git show 0af5d3b6:<path>` (a commit object, never a working
-//! tree) and matched against `git rev-parse 0af5d3b6:<path>`. The schema
+//! **Provenance (a recorded stamp, not an enforced check):** KISS `ae16d2a7`
+//! (conformance 0.2.11), `conformance/corpus/structure_key_derivation_vectors.json`,
+//! blob `299811b1836b9344b4a6379c01c815237baed9cb`, 23709 bytes, vendored
+//! 2026-10-14 with `git show ae16d2a7:<path>` (a commit object, never a working
+//! tree) and matched against `git rev-parse ae16d2a7:<path>`. It REPLACES the
+//! `0af5d3b6` copy (blob `86c1f3be`, 32 vectors), which KISS corrected after this
+//! deriver's table: `decline_reserved_dtype` moved the reserved dtype to operand 0
+//! and `reserved_dtype_at_non_primary_operand_derives` was added (KISS ruled a
+//! non-primary operand's dtype is not a key position). The schema
 //! version and the vector count are asserted below; the bytes are not hashed.
 //!
 //! Unlike `kiss_structure_key_byte_match.rs` (whose cells are hand-built Rust
@@ -114,6 +118,100 @@ struct Built {
     acc_mp: Option<AccMp>,
 }
 
+/// The `shape`/`strides` of one operand, from the vector's JSON arrays.
+fn layout_of(o: &serde_json::Value) -> Result<Layout, String> {
+    let extents: Vec<usize> = o["extents"]
+        .as_array()
+        .ok_or("extents")?
+        .iter()
+        .map(|x| x.as_u64().unwrap() as usize)
+        .collect();
+    let strides: Vec<isize> = o["strides"]
+        .as_array()
+        .ok_or("strides")?
+        .iter()
+        .map(|x| x.as_i64().unwrap() as isize)
+        .collect();
+    Ok(Layout::new(
+        Shape::from_dims(&extents),
+        strides.into_iter().collect(),
+        0,
+    ))
+}
+
+/// One operand of a vector, as Fuel's `CellOperand`.
+fn operand_of(o: &serde_json::Value) -> Result<CellOperand, String> {
+    let dtok = o["dtype"].as_str().ok_or("operand dtype")?;
+    let dtype = dtype_of(dtok)
+        .ok_or_else(|| format!("no Fuel DType for `{dtok}` (GAP-097 absent surface)"))?;
+    let mut desc = FdxOperandDesc::from_layout(&layout_of(o)?, dtype);
+    // The vector states the base alignment outright; `from_layout` would model
+    // 256 for offset 0, which is the only thing it cannot be told.
+    desc.align_bytes = o["alignment"].as_u64().ok_or("alignment")? as u32;
+    let cell = match o["use"].as_str().ok_or("use")? {
+        "in" => CellOperand::input(desc),
+        "out" => CellOperand::output(desc),
+        "inout" => CellOperand::in_place(desc),
+        other => return Err(format!("unknown operand use `{other}`")),
+    };
+    match o["dequant_form"].as_str() {
+        None => Ok(cell),
+        Some("dl" | "linear") => Ok(cell.with_dequant_form(DequantForm::Linear)),
+        Some("dc" | "codebook") => Ok(cell.with_dequant_form(DequantForm::Codebook)),
+        Some(other) => Err(format!("unknown dequant_form `{other}`")),
+    }
+}
+
+/// The declared reduced axes as Fuel's `Keepdim` bitmask (bit `d` = frame axis `d`).
+fn reduce_axes_of(v: &serde_json::Value) -> Result<Option<ReduceAxes>, String> {
+    let axes = v["reduced_axes"].as_array().ok_or("reduced_axes")?;
+    if axes.is_empty() {
+        return Ok(None);
+    }
+    let mut mask: u32 = 0;
+    for a in axes {
+        let bit = a.as_u64().ok_or("axis")? as u32;
+        // An axis past the mask width cannot be stated at all.
+        if bit >= 8 {
+            return Err(format!("reduced axis {bit} does not fit Fuel's u8 mask"));
+        }
+        mask |= 1 << bit;
+    }
+    Ok(Some(ReduceAxes::Keepdim(mask as u8)))
+}
+
+/// §6.6-0014 stable partition (everything that is not an output, then outputs),
+/// returning the new order and the index slot mapped through it.
+fn canonicalized(
+    cells: Vec<(usize, CellOperand)>,
+    index: Option<usize>,
+) -> (Vec<(usize, CellOperand)>, Option<usize>) {
+    use fuel_dispatch::telemetry::structure_key_derive::OperandRole;
+    let (mut front, back): (Vec<_>, Vec<_>) = cells
+        .into_iter()
+        .partition(|(_, c)| c.role != OperandRole::Output);
+    front.extend(back);
+    let index = index.and_then(|slot| front.iter().position(|(call, _)| *call == slot));
+    (front, index)
+}
+
+/// The `(acc + mp)` coordinate: accumulator null = the compute dtype.
+fn acc_mp_of(v: &serde_json::Value, compute: DType) -> Result<AccMp, String> {
+    let math_precision = match v["math_fidelity"].as_str().ok_or("math_fidelity")? {
+        "st" => GemMathPrecision::BitStable,
+        "rm" => GemMathPrecision::ReducedMantissa,
+        other => return Err(format!("unknown math_fidelity `{other}`")),
+    };
+    let acc_dtype = match v["accumulator"].as_str() {
+        None => compute,
+        Some(t) => dtype_of(t).ok_or_else(|| format!("no Fuel DType for accumulator `{t}`"))?,
+    };
+    Ok(AccMp {
+        acc_dtype,
+        math_precision,
+    })
+}
+
 /// Build Fuel's cell from one vector. `canonicalize` applies the §6.6-0014
 /// stable partition and maps the call-order index slot through it.
 fn build(v: &serde_json::Value, canonicalize: bool) -> Result<Built, String> {
@@ -127,95 +225,27 @@ fn build(v: &serde_json::Value, canonicalize: bool) -> Result<Built, String> {
     let ops = v["operands"].as_array().ok_or("no operands")?;
     let mut cells: Vec<(usize, CellOperand)> = Vec::new();
     for (call_idx, o) in ops.iter().enumerate() {
-        let dtok = o["dtype"].as_str().ok_or("operand dtype")?;
-        let dtype = dtype_of(dtok)
-            .ok_or_else(|| format!("no Fuel DType for `{dtok}` (GAP-097 absent surface)"))?;
-        let extents: Vec<usize> = o["extents"]
-            .as_array()
-            .ok_or("extents")?
-            .iter()
-            .map(|x| x.as_u64().unwrap() as usize)
-            .collect();
-        let strides: Vec<isize> = o["strides"]
-            .as_array()
-            .ok_or("strides")?
-            .iter()
-            .map(|x| x.as_i64().unwrap() as isize)
-            .collect();
-        let layout = Layout::new(Shape::from_dims(&extents), strides.into_iter().collect(), 0);
-        let mut desc = FdxOperandDesc::from_layout(&layout, dtype);
-        // The vector states the base alignment outright; `from_layout` would
-        // model 256 for offset 0, which is the only thing it cannot be told.
-        desc.align_bytes = o["alignment"].as_u64().ok_or("alignment")? as u32;
-        let mut cell = match o["use"].as_str().ok_or("use")? {
-            "in" => CellOperand::input(desc),
-            "out" => CellOperand::output(desc),
-            "inout" => CellOperand::in_place(desc),
-            other => return Err(format!("unknown operand use `{other}`")),
-        };
-        if let Some(f) = o["dequant_form"].as_str() {
-            cell = cell.with_dequant_form(match f {
-                "dl" | "linear" => DequantForm::Linear,
-                "dc" | "codebook" => DequantForm::Codebook,
-                other => return Err(format!("unknown dequant_form `{other}`")),
-            });
-        }
-        cells.push((call_idx, cell));
+        cells.push((call_idx, operand_of(o)?));
     }
-
     let mut index = v["index_operand"].as_u64().map(|x| x as usize);
     if canonicalize {
-        // stable partition: everything that is not an output, then outputs.
-        let (mut front, back): (Vec<_>, Vec<_>) = cells.into_iter().partition(|(_, c)| {
-            c.role != fuel_dispatch::telemetry::structure_key_derive::OperandRole::Output
-        });
-        front.extend(back);
-        cells = front;
-        if let Some(slot) = index {
-            index = cells.iter().position(|(call, _)| *call == slot);
-        }
+        (cells, index) = canonicalized(cells, index);
     }
-
     let mut facts = DeclaredFacts::none();
     if let Some(slot) = index {
         facts = DeclaredFacts::indexed(slot);
     }
-    let axes = v["reduced_axes"].as_array().ok_or("reduced_axes")?;
-    if !axes.is_empty() {
-        let mut mask: u32 = 0;
-        for a in axes {
-            let bit = a.as_u64().ok_or("axis")? as u32;
-            // An axis past the mask width cannot be stated at all.
-            if bit >= 8 {
-                return Err(format!("reduced axis {bit} does not fit Fuel's u8 mask"));
-            }
-            mask |= 1 << bit;
-        }
-        facts.reduced_axes = Some(ReduceAxes::Keepdim(mask as u8));
-    }
-
-    let math_precision = match v["math_fidelity"].as_str().ok_or("math_fidelity")? {
-        "st" => GemMathPrecision::BitStable,
-        "rm" => GemMathPrecision::ReducedMantissa,
-        other => return Err(format!("unknown math_fidelity `{other}`")),
-    };
+    facts.reduced_axes = reduce_axes_of(v)?;
     let operands: Vec<CellOperand> = cells.into_iter().map(|(_, c)| c).collect();
     let compute = operands
         .first()
         .map(|o| o.desc.dtype)
         .ok_or("no operands")?;
-    let acc_dtype = match v["accumulator"].as_str() {
-        None => compute,
-        Some(t) => dtype_of(t).ok_or_else(|| format!("no Fuel DType for accumulator `{t}`"))?,
-    };
     Ok(Built {
         facts,
         operands,
         target: v["target"].as_str().ok_or("target")?.to_string(),
-        acc_mp: Some(AccMp {
-            acc_dtype,
-            math_precision,
-        }),
+        acc_mp: Some(acc_mp_of(v, compute)?),
     })
 }
 
@@ -224,6 +254,23 @@ fn evaluate(v: &serde_json::Value, canonicalize: bool) -> Outcome {
         Ok(b) => b,
         Err(why) => return Outcome::NotExpressible(why),
     };
+    // KISS (cell_note, `call_order_is_not_canonical_order`): a deriver whose input
+    // contract is canonical order reports NOT-EXPRESSIBLE on call-order input,
+    // "which is not a defect". Fuel's deriver takes canonical order (caller's
+    // contract), so as-given call order is not a cell it can be asked.
+    if !canonicalize {
+        let mut seen_output = false;
+        for o in &built.operands {
+            use fuel_dispatch::telemetry::structure_key_derive::OperandRole;
+            if o.role == OperandRole::Output {
+                seen_output = true;
+            } else if seen_output {
+                return Outcome::NotExpressible(
+                    "input contract is canonical order (KISS: not a defect)".to_string(),
+                );
+            }
+        }
+    }
     let got =
         derive_structure_key_token(&built.facts, &built.operands, &built.target, built.acc_mp);
     match (v["expect"].as_str(), got) {
@@ -260,11 +307,11 @@ fn load() -> Vec<serde_json::Value> {
 ///
 /// These are deriver-vs-spec divergences, the dangerous direction: the deriver's
 /// own contract is "a typed decline, never a wrong token".
+///
+/// (An earlier revision also listed `decline_reserved_dtype`: it put a reserved
+/// dtype at operand 1, which KISS then ruled is NOT a key position, so Fuel's
+/// keying it was right and the vector was corrected, see the provenance note.)
 const EMITS_WHERE_KISS_DECLINES: &[&str] = &[
-    // §6.1-0001: a reserved dtype in ANY dtype position must typed-decline. Fuel
-    // checks the dtype of operand 0 and the `ctr`/`(acc+mp)` coordinates only, so
-    // `f8e6m2` as operand 1 is keyed (and spelled as a 1-byte element).
-    "decline_reserved_dtype",
     // §6.6-0009: a reduction's output must be the keepdim form; a rank-collapsed
     // output declines. Fuel right-aligns the `[4]` output against the `[4,8]`
     // frame and emits `co/01/v1/d4/f`.
@@ -284,6 +331,9 @@ const NOT_EXPRESSIBLE: &[&str] = &[
     // and the bare sub-byte cell are unstatable.
     "quantized_operand_dequant_form",
     "sub_byte_dtype_i4",
+    // The reserved dtype is `f8e4m3fnuz`: Fuel has no `DType` for the `fnuz`
+    // layouts at all, so the cell cannot be built (the decline is by construction).
+    "decline_reserved_dtype",
 ];
 
 /// Fed in CALL order, Fuel's deriver declines because it documents that it takes
@@ -305,7 +355,7 @@ fn rows() -> BTreeMap<String, (Outcome, Outcome, bool)> {
 #[test]
 fn report_every_vector_under_both_feeding_disciplines() {
     let rows = rows();
-    assert_eq!(rows.len(), 32, "vector count changed: re-pin the tables");
+    assert_eq!(rows.len(), 33, "vector count changed: re-pin the tables");
     for (name, (given, canon, golden)) in &rows {
         println!(
             "[kiss-deriv] {:<44} golden={:<5} as-given={:<18} canonicalized={}",
@@ -407,5 +457,5 @@ fn divergences_and_absent_surfaces_are_exactly_the_pinned_sets() {
         .values()
         .filter(|r| r.0 == Outcome::Pass && r.1 == Outcome::Pass)
         .count();
-    assert_eq!(both_pass + accounted, 32, "an unpinned outcome exists");
+    assert_eq!(both_pass + accounted, 33, "an unpinned outcome exists");
 }
