@@ -703,76 +703,115 @@ pub fn derive_structure_key_token(
     derive_structure_key_token_typed(facts, operands, target, acc_mp).ok()
 }
 
-/// [`derive_structure_key_token`] with the decline reason: `Err` names WHY no
-/// key exists, `Ok` is the byte-identical token.
-pub fn derive_structure_key_token_typed(
+/// The cell-level facts every later field is derived from, once the cell has
+/// been validated.
+struct ValidCell {
+    /// The iteration frame (per-axis maximum extents, right-aligned, §6.5-0010).
+    frame: Vec<i64>,
+    /// Field 3: operand 0's sk5 dtype spelling.
+    dtype: &'static str,
+    /// Field 1: the derived cell class.
+    class: CellClass,
+}
+
+/// Shape-level validity: operand count and rank caps, malformed descriptors.
+fn validate_shape(operands: &[CellOperand]) -> Result<Vec<i64>, DeriveDecline> {
+    if operands.is_empty() || operands.len() > MAX_OPERANDS {
+        return Err(DeriveDecline::OperandCount);
+    }
+    iteration_frame(operands).ok_or(DeriveDecline::BadShape)
+}
+
+/// Operand 0's dtype and the target: the two fields read from outside the cell
+/// body. KISS-CLASSIFY §3.2: F8E8M0 is a ratified MX **scale**, valid only as a
+/// sibling operand, never as the dense/primary dtype this generic path reads
+/// from operand 0. `sk5_dtype_token` is the position-agnostic "is this dtype
+/// spellable at all" table, shared with call sites where F8E8M0 IS valid (e.g.
+/// `contraction_field`'s `<wdt>` field, which reads a caller-supplied role hint,
+/// never operand 0 positionally). This decline is scoped to operand 0, not to
+/// the dtype itself, so it does not narrow anything KISS ratifies. (`F8E6M2` is
+/// reserved outright at sk5 and `sk5_dtype_token` declines it everywhere.)
+fn validate_primary(first: DType, target: &str) -> Result<&'static str, DeriveDecline> {
+    if matches!(first, DType::F8E8M0) {
+        return Err(DeriveDecline::ScaleDtypeAtOperand0);
+    }
+    let dtype = sk5_dtype_token(first).ok_or_else(|| dtype_decline(first))?;
+    if !is_valid_namespaced_target(target) {
+        return Err(DeriveDecline::InvalidTarget); // namespaced target required (§6.8-0001/-0005)
+    }
+    Ok(dtype)
+}
+
+/// Canonical order and the index slot are the CALLER's contract
+/// (§6.6-0012/-0014); a violation is named, not folded into `oth`.
+fn validate_roles(facts: &DeclaredFacts, operands: &[CellOperand]) -> Result<(), DeriveDecline> {
+    if !is_canonical_order(operands) {
+        return Err(DeriveDecline::NotCanonicalOrder);
+    }
+    match facts.index_operand.map(|slot| operands.get(slot)) {
+        Some(Some(o)) if o.role != OperandRole::Output => Ok(()),
+        Some(_) => Err(DeriveDecline::IndexSlotOutOfRange),
+        None => Ok(()),
+    }
+}
+
+/// Everything that can make a cell underivable before any field is spelled.
+fn validate_cell(
     facts: &DeclaredFacts,
     operands: &[CellOperand],
     target: &str,
     acc_mp: Option<AccMp>,
-) -> Result<String, DeriveDecline> {
+) -> Result<ValidCell, DeriveDecline> {
     if acc_mp.is_some() && facts.contraction.is_some() {
         return Err(DeriveDecline::AccMpOnContraction);
     }
-    if operands.is_empty() || operands.len() > MAX_OPERANDS {
-        return Err(DeriveDecline::OperandCount);
-    }
-    let frame = iteration_frame(operands).ok_or(DeriveDecline::BadShape)?;
+    let frame = validate_shape(operands)?;
     let first = operands.first().ok_or(DeriveDecline::OperandCount)?;
-    // KISS-CLASSIFY §3.2: F8E8M0 is a ratified MX **scale**, valid only as a
-    // sibling operand, never as the dense/primary dtype this generic path
-    // reads from operand 0. `sk5_dtype_token` is the position-agnostic "is this
-    // dtype spellable at all" table, shared with call sites where F8E8M0 IS
-    // valid (e.g. `contraction_field`'s `<wdt>` field, which reads a
-    // caller-supplied role hint, never operand 0 positionally). This decline is
-    // scoped to `first.desc.dtype` specifically, not to the dtype itself, so it
-    // does not narrow anything KISS ratifies. (`F8E6M2` is no longer here: it
-    // is reserved outright at sk5 and `sk5_dtype_token` declines it everywhere.)
-    if matches!(first.desc.dtype, DType::F8E8M0) {
-        return Err(DeriveDecline::ScaleDtypeAtOperand0);
-    }
-    let dtype = sk5_dtype_token(first.desc.dtype).ok_or_else(|| dtype_decline(first.desc.dtype))?;
-    if !is_valid_namespaced_target(target) {
-        return Err(DeriveDecline::InvalidTarget); // namespaced target required (§6.8-0001/-0005)
-    }
-
-    // Canonical order and the index slot are the CALLER's contract
-    // (§6.6-0012/-0014); a violation is named, not folded into `oth`.
-    if !is_canonical_order(operands) {
-        return Err(DeriveDecline::NotCanonicalOrder);
-    }
-    if let Some(slot) = facts.index_operand {
-        match operands.get(slot) {
-            Some(o) if o.role != OperandRole::Output => {}
-            _ => return Err(DeriveDecline::IndexSlotOutOfRange),
-        }
-    }
+    let dtype = validate_primary(first.desc.dtype, target)?;
+    validate_roles(facts, operands)?;
     let class = cell_class_in_frame(facts, operands, &frame).ok_or(DeriveDecline::BadShape)?;
-    let rank = frame.len();
+    Ok(ValidCell {
+        frame,
+        dtype,
+        class,
+    })
+}
 
-    // §6.6-0009: a reduction is presented in KEEPDIM form and its reduced axes
-    // are axes of the iteration frame. Checked ONLY for an `rdc` cell: a cell
-    // that declares a reduced set but derives `ctr`/`ndx` carries no reduce
-    // field (§6.6-0017), so nothing about the set is keyed, and KISS's own
-    // deriver does not look at it either. Out-of-range is decided first.
-    if let (CellClass::Reduction, Some(axes)) = (class, facts.reduced_axes) {
-        let mask = axes.mask(rank);
-        // `mask` is a u8: at rank >= 8 every bit is in range by construction.
-        if rank < 8 && (u32::from(mask) >> rank) != 0 {
-            return Err(DeriveDecline::ReducedAxisOutOfRange);
-        }
-        for o in operands.iter().filter(|o| o.role == OperandRole::Output) {
-            let collapsed = o.desc.shape.len() != rank
-                || (0..rank).any(|d| (mask >> d) & 1 == 1 && o.desc.shape[d] != 1);
-            if collapsed {
-                return Err(DeriveDecline::CollapsedReduction);
-            }
-        }
+/// §6.6-0009: a reduction is presented in KEEPDIM form and its reduced axes
+/// are axes of the iteration frame. Checked ONLY for an `rdc` cell: a cell that
+/// declares a reduced set but derives `ctr`/`ndx` carries no reduce field
+/// (§6.6-0017), so nothing about the set is keyed, and KISS's own deriver does
+/// not look at it either. Out-of-range is decided first.
+fn check_reduction(
+    class: CellClass,
+    facts: &DeclaredFacts,
+    operands: &[CellOperand],
+    rank: usize,
+) -> Result<(), DeriveDecline> {
+    let (CellClass::Reduction, Some(axes)) = (class, facts.reduced_axes) else {
+        return Ok(());
+    };
+    let mask = axes.mask(rank);
+    // `mask` is a u8: at rank >= 8 every bit is in range by construction.
+    if rank < 8 && (u32::from(mask) >> rank) != 0 {
+        return Err(DeriveDecline::ReducedAxisOutOfRange);
     }
+    let collapsed = |o: &CellOperand| {
+        o.desc.shape.len() != rank
+            || (0..rank).any(|d| (mask >> d) & 1 == 1 && o.desc.shape[d] != 1)
+    };
+    if operands
+        .iter()
+        .any(|o| o.role == OperandRole::Output && collapsed(o))
+    {
+        return Err(DeriveDecline::CollapsedReduction);
+    }
+    Ok(())
+}
 
-    // Field 4 — index width: max touched offset Σ|stride|·(ext−1) across
-    // operands' own axes (§6.5-0011; a padded frame axis is stride-0 and
-    // contributes 0).
+/// Field 4 — index width: max touched offset Σ|stride|·(ext−1) across operands'
+/// own axes (§6.5-0011; a padded frame axis is stride-0 and contributes 0).
+fn index_width(operands: &[CellOperand]) -> &'static str {
     let max_touched: i128 = operands
         .iter()
         .map(|o| {
@@ -785,79 +824,102 @@ pub fn derive_structure_key_token_typed(
         })
         .max()
         .unwrap_or(0);
-    let index_width = if max_touched >= (1i128 << 31) {
+    if max_touched >= (1i128 << 31) {
         "ix64"
     } else {
         "ix32"
-    };
+    }
+}
 
-    // Field 5 — work class: total element count of the ITERATION FRAME
-    // (§6.5-0010) — the per-axis maximum extents, not operand 0's.
+/// Field 5 — work class: total element count of the ITERATION FRAME
+/// (§6.5-0010) — the per-axis maximum extents, not operand 0's.
+fn work_class(frame: &[i64]) -> &'static str {
     let work_elems: i128 = frame.iter().map(|&e| i128::from(e)).product();
-    let work_class = if work_elems <= 32 {
+    if work_elems <= 32 {
         "warp"
     } else if work_elems <= 1024 {
         "block"
     } else {
         "grid"
-    };
+    }
+}
 
-    // The reduced-axis mask is read ONLY for an `rdc` cell (§6.6-0017: the
-    // reduce field is non-`-` iff `rdc`). A cell that declares a reduced set
-    // but derives `ctr`/`ndx` keeps `-` and no `v1` reduction gate.
-    //
-    // §6.5-0009(b): every operand of a reduction cell whose reduced set
-    // includes the innermost iteration-frame axis derives v1. Right-alignment
-    // (§6.6-0013) maps every operand's innermost axis to frame axis rank−1,
-    // so the gate is cell-level. Derived from the SAME rank-aware mask the
-    // class derivation and the reduce field use.
-    let reduced_mask = match (class, facts.reduced_axes) {
+/// The reduced-axis mask is read ONLY for an `rdc` cell (§6.6-0017: the reduce
+/// field is non-`-` iff `rdc`). A cell that declares a reduced set but derives
+/// `ctr`/`ndx` keeps `-` and no `v1` reduction gate.
+fn reduced_mask_of(class: CellClass, facts: &DeclaredFacts, rank: usize) -> u8 {
+    match (class, facts.reduced_axes) {
         (CellClass::Reduction, Some(axes)) => axes.mask(rank),
         _ => 0,
-    };
+    }
+}
+
+/// [`derive_structure_key_token`] with the decline reason: `Err` names WHY no
+/// key exists, `Ok` is the byte-identical token.
+pub fn derive_structure_key_token_typed(
+    facts: &DeclaredFacts,
+    operands: &[CellOperand],
+    target: &str,
+    acc_mp: Option<AccMp>,
+) -> Result<String, DeriveDecline> {
+    let ValidCell {
+        frame,
+        dtype,
+        class,
+    } = validate_cell(facts, operands, target, acc_mp)?;
+    let rank = frame.len();
+    check_reduction(class, facts, operands, rank)?;
+
+    let reduced_mask = reduced_mask_of(class, facts, rank);
+    // §6.5-0009(b): every operand of a reduction cell whose reduced set includes
+    // the innermost iteration-frame axis derives v1. Right-alignment (§6.6-0013)
+    // maps every operand's innermost axis to frame axis rank−1, so the gate is
+    // cell-level, derived from the SAME rank-aware mask the class derivation and
+    // the reduce field use.
     let innermost_reduced = rank >= 1 && (reduced_mask >> (rank - 1)) & 1 == 1;
 
-    // Field 7 — per-operand sub-keys, canonical order, each derived in the
-    // iteration frame.
+    // Field 7 — per-operand sub-keys, canonical order, each derived in the frame.
     let operand_keys: Vec<String> = operands
         .iter()
         .map(|o| operand_sub_key(o, &frame, innermost_reduced))
         .collect();
 
-    // Contraction field — present iff `ctr` (§6.6-0010).
-    let contraction = match (class, facts.contraction) {
-        (CellClass::DenseContraction, Some(cell)) => {
-            Some(contraction_field(&cell).ok_or(DeriveDecline::InvalidContraction)?)
-        }
-        _ => None,
-    };
-
     let mut token = format!(
         "sk5|{class}|{dtype}|{target}|{idx}|{work}|r{rank}|{ops}|{reduce}",
         class = class.code(),
-        idx = index_width,
-        work = work_class,
+        idx = index_width(operands),
+        work = work_class(&frame),
         ops = operand_keys.join(";"),
         reduce = reduce_field(reduced_mask, rank),
     );
-    // §6.7-0013(c)/(e): the non-contraction precision field is
-    // OMITTED-WHEN-ABSENT — not `-`, not empty. This is a deliberate contrast
-    // with the MANDATORY reduce field above, which emits `-` when
-    // inapplicable. Applying the reduce field's convention here would emit a
-    // spurious trailing `|-` and fail the byte-match. The nearest precedent in
-    // this very token teaches the opposite rule, which is what makes it a trap.
-    if let Some(a) = acc_mp.filter(|a| a.deviates_from(first.desc.dtype)) {
-        token.push('|');
-        token.push_str(&a.field().ok_or_else(|| dtype_decline(a.acc_dtype))?);
-    }
-    if let Some(c) = contraction {
-        token.push('|');
-        token.push_str(&c);
-    }
+    append_precision_fields(&mut token, facts, class, acc_mp, operands[0].desc.dtype)?;
     if token.len() > MAX_TOKEN_BYTES {
         return Err(DeriveDecline::TokenTooLong); // §6.4-0004 — declines, never truncates
     }
     Ok(token)
+}
+
+/// The OPTIONAL trailing precision fields. §6.7-0013(c)/(e): the non-contraction
+/// `(acc + mp)` field is OMITTED-WHEN-ABSENT — not `-`, not empty — a deliberate
+/// contrast with the MANDATORY reduce field, which emits `-` when inapplicable;
+/// applying the reduce field's convention here would emit a spurious trailing
+/// `|-` and fail the byte-match. The contraction group (`ctr` only) follows it.
+fn append_precision_fields(
+    token: &mut String,
+    facts: &DeclaredFacts,
+    class: CellClass,
+    acc_mp: Option<AccMp>,
+    compute: DType,
+) -> Result<(), DeriveDecline> {
+    if let Some(a) = acc_mp.filter(|a| a.deviates_from(compute)) {
+        token.push('|');
+        token.push_str(&a.field().ok_or_else(|| dtype_decline(a.acc_dtype))?);
+    }
+    if let (CellClass::DenseContraction, Some(cell)) = (class, facts.contraction) {
+        token.push('|');
+        token.push_str(&contraction_field(&cell).ok_or(DeriveDecline::InvalidContraction)?);
+    }
+    Ok(())
 }
 
 /// The `ctr` contraction field (§6.7-0006):
