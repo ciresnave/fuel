@@ -148,138 +148,192 @@ fn one() -> Shape {
     Shape::from_dims(&[1])
 }
 
-fn run(v: &Vector) -> Outcome {
+/// Big-endian operand bytes -> a fixed-size array.
+fn bytes<const N: usize>(v: &Vector, i: usize) -> [u8; N] {
+    v.inputs[i].clone().try_into().expect("operand width")
+}
+
+/// `neg` / `abs` on the 16-bit floats: sign-bit edits that must keep a NaN's payload.
+fn run_sign_edit(v: &Vector) -> Option<Vec<u8>> {
+    let dev = Device::cpu();
+    let neg = v.op == "neg";
+    match v.dtype.as_str() {
+        "bf16" => {
+            let x = bf16::from_bits(u16::from_be_bytes(bytes::<2>(v, 0)));
+            let t = Tensor::from_bf16(vec![x], one(), &dev).unwrap();
+            let r = if neg { t.neg() } else { t.abs() };
+            Some(r.realize_bf16()[0].to_bits().to_be_bytes().to_vec())
+        }
+        "f16" => {
+            let x = f16::from_bits(u16::from_be_bytes(bytes::<2>(v, 0)));
+            let t = Tensor::from_f16(vec![x], one(), &dev).unwrap();
+            let r = if neg { t.neg() } else { t.abs() };
+            Some(r.realize_f16()[0].to_bits().to_be_bytes().to_vec())
+        }
+        _ => None,
+    }
+}
+
+/// The four minmax ops, applied to a pair of same-graph tensors.
+fn apply_minmax(op: &str, a: &Tensor, b: &Tensor) -> Tensor {
+    match op {
+        "max_prop" => a.maximum(b),
+        "min_prop" => a.minimum(b),
+        "fmax_ieee" => a.fmax_ieee(b),
+        _ => a.fmin_ieee(b),
+    }
+    .unwrap()
+}
+
+/// `max_prop` / `min_prop` / `fmax_ieee` / `fmin_ieee` on bf16, f16, f32, f64.
+fn run_minmax(v: &Vector) -> Option<Vec<u8>> {
     let dev = Device::cpu();
     let op = v.op.as_str();
-    let want = v.expected.clone();
-    let got: Vec<u8> = match (op, v.dtype.as_str()) {
-        ("copysign", _) => return Outcome::NotExercised("no `copysign` op in Fuel"),
-        (_, "f8e5m2" | "f8e4m3fn") => {
-            return Outcome::NotExercised("no 8-bit float Tensor path on CPU");
-        }
-        ("neg" | "abs", "bf16") => {
-            let x = bf16::from_bits(u16::from_be_bytes(v.inputs[0].clone().try_into().unwrap()));
-            let t = Tensor::from_bf16(vec![x], one(), &dev).unwrap();
-            let r = if op == "neg" { t.neg() } else { t.abs() };
-            r.realize_bf16()[0].to_bits().to_be_bytes().to_vec()
-        }
-        ("neg" | "abs", "f16") => {
-            let x = f16::from_bits(u16::from_be_bytes(v.inputs[0].clone().try_into().unwrap()));
-            let t = Tensor::from_f16(vec![x], one(), &dev).unwrap();
-            let r = if op == "neg" { t.neg() } else { t.abs() };
-            r.realize_f16()[0].to_bits().to_be_bytes().to_vec()
-        }
-        ("max_prop" | "min_prop" | "fmax_ieee" | "fmin_ieee", "bf16") => {
-            let a = bf16::from_bits(u16::from_be_bytes(v.inputs[0].clone().try_into().unwrap()));
-            let b = bf16::from_bits(u16::from_be_bytes(v.inputs[1].clone().try_into().unwrap()));
+    match v.dtype.as_str() {
+        "bf16" => {
+            let a = bf16::from_bits(u16::from_be_bytes(bytes::<2>(v, 0)));
+            let b = bf16::from_bits(u16::from_be_bytes(bytes::<2>(v, 1)));
             let ta = Tensor::from_bf16(vec![a], one(), &dev).unwrap();
             let tb = ta.const_bf16_like(vec![b], one()).unwrap();
-            let r = match op {
-                "max_prop" => ta.maximum(&tb),
-                "min_prop" => ta.minimum(&tb),
-                "fmax_ieee" => ta.fmax_ieee(&tb),
-                _ => ta.fmin_ieee(&tb),
-            }
-            .unwrap();
-            r.realize_bf16()[0].to_bits().to_be_bytes().to_vec()
+            Some(
+                apply_minmax(op, &ta, &tb).realize_bf16()[0]
+                    .to_bits()
+                    .to_be_bytes()
+                    .to_vec(),
+            )
         }
-        ("max_prop" | "min_prop" | "fmax_ieee" | "fmin_ieee", "f16") => {
-            let a = f16::from_bits(u16::from_be_bytes(v.inputs[0].clone().try_into().unwrap()));
-            let b = f16::from_bits(u16::from_be_bytes(v.inputs[1].clone().try_into().unwrap()));
+        "f16" => {
+            let a = f16::from_bits(u16::from_be_bytes(bytes::<2>(v, 0)));
+            let b = f16::from_bits(u16::from_be_bytes(bytes::<2>(v, 1)));
             let ta = Tensor::from_f16(vec![a], one(), &dev).unwrap();
             let tb = ta.const_f16_like(vec![b], one()).unwrap();
-            let r = match op {
-                "max_prop" => ta.maximum(&tb),
-                "min_prop" => ta.minimum(&tb),
-                "fmax_ieee" => ta.fmax_ieee(&tb),
-                _ => ta.fmin_ieee(&tb),
-            }
-            .unwrap();
-            r.realize_f16()[0].to_bits().to_be_bytes().to_vec()
+            Some(
+                apply_minmax(op, &ta, &tb).realize_f16()[0]
+                    .to_bits()
+                    .to_be_bytes()
+                    .to_vec(),
+            )
         }
-        ("max_prop" | "min_prop" | "fmax_ieee" | "fmin_ieee", "f32") => {
-            let a = f32::from_be_bytes(v.inputs[0].clone().try_into().unwrap());
-            let b = f32::from_be_bytes(v.inputs[1].clone().try_into().unwrap());
+        "f32" => {
+            let a = f32::from_be_bytes(bytes::<4>(v, 0));
+            let b = f32::from_be_bytes(bytes::<4>(v, 1));
             let ta = Tensor::from_f32(vec![a], one(), &dev).unwrap();
             let tb = ta.const_f32_like(vec![b], one()).unwrap();
-            let r = match op {
-                "max_prop" => ta.maximum(&tb),
-                "min_prop" => ta.minimum(&tb),
-                "fmax_ieee" => ta.fmax_ieee(&tb),
-                _ => ta.fmin_ieee(&tb),
-            }
-            .unwrap();
-            r.realize_f32()[0].to_bits().to_be_bytes().to_vec()
+            Some(
+                apply_minmax(op, &ta, &tb).realize_f32()[0]
+                    .to_bits()
+                    .to_be_bytes()
+                    .to_vec(),
+            )
         }
-        ("max_prop" | "min_prop" | "fmax_ieee" | "fmin_ieee", "f64") => {
-            let a = f64::from_be_bytes(v.inputs[0].clone().try_into().unwrap());
-            let b = f64::from_be_bytes(v.inputs[1].clone().try_into().unwrap());
+        "f64" => {
+            let a = f64::from_be_bytes(bytes::<8>(v, 0));
+            let b = f64::from_be_bytes(bytes::<8>(v, 1));
             let ta = Tensor::from_f64(vec![a], one(), &dev).unwrap();
             let tb = ta.const_f64_like(vec![b], one()).unwrap();
-            let r = match op {
-                "max_prop" => ta.maximum(&tb),
-                "min_prop" => ta.minimum(&tb),
-                "fmax_ieee" => ta.fmax_ieee(&tb),
-                _ => ta.fmin_ieee(&tb),
-            }
-            .unwrap();
-            r.realize_f64()[0].to_bits().to_be_bytes().to_vec()
+            Some(
+                apply_minmax(op, &ta, &tb).realize_f64()[0]
+                    .to_bits()
+                    .to_be_bytes()
+                    .to_vec(),
+            )
         }
-        ("floor" | "ceil" | "trunc" | "round_even", "f32") => {
-            let x = f32::from_be_bytes(v.inputs[0].clone().try_into().unwrap());
-            let t = Tensor::from_f32(vec![x], one(), &dev).unwrap();
-            // Fuel's `round` is round-half-to-even (IEEE roundeven), which is KISS's
-            // `round_even`; `trunc` is Fuel's own expansion (GAP-300), not a primitive.
-            let r = match op {
-                "floor" => t.floor(),
-                "ceil" => t.ceil(),
-                "trunc" => t.trunc(),
-                _ => t.round(),
-            };
-            r.realize_f32()[0].to_bits().to_be_bytes().to_vec()
-        }
-        ("exp" | "log" | "sin", "f32") => {
-            let x = f32::from_be_bytes(v.inputs[0].clone().try_into().unwrap());
-            let t = Tensor::from_f32(vec![x], one(), &dev).unwrap();
-            let r = match op {
-                "exp" => t.exp(),
-                "log" => t.log(),
-                _ => t.sin(),
-            };
-            r.realize_f32()[0].to_bits().to_be_bytes().to_vec()
-        }
-        ("exp" | "log" | "sin", "f64") => {
-            let x = f64::from_be_bytes(v.inputs[0].clone().try_into().unwrap());
-            let t = Tensor::from_f64(vec![x], one(), &dev).unwrap();
-            let r = match op {
-                "exp" => t.exp(),
-                "log" => t.log(),
-                _ => t.sin(),
-            };
-            r.realize_f64()[0].to_bits().to_be_bytes().to_vec()
-        }
-        _ => return Outcome::NotExercised("no evaluator arm for this (op, dtype)"),
-    };
+        _ => None,
+    }
+}
 
-    let ok = if v.nan_provenance == "computed" {
+/// `floor` / `ceil` / `trunc` / `round_even` on f32. Fuel's `round` is
+/// round-half-to-even (IEEE roundeven), which is KISS's `round_even`; `trunc` is
+/// Fuel's own graph expansion (GAP-300), not a primitive.
+fn run_rounding(v: &Vector) -> Option<Vec<u8>> {
+    if v.dtype != "f32" {
+        return None;
+    }
+    let x = f32::from_be_bytes(bytes::<4>(v, 0));
+    let t = Tensor::from_f32(vec![x], one(), &Device::cpu()).unwrap();
+    let r = match v.op.as_str() {
+        "floor" => t.floor(),
+        "ceil" => t.ceil(),
+        "trunc" => t.trunc(),
+        _ => t.round(),
+    };
+    Some(r.realize_f32()[0].to_bits().to_be_bytes().to_vec())
+}
+
+/// `exp` / `log` / `sin` on f32 and f64.
+fn run_transcendental(v: &Vector) -> Option<Vec<u8>> {
+    let dev = Device::cpu();
+    let op = v.op.as_str();
+    match v.dtype.as_str() {
+        "f32" => {
+            let t =
+                Tensor::from_f32(vec![f32::from_be_bytes(bytes::<4>(v, 0))], one(), &dev).unwrap();
+            let r = match op {
+                "exp" => t.exp(),
+                "log" => t.log(),
+                _ => t.sin(),
+            };
+            Some(r.realize_f32()[0].to_bits().to_be_bytes().to_vec())
+        }
+        "f64" => {
+            let t =
+                Tensor::from_f64(vec![f64::from_be_bytes(bytes::<8>(v, 0))], one(), &dev).unwrap();
+            let r = match op {
+                "exp" => t.exp(),
+                "log" => t.log(),
+                _ => t.sin(),
+            };
+            Some(r.realize_f64()[0].to_bits().to_be_bytes().to_vec())
+        }
+        _ => None,
+    }
+}
+
+/// What Fuel produces for one vector, or why it cannot be asked.
+fn produce(v: &Vector) -> Result<Vec<u8>, &'static str> {
+    if v.op == "copysign" {
+        return Err("no `copysign` op in Fuel");
+    }
+    if matches!(v.dtype.as_str(), "f8e5m2" | "f8e4m3fn") {
+        return Err("no 8-bit float Tensor path on CPU");
+    }
+    let got = match v.op.as_str() {
+        "neg" | "abs" => run_sign_edit(v),
+        "max_prop" | "min_prop" | "fmax_ieee" | "fmin_ieee" => run_minmax(v),
+        "floor" | "ceil" | "trunc" | "round_even" => run_rounding(v),
+        "exp" | "log" | "sin" => run_transcendental(v),
+        _ => None,
+    };
+    got.ok_or("no evaluator arm for this (op, dtype)")
+}
+
+/// Does `got` conform to the vector's expectation under its comparator?
+fn conforms(v: &Vector, got: &[u8]) -> bool {
+    if v.nan_provenance == "computed" {
         // KISS-CONFORM-6.8-0010: a COMPUTED NaN matches iff the observed value is
         // also NaN and agrees in quietness. Sign and payload MUST NOT be compared.
         // (x86 SSE delivers the negative "real indefinite" `FFC00000` for
         // log(-1); a harness that compared it to `7FC00000` would report a defect
         // the spec says does not exist.)
-        match nan_quiet(&v.dtype, &got) {
-            Some(got_quiet) => Some(got_quiet) == nan_quiet(&v.dtype, &want),
+        return match nan_quiet(&v.dtype, got) {
+            Some(q) => Some(q) == nan_quiet(&v.dtype, &v.expected),
             None => false,
-        }
-    } else if v.class == "ULP" {
-        ulp_distance(&got, &want) <= v.ulp_bound
-    } else {
-        got == want
-    };
-    if ok {
-        Outcome::Pass
-    } else {
-        Outcome::Fail { got, want }
+        };
+    }
+    if v.class == "ULP" {
+        return ulp_distance(got, &v.expected) <= v.ulp_bound;
+    }
+    got == v.expected.as_slice()
+}
+
+fn run(v: &Vector) -> Outcome {
+    match produce(v) {
+        Err(why) => Outcome::NotExercised(why),
+        Ok(got) if conforms(v, &got) => Outcome::Pass,
+        Ok(got) => Outcome::Fail {
+            got,
+            want: v.expected.clone(),
+        },
     }
 }
 
