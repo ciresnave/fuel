@@ -7,9 +7,9 @@
 //! verbatim; the [`Reduction`] enum mirrors PyTorch's
 //! `'mean' | 'sum' | 'none'` parameter shape.
 
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
+use fuel_ir::error::Result;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::lazy::Tensor;
 
 /// Reduction mode for losses with per-sample outputs. Matches
 /// PyTorch's `reduction` parameter shape.
@@ -45,7 +45,7 @@ pub fn nll(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Result<Tensor
     let inp_dims = inp.shape();
     let inp_dims = inp_dims.dims();
     if inp_dims.len() != 2 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "nll: inp must be rank 2 [N, C], got {inp_dims:?}",
         ))
         .bt());
@@ -53,20 +53,20 @@ pub fn nll(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Result<Tensor
     let target_dims = target.shape();
     let target_dims = target_dims.dims();
     if target_dims.len() != 1 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "nll: target must be rank 1 [N], got {target_dims:?}",
         ))
         .bt());
     }
     if inp_dims[0] != target_dims[0] {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "nll: batch size mismatch — inp[0]={} target[0]={}",
             inp_dims[0], target_dims[0],
         ))
         .bt());
     }
     if target.dtype() != DType::U32 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "nll: target must be U32, got {:?}",
             target.dtype(),
         ))
@@ -93,7 +93,7 @@ pub fn cross_entropy(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Res
     let inp_dims = inp.shape();
     let inp_dims = inp_dims.dims();
     if inp_dims.len() != 2 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "cross_entropy: inp must be rank 2 [N, C], got {inp_dims:?}",
         ))
         .bt());
@@ -101,20 +101,20 @@ pub fn cross_entropy(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Res
     let target_dims = target.shape();
     let target_dims = target_dims.dims();
     if target_dims.len() != 1 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "cross_entropy: target must be rank 1 [N], got {target_dims:?}",
         ))
         .bt());
     }
     if inp_dims[0] != target_dims[0] {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "cross_entropy: batch size mismatch — inp[0]={} target[0]={}",
             inp_dims[0], target_dims[0],
         ))
         .bt());
     }
     if target.dtype() != DType::I64 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "cross_entropy: target must be I64 (PyTorch convention), got {:?}",
             target.dtype(),
         ))
@@ -139,7 +139,7 @@ pub fn binary_cross_entropy_with_logit(
     reduction: Reduction,
 ) -> Result<Tensor> {
     if inp.shape().dims() != target.shape().dims() {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "bce_with_logit: inp shape {:?} != target shape {:?}",
             inp.shape().dims(),
             target.shape().dims(),
@@ -147,7 +147,7 @@ pub fn binary_cross_entropy_with_logit(
         .bt());
     }
     if inp.dtype() != target.dtype() {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "bce_with_logit: dtype mismatch — inp={:?} target={:?}",
             inp.dtype(),
             target.dtype(),
@@ -170,7 +170,7 @@ pub fn binary_cross_entropy_with_logit(
 /// is element-wise `(inp - target)^2` otherwise.
 pub fn mse(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Result<Tensor> {
     if inp.shape().dims() != target.shape().dims() {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "mse: inp shape {:?} != target shape {:?}",
             inp.shape().dims(),
             target.shape().dims(),
@@ -178,7 +178,7 @@ pub fn mse(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Result<Tensor
         .bt());
     }
     if inp.dtype() != target.dtype() {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "mse: dtype mismatch — inp={:?} target={:?}",
             inp.dtype(),
             target.dtype(),
@@ -198,7 +198,7 @@ pub fn mse(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Result<Tensor
 /// element-wise `where_cond` over a `|diff| <= delta` mask.
 pub fn huber(inp: &Tensor, target: &Tensor, delta: f64, reduction: Reduction) -> Result<Tensor> {
     if inp.shape().dims() != target.shape().dims() {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "huber: inp shape {:?} != target shape {:?}",
             inp.shape().dims(),
             target.shape().dims(),
@@ -206,7 +206,7 @@ pub fn huber(inp: &Tensor, target: &Tensor, delta: f64, reduction: Reduction) ->
         .bt());
     }
     if inp.dtype() != target.dtype() {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "huber: dtype mismatch — inp={:?} target={:?}",
             inp.dtype(),
             target.dtype(),
@@ -219,7 +219,9 @@ pub fn huber(inp: &Tensor, target: &Tensor, delta: f64, reduction: Reduction) ->
     // rewrite would silently delete this validator's NaN case.
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(delta > 0.0) {
-        return Err(fuel_core::Error::Msg(format!("huber: delta must be > 0, got {delta}",)).bt());
+        return Err(
+            fuel_ir::error::Error::Msg(format!("huber: delta must be > 0, got {delta}",)).bt(),
+        );
     }
     let diff = inp.sub(target)?;
     let abs_diff = diff.abs();
@@ -250,7 +252,9 @@ fn abs_diff_like_scalar(host: &Tensor, value: f64) -> Result<Tensor> {
         }
         DType::BF16 => host.const_bf16_like(vec![half::bf16::from_f64(value); n], out_shape),
         DType::F16 => host.const_f16_like(vec![half::f16::from_f64(value); n], out_shape),
-        other => Err(fuel_core::Error::Msg(format!("huber: unsupported dtype {other:?}",)).bt()),
+        other => {
+            Err(fuel_ir::error::Error::Msg(format!("huber: unsupported dtype {other:?}",)).bt())
+        }
     }
 }
 
@@ -259,7 +263,7 @@ fn abs_diff_like_scalar(host: &Tensor, value: f64) -> Result<Tensor> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps

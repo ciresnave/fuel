@@ -29,9 +29,9 @@
 
 use crate::optim::Var;
 use crate::varmap::VarMap;
-use fuel_core::Result;
-use fuel_core::{DType, Device};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{DType, Device};
 
 /// A name-prefixing handle over a [`VarMap`] for constructing
 /// named lazy parameters. Cheap to clone — internally an Arc-shared
@@ -102,7 +102,7 @@ impl VarBuilder {
         let key = self.path(name);
         if let Some(existing) = self.map.get(&key) {
             if existing.shape().dims() != shape.dims() {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "VarBuilder::get_with: parameter {key} already \
                      registered with shape {:?}, requested {:?}",
                     existing.shape().dims(),
