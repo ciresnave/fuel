@@ -1911,6 +1911,7 @@ dependencies = [
  "rand 0.9.5",
  "rand_distr 0.5.1",
  "rayon",
+ "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
 ]

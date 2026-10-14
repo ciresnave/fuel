@@ -32,6 +32,7 @@ vendoring (2026-10-14) added `ops-narrow-move-nan`, `ops-narrow-select-nan`,
 | `ops-transcendental-nan.json` | **`ff9f52f5`** (blob first at `9ea8c05d`) | `d4f8b7486ca2b082252f4d305dff8edff2db5672` | `kiss-oracle-vectors-v1.json` |
 | `ops-minmax-nan.json` | **`0af5d3b6`** | `576d69ab693f6acb835c1c91307dba26bb0390d3` | `kiss-oracle-vectors-v1.json` |
 | `ops-rounding.json` | **`0af5d3b6`** | `f8f84610bc59bffe4e77c1ea2546482668fe5d77` | `kiss-oracle-vectors-v1.json` |
+| `ops-int-wrap.json` | **`d83d3c0a`** (KISS 0.2.19) | `00d16c351833e404bf8ffd80a4b62d778e0f0b84` | `kiss-oracle-vectors-v1.json` |
 
 Blob hashes were verified by computing `git hash-object --no-filters` on each
 vendored file and matching the value `git rev-parse <pin>:conformance/corpus/<file>`
@@ -102,7 +103,7 @@ adopt/reject` verdict table.
 Vector counts: `ops-arith` 5, `ops-minmax-ordinary` 24, `ops-minmax-signed-zero` 48
 (**77**, the 2026-09-02 set), plus `ops-narrow-move-nan` 30, `ops-narrow-select-nan` 40,
 `ops-transcendental-nan` 12 (**82**, 2026-10-14), plus `ops-minmax-nan` 44 and
-`ops-rounding` 72 (**116**, KISS `0af5d3b6`) -- **276 total** (13 transcendental, KISS#550 added tcId 13: f64 `log` of a signalling NaN), of which 263 are
+`ops-rounding` 72 (**116**, KISS `0af5d3b6`) -- **716 total** (440 integer-wrap, KISS 0.2.19; 13 transcendental, KISS#550 added tcId 13: f64 `log` of a signalling NaN), of which 263 are
 `exact-byte` and the 13 transcendental ones are class `ULP` with a NaN expected,
 compared by NaN-ness and quietness (KISS-CONFORM-6.8-0010), never by ULP distance.
 
@@ -135,7 +136,9 @@ CLOSED on the corpus side**: an `fmaxf`/`fmax` mis-lifted as a NaN-propagating `
 that, replacing the tripwire that went red on vendoring `ops-minmax-nan`.
 
 **These vectors ARE now run against Fuel**, through the lazy `Tensor` on CPU:
-`fuel-tensor/tests/kiss_nan_conformance.rs` evaluates 199 vectors (all of the NaN files, plus
+`fuel-cpu-backend/tests/kiss_int_wrap.rs` evaluates the 440 integer-wrap cells through the CPU
+backend's binary op on a `HostBuffer`: **275 pass, 0 fail, 55 typed errors (`i8`), 110 not
+expressible (`u16`, `u64`: no storage variant)**. `fuel-tensor/tests/kiss_nan_conformance.rs` evaluates 199 vectors (all of the NaN files, plus
 `ops-minmax-nan` and `ops-rounding`): **163 pass, 0 fail, 36 not exercised** (on x86 Windows; the macOS leg is CI). The 36 are
 the two 8-bit float dtypes (34) and `copysign` (2), which Fuel has no CPU `Tensor` path or
 op for; they are unmeasured, not passes (registry rows GAP-352 and GAP-353).

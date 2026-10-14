@@ -66,6 +66,9 @@ const OPS_MINMAX_NAN_JSON: &str = include_str!("../fixtures/kiss-corpus/ops-minm
 /// `floor`/`ceil`/`trunc`/`round_even` on `f32`: the vectors `trunc` never had
 /// (GAP-300 recorded that Fuel's `trunc` expansion was caught by no KISS vector).
 const OPS_ROUNDING_JSON: &str = include_str!("../fixtures/kiss-corpus/ops-rounding.json");
+/// `add`/`sub`/`mul` on the eight integer dtypes at the wrap boundaries: the first
+/// integer cells in the corpus (exact-byte, big-endian two's-complement patterns).
+const OPS_INT_WRAP_JSON: &str = include_str!("../fixtures/kiss-corpus/ops-int-wrap.json");
 
 /// A never-panic parse/schema failure. The embedded snapshot is a build-time
 /// constant, so in practice `load_vendored_corpus` always succeeds — the
@@ -347,6 +350,7 @@ pub fn load_vendored_corpus() -> Result<Corpus, CorpusError> {
         (OPS_TRANSCENDENTAL_NAN_JSON, "ops-transcendental-nan.json"),
         (OPS_MINMAX_NAN_JSON, "ops-minmax-nan.json"),
         (OPS_ROUNDING_JSON, "ops-rounding.json"),
+        (OPS_INT_WRAP_JSON, "ops-int-wrap.json"),
     ] {
         vectors.extend(parse_vector_file(json, file)?);
     }
@@ -628,11 +632,11 @@ mod tests {
 
     /// The three NaN files were loaded, not merely vendored: every cell they
     /// introduce is reachable through `covers`, and the total is the sum of all
-    /// eight vector files (5 + 24 + 48 + 30 + 40 + 13 + 44 + 72).
+    /// nine vector files (5 + 24 + 48 + 30 + 40 + 13 + 44 + 72 + 440).
     #[test]
     fn the_nan_vectors_are_loaded_not_merely_vendored() {
         let corpus = load_vendored_corpus().expect("vendored corpus parses");
-        assert_eq!(corpus.vectors.len(), 276);
+        assert_eq!(corpus.vectors.len(), 716);
         for (op, dtype) in [
             ("neg", "bf16"),
             ("abs", "f8e4m3fn"),
@@ -646,6 +650,10 @@ mod tests {
                 "({op}, {dtype}) is in a NaN file but not covered: the file is not in `include_str!`"
             );
         }
+        assert!(
+            corpus.covers("add", "u8") && corpus.covers("mul", "i64"),
+            "ops-int-wrap.json is vendored but not in `include_str!`"
+        );
         // The transcendental file is the only `ULP`-class one: a computed NaN is
         // canonical, so these cells carry a non-zero bound, unlike every
         // exact-byte cell.

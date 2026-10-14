@@ -355,6 +355,15 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-OPS-6.2-0002",
+        disposition: Obligation,
+        test: Some(
+            "fuel-cpu-backend/tests/kiss_int_wrap.rs::int_wrap_vectors_conform_except_the_pinned_sets",
+        ),
+        reason: "Integer add/sub/mul wrap modulo 2^N and never saturate. Fuel's CPU backend WRAPS on                  u8/u32/i16/i32/i64 (275 of the 440 vendored cells pass, none saturates). SCOPE, so the                  row is not read as parity: `i8` returns a typed error (55 cells, GAP-356) and `u16`/`u64`                  have no `HostBuffer` variant (110 cells, not expressible); both counts are pinned in the                  discharging test.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.20-0002",
         disposition: Record,
         test: None,
