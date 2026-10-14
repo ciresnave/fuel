@@ -34,6 +34,7 @@
 
 [dev-dependencies]
     tempfile = { workspace = true }
+    serde_json = { workspace = true }
 
 [features]
     accelerate = ["dep:accelerate-src", "dep:libc"]

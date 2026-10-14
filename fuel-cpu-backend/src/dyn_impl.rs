@@ -444,7 +444,7 @@ fn cpu_binary_op(
 ) -> Result<HostBuffer> {
     use BinaryOp::*;
     match op {
-        // KISS-Ops §6.2-0002: integer Add/Sub/Mul wrap mod 2^n. Each gets its
+        // KISS-OPS-6.2-0002: integer Add/Sub/Mul wrap mod 2^n. Each gets its
         // own `wrapping_*` i64 closure (`fi`) alongside the existing float
         // closure (`f`) -- see `all_binary`'s `G` bound for why a shared
         // float-only closure cannot express this.
@@ -554,7 +554,7 @@ fn all_binary<F, G>(
 ) -> Result<HostBuffer>
 where
     F: Fn(f64, f64) -> f64 + Copy,
-    // KISS-Ops §6.2-0002: integer arithmetic wraps mod 2^n. The float path
+    // KISS-OPS-6.2-0002: integer arithmetic wraps mod 2^n. The float path
     // `f` cannot express this (a float intermediate saturates on the final
     // float->int cast rather than wrapping, and loses precision above 2^53
     // for i64), so every integer dtype routes through its OWN i64-native
@@ -2164,7 +2164,7 @@ mod binary_op_nan_tests {
         assert_eq!(min, vec![1.0, 3.0]);
     }
 
-    /// KISS-Ops §6.2-0002 finding #3: integer Add/Sub/Mul used to compute in
+    /// KISS-OPS-6.2-0002 finding #3: integer Add/Sub/Mul used to compute in
     /// f64 then cast back with a float->int cast, which SATURATES on overflow
     /// rather than wrapping mod 2^n. `200u8 + 100u8` is the textbook case:
     /// the true wrapped result is `44` (`300 mod 256`); the old code produced
