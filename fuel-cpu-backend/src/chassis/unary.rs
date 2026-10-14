@@ -237,10 +237,10 @@ impl UnaryOpCore for Sqr {
 pub struct Sqrt;
 impl UnaryOpCore for Sqrt {
     fn f32(x: f32) -> f32 {
-        x.sqrt()
+        quiet_f32(x.sqrt())
     }
     fn f64(x: f64) -> f64 {
-        x.sqrt()
+        quiet_f64(x.sqrt())
     }
 }
 
@@ -405,10 +405,10 @@ impl UnaryOpCore for Step {
 pub struct Floor;
 impl UnaryOpCore for Floor {
     fn f32(x: f32) -> f32 {
-        x.floor()
+        quiet_f32(x.floor())
     }
     fn f64(x: f64) -> f64 {
-        x.floor()
+        quiet_f64(x.floor())
     }
 }
 
@@ -416,10 +416,10 @@ impl UnaryOpCore for Floor {
 pub struct Ceil;
 impl UnaryOpCore for Ceil {
     fn f32(x: f32) -> f32 {
-        x.ceil()
+        quiet_f32(x.ceil())
     }
     fn f64(x: f64) -> f64 {
-        x.ceil()
+        quiet_f64(x.ceil())
     }
 }
 
@@ -427,10 +427,10 @@ impl UnaryOpCore for Ceil {
 pub struct Round;
 impl UnaryOpCore for Round {
     fn f32(x: f32) -> f32 {
-        x.round_ties_even()
+        quiet_f32(x.round_ties_even())
     }
     fn f64(x: f64) -> f64 {
-        x.round_ties_even()
+        quiet_f64(x.round_ties_even())
     }
 }
 
@@ -461,10 +461,10 @@ impl UnaryOpCore for Sign {
 pub struct Erf;
 impl UnaryOpCore for Erf {
     fn f32(x: f32) -> f32 {
-        libm::erff(x)
+        quiet_f32(libm::erff(x))
     }
     fn f64(x: f64) -> f64 {
-        libm::erf(x)
+        quiet_f64(libm::erf(x))
     }
 }
 
@@ -517,6 +517,41 @@ impl UnaryOpCore for GeluTanh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GAP-355: the REST of the direct-libm unary ops (`erf`, `floor`, `ceil`,
+    /// `round_even`, `sqrt`) also return a quiet NaN for a signalling operand,
+    /// and so do the compositions over them. Same caveat as the sibling test:
+    /// x86 passes without the helper; the macOS CI leg is the instrument that
+    /// can see a libm that passes a signalling NaN through.
+    #[test]
+    fn remaining_libm_ops_return_a_quiet_nan_for_a_signalling_operand() {
+        let snan32 = f32::from_bits(0x7F80_0001);
+        let snan64 = f64::from_bits(0x7FF0_0000_0000_0001);
+        assert!(snan32.is_nan() && snan32.to_bits() & 0x0040_0000 == 0);
+        assert!(snan64.is_nan() && snan64.to_bits() & 0x0008_0000_0000_0000 == 0);
+        let q32 = |r: f32| r.is_nan() && r.to_bits() & 0x0040_0000 != 0;
+        let q64 = |r: f64| r.is_nan() && r.to_bits() & 0x0008_0000_0000_0000 != 0;
+        assert!(q32(<Erf as UnaryOpCore>::f32(snan32)), "erf f32");
+        assert!(q32(<Floor as UnaryOpCore>::f32(snan32)), "floor f32");
+        assert!(q32(<Ceil as UnaryOpCore>::f32(snan32)), "ceil f32");
+        assert!(q32(<Round as UnaryOpCore>::f32(snan32)), "round f32");
+        assert!(q32(<Sqrt as UnaryOpCore>::f32(snan32)), "sqrt f32");
+        assert!(q32(<Rsqrt as UnaryOpCore>::f32(snan32)), "rsqrt f32");
+        assert!(q32(<Sigmoid as UnaryOpCore>::f32(snan32)), "sigmoid f32");
+        assert!(q32(<Silu as UnaryOpCore>::f32(snan32)), "silu f32");
+        assert!(q32(<GeluErf as UnaryOpCore>::f32(snan32)), "gelu_erf f32");
+        assert!(q32(<GeluTanh as UnaryOpCore>::f32(snan32)), "gelu_tanh f32");
+        assert!(q64(<Erf as UnaryOpCore>::f64(snan64)), "erf f64");
+        assert!(q64(<Floor as UnaryOpCore>::f64(snan64)), "floor f64");
+        assert!(q64(<Ceil as UnaryOpCore>::f64(snan64)), "ceil f64");
+        assert!(q64(<Round as UnaryOpCore>::f64(snan64)), "round f64");
+        assert!(q64(<Sqrt as UnaryOpCore>::f64(snan64)), "sqrt f64");
+        assert!(q64(<Rsqrt as UnaryOpCore>::f64(snan64)), "rsqrt f64");
+        assert!(q64(<Sigmoid as UnaryOpCore>::f64(snan64)), "sigmoid f64");
+        assert!(q64(<Silu as UnaryOpCore>::f64(snan64)), "silu f64");
+        assert!(q64(<GeluErf as UnaryOpCore>::f64(snan64)), "gelu_erf f64");
+        assert!(q64(<GeluTanh as UnaryOpCore>::f64(snan64)), "gelu_tanh f64");
+    }
 
     /// A libm transcendental returns a QUIET NaN for a signalling operand. Apple's
     /// `logf` does not (it returns `7F800001` unchanged), which the KISS NaN

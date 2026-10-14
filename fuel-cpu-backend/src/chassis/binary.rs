@@ -317,10 +317,10 @@ impl BinaryOpCore for Minimum {
 pub struct Pow;
 impl BinaryOpCore for Pow {
     fn f32(a: f32, b: f32) -> f32 {
-        a.powf(b)
+        crate::chassis::unary::quiet_f32(a.powf(b))
     }
     fn f64(a: f64, b: f64) -> f64 {
-        a.powf(b)
+        crate::chassis::unary::quiet_f64(a.powf(b))
     }
 }
 
@@ -343,6 +343,34 @@ impl BinaryOpCore for Rem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GAP-355: `powf` is a direct libm call; a signalling operand must give a
+    /// QUIET NaN (see `chassis::unary::tests::transcendentals_return_a_quiet_nan_*`).
+    /// x86 libm passes without the helper; the macOS CI leg is the instrument that
+    /// can see a libm that returns the signalling NaN unchanged.
+    #[test]
+    fn pow_returns_a_quiet_nan_for_a_signalling_operand() {
+        let snan32 = f32::from_bits(0x7F80_0001);
+        let snan64 = f64::from_bits(0x7FF0_0000_0000_0001);
+        assert!(snan32.to_bits() & 0x0040_0000 == 0 && snan32.is_nan());
+        assert!(snan64.to_bits() & 0x0008_0000_0000_0000 == 0 && snan64.is_nan());
+        for (a, b) in [(snan32, 2.0f32), (2.0f32, snan32)] {
+            let r = <Pow as BinaryOpCore>::f32(a, b);
+            assert!(
+                r.is_nan() && r.to_bits() & 0x0040_0000 != 0,
+                "pow f32 {a:?} {b:?}"
+            );
+        }
+        for (a, b) in [(snan64, 2.0f64), (2.0f64, snan64)] {
+            let r = <Pow as BinaryOpCore>::f64(a, b);
+            assert!(
+                r.is_nan() && r.to_bits() & 0x0008_0000_0000_0000 != 0,
+                "pow f64 {a:?} {b:?}"
+            );
+        }
+        // CONTROL: ordinary values are untouched.
+        assert_eq!(<Pow as BinaryOpCore>::f32(2.0, 3.0), 8.0);
+    }
 
     /// KISS-OPS-6.16-0009: a MOVED NaN operand keeps its bits exactly.
     ///
