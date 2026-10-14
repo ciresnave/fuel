@@ -21,9 +21,9 @@
 //! dense-graph formulation.
 
 use crate::modules::{Linear, Module};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
+use fuel_ir::error::Result;
 use fuel_ir::{DynScalar, Shape};
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 const MASK_NEG: f32 = -1.0e30;
@@ -54,18 +54,19 @@ impl MoeRouter {
         jitter_noise: f64,
     ) -> Result<Self> {
         if num_experts == 0 {
-            return Err(
-                fuel_core::Error::Msg("MoeRouter::new: num_experts must be > 0".into()).bt(),
-            );
+            return Err(fuel_ir::error::Error::Msg(
+                "MoeRouter::new: num_experts must be > 0".into(),
+            )
+            .bt());
         }
         if top_k == 0 || top_k > num_experts {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MoeRouter::new: top_k must be in 1..={num_experts}, got {top_k}",
             ))
             .bt());
         }
         if weight.elem_count() != hidden_size * num_experts {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MoeRouter::new: weight has {} elements but \
                  hidden_size * num_experts = {} * {} = {}",
                 weight.elem_count(),
@@ -109,7 +110,7 @@ impl MoeRouter {
     pub fn route(&self, xs: &Tensor) -> Result<(Tensor, Tensor)> {
         let dims = xs.shape().dims().to_vec();
         if dims.is_empty() || *dims.last().unwrap() != self.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MoeRouter::route: input last dim must be {}, got shape {:?}",
                 self.hidden_size, dims,
             ))
@@ -167,7 +168,7 @@ impl MoeExpert {
         intermediate_size: usize,
     ) -> Result<Self> {
         if gate.in_features() != hidden_size || gate.out_features() != intermediate_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MoeExpert::new: gate must be ({hidden_size}, {intermediate_size}), \
                  got ({}, {})",
                 gate.in_features(),
@@ -176,7 +177,7 @@ impl MoeExpert {
             .bt());
         }
         if up.in_features() != hidden_size || up.out_features() != intermediate_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MoeExpert::new: up must be ({hidden_size}, {intermediate_size}), \
                  got ({}, {})",
                 up.in_features(),
@@ -185,7 +186,7 @@ impl MoeExpert {
             .bt());
         }
         if down.in_features() != intermediate_size || down.out_features() != hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MoeExpert::new: down must be ({intermediate_size}, {hidden_size}), \
                  got ({}, {})",
                 down.in_features(),
@@ -241,7 +242,7 @@ impl MoeExpert {
     pub fn forward_dyn_m(&self, xs: &Tensor, count: fuel_ir::DynScalar) -> Result<Tensor> {
         for (name, lin) in [("gate", &self.gate), ("up", &self.up), ("down", &self.down)] {
             if lin.bias().is_some() {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "MoeExpert::forward_dyn_m: sparse dispatch requires bias-free \
                      experts, but the {name} projection has a bias (it would \
                      contaminate the un-computed capacity tail)",
@@ -285,7 +286,7 @@ impl MoeLayer {
     /// and every expert's `hidden_size` must match the router's.
     pub fn new(router: MoeRouter, experts: Vec<MoeExpert>) -> Result<Self> {
         if experts.len() != router.num_experts() {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MoeLayer::new: experts.len() = {} but router.num_experts = {}",
                 experts.len(),
                 router.num_experts(),
@@ -294,7 +295,7 @@ impl MoeLayer {
         }
         for (i, e) in experts.iter().enumerate() {
             if e.hidden_size() != router.hidden_size() {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "MoeLayer::new: expert {i} hidden_size = {} but router \
                      hidden_size = {}",
                     e.hidden_size(),
@@ -339,7 +340,7 @@ impl MoeLayer {
         let dims = xs.shape().dims().to_vec();
         let hidden = self.router.hidden_size();
         if dims.is_empty() || *dims.last().unwrap() != hidden {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MoeLayer::forward: input last dim must be {hidden}, got shape {dims:?}",
             ))
             .bt());
@@ -399,7 +400,7 @@ impl MoeLayer {
         let dims = xs.shape().dims().to_vec();
         let hidden = self.router.hidden_size();
         if dims.is_empty() || *dims.last().unwrap() != hidden {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MoeLayer::forward_dense: input last dim must be {hidden}, got shape {dims:?}",
             ))
             .bt());
@@ -438,7 +439,7 @@ impl Module for MoeLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()
@@ -478,7 +479,7 @@ mod tests {
         let (idx, w_out) = router.route(&xs).unwrap();
         assert_eq!(idx.shape().dims(), &[n, top_k]);
         assert_eq!(w_out.shape().dims(), &[n, top_k]);
-        assert_eq!(idx.dtype(), fuel_core::DType::U32);
+        assert_eq!(idx.dtype(), fuel_tensor::DType::U32);
 
         let idx_v = idx.realize_u32();
         let w_v = w_out.realize_f32();

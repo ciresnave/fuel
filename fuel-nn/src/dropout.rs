@@ -52,9 +52,9 @@
 //! file is the host-side stop-gap that unblocks ports of models with
 //! dropout layers in the training path until that primitive ships.
 
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
+use fuel_ir::error::Result;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 /// A dropout layer that randomly zeroes input elements during
@@ -66,7 +66,7 @@ use std::sync::Arc;
 /// behavior across step boundaries).
 ///
 /// ```rust,no_run
-/// # use fuel_core::{Device, lazy::Tensor};
+/// # use fuel_tensor::{Device, lazy::Tensor};
 /// # use fuel_nn::dropout::Dropout;
 /// # use fuel_ir::Shape;
 /// let device = Device::cpu();
@@ -124,7 +124,7 @@ impl Dropout {
     /// deterministic training loops that thread their own rng state.
     pub fn forward_with_seed(&self, x: &Tensor, seed: u64) -> Result<Tensor> {
         if !(0.0..1.0).contains(&self.drop_p) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "dropout: drop_p must be in [0, 1), got {}",
                 self.drop_p,
             ))
@@ -136,7 +136,7 @@ impl Dropout {
             return Ok(x.clone());
         }
         if x.dtype() != DType::F32 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "dropout: v1 only supports F32 inputs, got {:?} (graph-level \
                  BernoulliMask primitive lands later)",
                 x.dtype(),
@@ -188,7 +188,7 @@ fn build_bernoulli_mask(n: usize, drop_p: f64, seed: u64) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     #[test]
     fn forward_eval_is_identity() {

@@ -15,9 +15,9 @@
 //! gap" convention used elsewhere in the lazy port.
 
 use crate::modules::{BatchNorm2d, Module};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Configuration for [`Conv1d`].
@@ -124,14 +124,14 @@ impl Conv1d {
         kernel_size: usize,
     ) -> Result<Self> {
         if cfg.groups < 1 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv1d::new: groups must be >= 1, got {}",
                 cfg.groups,
             ))
             .bt());
         }
         if !in_channels.is_multiple_of(cfg.groups) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv1d::new: in_channels ({}) must be divisible \
                  by groups ({})",
                 in_channels, cfg.groups,
@@ -139,7 +139,7 @@ impl Conv1d {
             .bt());
         }
         if !out_channels.is_multiple_of(cfg.groups) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv1d::new: out_channels ({}) must be divisible \
                  by groups ({})",
                 out_channels, cfg.groups,
@@ -148,7 +148,7 @@ impl Conv1d {
         }
         let expected = out_channels * (in_channels / cfg.groups) * kernel_size;
         if weight.elem_count() != expected {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv1d::new: weight has {} elements but \
                  out_channels * (in_channels / groups) * kernel_size = \
                  {} * {} * {} = {}",
@@ -163,7 +163,7 @@ impl Conv1d {
         if let Some(b) = bias.as_ref()
             && b.len() != out_channels
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv1d::new: bias has length {} but \
                      out_channels = {}",
                 b.len(),
@@ -204,7 +204,7 @@ impl Conv1d {
 impl Module for Conv1d {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         if self.cfg.dilation != 1 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv1d::forward: dilation = {} is not supported; \
                  Tensor::conv1d only takes stride/padding/groups. \
                  Use dilation == 1.",
@@ -262,14 +262,14 @@ impl Conv2d {
         kernel_w: usize,
     ) -> Result<Self> {
         if cfg.groups < 1 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv2d::new: groups must be >= 1, got {}",
                 cfg.groups,
             ))
             .bt());
         }
         if !in_channels.is_multiple_of(cfg.groups) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv2d::new: in_channels ({}) must be divisible \
                  by groups ({})",
                 in_channels, cfg.groups,
@@ -277,7 +277,7 @@ impl Conv2d {
             .bt());
         }
         if !out_channels.is_multiple_of(cfg.groups) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv2d::new: out_channels ({}) must be divisible \
                  by groups ({})",
                 out_channels, cfg.groups,
@@ -286,7 +286,7 @@ impl Conv2d {
         }
         let expected = out_channels * (in_channels / cfg.groups) * kernel_h * kernel_w;
         if weight.elem_count() != expected {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv2d::new: weight has {} elements but \
                  out_channels * (in_channels / groups) * kernel_h * kernel_w \
                  = {} * {} * {} * {} = {}",
@@ -302,7 +302,7 @@ impl Conv2d {
         if let Some(b) = bias.as_ref()
             && b.len() != out_channels
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv2d::new: bias has length {} but \
                      out_channels = {}",
                 b.len(),
@@ -366,7 +366,7 @@ impl Conv2d {
     ///   f32 view, which neither variant exposes losslessly.
     pub fn absorb_bn(&self, bn: &BatchNorm2d) -> Result<Conv2d> {
         if bn.num_features() != self.out_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv2d::absorb_bn: bn.num_features ({}) must equal \
                  conv.out_channels ({})",
                 bn.num_features(),
@@ -386,7 +386,7 @@ impl Conv2d {
             WeightStorage::F32(a) => a.iter().copied().collect(),
             WeightStorage::BF16(a) => a.iter().map(|v| v.to_f32()).collect(),
             WeightStorage::Q4_0 { .. } => {
-                return Err(fuel_core::Error::Msg(
+                return Err(fuel_ir::error::Error::Msg(
                     "Conv2d::absorb_bn: Q4_0 weights cannot be folded \
                      with a following BatchNorm (no lossless host f32 \
                      view). Dequantize first, fold, then requantize if \
@@ -396,7 +396,7 @@ impl Conv2d {
                 .bt());
             }
             WeightStorage::WithLoRA { .. } => {
-                return Err(fuel_core::Error::Msg(
+                return Err(fuel_ir::error::Error::Msg(
                     "Conv2d::absorb_bn: LoRA-wrapped weights cannot be \
                      folded with a following BatchNorm (the adapter must \
                      be applied to activations, not weights). Merge LoRA \
@@ -454,7 +454,7 @@ impl Conv2d {
 impl Module for Conv2d {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         if self.cfg.dilation != (1, 1) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv2d::forward: dilation = {:?} is not supported; \
                  Tensor::conv2d only takes stride/padding/groups. \
                  Use dilation == (1, 1).",
@@ -487,7 +487,7 @@ impl Module for Conv2d {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()
