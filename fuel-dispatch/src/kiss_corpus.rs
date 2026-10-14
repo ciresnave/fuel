@@ -628,11 +628,11 @@ mod tests {
 
     /// The three NaN files were loaded, not merely vendored: every cell they
     /// introduce is reachable through `covers`, and the total is the sum of all
-    /// eight vector files (5 + 24 + 48 + 30 + 40 + 12 + 44 + 72).
+    /// eight vector files (5 + 24 + 48 + 30 + 40 + 13 + 44 + 72).
     #[test]
     fn the_nan_vectors_are_loaded_not_merely_vendored() {
         let corpus = load_vendored_corpus().expect("vendored corpus parses");
-        assert_eq!(corpus.vectors.len(), 275);
+        assert_eq!(corpus.vectors.len(), 276);
         for (op, dtype) in [
             ("neg", "bf16"),
             ("abs", "f8e4m3fn"),
@@ -650,7 +650,7 @@ mod tests {
         // canonical, so these cells carry a non-zero bound, unlike every
         // exact-byte cell.
         let ulp: Vec<_> = corpus.vectors.iter().filter(|v| v.class == "ULP").collect();
-        assert_eq!(ulp.len(), 12);
+        assert_eq!(ulp.len(), 13);
         assert!(ulp.iter().all(|v| v.ulp_bound > 0));
     }
 }
