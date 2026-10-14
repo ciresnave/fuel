@@ -11,6 +11,18 @@ pub mod accelerate;
 #[cfg(feature = "mkl")]
 pub mod mkl;
 
+// Link glue. `mkl` and `accelerate` declare `extern "C"` FFI against the vendor
+// libraries; nothing in this crate NAMES the `-src` crate that supplies the link
+// directives, and rustc drops an unreferenced crate from the link line, so
+// `extern crate` is what forces the native library in. It lives HERE, beside the
+// FFI it serves, so a binary that enables only `fuel-cpu-backend/mkl` links too
+// (GAP-348 (b); it used to sit in `fuel-core/src/lib.rs`).
+#[cfg(feature = "mkl")]
+extern crate intel_mkl_src;
+
+#[cfg(feature = "accelerate")]
+extern crate accelerate_src;
+
 #[allow(dead_code)] // Not yet wired to fuel-core delegation; kept for future use
 pub mod conv2d;
 pub mod dyn_impl;

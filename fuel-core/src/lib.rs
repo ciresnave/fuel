@@ -205,12 +205,6 @@ pub use fuel_cuda_backend::builder_arg;
 #[cfg(feature = "metal")]
 pub use fuel_tensor::metal_backend::{MetalDevice, MetalError, MetalStorage};
 
-#[cfg(feature = "mkl")]
-extern crate intel_mkl_src;
-
-#[cfg(feature = "accelerate")]
-extern crate accelerate_src;
-
 // `Module` / `ModuleT` were REMOVED in B6. Both were defined over the eager
 // `crate::tensor::Tensor` (`forward(&self, xs: &Tensor) -> Result<Tensor>`), so
 // they could not survive its deletion. The lazy stack never adopted them — lazy
