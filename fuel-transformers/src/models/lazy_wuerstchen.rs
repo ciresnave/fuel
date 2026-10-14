@@ -19,8 +19,8 @@
 //! `fuel-transformers/src/models/diffusion/wuerstchen/*` (~1176 LOC
 //! across 7 files); see `port-wuerstchen.md` for the full mapping.
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 // ---- Config ----------------------------------------------------------------
@@ -281,7 +281,13 @@ pub struct PaellaUpLevelWeights {
 
 /// `(1, C, H, W)` LayerNorm over the channel axis with no affine.
 /// Matches eager `WLayerNorm`: permute NHWC, LN(last dim), permute back.
-fn w_layer_norm(x: &Tensor, c: usize, h: usize, w: usize, eps: f64) -> fuel_core::Result<Tensor> {
+fn w_layer_norm(
+    x: &Tensor,
+    c: usize,
+    h: usize,
+    w: usize,
+    eps: f64,
+) -> fuel_ir::error::Result<Tensor> {
     let x_nhwc = x.permute([0, 2, 3, 1_usize])?;
     let x_flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let normed = x_flat.layer_norm_last_dim(eps)?;
@@ -292,7 +298,7 @@ fn w_layer_norm(x: &Tensor, c: usize, h: usize, w: usize, eps: f64) -> fuel_core
 
 /// Same shape contract as `w_layer_norm` but operates on a `[1, seq, C]`
 /// tensor directly (i.e. already channels-last and flattened).
-fn ln_last_no_affine(x: &Tensor, eps: f64) -> fuel_core::Result<Tensor> {
+fn ln_last_no_affine(x: &Tensor, eps: f64) -> fuel_ir::error::Result<Tensor> {
     x.layer_norm_last_dim(eps)
 }
 
@@ -306,7 +312,7 @@ fn linear(
     out_f: usize,
     batch: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
@@ -338,7 +344,7 @@ pub fn global_response_norm(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     // sum over (h, w) per channel.
     let sq = x.mul(x)?; // [1, C, H, W]
     let agg = sq.reduce_sum_to(Shape::from_dims(&[1, c, 1, 1])).sqrt(); // [1, C, 1, 1]
@@ -373,7 +379,7 @@ fn apply_res_block(
     h: usize,
     w: usize,
     eps: f64,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let c = rw.c;
     let c_skip = rw.c_skip;
     let k = rw.ksize;
@@ -423,7 +429,7 @@ fn apply_res_block_stage_b(
     h: usize,
     w: usize,
     eps: f64,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let c = rw.c;
     let c_skip = rw.c_skip;
     let k = rw.ksize;
@@ -470,7 +476,7 @@ fn apply_timestep_block(
     t: &Tensor, // [1, 1, c_timestep]
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let c = tw.c;
     let mapped = linear(t, &tw.w, Some(&tw.b), tw.c_timestep, 2 * c, 1, 1)?;
     // mapped: [1, 1, 2C]. chunk along axis -1.
@@ -496,7 +502,7 @@ fn apply_attn_block(
     w: usize,
     eps: f64,
     self_attn: bool,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let c = aw.c;
     let heads = aw.heads;
     let d_head = c / heads;
@@ -597,7 +603,7 @@ impl PriorModel {
         c_embed: &Tensor,
         h: usize,
         w: usize,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let c = cfg.prior_c;
         let c_in = cfg.prior_c_in;
@@ -692,7 +698,7 @@ impl DiffNextModel {
         clip: &Tensor,
         h_in: usize,
         w_in: usize,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let c_in = cfg.diffnext_c_in;
         let c_out = cfg.diffnext_c_out;
@@ -701,13 +707,13 @@ impl DiffNextModel {
         let eps = 1e-6_f64;
         let levels = &cfg.diffnext_c_hidden;
         if levels.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "DiffNextModel.forward: diffnext_c_hidden is empty".into(),
             )
             .bt());
         }
         if !h_in.is_multiple_of(p) || !w_in.is_multiple_of(p) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DiffNextModel.forward: spatial dims ({h_in}, {w_in}) must be divisible by patch_size {p}",
             )).bt());
         }
@@ -848,7 +854,7 @@ fn pixel_unshuffle(
     h: usize,
     w: usize,
     p: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h_out = h / p;
     let w_out = w / p;
     let r = x.reshape(Shape::from_dims(&[1, c, h_out, p, w_out, p]))?;
@@ -859,7 +865,13 @@ fn pixel_unshuffle(
 
 /// Pixel-shuffle (depth-to-space) by factor `p`. Input `[1, C, H, W]`
 /// → output `[1, C/p², H*p, W*p]`. Inverse of `pixel_unshuffle`.
-fn pixel_shuffle(x: &Tensor, c: usize, h: usize, w: usize, p: usize) -> fuel_core::Result<Tensor> {
+fn pixel_shuffle(
+    x: &Tensor,
+    c: usize,
+    h: usize,
+    w: usize,
+    p: usize,
+) -> fuel_ir::error::Result<Tensor> {
     let c_out = c / (p * p);
     let r = x.reshape(Shape::from_dims(&[1, c_out, p, p, h, w]))?;
     // permute to [1, C_out, H, p, W, p].
@@ -882,17 +894,17 @@ impl PaellaVqModel {
     /// `[1, latent_channels, h_lat, w_lat]`. Output shape
     /// `[1, out_channels, h_lat * upscale, w_lat * upscale]` where
     /// `upscale = 2 * 2^(n_levels - 1)` (the *2 is the final pixel-shuffle).
-    pub fn decode(&self, latents: &Tensor) -> fuel_core::Result<Tensor> {
+    pub fn decode(&self, latents: &Tensor) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let dims = latents.shape().dims().to_vec();
         if dims.len() != 4 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaellaVqModel.decode: latents must be rank 4 [1, C, H, W], got {dims:?}",
             ))
             .bt());
         }
         if dims[1] != cfg.paella_latent_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaellaVqModel.decode: latent channel mismatch (have {}, cfg {})",
                 dims[1], cfg.paella_latent_channels,
             ))
@@ -952,7 +964,7 @@ fn apply_paella_mixing_res(
     bw: &PaellaMixingResWeights,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let c = bw.c;
     let g = &bw.gammas;
     let eps = 1e-6_f64;
@@ -992,7 +1004,7 @@ fn replicate_pad_2d(
     h: usize,
     w: usize,
     pad: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     if pad == 0 {
         return Ok(x.clone());
     }
@@ -1036,7 +1048,7 @@ pub fn generate(
     prior_w: usize,
     b_h: usize,
     b_w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let cfg = &prior.config;
 
     // Stage C: start from noise and run `1 + prior_steps` denoising
@@ -1079,7 +1091,7 @@ pub fn generate(
 /// model's `(x - a) / b` output is the update), so a reproducible
 /// pseudo-random initial state suffices for both the tiny test and the
 /// general-purpose entry point.
-fn noise_on_graph(anchor: &Tensor, shape: Shape, seed: u64) -> fuel_core::Result<Tensor> {
+fn noise_on_graph(anchor: &Tensor, shape: Shape, seed: u64) -> fuel_ir::error::Result<Tensor> {
     let n = shape.elem_count();
     let data = small_normal_vec(n, seed);
     anchor.const_f32_like(data, shape)
@@ -1359,11 +1371,11 @@ fn load_arc_f32(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     expected: usize,
-) -> fuel_core::Result<Arc<[f32]>> {
-    use fuel_core::lazy::load_tensor_as_f32;
+) -> fuel_ir::error::Result<Arc<[f32]>> {
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let v = load_tensor_as_f32(st, name)?;
     if v.len() != expected {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "wuerstchen load: tensor {name:?} has {} elements, expected {expected}",
             v.len(),
         ))
@@ -1379,8 +1391,8 @@ fn load_linear_f32(
     name: &str,
     out_f: usize,
     in_f: usize,
-) -> fuel_core::Result<Arc<[f32]>> {
-    use fuel_core::lazy::load_transposed_matrix;
+) -> fuel_ir::error::Result<Arc<[f32]>> {
+    use fuel_tensor::lazy::load_transposed_matrix;
     Ok(Arc::from(load_transposed_matrix(st, name, out_f, in_f)?))
 }
 
@@ -1388,7 +1400,7 @@ fn load_grn(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c: usize,
-) -> fuel_core::Result<GrnWeights> {
+) -> fuel_ir::error::Result<GrnWeights> {
     Ok(GrnWeights {
         gamma: load_arc_f32(st, &format!("{prefix}.gamma"), c)?,
         beta: load_arc_f32(st, &format!("{prefix}.beta"), c)?,
@@ -1401,7 +1413,7 @@ fn load_res_block(
     c: usize,
     c_skip: usize,
     ksize: usize,
-) -> fuel_core::Result<ResBlockWeights> {
+) -> fuel_ir::error::Result<ResBlockWeights> {
     // depthwise conv: [C, 1, K, K]
     let dw_w = load_arc_f32(st, &format!("{prefix}.depthwise.weight"), c * ksize * ksize)?;
     let dw_b = load_arc_f32(st, &format!("{prefix}.depthwise.bias"), c)?;
@@ -1437,7 +1449,7 @@ fn load_ts_block(
     prefix: &str,
     c: usize,
     c_timestep: usize,
-) -> fuel_core::Result<TimestepBlockWeights> {
+) -> fuel_ir::error::Result<TimestepBlockWeights> {
     let w = load_linear_f32(st, &format!("{prefix}.mapper.weight"), 2 * c, c_timestep)?;
     let b = load_arc_f32(st, &format!("{prefix}.mapper.bias"), 2 * c)?;
     Ok(TimestepBlockWeights {
@@ -1454,7 +1466,7 @@ fn load_attn_block(
     c: usize,
     c_cond: usize,
     heads: usize,
-) -> fuel_core::Result<AttnBlockWeights> {
+) -> fuel_ir::error::Result<AttnBlockWeights> {
     let kv_mapper_w = load_linear_f32(st, &format!("{prefix}.kv_mapper.1.weight"), c, c_cond)?;
     let kv_mapper_b = load_arc_f32(st, &format!("{prefix}.kv_mapper.1.bias"), c)?;
     let to_q_w = load_linear_f32(st, &format!("{prefix}.attention.to_q.weight"), c, c)?;
@@ -1500,7 +1512,7 @@ impl PriorWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &WuerstchenConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let c = cfg.prior_c;
         let c_in = cfg.prior_c_in;
         let c_cond = cfg.prior_c_cond;
@@ -1551,14 +1563,14 @@ impl DiffNextWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &WuerstchenConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let levels = &cfg.diffnext_c_hidden;
         let c_in = cfg.diffnext_c_in;
         let c_out = cfg.diffnext_c_out;
         let c_cond = cfg.diffnext_c_cond;
         let p = cfg.patch_size;
         if levels.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "DiffNextWeights.load_from_mmapped: diffnext_c_hidden empty".into(),
             )
             .bt());
@@ -1681,7 +1693,7 @@ fn load_paella_mixing_res(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c: usize,
-) -> fuel_core::Result<PaellaMixingResWeights> {
+) -> fuel_ir::error::Result<PaellaMixingResWeights> {
     let embed_dim = 4 * c;
     let gammas_vec = load_arc_f32(st, &format!("{prefix}.gammas"), 6)?;
     let gammas = [
@@ -1719,12 +1731,12 @@ impl PaellaVqWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &WuerstchenConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let levels = &cfg.paella_levels;
         let lc = cfg.paella_latent_channels;
         let oc = cfg.paella_out_channels;
         if levels.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "PaellaVqWeights.load_from_mmapped: paella_levels empty".into(),
             )
             .bt());
@@ -1784,8 +1796,8 @@ impl PaellaVqWeights {
 mod tests {
     use super::*;
 
-    fn dev() -> fuel_core::Device {
-        fuel_core::Device::cpu()
+    fn dev() -> fuel_tensor::Device {
+        fuel_tensor::Device::cpu()
     }
 
     /// GlobalResponseNorm hand-check: with `x = [1, 0; 0, 0]` on `C=1`,

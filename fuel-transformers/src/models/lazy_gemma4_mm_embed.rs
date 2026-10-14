@@ -15,8 +15,8 @@
 //! the Gemma4 text decoder's embedding space before concatenating
 //! them with text token embeddings.
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -73,8 +73,8 @@ impl Gemma4MmEmbedWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Gemma4MmEmbedConfig,
-    ) -> fuel_core::Result<Self> {
-        use fuel_core::lazy::load_transposed_matrix_preserve_dtype as ltm;
+    ) -> fuel_ir::error::Result<Self> {
+        use fuel_tensor::lazy::load_transposed_matrix_preserve_dtype as ltm;
         let projection = ltm(
             st,
             "model.embed_vision.embedding_projection.weight",
@@ -90,8 +90,8 @@ impl Gemma4MmEmbedWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
     use fuel_ir::Shape;
+    use fuel_tensor::Device;
 
     fn rng(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

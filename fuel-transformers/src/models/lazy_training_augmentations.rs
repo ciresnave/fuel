@@ -19,8 +19,8 @@
 //! update are out of scope here — they ship in follow-up commits per
 //! the master plan.
 
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::collections::HashMap;
 
 /// Host-side learning-rate schedule.
@@ -153,16 +153,18 @@ pub fn clip_grad_norm(
     norm_type: f64,
 ) -> Result<HashMap<String, Tensor>> {
     if grads.is_empty() {
-        return Err(fuel_core::Error::Msg("clip_grad_norm: gradient bundle is empty".into()).bt());
+        return Err(
+            fuel_ir::error::Error::Msg("clip_grad_norm: gradient bundle is empty".into()).bt(),
+        );
     }
     if !(max_norm > 0.0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "clip_grad_norm: max_norm must be > 0, got {max_norm}",
         ))
         .bt());
     }
     if !(norm_type > 0.0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "clip_grad_norm: norm_type must be > 0, got {norm_type}",
         ))
         .bt());
@@ -173,10 +175,10 @@ pub fn clip_grad_norm(
     // `Tensor::realize_f32` (whose panic is a test convenience). Uses the
     // same fallible path as `train.rs::param_to_host`.
     fn host_f32(t: &Tensor) -> Result<Vec<f32>> {
-        fuel_core::pipelined_bridge::realize_one_as::<f32>(
+        fuel_tensor::pipelined_bridge::realize_one_as::<f32>(
             t.graph(),
             t.node_id(),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
     }
 
@@ -252,7 +254,7 @@ pub fn clip_grad_value(
     clip_value: f64,
 ) -> Result<HashMap<String, Tensor>> {
     if clip_value < 0.0 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "clip_grad_value: clip_value must be >= 0, got {clip_value}",
         ))
         .bt());
@@ -267,8 +269,8 @@ pub fn clip_grad_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
     use fuel_ir::Shape;
+    use fuel_tensor::Device;
 
     // ---------- LR schedule tests ----------
 

@@ -26,9 +26,9 @@
 //!     `fuel-transformers/src/models/multimodal/openclip/text_model.rs`).
 //!   - Pre-LN structure.
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -146,7 +146,7 @@ impl OpenClipTextModel {
         assert!(seq > 0, "input_ids must be non-empty");
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "OpenClipTextModel: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             )));
@@ -156,7 +156,7 @@ impl OpenClipTextModel {
         let token_table = Tensor::from_f32(
             Arc::clone(&w.token_embedding),
             Shape::from_dims(&[cfg.vocab_size, cfg.embed_dim]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         let ids = token_table.const_u32_like(input_ids.to_vec(), Shape::from_dims(&[seq]))?;
         let tok = token_table
@@ -274,9 +274,9 @@ impl OpenClipTextWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &OpenClipTextConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{
-            load_tensor_as_f32, load_transposed_matrix,
-            load_transposed_matrix_preserve_dtype as ltm,
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix,
+            lazy::load_transposed_matrix_preserve_dtype as ltm,
         };
         let h = cfg.embed_dim;
         let inter = cfg.intermediate_size;

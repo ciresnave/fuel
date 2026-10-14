@@ -41,9 +41,10 @@
 //! the math.
 
 use crate::models::lazy_glm4::apply_interleaved_partial_rope;
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,21 +240,21 @@ impl ChatGlmModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "ChatGlmModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "ChatGlmModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         let rope_dim = cfg.rope_dim();
         if rope_dim == 0 || !rope_dim.is_multiple_of(2) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "ChatGlmConfig: kv_channels ({}) must be even and >= 2 for halved-pair RoPE",
                 cfg.head_dim(),
             ))
@@ -263,7 +264,7 @@ impl ChatGlmModel {
             .num_attention_heads
             .is_multiple_of(cfg.multi_query_group_num)
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "num_attention_heads ({}) must be a multiple of multi_query_group_num ({})",
                 cfg.num_attention_heads, cfg.multi_query_group_num,
             ))
@@ -476,7 +477,7 @@ impl ChatGlmWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ChatGlmConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.hidden_size;
         let ffn = cfg.ffn_hidden_size;
@@ -487,7 +488,7 @@ impl ChatGlmWeights {
         let token_embedding =
             load_tensor_as_f32(st, "transformer.embedding.word_embeddings.weight")?;
         if token_embedding.len() != cfg.padded_vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "transformer.embedding.word_embeddings.weight: {} elts, expected {} ({}×{})",
                 token_embedding.len(),
                 cfg.padded_vocab_size * h,

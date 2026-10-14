@@ -58,8 +58,8 @@
 //! - Forward-only. YOLOv8 training has a custom loss (box/cls/dfl
 //!   weighted sum) that's outside Phase 6a's scope.
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 // ---- Config ----------------------------------------------------------------
@@ -241,7 +241,7 @@ fn per_channel_affine(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let s = x
         .const_f32_like(scale.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
@@ -266,7 +266,7 @@ fn cbs(
     groups: usize,
     h_out: usize,
     w_out: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(
         cw.conv_w.clone(),
         Shape::from_dims(&[c_out, c_in / groups, k, k]),
@@ -292,7 +292,7 @@ fn max_pool_s1_composed(
     w: usize,
     k: usize,
     p: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     assert_eq!(
         k,
         2 * p + 1,
@@ -313,7 +313,13 @@ fn max_pool_s1_composed(
     Ok(acc.expect("max_pool_s1_composed: at least one tap"))
 }
 
-fn pad_hw_zeros(x: &Tensor, c: usize, h: usize, w: usize, p: usize) -> fuel_core::Result<Tensor> {
+fn pad_hw_zeros(
+    x: &Tensor,
+    c: usize,
+    h: usize,
+    w: usize,
+    p: usize,
+) -> fuel_ir::error::Result<Tensor> {
     if p == 0 {
         return Ok(x.clone());
     }
@@ -335,7 +341,7 @@ fn bottleneck(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let y = cbs(x, &bw.cv1, c, c, 3, 1, 1, 1, h, w)?;
     let y = cbs(&y, &bw.cv2, c, c, 3, 1, 1, 1, h, w)?;
     if bw.add_residual { x.add(&y) } else { Ok(y) }
@@ -352,7 +358,7 @@ fn c2f(
     c_out: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let c = cw.c_inner; // = c_out / 2 in the standard YOLOv8 config
     let expanded = cbs(x, &cw.cv1, c_in, 2 * c, 1, 1, 0, 1, h, w)?;
     // Split into halves along channel axis.
@@ -384,7 +390,7 @@ fn sppf(
     c_out: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let c_mid = c_in / 2;
     let y0 = cbs(x, &sw.cv1, c_in, c_mid, 1, 1, 0, 1, h, w)?;
     let y1 = max_pool_s1_composed(&y0, c_mid, h, w, 5, 2)?;
@@ -396,7 +402,7 @@ fn sppf(
 
 /// 2× nearest-neighbor upsample along both spatial axes. `[1, C, H, W]`
 /// → `[1, C, 2H, 2W]`.
-fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> fuel_core::Result<Tensor> {
+fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> fuel_ir::error::Result<Tensor> {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]))?;
     let x6 = x6.concat(&x6, 3)?;
     let x6 = x6.concat(&x6, 5)?;
@@ -413,7 +419,7 @@ fn raw_conv(
     c_out: usize,
     k: usize,
     p: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c_out, c_in, k, k]))?;
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c_out]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (p, p), 1)
@@ -432,7 +438,7 @@ fn detect_branch(
     c_in: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<(Tensor, Tensor)> {
+) -> fuel_ir::error::Result<(Tensor, Tensor)> {
     // Classification head.
     let cls = cbs(x, &dw.cls_cv1, c_in, c_in, 3, 1, 1, 1, h, w)?;
     let cls = cbs(&cls, &dw.cls_cv2, c_in, c_in, 3, 1, 1, 1, h, w)?;
@@ -463,7 +469,11 @@ fn detect_branch(
 /// DFL decode: `reg_logits [1, 4*R, N]` → `[1, 4, N]` distances. Each
 /// coordinate's `R` bins are softmaxed then summed against `[0, 1, ...,
 /// R-1]` to produce the expectation.
-fn dfl_decode(reg_logits: &Tensor, reg_max: usize, n_anchors: usize) -> fuel_core::Result<Tensor> {
+fn dfl_decode(
+    reg_logits: &Tensor,
+    reg_max: usize,
+    n_anchors: usize,
+) -> fuel_ir::error::Result<Tensor> {
     // Reshape [1, 4*R, N] → [1, 4, R, N] → [1, 4, N, R] (R last).
     let r = reg_max;
     let y = reg_logits.reshape(Shape::from_dims(&[1, 4, r, n_anchors]))?;
@@ -508,7 +518,7 @@ impl YoloV8Model {
     /// Run the full forward pass on a `[1, 3, H, W]` RGB image
     /// (pixel values typically 0..1). Returns the raw detection
     /// tensors pre-NMS.
-    pub fn forward(&self, image: &[f32]) -> fuel_core::Result<YoloV8RawOutput> {
+    pub fn forward(&self, image: &[f32]) -> fuel_ir::error::Result<YoloV8RawOutput> {
         let cfg = &self.config;
         let isize = cfg.image_size;
         assert_eq!(
@@ -520,7 +530,7 @@ impl YoloV8Model {
         let x = Tensor::from_f32(
             image.to_vec(),
             Shape::from_dims(&[1, 3, isize, isize]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
 
         // --- Backbone ---
@@ -667,7 +677,7 @@ impl YoloV8Model {
         // Flatten each (H, W) into N positions then concat along the
         // position axis.
         let flatten_positions =
-            |t: &Tensor, c: usize, h: usize, w: usize| -> fuel_core::Result<Tensor> {
+            |t: &Tensor, c: usize, h: usize, w: usize| -> fuel_ir::error::Result<Tensor> {
                 t.reshape(Shape::from_dims(&[1, c, h * w]))
             };
         let cls_s_f = flatten_positions(&cls_s, cfg.num_classes, h3, w3)?;
@@ -913,8 +923,8 @@ impl YoloV8Weights {
     pub fn load_from_mmapped(
         _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &YoloV8Config,
-    ) -> fuel_core::Result<Self> {
-        Err(fuel_core::Error::Msg(
+    ) -> fuel_ir::error::Result<Self> {
+        Err(fuel_ir::error::Error::Msg(
             "YoloV8Weights::load_from_mmapped: detection-head + multi-scale \
              C2f/SPPF naming pending; construct YoloV8Weights via the \
              explicit struct literal or contribute the loader."
@@ -968,8 +978,8 @@ mod tests {
         // Phase 6a oracle gate: fast path must agree with reference.
         let cls_ref = raw.cls_logits.realize_f32();
         let reg_ref = raw.reg_dists.realize_f32();
-        fuel_core::test_utils::assert_allclose_f32(&cls, &cls_ref, 1e-4, 1e-3);
-        fuel_core::test_utils::assert_allclose_f32(&reg, &reg_ref, 1e-4, 1e-3);
+        fuel_tensor::test_utils::assert_allclose_f32(&cls, &cls_ref, 1e-4, 1e-3);
+        fuel_tensor::test_utils::assert_allclose_f32(&reg, &reg_ref, 1e-4, 1e-3);
     }
 
     #[test]
@@ -1000,13 +1010,13 @@ mod tests {
             cls_logits: Tensor::from_f32(
                 vec![5.0_f32, 5.0, 5.0, 5.0],
                 Shape::from_dims(&[1, 1, 4]),
-                &fuel_core::Device::cpu(),
+                &fuel_tensor::Device::cpu(),
             )
             .unwrap(),
             reg_dists: Tensor::from_f32(
                 reg,
                 Shape::from_dims(&[1, 4, 4]),
-                &fuel_core::Device::cpu(),
+                &fuel_tensor::Device::cpu(),
             )
             .unwrap(),
             strides: vec![8.0; 4],

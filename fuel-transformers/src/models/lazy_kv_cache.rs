@@ -38,10 +38,10 @@
 //!    and re-uploading on the next forward.
 //!
 //! Persistent storage-backed cross-graph re-anchoring (the pattern
-//! [`fuel_core::inference_context::KvCache`] uses for its
+//! [`fuel_tensor::inference_context::KvCache`] uses for its
 //! `forward_with_kv_context` consumer) is a documented follow-up — it
 //! requires `Arc<RwLock<Storage>>` plumbing through
-//! [`fuel_core::inference_context::InferenceContext`] that's already in
+//! [`fuel_tensor::inference_context::InferenceContext`] that's already in
 //! place for option (a)-style consumers but adds enough complexity to
 //! warrant its own session.
 //!
@@ -60,10 +60,10 @@
 //!   rewrite the post-write buffer NodeId in place: the rewrite sees
 //!   one logical owner, the most recent cache.
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::{DType, lazy::Tensor};
 use fuel_ir::Shape;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{DType, lazy::Tensor};
 use std::sync::Arc;
 
 /// Per-forward-pass KV cache. See module docs for lifecycle and shape
@@ -154,9 +154,9 @@ impl LazyKvCache {
         layer: usize,
         k_new: &Tensor,
         v_new: &Tensor,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         if layer >= self.layers.len() {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "LazyKvCache::append: layer {layer} out of bounds (n_layers={})",
                 self.layers.len(),
             );
@@ -164,18 +164,16 @@ impl LazyKvCache {
         let k_dims = k_new.shape().dims().to_vec();
         let v_dims = v_new.shape().dims().to_vec();
         if k_dims.len() != 3 || v_dims.len() != 3 {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "LazyKvCache::append: k_new/v_new must be rank 3, got k={k_dims:?} v={v_dims:?}",
             );
         }
         if k_dims != v_dims {
-            fuel_core::bail!(
-                "LazyKvCache::append: k_new shape {k_dims:?} != v_new shape {v_dims:?}",
-            );
+            fuel_ir::bail!("LazyKvCache::append: k_new shape {k_dims:?} != v_new shape {v_dims:?}",);
         }
         let seqlen_new = k_dims[0];
         if k_dims[1] != self.n_kv_heads || k_dims[2] != self.head_dim {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "LazyKvCache::append: k_new shape {k_dims:?} doesn't match cache geometry \
                  [n_kv_heads={}, head_dim={}]",
                 self.n_kv_heads,
@@ -184,7 +182,7 @@ impl LazyKvCache {
         }
         let new_end = self.current_seq_len + seqlen_new;
         if new_end > self.max_seq_len {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "LazyKvCache::append: appending {seqlen_new} tokens at position {} would \
                  exceed max_seq_len {}",
                 self.current_seq_len,
@@ -236,9 +234,9 @@ impl LazyKvCache {
         k_new: &Tensor,
         v_new: &Tensor,
         position: &Tensor,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         if layer >= self.layers.len() {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "LazyKvCache::append_rotating: layer {layer} out of bounds (n_layers={})",
                 self.layers.len(),
             );
@@ -246,18 +244,18 @@ impl LazyKvCache {
         let k_dims = k_new.shape().dims().to_vec();
         let v_dims = v_new.shape().dims().to_vec();
         if k_dims.len() != 3 || v_dims.len() != 3 {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "LazyKvCache::append_rotating: k_new/v_new must be rank 3, got k={k_dims:?} v={v_dims:?}",
             );
         }
         if k_dims != v_dims {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "LazyKvCache::append_rotating: k_new shape {k_dims:?} != v_new shape {v_dims:?}",
             );
         }
         let seqlen_new = k_dims[0];
         if k_dims[1] != self.n_kv_heads || k_dims[2] != self.head_dim {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "LazyKvCache::append_rotating: k_new shape {k_dims:?} doesn't match cache geometry \
                  [n_kv_heads={}, head_dim={}]",
                 self.n_kv_heads,
@@ -265,7 +263,7 @@ impl LazyKvCache {
             );
         }
         if seqlen_new > self.max_seq_len {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "LazyKvCache::append_rotating: seqlen_new ({seqlen_new}) exceeds window \
                  max_seq_len ({})",
                 self.max_seq_len,

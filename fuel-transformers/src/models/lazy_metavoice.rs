@@ -28,12 +28,13 @@
 //! is not used — every `forward` call recomputes attention over
 //! the full input (matches the LLaMA / Mistral lazy v1 contract).
 
-use fuel_core::lazy::{
-    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix,
-    load_transposed_matrix_preserve_dtype,
-};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{
+    lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix, lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::sync::Arc;
 
 /// MetaVoice main LM configuration. Mirrors HF stage-2 config
@@ -79,7 +80,7 @@ impl MetaVoiceConfig {
 }
 
 /// MetaVoice main LM weights. Per-layer parameters reuse
-/// [`fuel_core::lazy::LayerWeights`] since the bias-free GQA decoder
+/// [`fuel_tensor::lazy::LayerWeights`] since the bias-free GQA decoder
 /// shape is identical to LLaMA / Mistral.
 #[derive(Debug, Clone)]
 pub struct MetaVoiceWeights {
@@ -153,7 +154,7 @@ impl MetaVoiceModel {
         // property a real checkpoint can violate, so it is an error to return,
         // not an invariant to assert.
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MetaVoiceConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -164,7 +165,7 @@ impl MetaVoiceModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MetaVoiceConfig: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
                 cfg.num_attention_heads, cfg.num_key_value_heads,
             ))
@@ -198,7 +199,7 @@ impl MetaVoiceModel {
         }
         let refs: Vec<&Tensor> = per_codebook.iter().collect();
         Tensor::stack(&refs, 1_usize)
-            .map_err(|e| fuel_core::Error::Msg(format!("stack lm_heads: {e}")).bt())
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("stack lm_heads: {e}")).bt())
     }
 
     fn anchor_speaker(&self, speaker_embed: &Tensor, anchor: &Tensor) -> Result<Tensor> {
@@ -213,7 +214,7 @@ impl MetaVoiceModel {
             _ => false,
         };
         if !trailing_ok || n != expected {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "speaker_embed must flatten to speaker_emb_dim={expected} elements, got shape {dims:?}",
             ))
             .bt());
@@ -398,7 +399,7 @@ impl MetaVoiceWeights {
         // Token embedding table — raw `[vocab, hidden]`, no transpose.
         let token_embedding_v = load_tensor_as_f32(st, "tok_embeddings.weight")?;
         if token_embedding_v.len() != cfg.vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "tok_embeddings.weight: {} elts, expected {} ({}×{})",
                 token_embedding_v.len(),
                 cfg.vocab_size * h,
@@ -428,7 +429,7 @@ impl MetaVoiceWeights {
             // layout.
             let fused = load_tensor_as_f32(st, &format!("{p}.attention.wqkv.weight"))?;
             if fused.len() != qkv_out * h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p}.attention.wqkv.weight: {} elts, expected {} ({}×{})",
                     fused.len(),
                     qkv_out * h,
@@ -476,7 +477,7 @@ impl MetaVoiceWeights {
             // Per-layer RmsNorm gains.
             let attn_norm_gain = load_tensor_as_f32(st, &format!("{p}.attention_norm.weight"))?;
             if attn_norm_gain.len() != h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p}.attention_norm.weight: {} elts, expected {}",
                     attn_norm_gain.len(),
                     h,
@@ -484,7 +485,7 @@ impl MetaVoiceWeights {
             }
             let ffn_norm_gain = load_tensor_as_f32(st, &format!("{p}.ffn_norm.weight"))?;
             if ffn_norm_gain.len() != h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p}.ffn_norm.weight: {} elts, expected {}",
                     ffn_norm_gain.len(),
                     h,
@@ -510,7 +511,7 @@ impl MetaVoiceWeights {
         // Final RmsNorm gain.
         let final_norm_gain_v = load_tensor_as_f32(st, "norm.weight")?;
         if final_norm_gain_v.len() != h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "norm.weight: {} elts, expected {}",
                 final_norm_gain_v.len(),
                 h,

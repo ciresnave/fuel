@@ -27,11 +27,11 @@
 //! Forward-only, single image + single token sequence, F32.
 
 use crate::models::lazy_mixformer::{MixFormerConfig, MixFormerModel, MixFormerWeights};
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +214,7 @@ impl MoondreamModel {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "moondream vision: input spatial dims ({}, {}) must equal image_size {}; this \
                  model is fixed-resolution (position interpolation deferred), and the patch \
                  reshape targets a config-derived num_patches — it guards the patch COUNT, not \
@@ -380,8 +380,8 @@ impl MoondreamWeights {
     pub fn load_from_mmapped(
         _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &MoondreamConfig,
-    ) -> fuel_core::Result<Self> {
-        Err(fuel_core::Error::Msg(
+    ) -> fuel_ir::error::Result<Self> {
+        Err(fuel_ir::error::Error::Msg(
             "MoondreamWeights::load_from_mmapped: vision+projector+text \
              composition pending; construct MoondreamWeights via explicit \
              struct literal or contribute the loader."

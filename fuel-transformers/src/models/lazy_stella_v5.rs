@@ -42,9 +42,9 @@
 //! enumerated by [`StellaEmbedDim`].
 
 use crate::models::lazy_qwen2::{Qwen2Config, Qwen2Model, Qwen2Weights};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Canonical output dimensions for Stella-en-v5's Matryoshka
@@ -211,7 +211,7 @@ impl StellaV5Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &StellaV5Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_transposed_matrix_preserve_dtype as ltm;
+        use fuel_tensor::lazy::load_transposed_matrix_preserve_dtype as ltm;
         let backbone =
             crate::models::lazy_qwen2::Qwen2Weights::load_from_mmapped(st, &cfg.backbone)?;
         let out_dim = cfg.embed_dim.out_features();
@@ -238,8 +238,8 @@ impl StellaV5Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
-    use fuel_core::lazy::LayerWeights;
+    use fuel_tensor::Device;
+    use fuel_tensor::lazy::LayerWeights;
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
@@ -296,7 +296,7 @@ mod tests {
             })
             .collect();
         Qwen2Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),

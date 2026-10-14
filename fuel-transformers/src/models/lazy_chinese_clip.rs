@@ -17,9 +17,9 @@
 
 use crate::models::lazy_bert::{BertConfig, BertModel, BertWeights};
 use crate::models::lazy_clip::{ClipVisionConfig, ClipVisionModel, ClipVisionWeights};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -155,7 +155,7 @@ impl ChineseClipWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ChineseClipConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let text = BertWeights::load_from_mmapped(st, &cfg.text)?;
         let vision = ClipVisionWeights::load_from_mmapped(st, &cfg.vision, "vision_model.")?;
         let text_projection = load_transposed_matrix_preserve_dtype(
@@ -191,7 +191,7 @@ mod tests {
     use super::*;
     use crate::models::lazy_bert::BertLayerWeights;
     use crate::models::lazy_clip::ClipEncoderLayerWeights;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

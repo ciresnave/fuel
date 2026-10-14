@@ -69,9 +69,10 @@
 //! graph-build time (same shape as the RWKV-5 port — long
 //! prompts produce large but well-formed graphs).
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 pub use crate::models::lazy_gemma::GemmaActivation;
@@ -180,11 +181,11 @@ struct RecurrentGemmaConfigRaw {
 /// Unknown values ERROR rather than defaulting: a block kind this port does not
 /// implement is a fact worth surfacing, and defaulting it to either variant
 /// would produce a model that runs and is wrong.
-fn recurrent_gemma_block_type_from_str(s: &str) -> fuel_core::Result<TemporalBlockType> {
+fn recurrent_gemma_block_type_from_str(s: &str) -> fuel_ir::error::Result<TemporalBlockType> {
     match s {
         "attention" => Ok(TemporalBlockType::Attention),
         "recurrent" => Ok(TemporalBlockType::Recurrent),
-        other => Err(fuel_core::Error::Msg(format!(
+        other => Err(fuel_ir::error::Error::Msg(format!(
             "unsupported RecurrentGemma _block_types entry {other:?} \
              (expected \"attention\" or \"recurrent\")"
         ))),
@@ -192,11 +193,11 @@ fn recurrent_gemma_block_type_from_str(s: &str) -> fuel_core::Result<TemporalBlo
 }
 
 /// Map `hidden_activation` to [`GemmaActivation`]. Unknown values ERROR.
-fn recurrent_gemma_activation_from_str(s: &str) -> fuel_core::Result<GemmaActivation> {
+fn recurrent_gemma_activation_from_str(s: &str) -> fuel_ir::error::Result<GemmaActivation> {
     match s {
         "gelu_pytorch_tanh" => Ok(GemmaActivation::GeluPytorchTanh),
         "gelu" => Ok(GemmaActivation::Gelu),
-        other => Err(fuel_core::Error::Msg(format!(
+        other => Err(fuel_ir::error::Error::Msg(format!(
             "unsupported RecurrentGemma hidden_activation {other:?} \
              (expected gelu_tanh/gelu_pytorch_tanh)"
         ))),
@@ -204,14 +205,15 @@ fn recurrent_gemma_activation_from_str(s: &str) -> fuel_core::Result<GemmaActiva
 }
 
 impl RecurrentGemmaConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing RecurrentGemma config.json: {e}")))
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
+        serde_json::from_str(json).map_err(|e| {
+            fuel_ir::error::Error::Msg(format!("parsing RecurrentGemma config.json: {e}"))
+        })
     }
 
-    fn resolve(self) -> fuel_core::Result<RecurrentGemmaConfig> {
+    fn resolve(self) -> fuel_ir::error::Result<RecurrentGemmaConfig> {
         if self.block_types.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "RecurrentGemma config.json: _block_types is empty, so block_type() \
                  would divide by zero"
                     .into(),
@@ -221,7 +223,7 @@ impl RecurrentGemmaConfigRaw {
             .block_types
             .iter()
             .map(|s| recurrent_gemma_block_type_from_str(s))
-            .collect::<fuel_core::Result<Vec<_>>>()?;
+            .collect::<fuel_ir::error::Result<Vec<_>>>()?;
 
         Ok(RecurrentGemmaConfig {
             vocab_size: self.vocab_size,
@@ -267,7 +269,7 @@ impl RecurrentGemmaConfig {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset.
     /// See `RecurrentGemmaConfigRaw` for why `_block_types` is mapped VERBATIM
     /// (it is a cycle, not a per-layer list) and what `max_seq_len` is set to.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         RecurrentGemmaConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -417,20 +419,20 @@ impl RecurrentGemmaModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "RecurrentGemmaModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "RecurrentGemmaModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if (cfg.partial_rotary_factor - 0.5).abs() >= 1e-9 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "RecurrentGemmaConfig: partial_rotary_factor must be exactly 0.5 (got {})",
                 cfg.partial_rotary_factor,
             ))
@@ -440,14 +442,14 @@ impl RecurrentGemmaModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
             .bt());
         }
         let lru_width = cfg.lru_width_or_default();
         if !lru_width.is_multiple_of(cfg.num_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "lru_width ({lru_width}) must be a multiple of num_attention_heads ({})",
                 cfg.num_attention_heads,
             ))
@@ -487,7 +489,7 @@ impl RecurrentGemmaModel {
                 self.apply_recurrent(&x_norm, r)?
             }
             _ => {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "RecurrentGemma layer {layer_idx}: weight kind does not match \
                  block_types[{layer_idx} % {}] — config + weights are inconsistent",
                     cfg.block_types.len(),
@@ -778,7 +780,9 @@ impl RecurrentGemmaWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &RecurrentGemmaConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let inter = cfg.mlp_intermediate();
         let lru = cfg.lru_width_or_default();

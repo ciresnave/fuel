@@ -33,8 +33,8 @@
 //! stay independent (one can be edited or retired without touching
 //! the other).
 
-use fuel_core::lazy::{ConvWeightBias, Tensor};
 use fuel_ir::Shape;
+use fuel_tensor::{lazy::ConvWeightBias, lazy::Tensor};
 use std::sync::Arc;
 
 // ---- Config ----------------------------------------------------------------
@@ -162,7 +162,7 @@ impl SdVae3Decoder {
     /// The TAESD3 scale + shift constants (`/ 1.5305 + 0.0609`) are
     /// applied inline at entry, so callers pass the raw sampler output
     /// without pre-arithmetic.
-    pub fn decode(&self, latent: &Tensor) -> fuel_core::Result<Tensor> {
+    pub fn decode(&self, latent: &Tensor) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let lc = cfg.latent_channels;
 
@@ -170,7 +170,7 @@ impl SdVae3Decoder {
         let shape = latent.shape();
         let dims = shape.dims();
         if dims.len() != 4 || dims[0] != 1 || dims[1] != lc {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "SdVae3Decoder::decode: expected latent shape [1, {lc}, H, W], got {dims:?}"
             );
         }
@@ -272,7 +272,7 @@ fn resnet(
     c_out: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h1 = group_norm(
         x,
         &rw.n1_g,
@@ -318,7 +318,7 @@ fn vae_spatial_attention(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let n = h * w;
     let x_norm = group_norm(
         x,
@@ -363,7 +363,7 @@ fn group_norm(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     assert_eq!(
         c % groups,
         0,
@@ -408,7 +408,7 @@ fn conv2d_k3_s1_p1(
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]))?;
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
@@ -424,14 +424,14 @@ fn conv2d_k1_s1_p0(
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 1, 1]))?;
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
 /// 2× nearest-neighbor upsample along both spatial axes.
-fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> fuel_core::Result<Tensor> {
+fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> fuel_ir::error::Result<Tensor> {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]))?;
     let x6 = x6.concat(&x6, 3)?;
     let x6 = x6.concat(&x6, 5)?;
@@ -446,7 +446,7 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
@@ -467,7 +467,7 @@ impl SdVae3DecoderWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SdVae3Config,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let _lc = cfg.latent_channels;
         let _oc = cfg.out_channels;
         let d_mid = cfg.dims[0];
@@ -538,7 +538,7 @@ fn load_resnet(
     prefix: &str,
     c_in: usize,
     c_out: usize,
-) -> fuel_core::Result<Resnet3Weights> {
+) -> fuel_ir::error::Result<Resnet3Weights> {
     let n1_g = load_f32(st, &format!("{prefix}.norm1.weight"))?;
     let n1_b = load_f32(st, &format!("{prefix}.norm1.bias"))?;
     let c1_w = load_f32(st, &format!("{prefix}.conv1.weight"))?;
@@ -572,7 +572,7 @@ fn load_attn(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     c: usize,
-) -> fuel_core::Result<Attn3Weights> {
+) -> fuel_ir::error::Result<Attn3Weights> {
     let gn_g = load_f32(st, &format!("{prefix}.group_norm.weight"))?;
     let gn_b = load_f32(st, &format!("{prefix}.group_norm.bias"))?;
     let q_w = load_transposed(st, &format!("{prefix}.query.weight"), c, c)?;
@@ -600,11 +600,11 @@ fn load_attn(
 fn load_f32(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
-        .map_err(|e| fuel_core::Error::Msg(format!("sd3 vae load_f32 {name:?}: {e}")).bt())?;
+        .map_err(|e| fuel_ir::error::Error::Msg(format!("sd3 vae load_f32 {name:?}: {e}")).bt())?;
     let bytes = view.data();
     match view.dtype() {
         Dtype::F32 => {
@@ -622,7 +622,7 @@ fn load_f32(
             }
             Ok(out)
         }
-        other => fuel_core::bail!("sd3 vae load_f32: unsupported dtype {other:?} for {name:?}"),
+        other => fuel_ir::bail!("sd3 vae load_f32: unsupported dtype {other:?} for {name:?}"),
     }
 }
 
@@ -631,10 +631,10 @@ fn load_transposed(
     name: &str,
     out_features: usize,
     in_features: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let flat = load_f32(st, name)?;
     if flat.len() != out_features * in_features {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "sd3 vae load_transposed: {name:?} has {} elements, expected {}",
             flat.len(),
             out_features * in_features,
@@ -652,17 +652,20 @@ fn load_transposed(
 // ---- HuggingFace Hub integration -------------------------------------------
 
 impl SdVae3Decoder {
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         Self::from_hub_with_config(repo_id, SdVae3Config::sd3())
     }
 
-    pub fn from_hub_with_config(repo_id: &str, config: SdVae3Config) -> fuel_core::Result<Self> {
+    pub fn from_hub_with_config(
+        repo_id: &str,
+        config: SdVae3Config,
+    ) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         let path = repo
             .get("vae/diffusion_pytorch_model.safetensors")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub sd3 vae safetensors: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub sd3 vae safetensors: {e}")))?;
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path) }?;
         let weights = SdVae3DecoderWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })
@@ -799,7 +802,7 @@ mod tests {
         let latent = Tensor::from_f32(
             latent_data,
             Shape::from_dims(&[1, lc, 4, 4]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let out = decoder.decode(&latent).unwrap();
@@ -828,7 +831,7 @@ mod tests {
         let latent = Tensor::from_f32(
             latent_data,
             Shape::from_dims(&[1, lc, 4, 4]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let out = decoder.decode(&latent).unwrap();

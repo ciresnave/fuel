@@ -45,9 +45,10 @@
 //! [1]: crate::models::lazy_rwkv5
 //! [2]: crate::models::lazy_rwkv6
 
-use fuel_core::lazy::{LayerNormPair, Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::LayerNormPair, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,7 +220,7 @@ impl Rwkv7Model {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Rwkv7Model::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
@@ -227,7 +228,7 @@ impl Rwkv7Model {
         let seq = dims[1];
         let batch = dims[0];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Rwkv7Model::forward_embeds: seq must be > 0".into(),
             )
             .bt());
@@ -235,7 +236,7 @@ impl Rwkv7Model {
         let n_heads = cfg.n_heads();
         let head_size = cfg.head_size;
         if n_heads * head_size != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Rwkv7Config: n_heads * head_size must equal hidden_size".into(),
             )
             .bt());
@@ -310,10 +311,10 @@ impl Rwkv7Model {
         // weights (`tm.x_r` etc.) against `cfg.hidden_size`. No local proof.
         // The enclosing fn already returns `Result`, so the channel exists
         // and the six call sites below simply propagate.
-        let mix_const = |arc: &Arc<[f32]>| -> fuel_core::Result<Tensor> {
+        let mix_const = |arc: &Arc<[f32]>| -> fuel_ir::error::Result<Tensor> {
             x.const_f32_like(Arc::clone(arc), Shape::from_dims(&[1, 1, h]))
                 .map_err(|e| {
-                    fuel_core::Error::Msg(format!(
+                    fuel_ir::error::Error::Msg(format!(
                         "rwkv7 time-mix weight from the checkpoint does not match the \n                         config: {e} (config implies hidden_size)"
                     ))
                 })
@@ -617,7 +618,9 @@ impl Rwkv7Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Rwkv7Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let ffn_inter = cfg.dim_ffn();
 

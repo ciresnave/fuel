@@ -26,9 +26,9 @@
 //!   an in-place SGD step from the caller's point of view, but graph-
 //!   allocates a new node. The gap is documented inline.
 
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::DType;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::collections::HashMap;
 
 // ---------- Gradient accumulation ----------
@@ -53,7 +53,7 @@ impl GradAccumulator {
     /// `microbatches`. Errors if `microbatches == 0`.
     pub fn new(microbatches: usize) -> Result<Self> {
         if microbatches == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "GradAccumulator::new: microbatches must be >= 1".into(),
             )
             .bt());
@@ -86,7 +86,7 @@ impl GradAccumulator {
             return Ok(());
         }
         if grads.len() != self.accum.len() {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "GradAccumulator::accumulate: bundle size mismatch (had {} params, got {})",
                 self.accum.len(),
                 grads.len(),
@@ -95,13 +95,13 @@ impl GradAccumulator {
         }
         for (name, g) in grads {
             let Some(prev) = self.accum.get(&name) else {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "GradAccumulator::accumulate: unknown parameter name '{name}'"
                 ))
                 .bt());
             };
             let sum = prev.add(&g).map_err(|e| {
-                fuel_core::Error::Msg(format!(
+                fuel_ir::error::Error::Msg(format!(
                     "GradAccumulator::accumulate: add failed for '{name}': {e}"
                 ))
                 .bt()
@@ -147,7 +147,7 @@ pub fn cast_for_forward(param: &Tensor, cfg: &MixedPrecisionConfig) -> Result<Te
         return Ok(param.clone());
     }
     param.to_dtype(cfg.forward_dtype).map_err(|e| {
-        fuel_core::Error::Msg(format!(
+        fuel_ir::error::Error::Msg(format!(
             "cast_for_forward: cast to {:?} failed: {e}",
             cfg.forward_dtype,
         ))
@@ -169,7 +169,7 @@ pub fn cast_grads_back(
             continue;
         }
         let cast = g.to_dtype(cfg.master_dtype).map_err(|e| {
-            fuel_core::Error::Msg(format!(
+            fuel_ir::error::Error::Msg(format!(
                 "cast_grads_back: cast of '{name}' to {:?} failed: {e}",
                 cfg.master_dtype,
             ))
@@ -197,7 +197,7 @@ pub fn cast_grads_back(
 pub fn apply_inplace_sgd_step(param: &mut Tensor, grad: &Tensor, lr: f64) -> Result<()> {
     let scaled = grad.mul_scalar(lr);
     let updated = param.sub(&scaled).map_err(|e| {
-        fuel_core::Error::Msg(format!("apply_inplace_sgd_step: sub failed: {e}")).bt()
+        fuel_ir::error::Error::Msg(format!("apply_inplace_sgd_step: sub failed: {e}")).bt()
     })?;
     *param = updated;
     Ok(())
@@ -206,8 +206,8 @@ pub fn apply_inplace_sgd_step(param: &mut Tensor, grad: &Tensor, lr: f64) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
     use fuel_ir::Shape;
+    use fuel_tensor::Device;
 
     fn cpu_f32(values: Vec<f32>, shape: &[usize]) -> Tensor {
         Tensor::from_f32(values, Shape::from_dims(shape), &Device::cpu()).unwrap()

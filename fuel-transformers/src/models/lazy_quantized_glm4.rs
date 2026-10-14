@@ -40,11 +40,11 @@
 
 use crate::models::lazy_glm4::{Glm4Config, Glm4LayerWeights, Glm4Model, Glm4Weights};
 #[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
-#[cfg(test)]
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// GGUF-quantized GLM-4 causal language model. Wraps a plain
@@ -143,14 +143,14 @@ impl QuantizedGlm4Model {
             |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
                 let f32_in_out = match w {
                 WeightStorage::F32(a) => a.to_vec(),
-                _ => return Err(fuel_core::Error::Msg(
+                _ => return Err(fuel_ir::error::Error::Msg(
                     "QuantizedGlm4Model::from_f32_bake: source weights must be WeightStorage::F32"
                         .into(),
                 )
                 .bt()),
             };
                 if f32_in_out.len() != in_features * out_features {
-                    return Err(fuel_core::Error::Msg(format!(
+                    return Err(fuel_ir::error::Error::Msg(format!(
                         "QuantizedGlm4Model::from_f32_bake: weight has {} elems, expected {}×{}",
                         f32_in_out.len(),
                         in_features,
@@ -195,7 +195,7 @@ impl QuantizedGlm4Model {
         let lm_head = match src.lm_head {
             Some(w) => Some(
                 quantize_linear(&w, h, cfg.vocab_size)
-                    .map_err(|e| fuel_core::Error::Msg(format!("lm_head: {e}")).bt())?,
+                    .map_err(|e| fuel_ir::error::Error::Msg(format!("lm_head: {e}")).bt())?,
             ),
             None => None, // tied embeddings stay as the f32 token_embedding
         };
@@ -203,7 +203,7 @@ impl QuantizedGlm4Model {
         let inner = Glm4Model {
             config: cfg,
             weights: Glm4Weights {
-                instance: fuel_core::decode_shape::ModelInstanceId::next(),
+                instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -236,7 +236,7 @@ impl QuantizedGlm4Model {
         let get_tensor_bytes =
             |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
+                    fuel_ir::error::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
                 let elems = info.shape.elem_count();
                 let block_size = info.ggml_dtype.block_size();
@@ -262,7 +262,7 @@ impl QuantizedGlm4Model {
             let expected = out_features * in_features;
             let actual: usize = dims.iter().product();
             if actual != expected {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "gguf: tensor {name:?} has {actual} elements, expected {expected} for [{out_features}, {in_features}]",
                 )).bt());
             }
@@ -294,7 +294,7 @@ impl QuantizedGlm4Model {
 
         let token_embedding = load_f32("token_embd.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "gguf token_embd.weight: {} elems, expected {}×{}",
                 token_embedding.len(),
                 cfg.vocab_size,
@@ -394,7 +394,7 @@ impl QuantizedGlm4Model {
         let inner = Glm4Model {
             config: cfg.clone(),
             weights: Glm4Weights {
-                instance: fuel_core::decode_shape::ModelInstanceId::next(),
+                instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers,
                 final_norm_gain,
@@ -483,7 +483,7 @@ fn weight_storage_to_f32_in_out(
     match ws {
         WeightStorage::F32(a) => {
             if a.len() != in_features * out_features {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "gguf {name}: F32 weight has {} elems, expected {}×{}",
                     a.len(),
                     in_features,
@@ -508,7 +508,7 @@ fn weight_storage_to_f32_in_out(
                 name,
             )?;
             if dq_out_in.len() != out_features * in_features {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "gguf {name}: Q4_0 dequant gave {} elems, expected {}×{}",
                     dq_out_in.len(),
                     out_features,
@@ -525,21 +525,21 @@ fn weight_storage_to_f32_in_out(
             }
             Ok(in_out)
         }
-        _ => Err(fuel_core::Error::Msg(format!(
+        _ => Err(fuel_ir::error::Error::Msg(format!(
             "gguf {name}: split-gate-up concatenation only supports F32 / Q4_0 inputs",
         ))
         .bt()),
     }
 }
 
-fn layer_err(idx: usize, name: &str, e: fuel_core::Error) -> fuel_core::Error {
-    fuel_core::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
+fn layer_err(idx: usize, name: &str, e: fuel_ir::error::Error) -> fuel_ir::error::Error {
+    fuel_ir::error::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
 }
 
 fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {
     const QK4_0: usize = 32;
     if !n.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "QuantizedGlm4Model::from_f32_bake: {name} ({n}) must be divisible by Q4_0 block size ({QK4_0})"
         )).bt());
     }
@@ -558,7 +558,7 @@ fn quantize_in_out_to_q4_0(
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "Q4_0 quantize: in_features ({in_features}) must be divisible by {QK4_0}"
         ))
         .bt());
@@ -680,7 +680,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let lm_head = Some(WeightStorage::F32(vec_of(h * cfg.vocab_size)));
         Glm4Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -763,7 +763,7 @@ mod tests {
         // because tiny_weights assumes the same cfg; just test the
         // check fires by handing in any source.
         let src = Glm4Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(vec![0.0_f32; cfg.vocab_size * 30]),
             layers: Vec::new(),
             final_norm_gain: Arc::from(vec![1.0_f32; 30]),

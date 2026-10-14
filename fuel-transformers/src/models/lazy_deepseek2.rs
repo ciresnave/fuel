@@ -49,10 +49,11 @@
 //! configurations supported.
 
 use crate::models::lazy_glm4::apply_interleaved_partial_rope;
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::lazy_latent_cache::LatentCache;
-use fuel_core::{DType, Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy_latent_cache::LatentCache;
+use fuel_tensor::{DType, Device};
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,7 +171,7 @@ pub struct DeepSeek2LayerWeights {
 #[derive(Debug, Clone)]
 pub struct DeepSeek2Weights {
     /// See [`fuel_model_llama::LlamaWeights::instance`].
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<DeepSeek2LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -243,8 +244,9 @@ impl DeepSeek2Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &DeepSeek2Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{
-            load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix,
+            lazy::load_transposed_matrix_preserve_dtype,
         };
 
         let h = cfg.hidden_size;
@@ -257,7 +259,7 @@ impl DeepSeek2Weights {
 
         let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
                 token_embedding.len(),
                 cfg.vocab_size * h,
@@ -463,7 +465,7 @@ impl DeepSeek2Weights {
         };
 
         Ok(DeepSeek2Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
             layers,
             final_norm_gain,
@@ -497,7 +499,7 @@ fn absorb_split_kv_b(
     let arc = match w {
         WeightStorage::F32(arc) => arc,
         other => {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "absorb_split_kv_b: MLA weight absorption is F32-only today, got {:?}",
                 other.dtype(),
             ))
@@ -507,7 +509,7 @@ fn absorb_split_kv_b(
     let out_features = n_heads * (nope + v_dim);
     let expected = kvr * out_features;
     if arc.len() != expected {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "absorb_split_kv_b: kv_b_proj has {} elements, expected {expected} \
              (kv_lora_rank={kvr} * n_heads*(nope+v_dim)={out_features})",
             arc.len(),
@@ -537,7 +539,7 @@ fn absorb_split_kv_b(
 impl DeepSeek2Model {
     /// See [`fuel_model_llama::LlamaModel::decode_shape_key`].
     pub fn decode_shape_key(&self) -> u64 {
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("deepseek2")
             .mix_instance(self.weights.instance)
             .mix_u64(self.config.num_hidden_layers as u64)
@@ -637,13 +639,13 @@ impl DeepSeek2Model {
         let cfg = &self.config;
 
         if tokens.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "DeepSeek2Model::forward_with_latent_cache: tokens must be non-empty".into(),
             )
             .bt());
         }
         if cache.n_layers() != cfg.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_cache: cache n_layers ({}) != model \
                  num_hidden_layers ({})",
                 cache.n_layers(),
@@ -652,7 +654,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.n_slots() != 2 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_cache: MLA latent cache needs exactly 2 \
                  slots (compressed latent + k_pe), got {}",
                 cache.n_slots(),
@@ -660,7 +662,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.slot_trailing(0).to_vec() != vec![cfg.kv_lora_rank] {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_cache: slot 0 trailing shape {:?} != \
                  [kv_lora_rank={}]",
                 cache.slot_trailing(0),
@@ -669,7 +671,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.slot_trailing(1).to_vec() != vec![cfg.qk_rope_head_dim] {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_cache: slot 1 trailing shape {:?} != \
                  [qk_rope_head_dim={}]",
                 cache.slot_trailing(1),
@@ -682,7 +684,7 @@ impl DeepSeek2Model {
         let seq_new = tokens.len();
         let total_len = cached_len + seq_new;
         if total_len > cache.max_seq_len() {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_cache: cached_len ({cached_len}) + \
                  seq_new ({seq_new}) = {total_len} exceeds cache max_seq_len ({})",
                 cache.max_seq_len(),
@@ -705,7 +707,7 @@ impl DeepSeek2Model {
             h.rope_tables_const(cfg.rope_theta, cached_len, seq_new, cfg.qk_rope_head_dim);
 
         // Decode mask, built once and shared across every layer.
-        let mask_data = fuel_core::lazy::build_decode_causal_mask(cached_len, seq_new, total_len);
+        let mask_data = fuel_tensor::lazy::build_decode_causal_mask(cached_len, seq_new, total_len);
         let mask = h
             .const_f32_like(mask_data, Shape::from_dims(&[seq_new, total_len]))?
             .reshape(Shape::from_dims(&[1, 1, seq_new, total_len]))?;
@@ -731,7 +733,7 @@ impl DeepSeek2Model {
 
     /// MLA increment 4 — the persistent (cross-graph) N-slot decode-cache
     /// entry point. D1-style: a fresh graph per call, but the cache
-    /// storage is a device-resident [`fuel_core::inference_context::
+    /// storage is a device-resident [`fuel_tensor::inference_context::
     /// LatentKvCache`] that survives across calls — **no host round-trip
     /// of the cached prefix**, unlike [`Self::forward_with_latent_cache`]
     /// / [`Self::forward_with_latent_cache_absorbed`], whose
@@ -742,7 +744,7 @@ impl DeepSeek2Model {
     /// entry point instead. Mirrors [`fuel_model_llama::LlamaModel::
     /// forward_with_kv_context_impl`]'s D1 shape: per-layer `Const`
     /// placeholders bound to the cache's persistent Storage Arcs via
-    /// [`fuel_core::inference_context::InferenceContext::insert`], written in
+    /// [`fuel_tensor::inference_context::InferenceContext::insert`], written in
     /// place via `Op::WriteSlice` at a `SymEnv`-bound dynamic offset, then
     /// unbound after realize.
     ///
@@ -759,20 +761,20 @@ impl DeepSeek2Model {
     pub fn forward_with_latent_kv_context(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::LatentKvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
+        cache: &mut fuel_tensor::inference_context::LatentKvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
     ) -> Result<Vec<f32>> {
         let cfg = &self.config;
         let seq = tokens.len();
 
         if tokens.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "DeepSeek2Model::forward_with_latent_kv_context: tokens must be non-empty".into(),
             )
             .bt());
         }
         if cache.n_layers() != cfg.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: cache n_layers ({}) != model \
                  num_hidden_layers ({})",
                 cache.n_layers(),
@@ -781,7 +783,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.n_slots() != 2 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: MLA latent cache needs exactly \
                  2 slots (compressed latent + k_pe), got {}",
                 cache.n_slots(),
@@ -789,7 +791,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.slot_trailing(0).to_vec() != vec![cfg.kv_lora_rank] {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: slot 0 trailing shape {:?} != \
                  [kv_lora_rank={}]",
                 cache.slot_trailing(0),
@@ -798,7 +800,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.slot_trailing(1).to_vec() != vec![cfg.qk_rope_head_dim] {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: slot 1 trailing shape {:?} != \
                  [qk_rope_head_dim={}]",
                 cache.slot_trailing(1),
@@ -807,7 +809,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.dtype != DType::F32 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: cache dtype {:?} != F32 \
                  (MLA weight absorption is F32-only today)",
                 cache.dtype,
@@ -817,7 +819,7 @@ impl DeepSeek2Model {
         let cached_len = cache.cached_len;
         let max_seq_len = cache.max_seq_len;
         if cached_len + seq > max_seq_len {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_with_latent_kv_context: cached_len ({cached_len}) + \
                  seq ({seq}) > max_seq_len ({max_seq_len})",
             ))
@@ -853,7 +855,7 @@ impl DeepSeek2Model {
         // persistent path always attends over the full buffer, relying on
         // the mask to hide both future positions and the zero-init/stale
         // tail (same trade LlamaModel's forward_with_kv_context documents).
-        let mask_data = fuel_core::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len);
+        let mask_data = fuel_tensor::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len);
         let mask = h
             .const_f32_like(mask_data, Shape::from_dims(&[seq, max_seq_len]))?
             .reshape(Shape::from_dims(&[1, 1, seq, max_seq_len]))?;
@@ -870,14 +872,14 @@ impl DeepSeek2Model {
             Vec::with_capacity(2 * cfg.num_hidden_layers);
         for (li, layer_weights) in self.weights.layers.iter().enumerate() {
             let latent_arc = cache.slot_storage(li, 0).ok_or_else(|| {
-                fuel_core::Error::Msg(format!(
+                fuel_ir::error::Error::Msg(format!(
                     "DeepSeek2Model::forward_with_latent_kv_context: cache layer {li} has no \
                  latent slot (with_capacity should have populated all layers)",
                 ))
                 .bt()
             })?;
             let kpe_arc = cache.slot_storage(li, 1).ok_or_else(|| {
-                fuel_core::Error::Msg(format!(
+                fuel_ir::error::Error::Msg(format!(
                     "DeepSeek2Model::forward_with_latent_kv_context: cache layer {li} has no \
                  k_pe slot",
                 ))
@@ -948,7 +950,7 @@ impl DeepSeek2Model {
     }
 
     /// Cached-decode sibling of [`Self::apply_layer_cached`] for the
-    /// persistent [`fuel_core::inference_context::LatentKvCache`] path: same
+    /// persistent [`fuel_tensor::inference_context::LatentKvCache`] path: same
     /// norms / residuals / dense-or-MoE FFN dispatch, but attention goes
     /// through [`Self::mla_attention_latent_kv`] and there is no functional
     /// cache threading — the cache is written in place via the
@@ -990,7 +992,7 @@ impl DeepSeek2Model {
             (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
             (DeepSeek2FfnWeights::Moe(w), true) => self.apply_moe(&h1_norm, w)?,
             _ => {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
                  config-derived kind (uses_moe={expected_moe}) — config + weights are inconsistent",
                 ))
@@ -1006,7 +1008,7 @@ impl DeepSeek2Model {
     /// `(1, seq_new, hidden)`. `latent_c`/`kpe_c` are this layer's
     /// full-capacity `[max_seq_len, kv_lora_rank]` /
     /// `[max_seq_len, qk_rope_head_dim]` `Const` placeholders, bound by the
-    /// caller to the [`fuel_core::inference_context::LatentKvCache`]'s
+    /// caller to the [`fuel_tensor::inference_context::LatentKvCache`]'s
     /// persistent Storage Arcs. `mask` is the shared
     /// `(1, 1, seq_new, max_seq_len)` decode causal mask.
     ///
@@ -1017,7 +1019,7 @@ impl DeepSeek2Model {
     /// This is not merely the faster of two equally-valid choices here:
     /// this path reads the **full fixed-capacity buffer every step** (no
     /// slice to `cached_len + seq_new`, so the graph's shape stays
-    /// token-independent — the same trade [`fuel_core::lazy::
+    /// token-independent — the same trade [`fuel_tensor::lazy::
     /// apply_layer_with_kv_writes`] documents for LlamaModel). Under that
     /// constraint the non-absorbed form would re-run `kv_b_proj`'s
     /// up-projection over the *entire* `max_seq_len` capacity
@@ -1139,7 +1141,7 @@ impl DeepSeek2Model {
     // =========================================================================
 
     /// Phase D · MLA D2 — plan-once persistent decode entry point, the
-    /// [`fuel_core::inference_context::LatentKvCache`] sibling of
+    /// [`fuel_tensor::inference_context::LatentKvCache`] sibling of
     /// [`fuel_model_llama::LlamaModel::forward_with_kv_context_persistent`].
     /// Mirrors that function's 5-branch ladder exactly:
     ///
@@ -1147,7 +1149,7 @@ impl DeepSeek2Model {
     ///    from the held seq==1 decode graph — drop any session and fall back
     ///    to the D1 rebuild path ([`Self::forward_with_latent_kv_context`]).
     /// 2. **Session present but stale** (`max_seq_len` / `n_layers` /
-    ///    `cache.dtype` no longer match — [`fuel_core::inference_context::
+    ///    `cache.dtype` no longer match — [`fuel_tensor::inference_context::
     ///    DecodeSession::is_valid_for`]): drop it, falling through to (3).
     /// 3. **`None`** (first decode token, or post-invalidation): build +
     ///    optimize the held graph ONCE via
@@ -1167,14 +1169,14 @@ impl DeepSeek2Model {
     /// - **No flash arm**: MLA's absorbed-attention math offers no CUDA
     ///   flash-decode arm (unlike LlamaModel's optional
     ///   `offer_decode_flash_arm`). `attended_len_sym` is still bound each
-    ///   token via [`fuel_core::inference_context::DecodeSession::
+    ///   token via [`fuel_tensor::inference_context::DecodeSession::
     ///   per_token_sym_env`] for API parity (Phi's f32-only decode graph
     ///   does the same) — a harmless unreferenced binding today.
     /// - **RoPE dim** is `qk_rope_head_dim` (NOT `head_dim` — MLA splits Q
     ///   into a NoPE part and a narrower RoPE part; the RoPE tables only
     ///   ever cover the RoPE part).
     /// - **KV placeholders**: `LatentKvCache`'s 2 slots (compressed latent +
-    ///   k_pe) fit [`fuel_core::inference_context::DecodeSession`]'s
+    ///   k_pe) fit [`fuel_tensor::inference_context::DecodeSession`]'s
     ///   `kv_nodes: Vec<(NodeId, NodeId)>` verbatim as `(latent, kpe)` pairs.
     /// - MLA-specific geometry guards (`n_slots == 2`, both slots' trailing
     ///   shapes, `dtype == F32`) live inside the build path
@@ -1186,9 +1188,9 @@ impl DeepSeek2Model {
     pub fn forward_with_latent_kv_context_persistent(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::LatentKvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        cache: &mut fuel_tensor::inference_context::LatentKvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
     ) -> Result<Vec<f32>> {
         let cfg = &self.config;
         let seq = tokens.len();
@@ -1210,7 +1212,7 @@ impl DeepSeek2Model {
         // in the latent allocation gets a guarded re-bind first (GAP-028);
         // MLA reuses `DecodeSession` verbatim, so it inherits both the
         // welding and the guard. No capture exists on this path.
-        fuel_core::lazy::refresh_decode_session(
+        fuel_tensor::lazy::refresh_decode_session(
             session,
             ctx,
             seq,
@@ -1234,7 +1236,7 @@ impl DeepSeek2Model {
                 let res = self.rebind_and_realize_prebuilt_mla(tokens, cache, &*ctx, &*session);
                 match res {
                     Ok(logits) => Ok(logits),
-                    Err(fuel_core::Error::TopologyChanged { .. }) => {
+                    Err(fuel_ir::error::Error::TopologyChanged { .. }) => {
                         // Stale cached generation — drop the session and
                         // rebuild via the D1 path this token; the session
                         // rebuilds on the next decode token.
@@ -1260,9 +1262,9 @@ impl DeepSeek2Model {
     fn build_and_realize_first_mla_decode_token(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::LatentKvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        cache: &mut fuel_tensor::inference_context::LatentKvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
     ) -> Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -1271,7 +1273,7 @@ impl DeepSeek2Model {
         let max_seq_len = cache.max_seq_len;
 
         if cache.n_layers() != cfg.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: cache n_layers {} != model {}",
                 cache.n_layers(),
                 cfg.num_hidden_layers,
@@ -1279,7 +1281,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.n_slots() != 2 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: MLA latent cache needs exactly 2 \
                  slots (compressed latent + k_pe), got {}",
                 cache.n_slots(),
@@ -1287,7 +1289,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.slot_trailing(0).to_vec() != vec![cfg.kv_lora_rank] {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: slot 0 trailing shape {:?} != \
                  [kv_lora_rank={}]",
                 cache.slot_trailing(0),
@@ -1296,7 +1298,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.slot_trailing(1).to_vec() != vec![cfg.qk_rope_head_dim] {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: slot 1 trailing shape {:?} != \
                  [qk_rope_head_dim={}]",
                 cache.slot_trailing(1),
@@ -1305,7 +1307,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cache.dtype != DType::F32 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: cache dtype {:?} != F32 \
                  (MLA weight absorption is F32-only today)",
                 cache.dtype,
@@ -1313,7 +1315,7 @@ impl DeepSeek2Model {
             .bt());
         }
         if cached_len + seq > max_seq_len {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_with_latent_kv_context_persistent: cached_len ({cached_len}) + \
                  seq ({seq}) > max_seq_len ({max_seq_len})",
             ))
@@ -1365,14 +1367,14 @@ impl DeepSeek2Model {
             Vec::with_capacity(cfg.num_hidden_layers);
         for (li, layer_weights) in weights.layers.iter().enumerate() {
             let latent_arc = cache.slot_storage(li, 0).ok_or_else(|| {
-                fuel_core::Error::Msg(format!(
+                fuel_ir::error::Error::Msg(format!(
                     "forward_with_latent_kv_context_persistent: cache layer {li} has no \
                  latent slot (with_capacity should have populated all layers)",
                 ))
                 .bt()
             })?;
             let kpe_arc = cache.slot_storage(li, 1).ok_or_else(|| {
-                fuel_core::Error::Msg(format!(
+                fuel_ir::error::Error::Msg(format!(
                     "forward_with_latent_kv_context_persistent: cache layer {li} has no k_pe slot",
                 ))
                 .bt()
@@ -1442,7 +1444,7 @@ impl DeepSeek2Model {
             ctx.remove(*v);
         }
 
-        *session = Some(fuel_core::inference_context::DecodeSession::new(
+        *session = Some(fuel_tensor::inference_context::DecodeSession::new(
             graph,
             optimized,
             effective_target,
@@ -1487,9 +1489,9 @@ impl DeepSeek2Model {
     fn rebind_and_realize_prebuilt_mla(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::LatentKvCache,
-        ctx: &fuel_core::inference_context::InferenceContext,
-        session: &Option<fuel_core::inference_context::DecodeSession>,
+        cache: &mut fuel_tensor::inference_context::LatentKvCache,
+        ctx: &fuel_tensor::inference_context::InferenceContext,
+        session: &Option<fuel_tensor::inference_context::DecodeSession>,
     ) -> Result<Vec<f32>> {
         let cfg = &self.config;
         let seq = tokens.len();
@@ -1532,20 +1534,20 @@ impl DeepSeek2Model {
         cached_len: usize,
         tokens: &[u32],
         max_seq_len: usize,
-    ) -> Result<fuel_core::inference_context::DecodeTokenData> {
+    ) -> Result<fuel_tensor::inference_context::DecodeTokenData> {
         let cfg = &self.config;
         let seq = tokens.len();
-        let upload = fuel_core::pipelined_bridge::upload_host_buffer_to_device;
+        let upload = fuel_tensor::pipelined_bridge::upload_host_buffer_to_device;
 
         let token_ids = upload(device, fuel_ir::HostBuffer::U32(tokens.to_vec()))?;
         let (cos_data, sin_data) =
             fuel_graph::build_rope_tables(cfg.rope_theta, cached_len, seq, cfg.qk_rope_head_dim);
         let rope_cos = upload(device, fuel_ir::HostBuffer::F32(cos_data))?;
         let rope_sin = upload(device, fuel_ir::HostBuffer::F32(sin_data))?;
-        let mask_data = fuel_core::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len);
+        let mask_data = fuel_tensor::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len);
         let mask = upload(device, fuel_ir::HostBuffer::F32(mask_data))?;
 
-        Ok(fuel_core::inference_context::DecodeTokenData {
+        Ok(fuel_tensor::inference_context::DecodeTokenData {
             token_ids,
             rope_cos,
             rope_sin,
@@ -1561,8 +1563,8 @@ impl DeepSeek2Model {
     /// covers the invalidation path). No-op if `session` is `None`.
     fn drop_latent_decode_session(
         &self,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
     ) {
         if let Some(s) = session.take() {
             ctx.remove(s.token_ids_node());
@@ -1579,51 +1581,51 @@ impl DeepSeek2Model {
     /// Streaming generation through the plan-once persistent MLA decode
     /// path ([`Self::forward_with_latent_kv_context_persistent`]), mirroring
     /// [`fuel_model_llama::LlamaModel::generate_streaming_with_kv_context`]'s
-    /// shape. Allocates a [`fuel_core::inference_context::LatentKvCache`] of
+    /// shape. Allocates a [`fuel_tensor::inference_context::LatentKvCache`] of
     /// capacity `prompt_tokens.len() + max_new_tokens` (2 slots — compressed
     /// latent `[kv_lora_rank]` + k_pe `[qk_rope_head_dim]` — F32, CPU: MLA
     /// weight absorption is F32-only today), then loops prefill + decode,
     /// calling `on_token` for each generated token. Holds ONE plan-once
-    /// [`fuel_core::inference_context::DecodeSession`] across the whole
+    /// [`fuel_tensor::inference_context::DecodeSession`] across the whole
     /// generation — loop-internal state; the public signature is unchanged.
     pub fn generate_streaming_with_latent_kv_context(
         &self,
         prompt_tokens: &[u32],
         max_new_tokens: usize,
-        strategy: fuel_core::lazy::SamplingStrategy,
+        strategy: fuel_tensor::lazy::SamplingStrategy,
         eos_id: Option<u32>,
         mut on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
         let cfg = &self.config;
         if prompt_tokens.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "generate_streaming_with_latent_kv_context: prompt is empty".to_string(),
             )
             .bt());
         }
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         let mut rng_state: u64 = match strategy {
-            fuel_core::lazy::SamplingStrategy::Temperature { seed, .. } => seed,
+            fuel_tensor::lazy::SamplingStrategy::Temperature { seed, .. } => seed,
             _ => 0,
         };
 
         let device = Device::cpu();
         let max_seq_len = prompt_tokens.len() + max_new_tokens;
-        let mut cache = fuel_core::inference_context::LatentKvCache::with_capacity(
+        let mut cache = fuel_tensor::inference_context::LatentKvCache::with_capacity(
             cfg.num_hidden_layers,
             max_seq_len,
             vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
             DType::F32,
             &device,
         )?;
-        let mut ctx = fuel_core::inference_context::InferenceContext::new(device);
+        let mut ctx = fuel_tensor::inference_context::InferenceContext::new(device);
 
         // Phase D · MLA D2 — hold ONE plan-once decode session across the
         // whole generation, exactly like LlamaModel's persistent generate
         // loop. Prefill (seq>1) routes through the persistent entry, which
         // internally falls back to the D1 rebuild path for non-seq==1 steps
         // WITHOUT building the session.
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // Prefill: one forward pass over the full prompt.
         let mut last_logits = self.forward_with_latent_kv_context_persistent(
@@ -1635,7 +1637,7 @@ impl DeepSeek2Model {
 
         // Decode loop.
         for _ in 0..max_new_tokens {
-            let next = fuel_core::lazy::sample_logits(&last_logits, strategy, &mut rng_state);
+            let next = fuel_tensor::lazy::sample_logits(&last_logits, strategy, &mut rng_state);
             tokens.push(next);
             on_token(next);
             if let Some(eos) = eos_id
@@ -1660,7 +1662,7 @@ impl DeepSeek2Model {
         &self,
         prompt_tokens: &[u32],
         max_new_tokens: usize,
-        strategy: fuel_core::lazy::SamplingStrategy,
+        strategy: fuel_tensor::lazy::SamplingStrategy,
         eos_id: Option<u32>,
     ) -> Result<Vec<u32>> {
         self.generate_streaming_with_latent_kv_context(
@@ -1739,7 +1741,7 @@ impl DeepSeek2Model {
         // via `Tensor::realize_f32`'s `.expect()` (a test convenience).
         // Same fallible path as `train.rs::param_to_host`.
         fn host_f32(t: &Tensor) -> Result<Vec<f32>> {
-            fuel_core::pipelined_bridge::realize_one_as::<f32>(
+            fuel_tensor::pipelined_bridge::realize_one_as::<f32>(
                 t.graph(),
                 t.node_id(),
                 &Device::cpu(),
@@ -1815,20 +1817,20 @@ impl DeepSeek2Model {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Model::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "DeepSeek2Model::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if weights.layers.len() != cfg.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DeepSeek2Weights: layers length ({}) must match num_hidden_layers ({})",
                 weights.layers.len(),
                 cfg.num_hidden_layers,
@@ -1876,7 +1878,7 @@ impl DeepSeek2Model {
             (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
             (DeepSeek2FfnWeights::Moe(w), true) => self.apply_moe(&h1_norm, w)?,
             _ => {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
                  config-derived kind (uses_moe={expected_moe}) — config + weights are inconsistent",
                 ))
@@ -1930,7 +1932,7 @@ impl DeepSeek2Model {
             (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
             (DeepSeek2FfnWeights::Moe(w), true) => self.apply_moe(&h1_norm, w)?,
             _ => {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
                  config-derived kind (uses_moe={expected_moe}) — config + weights are inconsistent",
                 ))
@@ -2471,7 +2473,7 @@ mod tests {
             Some(WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)))
         };
         DeepSeek2Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -3106,7 +3108,7 @@ mod tests {
                 .realize_f32();
 
             // Cached run through the persistent path.
-            let mut cache = fuel_core::inference_context::LatentKvCache::with_capacity(
+            let mut cache = fuel_tensor::inference_context::LatentKvCache::with_capacity(
                 cfg.num_hidden_layers,
                 /* max_seq_len */ 8,
                 vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
@@ -3114,7 +3116,7 @@ mod tests {
                 &Device::cpu(),
             )
             .expect("LatentKvCache::with_capacity");
-            let mut ctx = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+            let mut ctx = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
 
             let prefill_actual = model
                 .forward_with_latent_kv_context(&prompt, &mut cache, &mut ctx)
@@ -3181,7 +3183,7 @@ mod tests {
         };
 
         // Wrong n_layers.
-        let mut bad_layers = fuel_core::inference_context::LatentKvCache::with_capacity(
+        let mut bad_layers = fuel_tensor::inference_context::LatentKvCache::with_capacity(
             cfg.num_hidden_layers + 1,
             8,
             vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
@@ -3189,7 +3191,7 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let mut ctx = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+        let mut ctx = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
         assert!(
             model
                 .forward_with_latent_kv_context(&[1, 2], &mut bad_layers, &mut ctx)
@@ -3197,7 +3199,7 @@ mod tests {
         );
 
         // Wrong slot count (1 slot instead of 2).
-        let mut bad_slots = fuel_core::inference_context::LatentKvCache::with_capacity(
+        let mut bad_slots = fuel_tensor::inference_context::LatentKvCache::with_capacity(
             cfg.num_hidden_layers,
             8,
             vec![vec![cfg.kv_lora_rank]],
@@ -3205,7 +3207,7 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let mut ctx = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+        let mut ctx = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
         assert!(
             model
                 .forward_with_latent_kv_context(&[1, 2], &mut bad_slots, &mut ctx)
@@ -3213,7 +3215,7 @@ mod tests {
         );
 
         // Wrong trailing shape on slot 0.
-        let mut bad_trailing = fuel_core::inference_context::LatentKvCache::with_capacity(
+        let mut bad_trailing = fuel_tensor::inference_context::LatentKvCache::with_capacity(
             cfg.num_hidden_layers,
             8,
             vec![vec![cfg.kv_lora_rank + 1], vec![cfg.qk_rope_head_dim]],
@@ -3221,7 +3223,7 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let mut ctx = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+        let mut ctx = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
         assert!(
             model
                 .forward_with_latent_kv_context(&[1, 2], &mut bad_trailing, &mut ctx)
@@ -3229,7 +3231,7 @@ mod tests {
         );
 
         // Capacity overflow: max_seq_len 2, feed 3 tokens.
-        let mut small_cap = fuel_core::inference_context::LatentKvCache::with_capacity(
+        let mut small_cap = fuel_tensor::inference_context::LatentKvCache::with_capacity(
             cfg.num_hidden_layers,
             2,
             vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
@@ -3237,7 +3239,7 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let mut ctx = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+        let mut ctx = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
         assert!(
             model
                 .forward_with_latent_kv_context(&[1, 2, 3], &mut small_cap, &mut ctx)
@@ -3296,7 +3298,7 @@ mod tests {
         let slot_trailing = vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]];
         let max_seq_len = 8usize;
         let mk = || {
-            fuel_core::inference_context::LatentKvCache::with_capacity(
+            fuel_tensor::inference_context::LatentKvCache::with_capacity(
                 cfg.num_hidden_layers,
                 max_seq_len,
                 slot_trailing.clone(),
@@ -3312,8 +3314,8 @@ mod tests {
 
         // Request A builds a plan welded to cache A's latent slots.
         let mut cache_a = mk();
-        let mut ctx = fuel_core::inference_context::InferenceContext::new(Device::cpu());
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut ctx = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         model
             .forward_with_latent_kv_context_persistent(
                 &prompt_a,
@@ -3334,7 +3336,7 @@ mod tests {
         // path, which holds no session and so cannot be contaminated.
         let expected = {
             let mut c = mk();
-            let mut x = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+            let mut x = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
             model
                 .forward_with_latent_kv_context(&prompt_b, &mut c, &mut x)
                 .expect("oracle prefill");
@@ -3346,7 +3348,7 @@ mod tests {
         // separable at this token, or the comparison below proves nothing.
         let a_history = {
             let mut c = mk();
-            let mut x = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+            let mut x = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
             model
                 .forward_with_latent_kv_context(&prompt_a, &mut c, &mut x)
                 .expect("ctl prefill");
@@ -3375,7 +3377,7 @@ mod tests {
         // (a) Offer the held plan a step over a DIFFERENT latent cache, primed
         // with B's own prefix through the re-planning path.
         let mut cache_b = mk();
-        let mut ctx_b = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+        let mut ctx_b = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
         model
             .forward_with_latent_kv_context(&prompt_b, &mut cache_b, &mut ctx_b)
             .expect("B prefill lands in B's OWN latent slots");
@@ -3440,7 +3442,7 @@ mod tests {
             // --- D1 (rebuild) reference FIRST, in its own pass, so its
             // per-token re-plans do NOT pollute the optimize-count window we
             // measure around the D2 loop. Store the expected logits. ---
-            let mut cache1 = fuel_core::inference_context::LatentKvCache::with_capacity(
+            let mut cache1 = fuel_tensor::inference_context::LatentKvCache::with_capacity(
                 cfg.num_hidden_layers,
                 max_seq_len,
                 slot_trailing.clone(),
@@ -3448,7 +3450,7 @@ mod tests {
                 &Device::cpu(),
             )
             .expect("with_capacity d1");
-            let mut ctx1 = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+            let mut ctx1 = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
             let _ = model_d1
                 .forward_with_latent_kv_context(&prompt, &mut cache1, &mut ctx1)
                 .expect("d1 prefill");
@@ -3462,7 +3464,7 @@ mod tests {
             }
 
             // --- D2 (persistent) session state ---
-            let mut cache2 = fuel_core::inference_context::LatentKvCache::with_capacity(
+            let mut cache2 = fuel_tensor::inference_context::LatentKvCache::with_capacity(
                 cfg.num_hidden_layers,
                 max_seq_len,
                 slot_trailing.clone(),
@@ -3470,8 +3472,8 @@ mod tests {
                 &Device::cpu(),
             )
             .expect("with_capacity d2");
-            let mut ctx2 = fuel_core::inference_context::InferenceContext::new(Device::cpu());
-            let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+            let mut ctx2 = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
+            let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
             // Prefill the D2 path (seq > 1 -> the persistent path falls back
             // to the rebuild path; the session is NOT built here).
@@ -3488,7 +3490,7 @@ mod tests {
                 "prefill (seq>1) must NOT build the held session"
             );
 
-            let opt_before = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+            let opt_before = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
             let mut len_at_token2: Option<usize> = None;
 
             for (i, &tok) in decode_tokens.iter().enumerate() {
@@ -3530,7 +3532,7 @@ mod tests {
 
             if check_opt_and_node_count {
                 // (b) optimize bumped EXACTLY ONCE across all decode tokens.
-                let opt_after = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+                let opt_after = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
                 assert_eq!(
                     opt_after - opt_before,
                     1,
@@ -3574,13 +3576,13 @@ mod tests {
         let prompt = [1_u32, 2, 3];
         let max_new = 4;
         let max_seq_len = prompt.len() + max_new;
-        let strategy = fuel_core::lazy::SamplingStrategy::Greedy;
+        let strategy = fuel_tensor::lazy::SamplingStrategy::Greedy;
         let slot_trailing = vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]];
 
         // ---- D1 (rebuild) REFERENCE loop FIRST, in its own pass, so its
         // per-token re-plans do NOT pollute the optimize-count window we
         // measure around the D2 loop. ----
-        let mut cache1 = fuel_core::inference_context::LatentKvCache::with_capacity(
+        let mut cache1 = fuel_tensor::inference_context::LatentKvCache::with_capacity(
             cfg.num_hidden_layers,
             max_seq_len,
             slot_trailing.clone(),
@@ -3588,7 +3590,7 @@ mod tests {
             &Device::cpu(),
         )
         .expect("with_capacity d1");
-        let mut ctx1 = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+        let mut ctx1 = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
         let mut rng1: u64 = 0;
         let mut ref_tokens: Vec<u32> = prompt.to_vec();
         let mut ref_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
@@ -3596,7 +3598,7 @@ mod tests {
             .forward_with_latent_kv_context(&prompt, &mut cache1, &mut ctx1)
             .expect("d1 prefill");
         for _ in 0..max_new {
-            let next = fuel_core::lazy::sample_logits(&last1, strategy, &mut rng1);
+            let next = fuel_tensor::lazy::sample_logits(&last1, strategy, &mut rng1);
             ref_tokens.push(next);
             last1 = model
                 .forward_with_latent_kv_context(&[next], &mut cache1, &mut ctx1)
@@ -3607,9 +3609,9 @@ mod tests {
         // ---- D2 (persistent) generate loop — mirrors the production loop
         // exactly. Snapshot the thread-local optimize count around the WHOLE
         // loop (prefill + decode). ----
-        let opt_before = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_before = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
 
-        let mut cache2 = fuel_core::inference_context::LatentKvCache::with_capacity(
+        let mut cache2 = fuel_tensor::inference_context::LatentKvCache::with_capacity(
             cfg.num_hidden_layers,
             max_seq_len,
             slot_trailing.clone(),
@@ -3617,9 +3619,9 @@ mod tests {
             &Device::cpu(),
         )
         .expect("with_capacity d2");
-        let mut ctx2 = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+        let mut ctx2 = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
         let mut rng2: u64 = 0;
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut d2_tokens: Vec<u32> = prompt.to_vec();
         let mut d2_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
         let mut last2 = model
@@ -3635,7 +3637,7 @@ mod tests {
             "prefill (seq>1) must NOT build the held session"
         );
         for _ in 0..max_new {
-            let next = fuel_core::lazy::sample_logits(&last2, strategy, &mut rng2);
+            let next = fuel_tensor::lazy::sample_logits(&last2, strategy, &mut rng2);
             d2_tokens.push(next);
             last2 = model
                 .forward_with_latent_kv_context_persistent(
@@ -3648,7 +3650,7 @@ mod tests {
             d2_step_logits.push(last2.clone());
         }
 
-        let opt_after = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_after = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
 
         // (a) Byte-identical token sequence over N greedy tokens.
         assert_eq!(
@@ -3714,7 +3716,7 @@ mod tests {
         let prompt = [1_u32, 2];
         let max_seq_len = 8;
         let slot_trailing = vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]];
-        let mut cache = fuel_core::inference_context::LatentKvCache::with_capacity(
+        let mut cache = fuel_tensor::inference_context::LatentKvCache::with_capacity(
             cfg.num_hidden_layers,
             max_seq_len,
             slot_trailing.clone(),
@@ -3722,8 +3724,8 @@ mod tests {
             &Device::cpu(),
         )
         .expect("with_capacity");
-        let mut ctx = fuel_core::inference_context::InferenceContext::new(Device::cpu());
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut ctx = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // Prefill (seq>1 -> no session).
         let _ = model
@@ -3778,7 +3780,7 @@ mod tests {
         drop(graph_1_keepalive); // address no longer needs pinning past here
 
         // Byte-exact vs. a fresh D1 run over the identical token history.
-        let mut cache_ref = fuel_core::inference_context::LatentKvCache::with_capacity(
+        let mut cache_ref = fuel_tensor::inference_context::LatentKvCache::with_capacity(
             cfg.num_hidden_layers,
             max_seq_len,
             slot_trailing,
@@ -3786,7 +3788,7 @@ mod tests {
             &Device::cpu(),
         )
         .expect("with_capacity ref");
-        let mut ctx_ref = fuel_core::inference_context::InferenceContext::new(Device::cpu());
+        let mut ctx_ref = fuel_tensor::inference_context::InferenceContext::new(Device::cpu());
         let _ = model
             .forward_with_latent_kv_context(&prompt, &mut cache_ref, &mut ctx_ref)
             .unwrap();

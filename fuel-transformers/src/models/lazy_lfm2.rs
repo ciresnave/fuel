@@ -47,13 +47,14 @@
 //!   blocker that gates Mamba autoregressive resume). `start_pos` is
 //!   honored for RoPE in attention blocks; the conv blocks treat every
 //!   call as a fresh prefill from zero state.
-//! - **F32 activations.** Weights via [`fuel_core::lazy::WeightStorage`]
+//! - **F32 activations.** Weights via [`fuel_tensor::lazy::WeightStorage`]
 //!   (F32 / BF16 / Q4_0).
 //! - **Single batch.** Asserts `batch == 1`.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Selects which mixer a given LFM2 layer runs.
@@ -91,7 +92,7 @@ impl LFM2Config {
     /// validate a hand-rolled config without instantiating weights.
     pub fn validate(&self) -> Result<()> {
         if self.block_types.len() != self.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "LFM2Config: block_types.len() ({}) must equal num_hidden_layers ({})",
                 self.block_types.len(),
                 self.num_hidden_layers,
@@ -99,7 +100,7 @@ impl LFM2Config {
             .bt());
         }
         if self.num_attention_heads * self.head_dim != self.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "LFM2Config: num_attention_heads ({}) * head_dim ({}) must equal hidden_size ({})",
                 self.num_attention_heads, self.head_dim, self.hidden_size,
             ))
@@ -109,15 +110,16 @@ impl LFM2Config {
             .num_attention_heads
             .is_multiple_of(self.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "LFM2Config: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
                 self.num_attention_heads, self.num_key_value_heads,
             )).bt());
         }
         if self.conv_kernel_size == 0 {
-            return Err(
-                fuel_core::Error::Msg("LFM2Config: conv_kernel_size must be >= 1".into()).bt(),
-            );
+            return Err(fuel_ir::error::Error::Msg(
+                "LFM2Config: conv_kernel_size must be >= 1".into(),
+            )
+            .bt());
         }
         Ok(())
     }
@@ -187,11 +189,11 @@ struct LFM2ConfigRaw {
 fn lfm2_block_types_from_attn_idxs(
     full_attn_idxs: &[usize],
     num_hidden_layers: usize,
-) -> fuel_core::Result<Vec<LFM2BlockType>> {
+) -> fuel_ir::error::Result<Vec<LFM2BlockType>> {
     let mut types = vec![LFM2BlockType::Conv; num_hidden_layers];
     for &i in full_attn_idxs {
         if i >= num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "LFM2 config.json: full_attn_idxs contains layer {i}, but \
                  num_hidden_layers is {num_hidden_layers} — the artifact and the \
                  layer count disagree"
@@ -209,9 +211,9 @@ fn lfm2_agree<T: PartialEq + std::fmt::Debug>(
     b: Option<T>,
     a_name: &str,
     b_name: &str,
-) -> fuel_core::Result<Option<T>> {
+) -> fuel_ir::error::Result<Option<T>> {
     match (a, b) {
-        (Some(x), Some(y)) if x != y => Err(fuel_core::Error::Msg(format!(
+        (Some(x), Some(y)) if x != y => Err(fuel_ir::error::Error::Msg(format!(
             "LFM2 config.json: {a_name} ({x:?}) and {b_name} ({y:?}) disagree. \
              Released checkpoints ship them equal; a config where they differ \
              means something this port does not model."
@@ -234,9 +236,9 @@ fn lfm2_agree_required<T: PartialEq + std::fmt::Debug>(
     b: Option<T>,
     a_name: &str,
     b_name: &str,
-) -> fuel_core::Result<T> {
+) -> fuel_ir::error::Result<T> {
     lfm2_agree(a, b, a_name, b_name)?.ok_or_else(|| {
-        fuel_core::Error::Msg(format!(
+        fuel_ir::error::Error::Msg(format!(
             "LFM2 config.json: neither {a_name} nor {b_name} present"
         ))
     })
@@ -260,12 +262,12 @@ fn lfm2_head_dim(
     explicit: Option<usize>,
     hidden_size: usize,
     num_attention_heads: usize,
-) -> fuel_core::Result<usize> {
+) -> fuel_ir::error::Result<usize> {
     if let Some(d) = explicit {
         return Ok(d);
     }
     if num_attention_heads == 0 || !hidden_size.is_multiple_of(num_attention_heads) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "LFM2 config.json omits head_dim and hidden_size ({hidden_size}) is not divisible by num_attention_heads ({num_attention_heads}), so it cannot be derived"
         )));
     }
@@ -273,12 +275,12 @@ fn lfm2_head_dim(
 }
 
 impl LFM2ConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing LFM2 config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing LFM2 config.json: {e}")))
     }
 
-    fn resolve(self) -> fuel_core::Result<LFM2Config> {
+    fn resolve(self) -> fuel_ir::error::Result<LFM2Config> {
         let num_attention_heads = lfm2_agree_required(
             Some(self.num_attention_heads),
             self.num_heads,
@@ -326,7 +328,7 @@ impl LFM2Config {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset.
     /// LFM2 is the key-remap case — see `LFM2ConfigRaw` for the full mapping and
     /// for the two DERIVED fields (`head_dim`, `block_types`).
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         LFM2ConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -468,16 +470,17 @@ impl LFM2Model {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "LFM2Model::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(
-                fuel_core::Error::Msg("LFM2Model::forward_embeds: seq must be > 0".into()).bt(),
-            );
+            return Err(fuel_ir::error::Error::Msg(
+                "LFM2Model::forward_embeds: seq must be > 0".into(),
+            )
+            .bt());
         }
 
         let (rope_cos, rope_sin) =
@@ -524,7 +527,7 @@ impl LFM2Model {
                 self.apply_short_conv(&x_norm, c)?
             }
             _ => {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "LFM2 layer {layer_idx}: mixer weight kind does not match \
                  block_types[{layer_idx}] = {:?}",
                     cfg.block_types[layer_idx],
@@ -695,7 +698,9 @@ impl LFM2Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &LFM2Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         cfg.validate()?;
         let h = cfg.hidden_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
@@ -863,7 +868,7 @@ fn normalize_conv_kernel(
 ) -> Result<Vec<f32>> {
     let want = hidden * k;
     if raw.len() != want {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "LFM2 layer {layer_idx} conv.conv.weight: {} elems, expected hidden*k = {hidden}*{k} = {want}",
             raw.len(),
         )).bt());

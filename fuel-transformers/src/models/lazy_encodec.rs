@@ -36,9 +36,9 @@
 
 use crate::models::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
 use crate::models::lazy_lstm::{LstmCellWeights, LstmStack};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, load_tensor_as_f32};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::load_tensor_as_f32};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,7 +311,7 @@ impl EncodecModel {
     /// and shape `(B, T)`.
     pub fn decode(&self, codes: &[Tensor]) -> Result<Tensor> {
         if codes.len() != self.weights.quantizers.len() {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "EncodecModel::decode: expected {} codebooks, got {}",
                 self.weights.quantizers.len(),
                 codes.len(),
@@ -405,10 +405,10 @@ fn rvq_decode_per_codebook(
     cfg: &EncodecConfig,
 ) -> Result<Tensor> {
     if codes.is_empty() {
-        fuel_core::bail!("rvq_decode_per_codebook: zero codebooks");
+        fuel_ir::bail!("rvq_decode_per_codebook: zero codebooks");
     }
     if codes.len() != quantizers.len() {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "rvq_decode_per_codebook: codes count {} != quantizers {}",
             codes.len(),
             quantizers.len(),
@@ -417,7 +417,7 @@ fn rvq_decode_per_codebook(
     let first_dims = codes[0].shape();
     let first_dims = first_dims.dims();
     if first_dims.len() != 2 {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "rvq_decode_per_codebook: codes[i] must be rank 2 (B, T), got {:?}",
             first_dims,
         );
@@ -459,7 +459,7 @@ fn rvq_encode(
     let dims = latent.shape();
     let dims = dims.dims();
     if dims.len() != 3 {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "rvq_encode: latent must be rank 3 (B, hidden_size, T), got {:?}",
             dims,
         );
@@ -468,7 +468,7 @@ fn rvq_encode(
     let hidden = dims[1];
     let t = dims[2];
     if hidden != cfg.codebook_dim {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "rvq_encode: latent channel dim {hidden} must equal codebook_dim {} \
              (the EnCodec quantizer indexes directly into the latent space; \
              a projection layer would have to live in the encoder, not here)",
@@ -795,7 +795,7 @@ fn fuse_weight_norm_conv1d(
     let weight_g = load_tensor_as_f32(st, &format!("{name_prefix}.weight_g"))?;
     let weight_v = load_tensor_as_f32(st, &format!("{name_prefix}.weight_v"))?;
     if weight_g.len() != out_c {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{name_prefix}.weight_g: {} elts, expected {} (= out_c)",
             weight_g.len(),
             out_c,
@@ -803,7 +803,7 @@ fn fuse_weight_norm_conv1d(
     }
     let expected_v = out_c * in_c * k;
     if weight_v.len() != expected_v {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{name_prefix}.weight_v: {} elts, expected {} (= {out_c} * {in_c} * {k})",
             weight_v.len(),
             expected_v,
@@ -836,7 +836,7 @@ fn load_encodec_conv1d(
     let w = fuse_weight_norm_conv1d(st, name_prefix, c_out, c_in, k)?;
     let b = load_tensor_as_f32(st, &format!("{name_prefix}.bias"))?;
     if b.len() != c_out {
-        fuel_core::bail!("{name_prefix}.bias: {} elts, expected {}", b.len(), c_out,);
+        fuel_ir::bail!("{name_prefix}.bias: {} elts, expected {}", b.len(), c_out,);
     }
     Ok(Conv1dWeights {
         w: Arc::from(w),
@@ -866,7 +866,7 @@ fn load_encodec_conv_transpose1d(
     let w = fuse_weight_norm_conv1d(st, name_prefix, c_in, c_out, k)?;
     let b = load_tensor_as_f32(st, &format!("{name_prefix}.bias"))?;
     if b.len() != c_out {
-        fuel_core::bail!("{name_prefix}.bias: {} elts, expected {}", b.len(), c_out,);
+        fuel_ir::bail!("{name_prefix}.bias: {} elts, expected {}", b.len(), c_out,);
     }
     Ok(ConvTranspose1dWeights {
         w: Arc::from(w),
@@ -896,28 +896,28 @@ fn load_encodec_lstm(
         let b_ih = load_tensor_as_f32(st, &format!("{name_prefix}.bias_ih_l{li}"))?;
         let b_hh = load_tensor_as_f32(st, &format!("{name_prefix}.bias_hh_l{li}"))?;
         if w_ih.len() != four_h * dim {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{name_prefix}.weight_ih_l{li}: {} elts, expected {}",
                 w_ih.len(),
                 four_h * dim,
             );
         }
         if w_hh.len() != four_h * dim {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{name_prefix}.weight_hh_l{li}: {} elts, expected {}",
                 w_hh.len(),
                 four_h * dim,
             );
         }
         if b_ih.len() != four_h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{name_prefix}.bias_ih_l{li}: {} elts, expected {}",
                 b_ih.len(),
                 four_h,
             );
         }
         if b_hh.len() != four_h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{name_prefix}.bias_hh_l{li}: {} elts, expected {}",
                 b_hh.len(),
                 four_h,
@@ -988,7 +988,7 @@ impl EncodecWeights {
         let num_codebooks =
             encodec_num_quantizers(sampling_rate, &cfg.upsampling_ratios, target_bandwidths);
         if num_codebooks == 0 {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "EncodecWeights::load_from_mmapped: zero quantizers \
                  — check target_bandwidths and upsampling_ratios",
             );
@@ -1095,7 +1095,7 @@ impl EncodecWeights {
             let embed = load_tensor_as_f32(st, &format!("quantizer.layers.{i}.codebook.embed"))?;
             let expected = cfg.codebook_size * cfg.codebook_dim;
             if embed.len() != expected {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "quantizer.layers.{i}.codebook.embed: {} elts, expected {}",
                     embed.len(),
                     expected,
@@ -1238,7 +1238,7 @@ fn load_encoder_weights(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;
@@ -1595,7 +1595,7 @@ mod tests {
             assert!(dims[1] > 0, "codebook {i} time axis must be non-empty");
             assert_eq!(
                 c.dtype(),
-                fuel_core::DType::U32,
+                fuel_tensor::DType::U32,
                 "codebook {i} dtype must be U32"
             );
             // All indices must fall inside the codebook.

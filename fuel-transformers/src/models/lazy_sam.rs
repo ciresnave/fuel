@@ -82,9 +82,10 @@
 //!   deferred to follow-up commits. They depend on the image
 //!   encoder being available first.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 // ---- Config ---------------------------------------------------------------
@@ -458,7 +459,7 @@ fn apply_attention(
     // the input tensor's embed dim -- still a checkable condition, so an error
     // to return rather than an invariant to assert.
     if nh * hd != c {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "SAM attn: num_heads ({nh}) * head_dim ({hd}) must equal embed_dim ({c})"
         ))
         .bt());
@@ -585,7 +586,7 @@ fn get_rel_pos(
     head_dim: usize,
 ) -> Result<Tensor> {
     if 2 * std::cmp::max(q_size, k_size) - 1 != max_rel_dist {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "get_rel_pos: interpolation not yet supported (q_size={q_size}, \
              k_size={k_size}, max_rel_dist={max_rel_dist})",
         ))
@@ -1638,13 +1639,13 @@ impl SamModel {
     pub fn preprocess(&self, image_chw: &[f32], h: usize, w: usize) -> Result<Vec<f32>> {
         let s = self.config.image_encoder.img_size;
         if h > s || w > s {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "SAM preprocess: image ({w}x{h}) exceeds max side {s}",
             ))
             .bt());
         }
         if image_chw.len() != 3 * h * w {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "SAM preprocess: expected {} f32s (3x{}x{}), got {}",
                 3 * h * w,
                 h,
@@ -1705,14 +1706,14 @@ impl SamModel {
         multimask_output: bool,
     ) -> Result<(Tensor, Tensor)> {
         if point_labels.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "SAM forward: no prompts supplied (point_labels is empty)".into(),
             )
             .bt());
         }
         let img_size = self.config.image_encoder.img_size;
         if orig_h == 0 || orig_w == 0 || orig_h > img_size || orig_w > img_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "SAM forward: orig ({orig_w}x{orig_h}) must be within (0, {img_size}]",
             ))
             .bt());
@@ -1732,7 +1733,7 @@ impl SamModel {
         let pps = self.config.image_encoder.patches_per_side();
         let decoder_side = 4 * pps;
         if !img_size.is_multiple_of(decoder_side) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "SAM upsample: img_size={img_size} not divisible by decoder spatial side {decoder_side}",
             )).bt());
         }
@@ -1777,7 +1778,7 @@ impl SamImageEncoderWeights {
         _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &SamImageEncoderConfig,
     ) -> Result<Self> {
-        Err(fuel_core::Error::Msg(
+        Err(fuel_ir::error::Error::Msg(
             "SamImageEncoderWeights::load_from_mmapped: HF SAM checkpoint \
              tensor naming pending; construct via explicit struct literal \
              or contribute the loader."
@@ -1792,7 +1793,7 @@ impl SamPromptEncoderWeights {
         _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &SamPromptEncoderConfig,
     ) -> Result<Self> {
-        Err(fuel_core::Error::Msg(
+        Err(fuel_ir::error::Error::Msg(
             "SamPromptEncoderWeights::load_from_mmapped: pending — see lazy_sam.".to_string(),
         )
         .bt())
@@ -1804,7 +1805,7 @@ impl SamMaskDecoderWeights {
         _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &SamMaskDecoderConfig,
     ) -> Result<Self> {
-        Err(fuel_core::Error::Msg(
+        Err(fuel_ir::error::Error::Msg(
             "SamMaskDecoderWeights::load_from_mmapped: pending — see lazy_sam.".to_string(),
         )
         .bt())

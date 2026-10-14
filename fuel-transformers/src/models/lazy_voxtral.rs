@@ -62,9 +62,10 @@
 //!   no stochastic depth.
 
 use crate::models::lazy_whisper::{conv1d_k3_s1_p1, conv1d_k3_s2_p1};
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 // ---- Configs ---------------------------------------------------------------
@@ -241,9 +242,9 @@ struct VoxtralConfigRaw {
 }
 
 impl VoxtralConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Voxtral config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Voxtral config.json: {e}")))
     }
 
     fn resolve(self) -> Result<VoxtralConfig> {
@@ -261,7 +262,7 @@ impl VoxtralConfig {
     ///
     /// ROADMAP item 8 (II), nested-artifact extension — see the born-red
     /// `voxtral_config_from_hf_json_composes_the_nested_sub_configs`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         VoxtralConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -484,7 +485,7 @@ impl VoxtralMultiModalProjector {
 // ---- Text-model weights (Llama-shape with explicit head_dim) ---------------
 
 /// Per-layer weights for the Voxtral text model. Distinct from
-/// `fuel_core::lazy::LayerWeights` because Voxtral's Q/K/V are
+/// `fuel_tensor::lazy::LayerWeights` because Voxtral's Q/K/V are
 /// non-square (`num_heads * head_dim` may not equal `hidden_size`).
 #[derive(Debug, Clone)]
 pub struct VoxtralTextLayerWeights {
@@ -837,15 +838,16 @@ impl VoxtralWeights {
     /// - `language_model.lm_head.weight` — `[V, hidden]` output.
     ///   Falls back to tied embeddings if absent.
     ///
-    /// Weight matrices go through [`fuel_core::lazy::load_transposed_matrix_preserve_dtype`]
+    /// Weight matrices go through [`fuel_tensor::lazy::load_transposed_matrix_preserve_dtype`]
     /// (so bf16 stays bf16); LayerNorm gains/biases, conv kernels, and
-    /// position-embedding tables go through [`fuel_core::lazy::load_tensor_as_f32`].
+    /// position-embedding tables go through [`fuel_tensor::lazy::load_tensor_as_f32`].
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &VoxtralConfig,
-    ) -> fuel_core::Result<Self> {
-        use fuel_core::lazy::{
-            load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
+    ) -> fuel_ir::error::Result<Self> {
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix,
+            lazy::load_transposed_matrix_preserve_dtype,
         };
 
         // ---- audio encoder (Whisper-shape) -------------------------

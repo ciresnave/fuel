@@ -21,9 +21,9 @@
 //! v1 scope: F32, batch == 1, forward-only inference.
 
 use crate::models::lazy_lstm::{LstmCellWeights, LstmStack};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,7 +85,7 @@ impl SpeakerEncoderModel {
         let d = dims[2];
         assert_eq!(b, 1, "v1 supports batch == 1");
         if d != cfg.mel_n_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MetaVoice speaker-encoder: input feature dim {} must equal mel_n_channels {}; \
                  a mismatch otherwise panics deeper in the LSTM input-dim check rather than \
                  declining here",
@@ -142,7 +142,7 @@ impl SpeakerEncoderWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SpeakerEncoderConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.model_hidden_size;
         let e = cfg.model_embedding_size;
@@ -158,28 +158,28 @@ impl SpeakerEncoderWeights {
             let b_ih = load_tensor_as_f32(st, &format!("lstm.{li}.bias_ih_l{li}"))?;
             let b_hh = load_tensor_as_f32(st, &format!("lstm.{li}.bias_hh_l{li}"))?;
             if w_ih.len() != four_h * in_dim {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "lstm.{li}.weight_ih_l{li}: {} elts, expected {}",
                     w_ih.len(),
                     four_h * in_dim,
                 );
             }
             if w_hh.len() != four_h * h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "lstm.{li}.weight_hh_l{li}: {} elts, expected {}",
                     w_hh.len(),
                     four_h * h,
                 );
             }
             if b_ih.len() != four_h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "lstm.{li}.bias_ih_l{li}: {} elts, expected {}",
                     b_ih.len(),
                     four_h,
                 );
             }
             if b_hh.len() != four_h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "lstm.{li}.bias_hh_l{li}: {} elts, expected {}",
                     b_hh.len(),
                     four_h,
@@ -219,7 +219,7 @@ impl SpeakerEncoderWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

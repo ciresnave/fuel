@@ -59,11 +59,11 @@
 //! let tokens = model.generate_greedy(&mel, &prompt, /* max_new = */ 64)?;
 //! let text = tokenizer.decode(&tokens, true)?;
 //! println!("{text}");
-//! # Ok::<(), fuel_core::Error>(())
+//! # Ok::<(), fuel_ir::error::Error>(())
 //! ```
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -95,17 +95,18 @@ fn default_scale_embedding() -> bool {
 }
 
 impl WhisperConfig {
-    pub fn from_hf_json_str(s: &str) -> fuel_core::Result<Self> {
-        serde_json::from_str::<Self>(s)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing whisper config.json: {e}")).bt())
+    pub fn from_hf_json_str(s: &str) -> fuel_ir::error::Result<Self> {
+        serde_json::from_str::<Self>(s).map_err(|e| {
+            fuel_ir::error::Error::Msg(format!("parsing whisper config.json: {e}")).bt()
+        })
     }
 
-    pub fn encoder_head_dim(&self) -> fuel_core::Result<usize> {
+    pub fn encoder_head_dim(&self) -> fuel_ir::error::Result<usize> {
         // GAP-281 (dim/head relation): a typed decline, not a panic. The
         // quotient below is integer division, so a non-dividing head count
         // truncates silently -- a CONFIG property to reject, not an invariant.
         if !self.d_model.is_multiple_of(self.encoder_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "WhisperConfig: d_model ({}) must be divisible by encoder_attention_heads ({})",
                 self.d_model, self.encoder_attention_heads,
             )));
@@ -113,12 +114,12 @@ impl WhisperConfig {
         Ok(self.d_model / self.encoder_attention_heads)
     }
 
-    pub fn decoder_head_dim(&self) -> fuel_core::Result<usize> {
+    pub fn decoder_head_dim(&self) -> fuel_ir::error::Result<usize> {
         // GAP-281 (dim/head relation): a typed decline, not a panic. The
         // quotient below is integer division, so a non-dividing head count
         // truncates silently -- a CONFIG property to reject, not an invariant.
         if !self.d_model.is_multiple_of(self.decoder_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "WhisperConfig: d_model ({}) must be divisible by decoder_attention_heads ({})",
                 self.d_model, self.decoder_attention_heads,
             )));
@@ -234,7 +235,7 @@ impl WhisperModel {
     /// `mel` is a flat row-major `[1, num_mel_bins, T]` spectrogram —
     /// typically `[1, 80, 3000]` for 30 s of 16 kHz audio. The function
     /// validates shape-vs-config at entry.
-    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> fuel_core::Result<Tensor> {
+    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let n_mel = cfg.num_mel_bins;
@@ -249,7 +250,7 @@ impl WhisperModel {
         let mel_t = Tensor::from_f32(
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
 
         // --- conv stem (pre-attention downsample) ------------------------
@@ -315,14 +316,14 @@ impl WhisperModel {
         &self,
         tokens: &[u32],
         encoder_out: &Tensor,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let seq = tokens.len();
         assert!(seq > 0, "forward_decoder: empty tokens");
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_target_positions {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_decoder: seq {seq} > max_target_positions {}",
                 cfg.max_target_positions,
             )));
@@ -380,7 +381,7 @@ impl WhisperModel {
         mel: &[f32],
         prompt_tokens: &[u32],
         max_new_tokens: usize,
-    ) -> fuel_core::Result<Vec<u32>> {
+    ) -> fuel_ir::error::Result<Vec<u32>> {
         let mel_time = mel.len() / self.config.num_mel_bins;
         let encoder_out = self.forward_encoder(mel, mel_time)?.realize_f32();
         // Re-materialize the encoder output into a fresh Tensor for
@@ -394,7 +395,7 @@ impl WhisperModel {
             let encoder_t = Tensor::from_f32(
                 encoder_out.clone(),
                 enc_shape.clone(),
-                &fuel_core::Device::cpu(),
+                &fuel_tensor::Device::cpu(),
             )?;
             let logits = self.forward_decoder(&tokens, &encoder_t)?;
             let flat = logits.realize_f32();
@@ -429,7 +430,7 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
@@ -451,7 +452,7 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
@@ -469,7 +470,7 @@ fn linear(
 /// Zero-pad `x: [1, C, T]` by 1 along the time axis, returning
 /// `[1, C, T+2]`. Built via concat with a const zero tensor — no
 /// native `Pad` op is needed since we only use this one padding.
-fn pad_t_axis_one_each_side(x: &Tensor, c: usize, _t: usize) -> fuel_core::Result<Tensor> {
+fn pad_t_axis_one_each_side(x: &Tensor, c: usize, _t: usize) -> fuel_ir::error::Result<Tensor> {
     let zeros = x.const_f32_like(vec![0.0_f32; c], Shape::from_dims(&[1, c, 1]))?;
     zeros.concat(x, 2)?.concat(&zeros, 2) // [1, c, t+2]
 }
@@ -490,7 +491,7 @@ pub(crate) fn conv1d_k3_s1_p1(
     in_c: usize,
     out_c: usize,
     t: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     // Pad T axis to T+2.
     let padded = pad_t_axis_one_each_side(x, in_c, t)?;
     // Three stride-1 windows along the time axis, each of length T.
@@ -540,7 +541,7 @@ pub(crate) fn conv1d_k3_s2_p1(
     in_c: usize,
     out_c: usize,
     t_in: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     assert!(
         t_in.is_multiple_of(2),
         "conv1d_k3_s2_p1 needs even T, got {t_in}"
@@ -616,7 +617,7 @@ fn multi_head_attn(
     q_seq: usize,
     kv_seq: usize,
     causal: bool,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let q = linear(q_src, q_w, Some(q_b), d, d, q_seq)?;
     let k = linear(k_src, k_w, None, d, d, kv_seq)?; // no K bias
     let v = linear(v_src, v_w, Some(v_b), d, d, kv_seq)?;
@@ -660,7 +661,7 @@ fn encoder_layer(
     lw: &WhisperEncoderLayerWeights,
     cfg: &WhisperConfig,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.encoder_attention_heads;
     let d_head = cfg.encoder_head_dim()?;
@@ -686,7 +687,7 @@ fn decoder_layer(
     lw: &WhisperDecoderLayerWeights,
     cfg: &WhisperConfig,
     q_seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.decoder_attention_heads;
     let d_head = cfg.decoder_head_dim()?;
@@ -769,14 +770,14 @@ impl WhisperWeights {
     ///
     /// Weight matrices are physically transposed at load time from HF's
     /// `[out_features, in_features]` to fuel's `[in_features, out_features]`
-    /// matmul order via [`fuel_core::lazy::load_transposed_matrix`]; LayerNorm / bias /
+    /// matmul order via [`fuel_tensor::lazy::load_transposed_matrix`]; LayerNorm / bias /
     /// conv / embedding tensors stay 1:1 with HF and go through
-    /// [`fuel_core::lazy::load_tensor_as_f32`].
+    /// [`fuel_tensor::lazy::load_tensor_as_f32`].
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &WhisperConfig,
-    ) -> fuel_core::Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
+    ) -> fuel_ir::error::Result<Self> {
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix};
 
         let d = cfg.d_model;
         // --- encoder ------------------------------------------------
@@ -929,18 +930,18 @@ impl WhisperWeights {
 // ---- HuggingFace Hub integration -------------------------------------------
 
 impl WhisperModel {
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         let config_path = repo
             .get("config.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub whisper config: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub whisper config: {e}")))?;
         let config_str = std::fs::read_to_string(&config_path)?;
         let config = WhisperConfig::from_hf_json_str(&config_str)?;
         let weights_path = repo
             .get("model.safetensors")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub whisper safetensors: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub whisper safetensors: {e}")))?;
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&weights_path) }?;
         let weights = WhisperWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })
@@ -956,26 +957,26 @@ pub struct WhisperTokenizer {
 }
 
 impl WhisperTokenizer {
-    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> fuel_core::Result<Self> {
+    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> fuel_ir::error::Result<Self> {
         let inner = tokenizers::Tokenizer::from_file(path)
-            .map_err(|e| fuel_core::Error::Msg(format!("whisper tokenizer: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("whisper tokenizer: {e}")))?;
         Ok(Self { inner })
     }
 
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
-        let path = repo
-            .get("tokenizer.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub whisper tokenizer.json: {e}")))?;
+        let path = repo.get("tokenizer.json").map_err(|e| {
+            fuel_ir::error::Error::Msg(format!("hf-hub whisper tokenizer.json: {e}"))
+        })?;
         Self::from_file(path)
     }
 
-    pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> fuel_core::Result<String> {
+    pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> fuel_ir::error::Result<String> {
         self.inner
             .decode(ids, skip_special_tokens)
-            .map_err(|e| fuel_core::Error::Msg(format!("whisper decode: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("whisper decode: {e}")))
     }
 
     pub fn token_to_id(&self, s: &str) -> Option<u32> {
@@ -1135,7 +1136,7 @@ mod tests {
 
         // Phase 6a oracle gate.
         let flat_ref = enc.realize_f32();
-        fuel_core::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
+        fuel_tensor::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
     }
 
     /// GAP-308 born-red: a decoder sequence longer than `max_target_positions`
@@ -1185,7 +1186,7 @@ mod tests {
 
         // Phase 6a oracle gate.
         let flat_ref = logits.realize_f32();
-        fuel_core::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
+        fuel_tensor::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
     }
 
     #[test]

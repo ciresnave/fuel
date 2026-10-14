@@ -39,14 +39,15 @@
 //! Multi-image / anyres / `image_newline` injection deferred.
 
 use crate::models::lazy_clip::{ClipEncoderLayerWeights, ClipVisionConfig, ClipVisionWeights};
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{
-    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
 use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{
+    lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -133,8 +134,9 @@ impl HFLlavaConfig {
     /// internal [`LlavaConfig`]. Returns an error if the projector
     /// dim is inconsistent with `text_config.hidden_size`.
     pub fn from_hf_json_str(json: &str) -> Result<LlavaConfig> {
-        let parsed: HFLlavaConfig = serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing llava config.json: {e}")).bt())?;
+        let parsed: HFLlavaConfig = serde_json::from_str(json).map_err(|e| {
+            fuel_ir::error::Error::Msg(format!("parsing llava config.json: {e}")).bt()
+        })?;
         parsed.to_llava_config()
     }
 
@@ -146,14 +148,14 @@ impl HFLlavaConfig {
         let v = &self.vision_config;
         let projection_dim = self.projection_dim.unwrap_or(t.hidden_size);
         if projection_dim != t.hidden_size {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "llava: projection_dim ({}) must equal text hidden_size ({}) for v1",
                 projection_dim,
                 t.hidden_size,
             );
         }
         if !t.hidden_size.is_multiple_of(t.num_attention_heads) {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "llava: text hidden_size ({}) not divisible by num_attention_heads ({})",
                 t.hidden_size,
                 t.num_attention_heads,
@@ -336,7 +338,7 @@ impl LlavaModel {
         // `num_patches()` PRODUCT, so it guards the patch COUNT, not the per-axis size — a
         // count-preserving resize would pass the reshape silently rather than error.
         if dims[2] != v_cfg.image_size || dims[3] != v_cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "llava clip vision: input spatial dims ({}, {}) must equal image_size {}; this \
                  model is fixed-resolution (position interpolation deferred), and the patch \
                  reshape targets a config-derived num_patches — it guards the patch COUNT, not \
@@ -511,7 +513,7 @@ pub fn load_clip_vision_weights(
     let position_embedding =
         load_tensor_as_f32(st, &format!("{prefix}embeddings.position_embedding.weight"))?;
     if position_embedding.len() != (np + 1) * h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}embeddings.position_embedding.weight: {} elts, expected {}",
             position_embedding.len(),
             (np + 1) * h,
@@ -616,7 +618,7 @@ pub fn load_llama_weights_with_prefix(
     let kv_dim = cfg.n_kv_heads * cfg.head_dim;
     let token_embedding = load_tensor_as_f32(st, &format!("{prefix}model.embed_tokens.weight"))?;
     if token_embedding.len() != cfg.vocab_size * cfg.dim {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}model.embed_tokens.weight: {} elts, expected {} ({}*{})",
             token_embedding.len(),
             cfg.vocab_size * cfg.dim,
@@ -732,7 +734,7 @@ pub fn load_llama_weights_with_prefix(
     };
 
     Ok(LlamaWeights {
-        instance: fuel_core::decode_shape::ModelInstanceId::next(),
+        instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
         token_embedding: Arc::from(token_embedding),
         layers,
         final_norm_gain: Arc::from(final_norm_gain),
@@ -763,7 +765,7 @@ impl LlavaWeights {
         )?;
         let mm_proj_bias = load_tensor_as_f32(st, "multi_modal_projector.linear_1.bias")?;
         if mm_proj_bias.len() != cfg.projection_dim {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "multi_modal_projector.linear_1.bias: {} elts, expected {}",
                 mm_proj_bias.len(),
                 cfg.projection_dim,
@@ -898,7 +900,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
         LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,

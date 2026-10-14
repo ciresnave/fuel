@@ -48,9 +48,9 @@
 //! - WeightNorm via [`bake_weight_norm`]; Norm::Identity / None
 //!   accepted.
 
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 /// Padding mode for [`pad_last_1d`] / streaming-conv left context.
@@ -86,7 +86,7 @@ pub fn pad_last_1d(xs: &Tensor, left: usize, right: usize, mode: LazyPadMode) ->
     let dims = xs.shape();
     let dims = dims.dims();
     if dims.len() != 3 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "pad_last_1d: input must be rank 3 (B, C, T), got rank {}",
             dims.len(),
         )));
@@ -96,7 +96,7 @@ pub fn pad_last_1d(xs: &Tensor, left: usize, right: usize, mode: LazyPadMode) ->
         LazyPadMode::Replicate => {
             let (b, c, t) = (dims[0], dims[1], dims[2]);
             if t == 0 {
-                return Err(fuel_core::Error::Msg(
+                return Err(fuel_ir::error::Error::Msg(
                     "pad_last_1d: cannot Replicate-pad an empty sequence".into(),
                 ));
             }
@@ -144,7 +144,7 @@ pub fn bake_weight_norm(
     kernel_size: usize,
 ) -> Result<Vec<f32>> {
     if weight_g.len() != out_channels {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "bake_weight_norm: weight_g length {} != out_channels {}",
             weight_g.len(),
             out_channels,
@@ -152,7 +152,7 @@ pub fn bake_weight_norm(
     }
     let per_out = in_channels_per_group * kernel_size;
     if weight_v.len() != out_channels * per_out {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "bake_weight_norm: weight_v length {} != out_channels * \
              (in_channels_per_group * kernel_size) = {} * {} = {}",
             weight_v.len(),
@@ -167,7 +167,7 @@ pub fn bake_weight_norm(
         let v_slice = &weight_v[base..base + per_out];
         let norm: f32 = v_slice.iter().map(|x| x * x).sum::<f32>().sqrt();
         if !norm.is_finite() || norm == 0.0 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "bake_weight_norm: invalid norm {norm} at output channel {c}",
             )));
         }
@@ -214,25 +214,25 @@ impl StreamableConv1dWeights {
         pad_mode: LazyPadMode,
     ) -> Result<Self> {
         if in_channels == 0 || out_channels == 0 || kernel_size == 0 || stride == 0 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConv1dWeights: in/out/kernel/stride must be > 0 \
                  (got {in_channels}, {out_channels}, {kernel_size}, {stride})",
             )));
         }
         if groups == 0 || !in_channels.is_multiple_of(groups) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConv1dWeights: in_channels {in_channels} must be divisible by groups {groups}",
             )));
         }
         if kernel_size < stride {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConv1dWeights: kernel_size {kernel_size} must be >= stride {stride} \
                  (eager mimi::conv invariant)",
             )));
         }
         let expected_w = out_channels * (in_channels / groups) * kernel_size;
         if weight.len() != expected_w {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConv1dWeights: weight length {} != \
                  out_channels * (in_channels/groups) * kernel_size = {expected_w}",
                 weight.len(),
@@ -241,7 +241,7 @@ impl StreamableConv1dWeights {
         if let Some(b) = &bias
             && b.len() != out_channels
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConv1dWeights: bias length {} != out_channels {}",
                 b.len(),
                 out_channels,
@@ -284,7 +284,7 @@ impl StreamableConv1dWeights {
         ideal.saturating_sub(t_in)
     }
 
-    fn build_weight_tensor(&self, anchor: &Tensor) -> fuel_core::Result<Tensor> {
+    fn build_weight_tensor(&self, anchor: &Tensor) -> fuel_ir::error::Result<Tensor> {
         // ⚠️ GAP-003 CATEGORY 3 — the ruled case, and the only kind that takes
         // `Result`. The DATA is `Arc::clone(&self.weight)`, loaded from a
         // CHECKPOINT. The SHAPE comes from CONFIG fields. There is no local
@@ -307,13 +307,13 @@ impl StreamableConv1dWeights {
                 ]),
             )
             .map_err(|e| {
-                fuel_core::Error::Msg(format!(
+                fuel_ir::error::Error::Msg(format!(
                     "conv weight from the checkpoint does not match the config: {e} \n                     (config implies out_channels * (in_channels / groups) * kernel_size)"
                 ))
             })
     }
 
-    fn build_bias_tensor(&self, anchor: &Tensor) -> fuel_core::Result<Option<Tensor>> {
+    fn build_bias_tensor(&self, anchor: &Tensor) -> fuel_ir::error::Result<Option<Tensor>> {
         // GAP-003 CATEGORY 3, same as the weight above: loaded bias data
         // against a config-derived length.
         self.bias
@@ -322,7 +322,7 @@ impl StreamableConv1dWeights {
                 anchor
                     .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
                     .map_err(|e| {
-                        fuel_core::Error::Msg(format!(
+                        fuel_ir::error::Error::Msg(format!(
                             "conv bias from the checkpoint does not match the config: {e} \n                             (config implies out_channels)"
                         ))
                     })
@@ -342,7 +342,7 @@ impl StreamableConv1dWeights {
         let dims = xs.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.in_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConv1dWeights::forward: expected input (B, {}, T), got {dims:?}",
                 self.in_channels,
             )));
@@ -409,7 +409,7 @@ impl StreamableConv1dWeights {
         let dims = xs.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.in_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConv1dWeights::step: expected (B, {}, L), got {dims:?}",
                 self.in_channels,
             )));
@@ -450,7 +450,7 @@ impl StreamableConv1dWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> Tensor {
         assert_eq!(src.len(), b * c * t);

@@ -41,11 +41,11 @@ use crate::models::lazy_t5::{
     T5Model, T5Weights,
 };
 #[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::WeightStorage;
-#[cfg(test)]
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::lazy::WeightStorage;
 use std::sync::Arc;
 
 /// GGUF-quantized T5 (encoder-decoder) model. Wraps a plain
@@ -69,13 +69,13 @@ impl QuantizedT5Model {
         &self,
         src_tokens: &[u32],
         tgt_tokens: &[u32],
-    ) -> Result<fuel_core::lazy::Tensor> {
+    ) -> Result<fuel_tensor::lazy::Tensor> {
         self.inner.forward(src_tokens, tgt_tokens)
     }
 
     /// Encoder-only forward over token IDs. Returns post-final-norm
     /// hidden states `(1, src_len, d_model)`.
-    pub fn forward_encoder(&self, src_tokens: &[u32]) -> Result<fuel_core::lazy::Tensor> {
+    pub fn forward_encoder(&self, src_tokens: &[u32]) -> Result<fuel_tensor::lazy::Tensor> {
         self.inner.forward_encoder(src_tokens)
     }
 
@@ -83,8 +83,8 @@ impl QuantizedT5Model {
     /// token-embedding lookup. Returns `(1, src_len, d_model)`.
     pub fn forward_encoder_embeds(
         &self,
-        src_embeds: &fuel_core::lazy::Tensor,
-    ) -> Result<fuel_core::lazy::Tensor> {
+        src_embeds: &fuel_tensor::lazy::Tensor,
+    ) -> Result<fuel_tensor::lazy::Tensor> {
         self.inner.forward_encoder_embeds(src_embeds)
     }
 
@@ -93,8 +93,8 @@ impl QuantizedT5Model {
     pub fn forward_decoder(
         &self,
         tgt_tokens: &[u32],
-        encoder_out: &fuel_core::lazy::Tensor,
-    ) -> Result<fuel_core::lazy::Tensor> {
+        encoder_out: &fuel_tensor::lazy::Tensor,
+    ) -> Result<fuel_tensor::lazy::Tensor> {
         self.inner.forward_decoder(tgt_tokens, encoder_out)
     }
 
@@ -103,9 +103,9 @@ impl QuantizedT5Model {
     /// `(1, tgt_len, vocab_size)`.
     pub fn forward_decoder_embeds(
         &self,
-        tgt_embeds: &fuel_core::lazy::Tensor,
-        encoder_out: &fuel_core::lazy::Tensor,
-    ) -> Result<fuel_core::lazy::Tensor> {
+        tgt_embeds: &fuel_tensor::lazy::Tensor,
+        encoder_out: &fuel_tensor::lazy::Tensor,
+    ) -> Result<fuel_tensor::lazy::Tensor> {
         self.inner.forward_decoder_embeds(tgt_embeds, encoder_out)
     }
 
@@ -114,9 +114,9 @@ impl QuantizedT5Model {
     /// the LM head or tied-embedding scaling.
     pub fn forward_decoder_hidden_embeds(
         &self,
-        tgt_embeds: &fuel_core::lazy::Tensor,
-        encoder_out: &fuel_core::lazy::Tensor,
-    ) -> Result<fuel_core::lazy::Tensor> {
+        tgt_embeds: &fuel_tensor::lazy::Tensor,
+        encoder_out: &fuel_tensor::lazy::Tensor,
+    ) -> Result<fuel_tensor::lazy::Tensor> {
         self.inner
             .forward_decoder_hidden_embeds(tgt_embeds, encoder_out)
     }
@@ -126,9 +126,9 @@ impl QuantizedT5Model {
     /// both sides. Returns `(1, seq, d_model)`.
     pub fn embed_tokens_anchored(
         &self,
-        anchor: &fuel_core::lazy::Tensor,
+        anchor: &fuel_tensor::lazy::Tensor,
         tokens: &[u32],
-    ) -> Result<fuel_core::lazy::Tensor> {
+    ) -> Result<fuel_tensor::lazy::Tensor> {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
@@ -178,14 +178,14 @@ impl QuantizedT5Model {
             |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
                 let f32_in_out = match w {
                 WeightStorage::F32(a) => a.to_vec(),
-                _ => return Err(fuel_core::Error::Msg(
+                _ => return Err(fuel_ir::error::Error::Msg(
                     "QuantizedT5Model::from_f32_bake: source weights must be WeightStorage::F32"
                         .into(),
                 )
                 .bt()),
             };
                 if f32_in_out.len() != in_features * out_features {
-                    return Err(fuel_core::Error::Msg(format!(
+                    return Err(fuel_ir::error::Error::Msg(format!(
                         "QuantizedT5Model::from_f32_bake: weight has {} elems, expected {}×{}",
                         f32_in_out.len(),
                         in_features,
@@ -198,13 +198,13 @@ impl QuantizedT5Model {
 
         let quantize_attn = |a: &T5AttentionWeights, name: &str| -> Result<T5AttentionWeights> {
             let q = quantize_linear(&a.q, d, inner)
-                .map_err(|e| fuel_core::Error::Msg(format!("{name}.q: {e}")).bt())?;
+                .map_err(|e| fuel_ir::error::Error::Msg(format!("{name}.q: {e}")).bt())?;
             let k = quantize_linear(&a.k, d, inner)
-                .map_err(|e| fuel_core::Error::Msg(format!("{name}.k: {e}")).bt())?;
+                .map_err(|e| fuel_ir::error::Error::Msg(format!("{name}.k: {e}")).bt())?;
             let v = quantize_linear(&a.v, d, inner)
-                .map_err(|e| fuel_core::Error::Msg(format!("{name}.v: {e}")).bt())?;
+                .map_err(|e| fuel_ir::error::Error::Msg(format!("{name}.v: {e}")).bt())?;
             let o = quantize_linear(&a.o, inner, d)
-                .map_err(|e| fuel_core::Error::Msg(format!("{name}.o: {e}")).bt())?;
+                .map_err(|e| fuel_ir::error::Error::Msg(format!("{name}.o: {e}")).bt())?;
             Ok(T5AttentionWeights { q, k, v, o })
         };
 
@@ -212,18 +212,20 @@ impl QuantizedT5Model {
             match f {
                 T5FfnWeights::Dense { wi, wo } => {
                     let wi = quantize_linear(wi, d, d_ff)
-                        .map_err(|e| fuel_core::Error::Msg(format!("{name}.wi: {e}")).bt())?;
+                        .map_err(|e| fuel_ir::error::Error::Msg(format!("{name}.wi: {e}")).bt())?;
                     let wo = quantize_linear(wo, d_ff, d)
-                        .map_err(|e| fuel_core::Error::Msg(format!("{name}.wo: {e}")).bt())?;
+                        .map_err(|e| fuel_ir::error::Error::Msg(format!("{name}.wo: {e}")).bt())?;
                     Ok(T5FfnWeights::Dense { wi, wo })
                 }
                 T5FfnWeights::Gated { wi_0, wi_1, wo } => {
-                    let wi_0 = quantize_linear(wi_0, d, d_ff)
-                        .map_err(|e| fuel_core::Error::Msg(format!("{name}.wi_0: {e}")).bt())?;
-                    let wi_1 = quantize_linear(wi_1, d, d_ff)
-                        .map_err(|e| fuel_core::Error::Msg(format!("{name}.wi_1: {e}")).bt())?;
+                    let wi_0 = quantize_linear(wi_0, d, d_ff).map_err(|e| {
+                        fuel_ir::error::Error::Msg(format!("{name}.wi_0: {e}")).bt()
+                    })?;
+                    let wi_1 = quantize_linear(wi_1, d, d_ff).map_err(|e| {
+                        fuel_ir::error::Error::Msg(format!("{name}.wi_1: {e}")).bt()
+                    })?;
                     let wo = quantize_linear(wo, d_ff, d)
-                        .map_err(|e| fuel_core::Error::Msg(format!("{name}.wo: {e}")).bt())?;
+                        .map_err(|e| fuel_ir::error::Error::Msg(format!("{name}.wo: {e}")).bt())?;
                     Ok(T5FfnWeights::Gated { wi_0, wi_1, wo })
                 }
             }
@@ -266,7 +268,7 @@ impl QuantizedT5Model {
         let lm_head = match src.lm_head {
             Some(w) => Some(
                 quantize_linear(&w, d, cfg.vocab_size)
-                    .map_err(|e| fuel_core::Error::Msg(format!("lm_head: {e}")).bt())?,
+                    .map_err(|e| fuel_ir::error::Error::Msg(format!("lm_head: {e}")).bt())?,
             ),
             None => None,
         };
@@ -328,7 +330,7 @@ impl QuantizedT5Model {
         let get_tensor_bytes =
             |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
+                    fuel_ir::error::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
                 let elems = info.shape.elem_count();
                 let block_size = info.ggml_dtype.block_size();
@@ -354,7 +356,7 @@ impl QuantizedT5Model {
             let expected = out_features * in_features;
             let actual: usize = dims.iter().product();
             if actual != expected {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "gguf: tensor {name:?} has {actual} elements, expected {expected} for [{out_features}, {in_features}]",
                 )).bt());
             }
@@ -389,7 +391,7 @@ impl QuantizedT5Model {
         // Shared embedding table: [vocab_size, d_model].
         let shared_embedding = load_f32("token_embd.weight")?;
         if shared_embedding.len() != cfg.vocab_size * d {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "gguf token_embd.weight: {} elems, expected {}×{}",
                 shared_embedding.len(),
                 cfg.vocab_size,
@@ -403,7 +405,7 @@ impl QuantizedT5Model {
         let decoder_rel_bias = load_f32("dec.blk.0.attn_rel_b.weight")?;
         let expected_rel = cfg.relative_attention_num_buckets * cfg.num_heads;
         if encoder_rel_bias.len() != expected_rel {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "gguf enc.blk.0.attn_rel_b.weight: {} elems, expected {}×{}",
                 encoder_rel_bias.len(),
                 cfg.relative_attention_num_buckets,
@@ -412,7 +414,7 @@ impl QuantizedT5Model {
             .bt());
         }
         if decoder_rel_bias.len() != expected_rel {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "gguf dec.blk.0.attn_rel_b.weight: {} elems, expected {}×{}",
                 decoder_rel_bias.len(),
                 cfg.relative_attention_num_buckets,
@@ -505,7 +507,7 @@ impl QuantizedT5Model {
         } else if cfg.tie_word_embeddings {
             None
         } else {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "gguf: output.weight absent and config has tie_word_embeddings=false".into(),
             )
             .bt());
@@ -528,14 +530,14 @@ impl QuantizedT5Model {
     }
 }
 
-fn layer_err(idx: usize, name: &str, e: fuel_core::Error) -> fuel_core::Error {
-    fuel_core::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
+fn layer_err(idx: usize, name: &str, e: fuel_ir::error::Error) -> fuel_ir::error::Error {
+    fuel_ir::error::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
 }
 
 fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {
     const QK4_0: usize = 32;
     if !n.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "QuantizedT5Model::from_f32_bake: {name} ({n}) must be divisible by Q4_0 block size ({QK4_0})"
         )).bt());
     }
@@ -555,7 +557,7 @@ fn quantize_in_out_to_q4_0(
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "Q4_0 quantize: in_features ({in_features}) must be divisible by {QK4_0}"
         ))
         .bt());
@@ -623,7 +625,7 @@ fn dequant_bytes_to_f32(
 mod tests {
     use super::*;
     use crate::models::lazy_t5::T5Activation;
-    use fuel_core::lazy::Tensor;
+    use fuel_tensor::lazy::Tensor;
 
     fn test_cfg() -> T5Config {
         // All quantized dims must be multiples of 32:

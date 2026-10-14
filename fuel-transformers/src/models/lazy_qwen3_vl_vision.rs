@@ -35,9 +35,9 @@
 //! last entry must equal `N`.
 
 use crate::models::lazy_conv3d::Conv3dTemporal2Weights;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,7 +121,7 @@ pub struct Qwen3VlVisionOutput {
 /// inside the same `cu_seqlens` block and `-inf` otherwise.
 pub fn build_cu_seqlens_mask(cu_seqlens: &[usize], n: usize) -> Result<Vec<f32>> {
     if cu_seqlens.len() < 2 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "build_cu_seqlens_mask: cu_seqlens must contain at least \
              two entries (start and end), got {}",
             cu_seqlens.len(),
@@ -129,14 +129,14 @@ pub fn build_cu_seqlens_mask(cu_seqlens: &[usize], n: usize) -> Result<Vec<f32>>
         .bt());
     }
     if cu_seqlens[0] != 0 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "build_cu_seqlens_mask: cu_seqlens[0] must be 0, got {}",
             cu_seqlens[0],
         ))
         .bt());
     }
     if *cu_seqlens.last().unwrap() != n {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "build_cu_seqlens_mask: cu_seqlens.last ({}) must equal \
              total patch count N ({n})",
             cu_seqlens.last().unwrap(),
@@ -145,7 +145,7 @@ pub fn build_cu_seqlens_mask(cu_seqlens: &[usize], n: usize) -> Result<Vec<f32>>
     }
     for w in cu_seqlens.windows(2) {
         if w[1] < w[0] {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "build_cu_seqlens_mask: cu_seqlens must be \
                  non-decreasing, got {:?}",
                 cu_seqlens,
@@ -172,14 +172,14 @@ impl Qwen3VlVisionModel {
         let cfg = &self.config;
         let weights = &self.weights;
         if !cfg.hidden_size.is_multiple_of(cfg.num_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlVisionModel: hidden_size ({}) must be divisible by num_heads ({})",
                 cfg.hidden_size, cfg.num_heads,
             ))
             .bt());
         }
         if weights.layers.len() != cfg.depth {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlVisionModel: weights.layers ({}) must match config.depth ({})",
                 weights.layers.len(),
                 cfg.depth,
@@ -187,7 +187,7 @@ impl Qwen3VlVisionModel {
             .bt());
         }
         if weights.deepstack.len() != cfg.deepstack_visual_indexes.len() {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlVisionModel: weights.deepstack ({}) must match \
                  config.deepstack_visual_indexes ({})",
                 weights.deepstack.len(),
@@ -200,7 +200,7 @@ impl Qwen3VlVisionModel {
         let dims = pixels.shape();
         let dims = dims.dims();
         if dims.len() != 5 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlVisionModel::forward: pixels must be rank 5 \
                  (N, C, T, H, W), got rank {}",
                 dims.len(),
@@ -209,21 +209,21 @@ impl Qwen3VlVisionModel {
         }
         let n = dims[0];
         if dims[1] != cfg.in_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlVisionModel::forward: pixels[1] ({}) must equal in_channels ({})",
                 dims[1], cfg.in_channels,
             ))
             .bt());
         }
         if dims[2] != cfg.temporal_patch_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlVisionModel::forward: pixels[2] ({}) must equal temporal_patch_size ({})",
                 dims[2], cfg.temporal_patch_size,
             ))
             .bt());
         }
         if dims[3] != cfg.patch_size || dims[4] != cfg.patch_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlVisionModel::forward: pixels[3,4] ({},{}) must equal patch_size ({})",
                 dims[3], dims[4], cfg.patch_size,
             ))
@@ -378,7 +378,7 @@ impl Qwen3VlVisionWeights {
         cfg: &Qwen3VlVisionConfig,
     ) -> Result<Self> {
         use crate::models::lazy_conv3d::{Conv3dTemporal2Config, Conv3dTemporal2Weights};
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
@@ -542,7 +542,7 @@ impl Qwen3VlVisionWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng() -> impl FnMut() -> f32 {
         let mut s: u32 = 0xC0DE_F00D;

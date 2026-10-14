@@ -20,11 +20,12 @@
 //!     project to decoder `d_model`.
 
 use crate::models::lazy_vit::{VitConfig, VitLayerWeights, VitModel, VitWeights};
-use fuel_core::Result;
-use fuel_core::lazy::{
-    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{
+    lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,7 +354,7 @@ pub fn load_vit_weights(
     let position_embeddings =
         load_tensor_as_f32(st, &format!("{prefix}embeddings.position_embeddings"))?;
     if position_embeddings.len() != (np + 1) * h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}embeddings.position_embeddings: {} elts, expected {}",
             position_embeddings.len(),
             (np + 1) * h,
@@ -611,7 +612,7 @@ impl TrocrModel {
 mod tests {
     use super::*;
     use crate::models::lazy_vit::{VitActivation, VitConfig, VitLayerWeights, VitWeights};
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;
@@ -1146,7 +1147,7 @@ mod tests {
             let img = Tensor::from_f32(
                 image,
                 Shape::from_dims(&[1, 3, 8, 8]),
-                &fuel_core::Device::cpu(),
+                &fuel_tensor::Device::cpu(),
             )
             .unwrap();
             let logits = model.forward(&img, &[1_u32, 2, 3]).unwrap().realize_f32();

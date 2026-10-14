@@ -32,11 +32,11 @@
 //! let hidden = model.forward(&tokens)?;
 //! let flat = hidden.realize_f32();
 //! assert_eq!(flat.len(), 77 * 768);
-//! # Ok::<(), fuel_core::Error>(())
+//! # Ok::<(), fuel_ir::error::Error>(())
 //! ```
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -144,17 +144,17 @@ impl ClipTextConfig {
         }
     }
 
-    pub fn from_hf_json_str(s: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(s: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str::<Self>(s)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing clip text config: {e}")).bt())
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing clip text config: {e}")).bt())
     }
 
-    pub fn head_dim(&self) -> fuel_core::Result<usize> {
+    pub fn head_dim(&self) -> fuel_ir::error::Result<usize> {
         // GAP-281 (dim/head relation): a typed decline, not a panic. The
         // quotient below is integer division, so a non-dividing head count
         // truncates silently -- a CONFIG property to reject, not an invariant.
         if !self.hidden_size.is_multiple_of(self.num_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "SdTextEncoderConfig: hidden_size ({}) must be divisible by num_attention_heads ({})",
                 self.hidden_size, self.num_attention_heads,
             )));
@@ -212,10 +212,10 @@ impl SdTextEncoder {
     /// common source of cryptic mismatches downstream.
     ///
     /// Returns `[1, seq, hidden_size]` hidden states.
-    pub fn forward(&self, tokens: &[u32]) -> fuel_core::Result<Tensor> {
+    pub fn forward(&self, tokens: &[u32]) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         if tokens.len() != cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "SdTextEncoder::forward: expected exactly {} tokens, got {}; a shorter/longer \
                  sequence builds a graph that only fails at realize (the position table is a \
                  fixed [max_position_embeddings, hidden] const), so it is declined at build",
@@ -231,7 +231,7 @@ impl SdTextEncoder {
         let token_emb = Tensor::from_f32(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         let input_ids = token_emb.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let pos_ids: Vec<u32> = (0..seq as u32).collect();
@@ -276,11 +276,11 @@ impl SdTextEncoder {
         &self,
         tokens: &[u32],
         until_layer: isize,
-    ) -> fuel_core::Result<(Tensor, Tensor)> {
+    ) -> fuel_ir::error::Result<(Tensor, Tensor)> {
         let token_emb = Tensor::from_f32(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[self.config.vocab_size, self.config.hidden_size]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         self.forward_until_encoder_layer_seeded(token_emb, tokens, until_layer)
     }
@@ -296,7 +296,7 @@ impl SdTextEncoder {
         anchor: &Tensor,
         tokens: &[u32],
         until_layer: isize,
-    ) -> fuel_core::Result<(Tensor, Tensor)> {
+    ) -> fuel_ir::error::Result<(Tensor, Tensor)> {
         let token_emb = anchor.const_f32_like(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[self.config.vocab_size, self.config.hidden_size]),
@@ -309,10 +309,10 @@ impl SdTextEncoder {
         token_emb: Tensor,
         tokens: &[u32],
         until_layer: isize,
-    ) -> fuel_core::Result<(Tensor, Tensor)> {
+    ) -> fuel_ir::error::Result<(Tensor, Tensor)> {
         let cfg = &self.config;
         if tokens.len() != cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "SdTextEncoder::forward_until_encoder_layer: expected exactly {} tokens, got {}; \
                  a shorter/longer sequence builds a graph that only fails at realize (fixed \
                  [max_position_embeddings, hidden] position const), so it is declined at build",
@@ -384,7 +384,7 @@ fn encoder_layer(
     lw: &ClipLayerWeights,
     cfg: &ClipTextConfig,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim()?;
@@ -427,7 +427,7 @@ fn encoder_layer(
 /// QuickGELU: `x * sigmoid(1.702 * x)`. CLIP's approximation to GELU;
 /// the 1.702 constant is part of CLIP's trained baseline and swapping
 /// in the exact GELU at inference produces visibly different outputs.
-fn quick_gelu(x: &Tensor) -> fuel_core::Result<Tensor> {
+fn quick_gelu(x: &Tensor) -> fuel_ir::error::Result<Tensor> {
     // sigmoid(y) = 1 / (1 + exp(-y))
     // sigmoid(1.702 * x) = 1 / (1 + exp(-1.702 * x))
     let scaled = x.mul_scalar(1.702);
@@ -451,7 +451,7 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
@@ -471,7 +471,7 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
@@ -497,7 +497,7 @@ impl ClipTextWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ClipTextConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let h = cfg.hidden_size;
         let token_embedding = load_f32(st, "text_model.embeddings.token_embedding.weight")?;
         let position_embedding = load_f32(st, "text_model.embeddings.position_embedding.weight")?;
@@ -558,11 +558,11 @@ impl ClipTextWeights {
 fn load_f32(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
-        .map_err(|e| fuel_core::Error::Msg(format!("clip load_f32 {name:?}: {e}")).bt())?;
+        .map_err(|e| fuel_ir::error::Error::Msg(format!("clip load_f32 {name:?}: {e}")).bt())?;
     let bytes = view.data();
     match view.dtype() {
         Dtype::F32 => {
@@ -588,7 +588,7 @@ fn load_f32(
             }
             Ok(out)
         }
-        other => fuel_core::bail!("clip load_f32: unsupported dtype {other:?} for {name:?}"),
+        other => fuel_ir::bail!("clip load_f32: unsupported dtype {other:?} for {name:?}"),
     }
 }
 
@@ -597,10 +597,10 @@ fn load_transposed(
     name: &str,
     out_features: usize,
     in_features: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let flat = load_f32(st, name)?;
     if flat.len() != out_features * in_features {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "clip load_transposed: {name:?} has {} elements, expected {}",
             flat.len(),
             out_features * in_features,
@@ -622,18 +622,21 @@ impl SdTextEncoder {
     /// subfolder + loads the weights. Defaults to the SD 1.5 text
     /// encoder config; override via `from_hub_with_config` for SD 2.x
     /// (different `hidden_size` + `num_hidden_layers`).
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         Self::from_hub_with_config(repo_id, ClipTextConfig::sd_v1())
     }
 
-    pub fn from_hub_with_config(repo_id: &str, config: ClipTextConfig) -> fuel_core::Result<Self> {
+    pub fn from_hub_with_config(
+        repo_id: &str,
+        config: ClipTextConfig,
+    ) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         // Diffusers repos ship one safetensors per subcomponent; SD 1.5
         // puts the text encoder at text_encoder/model.safetensors.
         let path = repo.get("text_encoder/model.safetensors").map_err(|e| {
-            fuel_core::Error::Msg(format!("hf-hub text_encoder/model.safetensors: {e}"))
+            fuel_ir::error::Error::Msg(format!("hf-hub text_encoder/model.safetensors: {e}"))
         })?;
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path) }?;
         let weights = ClipTextWeights::load_from_mmapped(&st, &config)?;
@@ -657,9 +660,9 @@ impl SdTextTokenizer {
     pub fn from_file<P: AsRef<std::path::Path>>(
         path: P,
         cfg: &ClipTextConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let inner = tokenizers::Tokenizer::from_file(path)
-            .map_err(|e| fuel_core::Error::Msg(format!("clip tokenizer: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("clip tokenizer: {e}")))?;
         Ok(Self {
             inner,
             pad_id: cfg.pad_token_id,
@@ -675,33 +678,36 @@ impl SdTextTokenizer {
     /// modern format. `laion/CLIP-ViT-L-14-laion2B-s32B-b82K` uses the
     /// same OpenAI CLIP vocabulary as SD 1.5 / 2.x and ships
     /// `tokenizer.json`.
-    pub fn from_hub(_repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(_repo_id: &str) -> fuel_ir::error::Result<Self> {
         Self::from_hub_with_config(_repo_id, &ClipTextConfig::sd_v1())
     }
 
-    pub fn from_hub_with_config(_repo_id: &str, cfg: &ClipTextConfig) -> fuel_core::Result<Self> {
+    pub fn from_hub_with_config(
+        _repo_id: &str,
+        cfg: &ClipTextConfig,
+    ) -> fuel_ir::error::Result<Self> {
         // The _repo_id parameter is reserved for future support of
         // diffusers repos that do ship tokenizer/tokenizer.json. The
         // laion mirror is the default fallback — it's the canonical
         // CLIP-L tokenizer and interchangeable with the one SD was
         // trained against.
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model("laion/CLIP-ViT-L-14-laion2B-s32B-b82K".to_string());
         let path = repo
             .get("tokenizer.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub clip tokenizer: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub clip tokenizer: {e}")))?;
         Self::from_file(path, cfg)
     }
 
     /// Encode a prompt and pad/truncate to `max_position_embeddings`.
     /// Padding uses `pad_token_id`; sequences longer than the max are
     /// truncated and closed with EOS.
-    pub fn encode_padded(&self, text: &str) -> fuel_core::Result<Vec<u32>> {
+    pub fn encode_padded(&self, text: &str) -> fuel_ir::error::Result<Vec<u32>> {
         let encoding = self
             .inner
             .encode(text, true)
-            .map_err(|e| fuel_core::Error::Msg(format!("clip encode: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("clip encode: {e}")))?;
         let mut ids: Vec<u32> = encoding.get_ids().to_vec();
         if ids.len() >= self.max_len {
             ids.truncate(self.max_len - 1);
@@ -791,7 +797,7 @@ mod tests {
 
         // Phase 6a oracle gate.
         let flat_ref = hidden.realize_f32();
-        fuel_core::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
+        fuel_tensor::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
     }
 
     #[test]
@@ -800,7 +806,7 @@ mod tests {
         // We build a 1-element graph and compare against the closed form.
         let x_vals = [-2.0_f32, -0.5, 0.0, 0.5, 1.0, 2.0];
         for &v in &x_vals {
-            let x = Tensor::from_f32(vec![v], Shape::from_dims(&[1]), &fuel_core::Device::cpu())
+            let x = Tensor::from_f32(vec![v], Shape::from_dims(&[1]), &fuel_tensor::Device::cpu())
                 .unwrap();
             let y = quick_gelu(&x).unwrap();
             let out = y.realize_f32()[0];

@@ -63,9 +63,9 @@
 use crate::models::lazy_sd_text_encoder::ClipTextActivation;
 use crate::models::lazy_sd_text_encoder::{ClipTextConfig, ClipTextWeights, SdTextEncoder};
 use crate::models::lazy_t5::{T5Config, T5Model, T5Weights};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 
 /// SD3 max position embeddings for each of the three encoders.
 /// Both CLIPs and T5 use 77 to keep the per-token sequence
@@ -248,21 +248,21 @@ impl Sd3TripleClip {
     ) -> Result<(Tensor, Tensor)> {
         let seq = SD3_MAX_POSITION_EMBEDDINGS;
         if prompt_tokens_clip_l.len() != seq {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Sd3TripleClip::encode: prompt_tokens_clip_l has {} tokens, expected {seq}",
                 prompt_tokens_clip_l.len(),
             ))
             .bt());
         }
         if prompt_tokens_clip_g.len() != seq {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Sd3TripleClip::encode: prompt_tokens_clip_g has {} tokens, expected {seq}",
                 prompt_tokens_clip_g.len(),
             ))
             .bt());
         }
         if prompt_tokens_t5.len() != seq {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Sd3TripleClip::encode: prompt_tokens_t5 has {} tokens, expected {seq}",
                 prompt_tokens_t5.len(),
             ))
@@ -277,13 +277,13 @@ impl Sd3TripleClip {
         let clip_g_dim = self.config.clip_g.hidden_size;
         let t5_dim = self.config.t5.d_model;
         if clip_l_dim + clip_g_dim != SD3_POOLED_DIM {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Sd3TripleClip::encode: clip_l.hidden_size ({clip_l_dim}) + clip_g.hidden_size ({clip_g_dim}) = {} != SD3_POOLED_DIM {SD3_POOLED_DIM}",
                 clip_l_dim + clip_g_dim,
             )).bt());
         }
         if t5_dim != SD3_CONTEXT_DIM {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Sd3TripleClip::encode: t5.d_model ({t5_dim}) != SD3_CONTEXT_DIM {SD3_CONTEXT_DIM}",
             ))
             .bt());
@@ -390,7 +390,7 @@ impl Sd3TripleClipWeights {
         st_t5: &fuel_loaders::safetensors::MmapedSafetensors,
         config: &Sd3TripleClipConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_transposed_matrix_preserve_dtype;
+        use fuel_tensor::lazy::load_transposed_matrix_preserve_dtype;
 
         let clip_l = ClipTextWeights::load_from_mmapped(st_clip_l, &config.clip_l)?;
         let clip_g = ClipTextWeights::load_from_mmapped(st_clip_g, &config.clip_g)?;

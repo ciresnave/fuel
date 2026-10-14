@@ -11,10 +11,11 @@
 //! Thin wrapper over [`fuel_model_llama::LlamaModel`] + adapter from
 //! [`Llama2cConfig`] to [`fuel_model_llama::LlamaConfig`].
 
-use fuel_core::inference_context::{InferenceContext, KvCache};
-use fuel_core::lazy::{LayerWeights, SamplingStrategy, Tensor, WeightStorage};
-use fuel_core::{DType, Device, Result};
+use fuel_ir::error::Result;
 use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
+use fuel_tensor::{DType, Device};
+use fuel_tensor::{inference_context::InferenceContext, inference_context::KvCache};
+use fuel_tensor::{lazy::LayerWeights, lazy::SamplingStrategy, lazy::Tensor, lazy::WeightStorage};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -71,7 +72,7 @@ pub(crate) struct Llama2cConfigRaw {
 impl Llama2cConfigRaw {
     fn from_json_str(json: &str) -> Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Llama2c config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Llama2c config.json: {e}")))
     }
 
     /// Apply the two cross-field defaults, then rename into this crate's
@@ -168,7 +169,7 @@ impl Llama2cModel {
         let anchor = Tensor::from_f32(
             llama.weights.token_embedding.clone(),
             fuel_ir::Shape::from_dims(&[llama.config.vocab_size, llama.config.dim]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         llama.forward_hidden(tokens, start_pos, &anchor)
     }
@@ -379,44 +380,45 @@ impl Llama2cModel {
     /// `model.safetensors.index.json` when present).
     pub fn from_hub(repo_id: &str) -> Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
 
         let config_path = repo
             .get("config.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub config.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub config.json: {e}")))?;
         let config_str = std::fs::read_to_string(&config_path)?;
         let config = Llama2cConfig::from_hf_json_str(&config_str)?;
 
-        let weight_paths: Vec<std::path::PathBuf> = match repo.get("model.safetensors.index.json") {
-            Ok(index_path) => {
-                let index_str = std::fs::read_to_string(&index_path)?;
-                let index: serde_json::Value = serde_json::from_str(&index_str)
-                    .map_err(|e| fuel_core::Error::Msg(format!("parsing index: {e}")))?;
-                let weight_map = index
-                    .get("weight_map")
-                    .and_then(|x| x.as_object())
-                    .ok_or_else(|| fuel_core::Error::Msg("index: missing weight_map".into()))?;
-                let mut unique = std::collections::HashSet::new();
-                for v in weight_map.values() {
-                    if let Some(s) = v.as_str() {
-                        unique.insert(s.to_string());
+        let weight_paths: Vec<std::path::PathBuf> =
+            match repo.get("model.safetensors.index.json") {
+                Ok(index_path) => {
+                    let index_str = std::fs::read_to_string(&index_path)?;
+                    let index: serde_json::Value = serde_json::from_str(&index_str)
+                        .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing index: {e}")))?;
+                    let weight_map = index
+                        .get("weight_map")
+                        .and_then(|x| x.as_object())
+                        .ok_or_else(|| {
+                            fuel_ir::error::Error::Msg("index: missing weight_map".into())
+                        })?;
+                    let mut unique = std::collections::HashSet::new();
+                    for v in weight_map.values() {
+                        if let Some(s) = v.as_str() {
+                            unique.insert(s.to_string());
+                        }
                     }
+                    let mut paths = Vec::new();
+                    for name in &unique {
+                        paths.push(repo.get(name).map_err(|e| {
+                            fuel_ir::error::Error::Msg(format!("hf-hub {name}: {e}"))
+                        })?);
+                    }
+                    paths
                 }
-                let mut paths = Vec::new();
-                for name in &unique {
-                    paths.push(
-                        repo.get(name)
-                            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub {name}: {e}")))?,
-                    );
-                }
-                paths
-            }
-            Err(_) => vec![
-                repo.get("model.safetensors")
-                    .map_err(|e| fuel_core::Error::Msg(format!("hf-hub model.safetensors: {e}")))?,
-            ],
-        };
+                Err(_) => vec![repo.get("model.safetensors").map_err(|e| {
+                    fuel_ir::error::Error::Msg(format!("hf-hub model.safetensors: {e}"))
+                })?],
+            };
 
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
         let weights = LlamaWeights::load_from_mmapped(&st, &config.to_llama_config())?;
@@ -458,7 +460,7 @@ impl Llama2cConfig {
 fn read_i32_le<R: std::io::Read>(r: &mut R) -> Result<i32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf).map_err(|e| {
-        fuel_core::Error::Msg(format!("llama2c bin: short read on i32 header: {e}"))
+        fuel_ir::error::Error::Msg(format!("llama2c bin: short read on i32 header: {e}"))
     })?;
     Ok(i32::from_le_bytes(buf))
 }
@@ -466,7 +468,7 @@ fn read_i32_le<R: std::io::Read>(r: &mut R) -> Result<i32> {
 fn read_f32_vec<R: std::io::Read>(r: &mut R, n: usize) -> Result<Vec<f32>> {
     let mut bytes = vec![0u8; n * 4];
     r.read_exact(&mut bytes).map_err(|e| {
-        fuel_core::Error::Msg(format!(
+        fuel_ir::error::Error::Msg(format!(
             "llama2c bin: short read of {n} f32s ({} bytes): {e}",
             n * 4,
         ))
@@ -543,13 +545,13 @@ pub fn load_llama2c_bin<R: std::io::Read>(r: &mut R) -> Result<Llama2cModel> {
     let seq_len = read_i32_le(r)? as usize;
 
     if dim == 0 || n_heads == 0 || !dim.is_multiple_of(n_heads) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "llama2c bin: invalid header dim={dim} n_heads={n_heads}",
         )));
     }
     let head_dim = dim / n_heads;
     if !head_dim.is_multiple_of(2) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "llama2c bin: head_dim {head_dim} must be even for RoPE",
         )));
     }
@@ -662,7 +664,7 @@ pub fn load_llama2c_bin<R: std::io::Read>(r: &mut R) -> Result<Llama2cModel> {
     };
 
     let weights = LlamaWeights {
-        instance: fuel_core::decode_shape::ModelInstanceId::next(),
+        instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
         token_embedding,
         layers,
         final_norm_gain: rms_final,
@@ -673,8 +675,9 @@ pub fn load_llama2c_bin<R: std::io::Read>(r: &mut R) -> Result<Llama2cModel> {
 
 /// Convenience: open a path and read a llama2.c bin file.
 pub fn load_llama2c_bin_path<P: AsRef<std::path::Path>>(path: P) -> Result<Llama2cModel> {
-    let file = std::fs::File::open(path.as_ref())
-        .map_err(|e| fuel_core::Error::Msg(format!("llama2c bin open {:?}: {e}", path.as_ref())))?;
+    let file = std::fs::File::open(path.as_ref()).map_err(|e| {
+        fuel_ir::error::Error::Msg(format!("llama2c bin open {:?}: {e}", path.as_ref()))
+    })?;
     let mut reader = std::io::BufReader::new(file);
     load_llama2c_bin(&mut reader)
 }
@@ -690,14 +693,16 @@ impl Llama2cConfig {
     /// make.
     pub(crate) fn from_hf_json_str_legacy(json: &str) -> Result<Self> {
         let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Llama2c config.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Llama2c config.json: {e}")))?;
 
         let get_usize = |key: &str| -> Result<usize> {
             v.get(key)
                 .and_then(|x| x.as_u64())
                 .map(|x| x as usize)
                 .ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("Llama2c config.json: missing/invalid {key:?}"))
+                    fuel_ir::error::Error::Msg(format!(
+                        "Llama2c config.json: missing/invalid {key:?}"
+                    ))
                 })
         };
         let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
@@ -921,7 +926,7 @@ mod tests {
             })
             .collect();
         let weights = LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::clone(&token_embedding),
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
@@ -944,7 +949,7 @@ mod tests {
             cfg.vocab_size,
             cfg.dim,
             &tokens,
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let logits_b = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
@@ -1005,7 +1010,7 @@ mod tests {
             })
             .collect();
         let weights = LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
@@ -1029,13 +1034,13 @@ mod tests {
             last.realize_f32()
         };
 
-        let device = fuel_core::Device::cpu();
+        let device = fuel_tensor::Device::cpu();
         let mut cache = KvCache::with_capacity(
             cfg.n_layers,
             cfg.n_kv_heads,
             cfg.head_dim,
             tokens.len(),
-            fuel_core::DType::F32,
+            fuel_tensor::DType::F32,
             &device,
         )
         .unwrap();
@@ -1101,7 +1106,7 @@ mod tests {
             })
             .collect();
         let weights = LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
@@ -1114,7 +1119,7 @@ mod tests {
 
         let prompt = [2_u32, 9, 4];
         let max_new = 6;
-        let device = fuel_core::Device::cpu();
+        let device = fuel_tensor::Device::cpu();
 
         let baseline = model
             .generate_with_kv_context(
@@ -1123,7 +1128,7 @@ mod tests {
                 SamplingStrategy::Greedy,
                 None,
                 &device,
-                fuel_core::DType::F32,
+                fuel_tensor::DType::F32,
             )
             .expect("baseline");
 
@@ -1136,7 +1141,7 @@ mod tests {
                 SamplingStrategy::Greedy,
                 None,
                 &device,
-                fuel_core::DType::F32,
+                fuel_tensor::DType::F32,
                 |_| {},
             )
             .expect("spec");
@@ -1214,7 +1219,7 @@ mod tests {
             })
             .collect();
         let weights = LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),
@@ -1288,7 +1293,7 @@ mod tests {
             })
             .collect();
         let weights = LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain: Arc::from(vec![1.0_f32; h]),

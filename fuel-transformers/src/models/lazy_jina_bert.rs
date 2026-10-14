@@ -39,9 +39,10 @@
 //! Pooling / projection heads stay out of v1 — caller can
 //! mean-pool and L2-normalize.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,7 +179,7 @@ impl JinaBertModel {
         assert!(seq > 0);
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "JinaBertModel: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             ))
@@ -188,7 +189,7 @@ impl JinaBertModel {
         // so a config whose hidden_size is not divisible by the head count violates
         // this -- a CONFIG property to reject, not an invariant to assert.
         if n_heads * cfg.head_dim() != h {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -274,7 +275,7 @@ impl JinaBertModel {
         assert!(seq > 0);
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "JinaBertModel: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             ))
@@ -284,7 +285,7 @@ impl JinaBertModel {
         // so a config whose hidden_size is not divisible by the head count violates
         // this -- a CONFIG property to reject, not an invariant to assert.
         if n_heads * cfg.head_dim() != h {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -416,7 +417,9 @@ impl JinaBertWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &JinaBertConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 

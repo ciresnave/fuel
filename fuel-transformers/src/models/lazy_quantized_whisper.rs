@@ -29,9 +29,9 @@
 //!   the LLaMA port uses; see `lazy::LlamaWeights::load_from_gguf`.)*
 
 use crate::models::lazy_whisper::{WhisperConfig, WhisperModel, conv1d_k3_s1_p1, conv1d_k3_s2_p1};
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use fuel_quantized::{BlockQ4_0, GgmlType, QK4_0};
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 // ---- Quantized weight structs ---------------------------------------------
@@ -138,9 +138,9 @@ fn quantize_in_out_to_q4_0(
     w_in_out: &[f32],
     in_features: usize,
     out_features: usize,
-) -> fuel_core::Result<WeightStorage> {
+) -> fuel_ir::error::Result<WeightStorage> {
     if w_in_out.len() != in_features * out_features {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "quantize_in_out_to_q4_0: weight has {} elements, expected {} × {} = {}",
             w_in_out.len(),
             in_features,
@@ -150,7 +150,7 @@ fn quantize_in_out_to_q4_0(
         .bt());
     }
     if !in_features.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "quantize_in_out_to_q4_0: in_features ({in_features}) must be a multiple of Q4_0 block size ({QK4_0})",
         )).bt());
     }
@@ -219,7 +219,7 @@ impl QuantizedWhisperModel {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: WhisperConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         use crate::models::lazy_whisper::{WhisperModel, WhisperWeights};
         let weights = WhisperWeights::load_from_mmapped(st, &cfg)?;
         let plain = WhisperModel {
@@ -229,7 +229,7 @@ impl QuantizedWhisperModel {
         Self::from_f32_bake(&plain)
     }
 
-    pub fn from_f32_bake(plain: &WhisperModel) -> fuel_core::Result<Self> {
+    pub fn from_f32_bake(plain: &WhisperModel) -> fuel_ir::error::Result<Self> {
         let cfg = plain.config.clone();
         let d = cfg.d_model;
         let h_ff_enc = cfg.encoder_ffn_dim;
@@ -315,8 +315,8 @@ impl QuantizedWhisperModel {
     /// loader is a mechanical re-use of the GGUF reader the LLaMA port
     /// already ships. Wiring it up is a follow-up — callers that have
     /// a `WhisperModel` should use `from_f32_bake` instead.
-    pub fn from_gguf<P: AsRef<std::path::Path>>(_path: P) -> fuel_core::Result<Self> {
-        Err(fuel_core::Error::Msg(
+    pub fn from_gguf<P: AsRef<std::path::Path>>(_path: P) -> fuel_ir::error::Result<Self> {
+        Err(fuel_ir::error::Error::Msg(
             "QuantizedWhisperModel::from_gguf: GGUF loader not yet wired in this crate. \
              Use QuantizedWhisperModel::from_f32_bake on a loaded WhisperModel as the bridge."
                 .into(),
@@ -329,12 +329,12 @@ impl QuantizedWhisperModel {
     /// final LN); the only difference is that the attention + FFN
     /// projections inside each block read from Q4_0 weights via
     /// `WeightStorage::apply_linear` → `qmatmul`.
-    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> fuel_core::Result<Tensor> {
+    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let n_mel = cfg.num_mel_bins;
         if mel.len() != n_mel * mel_time {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_encoder: mel has {} elements, expected {}×{}",
                 mel.len(),
                 n_mel,
@@ -345,7 +345,7 @@ impl QuantizedWhisperModel {
         let mel_t = Tensor::from_f32(
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
 
         let x = conv1d_k3_s1_p1(
@@ -358,7 +358,7 @@ impl QuantizedWhisperModel {
         )?
         .gelu_tanh();
         if !mel_time.is_multiple_of(2) {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "forward_encoder: mel_time must be even for stride-2 conv".into(),
             )
             .bt());
@@ -405,15 +405,15 @@ impl QuantizedWhisperModel {
         &self,
         tokens: &[u32],
         encoder_out: &Tensor,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let seq = tokens.len();
         if seq == 0 {
-            return Err(fuel_core::Error::Msg("forward_decoder: empty tokens".into()).bt());
+            return Err(fuel_ir::error::Error::Msg("forward_decoder: empty tokens".into()).bt());
         }
         if seq > cfg.max_target_positions {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_decoder: seq {seq} > max_target_positions {}",
                 cfg.max_target_positions,
             ))
@@ -461,7 +461,7 @@ impl QuantizedWhisperModel {
         mel: &[f32],
         prompt_tokens: &[u32],
         max_new_tokens: usize,
-    ) -> fuel_core::Result<Vec<u32>> {
+    ) -> fuel_ir::error::Result<Vec<u32>> {
         let mel_time = mel.len() / self.config.num_mel_bins;
         let encoder_out = self.forward_encoder(mel, mel_time)?.realize_f32();
         let t_half = mel_time / 2;
@@ -473,7 +473,7 @@ impl QuantizedWhisperModel {
             let encoder_t = Tensor::from_f32(
                 encoder_out.clone(),
                 enc_shape.clone(),
-                &fuel_core::Device::cpu(),
+                &fuel_tensor::Device::cpu(),
             )?;
             let logits = self.forward_decoder(&tokens, &encoder_t)?;
             let flat = logits.realize_f32();
@@ -505,7 +505,7 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(Arc::clone(gamma), Shape::from_dims(&[hidden]))?
@@ -529,7 +529,7 @@ fn q_linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let proj = w.apply_linear(x, in_f, out_f)?;
     match b {
         Some(bias) => {
@@ -561,7 +561,7 @@ fn multi_head_attn(
     q_seq: usize,
     kv_seq: usize,
     causal: bool,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let q = q_linear(q_src, q_w, Some(q_b), d, d, q_seq)?;
     let k = q_linear(k_src, k_w, None, d, d, kv_seq)?;
     let v = q_linear(v_src, v_w, Some(v_b), d, d, kv_seq)?;
@@ -600,7 +600,7 @@ fn encoder_layer(
     lw: &QuantizedWhisperEncoderLayerWeights,
     cfg: &WhisperConfig,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.encoder_attention_heads;
     let d_head = cfg.encoder_head_dim()?;
@@ -625,7 +625,7 @@ fn decoder_layer(
     lw: &QuantizedWhisperDecoderLayerWeights,
     cfg: &WhisperConfig,
     q_seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.decoder_attention_heads;
     let d_head = cfg.decoder_head_dim()?;
@@ -656,7 +656,7 @@ fn decoder_layer(
     let enc_shape = encoder_out.shape();
     let enc_dims = enc_shape.dims();
     if enc_dims.len() != 3 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "encoder_out must be [1, T, d]; got {enc_dims:?}",
         ))
         .bt());

@@ -13,13 +13,19 @@
 //! as Mixtral. No shared expert.
 
 use crate::models::lazy_qwen3::{Qwen3AttnBlock, qwen3_attn_with_kv_writes};
-use fuel_core::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::persistent_decode::{
-    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
-};
-use fuel_core::{Device, Result};
+use fuel_ir::error::Result;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::Device;
+use fuel_tensor::{
+    inference_context::DecodeSession, inference_context::DecodeTokenData,
+    inference_context::InferenceContext, inference_context::KvCache,
+};
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
+use fuel_tensor::{
+    persistent_decode::DecodeBackbone, persistent_decode::DecodeDims,
+    persistent_decode::DecodeLayerInputs, persistent_decode::MaskPlan,
+    persistent_decode::PersistentDecodeModel,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,9 +106,9 @@ fn default_qwen3_moe_decoder_sparse_step() -> usize {
 }
 
 impl Qwen3MoeConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen3-MoE config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Qwen3-MoE config.json: {e}")))
     }
 
     fn resolve(self) -> Result<Qwen3MoeConfig> {
@@ -141,7 +147,7 @@ impl Qwen3MoeConfig {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `qwen3_moe_config_from_hf_json_parses_the_artifact`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         Qwen3MoeConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -189,8 +195,8 @@ pub enum Qwen3MoeFfn {
 pub struct Qwen3MoeWeights {
     /// Process-unique identity for THIS weight set — what lets a held decode
     /// plan tell two same-architecture models apart (GAP-029). Mint with
-    /// [`fuel_core::decode_shape::ModelInstanceId::next`].
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    /// [`fuel_tensor::decode_shape::ModelInstanceId::next`].
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<Qwen3MoeLayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -275,14 +281,14 @@ impl Qwen3MoeModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3MoeModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen3MoeModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
@@ -471,7 +477,7 @@ impl Qwen3MoeModel {
     /// never share a held plan.
     pub fn decode_shape_key(&self) -> u64 {
         let cfg = &self.config;
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("qwen3_moe")
             .mix_instance(self.weights.instance)
             .mix_u64(cfg.num_hidden_layers as u64)
@@ -497,7 +503,9 @@ impl Qwen3MoeModel {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+        fuel_tensor::persistent_decode::forward_with_kv_context(
+            self, tokens, cache, ctx, false, None,
+        )
     }
 
     /// Plan-once persistent decode.
@@ -508,7 +516,7 @@ impl Qwen3MoeModel {
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context_persistent(
+        fuel_tensor::persistent_decode::forward_with_kv_context_persistent(
             self, tokens, cache, ctx, session, None,
         )
     }
@@ -541,14 +549,14 @@ impl PersistentDecodeModel for Qwen3MoeModel {
         cache: &KvCache,
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
-        let host = fuel_core::persistent_decode::compute_decode_token_host(
+        let host = fuel_tensor::persistent_decode::compute_decode_token_host(
             self,
             cached_len,
             tokens,
             session.max_seq_len(),
             rope_inv_freq,
         );
-        fuel_core::persistent_decode::upload_decode_token_data(
+        fuel_tensor::persistent_decode::upload_decode_token_data(
             device,
             &host,
             cache.dtype.unwrap_or(DType::F32),
@@ -583,8 +591,8 @@ impl DecodeBackbone for Qwen3MoeModel {
         Qwen3MoeModel::decode_mask_plan(self)
     }
 
-    fn decode_rope_plan(&self) -> fuel_core::persistent_decode::RopePlan {
-        fuel_core::persistent_decode::RopePlan::single(
+    fn decode_rope_plan(&self) -> fuel_tensor::persistent_decode::RopePlan {
+        fuel_tensor::persistent_decode::RopePlan::single(
             self.config.rope_theta,
             self.decode_dims().n_layers,
         )
@@ -654,9 +662,9 @@ impl Qwen3MoeWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen3MoeConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{
-            load_tensor_as_f32, load_transposed_matrix,
-            load_transposed_matrix_preserve_dtype as ltm,
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix,
+            lazy::load_transposed_matrix_preserve_dtype as ltm,
         };
         let h = cfg.hidden_size;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
@@ -769,7 +777,7 @@ impl Qwen3MoeWeights {
         };
 
         Ok(Self {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -972,7 +980,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
         Qwen3MoeWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -1023,7 +1031,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
         Qwen3MoeWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,

@@ -6,7 +6,7 @@
 //! bias-free Q/K/V/O projections, and **Multimodal Rotary Position
 //! Embedding (M-RoPE)**. M-RoPE is the only structural deviation from
 //! a stock LLaMA / Mistral decoder — everything else lines up with
-//! `fuel_core::lazy::LayerWeights`.
+//! `fuel_tensor::lazy::LayerWeights`.
 //!
 //! # M-RoPE in one paragraph
 //!
@@ -41,11 +41,13 @@
 //!     - `lm_head.weight` → `output` (or tied to embedding if
 //!       `tie_word_embeddings`).
 
-use fuel_core::lazy::{
-    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{
+    lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::sync::Arc;
 
 /// PaddleOCR-VL text-model configuration. Mirrors the HuggingFace
@@ -139,9 +141,10 @@ fn default_paddleocr_rope_theta() -> f64 {
 }
 
 impl PaddleOcrVlTextConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing PaddleOCR-VL config.json: {e}")))
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
+        serde_json::from_str(json).map_err(|e| {
+            fuel_ir::error::Error::Msg(format!("parsing PaddleOCR-VL config.json: {e}"))
+        })
     }
 
     fn resolve(self) -> Result<PaddleOcrVlTextConfig> {
@@ -178,7 +181,7 @@ impl PaddleOcrVlTextConfig {
     /// than returning a preset, lifting `mrope_section` out of the nested
     /// `rope_scaling` object — see the born-red
     /// `paddleocr_config_from_hf_json_lifts_nested_mrope_section`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         PaddleOcrVlTextConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -270,7 +273,7 @@ impl PaddleOcrVlTextModel {
         let cfg = &self.config;
         let seq = self.validate_embeds(embeds)?;
         if position_ids.len() != seq {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlTextModel: position_ids length ({}) must match seq ({})",
                 position_ids.len(),
                 seq,
@@ -286,17 +289,19 @@ impl PaddleOcrVlTextModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlTextModel: embeds shape must be (1, seq, {}), got {:?}",
                 cfg.hidden_size, dims,
             ))
             .bt());
         }
         if dims[1] == 0 {
-            return Err(fuel_core::Error::Msg("PaddleOcrVlTextModel: seq must be > 0".into()).bt());
+            return Err(
+                fuel_ir::error::Error::Msg("PaddleOcrVlTextModel: seq must be > 0".into()).bt(),
+            );
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "PaddleOcrVlTextConfig: num_attention_heads * head_dim must equal hidden_size"
                     .into(),
             )
@@ -306,14 +311,14 @@ impl PaddleOcrVlTextModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlTextConfig: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
                 cfg.num_attention_heads, cfg.num_key_value_heads,
             )).bt());
         }
         let mrope_sum: usize = cfg.mrope_section.iter().sum();
         if mrope_sum * 2 != cfg.head_dim {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlTextConfig: mrope_section {:?} sums to {}, expected head_dim/2 = {}",
                 cfg.mrope_section,
                 mrope_sum,
@@ -472,7 +477,7 @@ pub fn build_mrope_tables(
     // GAP-281: a CONFIG property -- reject it rather than panicking. The
     // half-dimension split below assumes an even head_dim.
     if !head_dim.is_multiple_of(2) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "build_mrope_tables: head_dim ({head_dim}) must be even"
         )));
     }
@@ -482,7 +487,7 @@ pub fn build_mrope_tables(
     // declines this at the config boundary, so production cannot reach it --
     // but this fn is `pub` and its direct callers are not covered by that.
     if mrope_sum != half {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "build_mrope_tables: mrope_section must sum to head_dim/2 ({half}), got {mrope_sum}"
         )));
     }
@@ -587,7 +592,7 @@ pub fn load_paddleocr_vl_text_weights_with_prefix(
     let kv = cfg.num_key_value_heads * cfg.head_dim;
     let token_embedding = load_tensor_as_f32(st, &format!("{prefix}model.embed_tokens.weight"))?;
     if token_embedding.len() != cfg.vocab_size * h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}model.embed_tokens.weight: {} elts, expected {}",
             token_embedding.len(),
             cfg.vocab_size * h,

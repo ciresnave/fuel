@@ -15,9 +15,9 @@
 //! ancestral path.
 
 use crate::models::lazy_sd_samplers::{BetaSchedule, PredictionType, SdScheduler, TimestepSpacing};
-use fuel_core::lazy::Tensor;
-use fuel_core::{Error, Result};
 use fuel_ir::Shape;
+use fuel_ir::{error::Error, error::Result};
+use fuel_tensor::lazy::Tensor;
 
 /// Configuration for [`EulerAncestralDiscreteScheduler`].
 #[derive(Debug, Clone, Copy)]
@@ -393,7 +393,7 @@ fn randn_like_on_graph(anchor: &Tensor, mean: f64, stdev: f64) -> Result<Tensor>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn paired(a: &[f32], b: &[f32], shape: &[usize]) -> (Tensor, Tensor) {
         let anchor = Tensor::from_f32(a.to_vec(), Shape::from_dims(shape), &Device::cpu()).unwrap();

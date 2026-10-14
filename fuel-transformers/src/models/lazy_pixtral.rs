@@ -47,13 +47,14 @@
 use crate::models::lazy_mistral::{
     MistralConfig, MistralModel, MistralWeights, load_mistral_weights_with_prefix,
 };
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{
-    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{
+    lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,7 +205,7 @@ impl PixtralModel {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "pixtral vision: input spatial dims ({}, {}) must equal image_size {}; this model \
                  is fixed-resolution (position interpolation deferred), and the patch reshape \
                  targets a config-derived num_patches — it guards the patch COUNT, not the \
@@ -433,7 +434,7 @@ pub fn load_pixtral_vision_weights(
     let patch_conv = load_tensor_as_f32(st, &format!("{prefix}patch_conv.weight"))?;
     let expected_patch = h * cfg.num_channels * cfg.patch_size * cfg.patch_size;
     if patch_conv.len() != expected_patch {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}patch_conv.weight: {} elts, expected {}",
             patch_conv.len(),
             expected_patch,
@@ -441,7 +442,7 @@ pub fn load_pixtral_vision_weights(
     }
     let ln_pre_gain = load_tensor_as_f32(st, &format!("{prefix}ln_pre.weight"))?;
     if ln_pre_gain.len() != h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}ln_pre.weight: {} elts, expected {}",
             ln_pre_gain.len(),
             h,
@@ -531,7 +532,7 @@ pub fn load_pixtral_projector_weights(
     )?;
     let linear_1_bias = load_tensor_as_f32(st, &format!("{prefix}linear_1.bias"))?;
     if linear_1_bias.len() != cfg.out_dim {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}linear_1.bias: {} elts, expected {}",
             linear_1_bias.len(),
             cfg.out_dim,
@@ -545,7 +546,7 @@ pub fn load_pixtral_projector_weights(
     )?;
     let linear_2_bias = load_tensor_as_f32(st, &format!("{prefix}linear_2.bias"))?;
     if linear_2_bias.len() != cfg.out_dim {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}linear_2.bias: {} elts, expected {}",
             linear_2_bias.len(),
             cfg.out_dim,
@@ -585,7 +586,7 @@ impl PixtralWeights {
 mod tests {
     use super::*;
     use crate::models::lazy_mistral::MistralConfig;
-    use fuel_core::lazy::LayerWeights;
+    use fuel_tensor::lazy::LayerWeights;
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())

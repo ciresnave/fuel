@@ -32,9 +32,10 @@
 //! keep and `-inf` for mask. The caller is responsible for
 //! constructing it (e.g., from a pad-token mask).
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +123,7 @@ impl DistilBertModel {
         assert!(seq > 0);
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DistilBertModel::forward: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             )));
@@ -184,7 +185,7 @@ impl DistilBertModel {
         assert!(seq > 0);
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DistilBertModel::forward_intermediate_layers: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             )));
@@ -328,7 +329,7 @@ impl DistilBertWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &DistilBertConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         // Prefix detection: HF's `distilbert-base-uncased` and
         // friends save weights under the `distilbert.` wrapper, but
@@ -348,7 +349,7 @@ impl DistilBertWeights {
         let word_embedding =
             load_tensor_as_f32(st, &format!("{prefix}embeddings.word_embeddings.weight"))?;
         if word_embedding.len() != cfg.vocab_size * d {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{prefix}embeddings.word_embeddings.weight: {} elts, expected {} ({}×{})",
                 word_embedding.len(),
                 cfg.vocab_size * d,
@@ -361,7 +362,7 @@ impl DistilBertWeights {
             &format!("{prefix}embeddings.position_embeddings.weight"),
         )?;
         if position_embedding.len() != cfg.max_position_embeddings * d {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{prefix}embeddings.position_embeddings.weight: {} elts, expected {} ({}×{})",
                 position_embedding.len(),
                 cfg.max_position_embeddings * d,

@@ -34,8 +34,8 @@ use crate::models::lazy_mimi_seanet::{
 use crate::models::lazy_mimi_transformer::{
     MimiTransformerConfig, ProjectedTransformerModel, ProjectedTransformerWeights,
 };
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 
 #[derive(Debug, Clone)]
 pub struct MimiConfig {
@@ -193,7 +193,7 @@ impl MimiWeights {
         cfg: &MimiConfig,
         resampler_stride: usize,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_tensor_as_f32;
+        use fuel_tensor::lazy::load_tensor_as_f32;
 
         let encoder = SeaNetEncoderWeights::load_from_mmapped(st, "encoder", &cfg.seanet)?;
         let decoder = SeaNetDecoderWeights::load_from_mmapped(st, "decoder", &cfg.seanet)?;
@@ -225,7 +225,7 @@ impl MimiWeights {
         let dn = load_tensor_as_f32(st, "downsample.conv.weight")?;
         let expected_dn = dim * dim * kernel;
         if dn.len() != expected_dn {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "downsample.conv.weight: {} elements, expected {expected_dn} ({dim}×{dim}×{kernel})",
                 dn.len(),
             );
@@ -234,7 +234,7 @@ impl MimiWeights {
         let up = load_tensor_as_f32(st, "upsample.convtr.weight")?;
         let expected_up = dim * 1 * kernel;
         if up.len() != expected_up {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "upsample.convtr.weight: {} elements, expected {expected_up} ({dim}×1×{kernel})",
                 up.len(),
             );

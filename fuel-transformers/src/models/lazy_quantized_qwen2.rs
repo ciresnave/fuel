@@ -41,8 +41,8 @@
 //! - `blk.{i}.ffn_down.weight`          — SwiGLU down
 
 use crate::models::lazy_qwen2::{Qwen2Config, Qwen2Model, Qwen2Weights};
-use fuel_core::Result;
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// GGUF-quantized Qwen2 causal language model. Wraps a plain
@@ -102,8 +102,8 @@ impl QuantizedQwen2Model {
     pub fn forward_with_kv_context(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::KvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
+        cache: &mut fuel_tensor::inference_context::KvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
     ) -> Result<Vec<f32>> {
         self.inner.forward_with_kv_context(tokens, cache, ctx)
     }
@@ -113,9 +113,9 @@ impl QuantizedQwen2Model {
     pub fn forward_with_kv_context_persistent(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::KvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        cache: &mut fuel_tensor::inference_context::KvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
     ) -> Result<Vec<f32>> {
         self.inner
             .forward_with_kv_context_persistent(tokens, cache, ctx, session)
@@ -125,8 +125,8 @@ impl QuantizedQwen2Model {
     pub fn forward_decode_step(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::KvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
+        cache: &mut fuel_tensor::inference_context::KvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
     ) -> Result<Vec<f32>> {
         self.inner.forward_decode_step(tokens, cache, ctx)
     }
@@ -188,14 +188,14 @@ impl QuantizedQwen2Model {
             |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
                 let f32_in_out = match w {
                 WeightStorage::F32(a) => a.to_vec(),
-                _ => return Err(fuel_core::Error::Msg(
+                _ => return Err(fuel_ir::error::Error::Msg(
                     "QuantizedQwen2Model::from_f32_bake: source weights must be WeightStorage::F32"
                         .into(),
                 )
                 .bt()),
             };
                 if f32_in_out.len() != in_features * out_features {
-                    return Err(fuel_core::Error::Msg(format!(
+                    return Err(fuel_ir::error::Error::Msg(format!(
                         "QuantizedQwen2Model::from_f32_bake: weight has {} elems, expected {}×{}",
                         f32_in_out.len(),
                         in_features,
@@ -239,12 +239,12 @@ impl QuantizedQwen2Model {
         }
 
         let output = quantize_linear(&src.output, h, cfg.vocab_size)
-            .map_err(|e| fuel_core::Error::Msg(format!("output: {e}")).bt())?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("output: {e}")).bt())?;
 
         let inner = Qwen2Model {
             config: cfg,
             weights: Qwen2Weights {
-                instance: fuel_core::decode_shape::ModelInstanceId::next(),
+                instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -275,7 +275,7 @@ impl QuantizedQwen2Model {
         let get_tensor_bytes =
             |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
+                    fuel_ir::error::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
                 let elems = info.shape.elem_count();
                 let block_size = info.ggml_dtype.block_size();
@@ -301,7 +301,7 @@ impl QuantizedQwen2Model {
             let expected = out_features * in_features;
             let actual: usize = dims.iter().product();
             if actual != expected {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "gguf: tensor {name:?} has {actual} elements, expected {expected} for [{out_features}, {in_features}]",
                 )).bt());
             }
@@ -334,7 +334,7 @@ impl QuantizedQwen2Model {
 
         let token_embedding = load_f32("token_embd.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "gguf token_embd.weight: {} elems, expected {}×{}",
                 token_embedding.len(),
                 cfg.vocab_size,
@@ -406,7 +406,7 @@ impl QuantizedQwen2Model {
         let inner = Qwen2Model {
             config: cfg.clone(),
             weights: Qwen2Weights {
-                instance: fuel_core::decode_shape::ModelInstanceId::next(),
+                instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers,
                 final_norm_gain,
@@ -417,14 +417,14 @@ impl QuantizedQwen2Model {
     }
 }
 
-fn layer_err(idx: usize, name: &str, e: fuel_core::Error) -> fuel_core::Error {
-    fuel_core::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
+fn layer_err(idx: usize, name: &str, e: fuel_ir::error::Error) -> fuel_ir::error::Error {
+    fuel_ir::error::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
 }
 
 fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {
     const QK4_0: usize = 32;
     if !n.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "QuantizedQwen2Model::from_f32_bake: {name} ({n}) must be divisible by Q4_0 block size ({QK4_0})"
         )).bt());
     }
@@ -444,7 +444,7 @@ fn quantize_in_out_to_q4_0(
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "Q4_0 quantize: in_features ({in_features}) must be divisible by {QK4_0}"
         ))
         .bt());
@@ -563,7 +563,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
         Qwen2Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -583,9 +583,12 @@ mod tests {
     /// rather than only the held-graph build.
     #[test]
     fn quantized_decode_matches_quantized_forward() {
-        use fuel_core::Device;
-        use fuel_core::inference_context::{DecodeSession, InferenceContext, KvCache};
         use fuel_ir::DType;
+        use fuel_tensor::Device;
+        use fuel_tensor::{
+            inference_context::DecodeSession, inference_context::InferenceContext,
+            inference_context::KvCache,
+        };
 
         let cfg = test_cfg();
         let model = QuantizedQwen2Model::from_f32_bake(cfg.clone(), tiny_weights(&cfg)).unwrap();
@@ -723,7 +726,7 @@ mod tests {
             ffn_norm_gain: zeros(h),
         };
         let src = Qwen2Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: zeros(cfg.vocab_size * h),
             layers: vec![layer],
             final_norm_gain: zeros(h),

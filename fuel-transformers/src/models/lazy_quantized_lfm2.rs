@@ -24,11 +24,11 @@ use crate::models::lazy_lfm2::{
     LFM2MixerWeights, LFM2Model, LFM2Weights,
 };
 #[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
-#[cfg(test)]
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// GGUF-quantized LFM2 causal language model. Wraps a plain
@@ -130,14 +130,14 @@ impl QuantizedLFM2Model {
          -> Result<WeightStorage> {
             let f32_in_out = match w {
                 WeightStorage::F32(a) => a.to_vec(),
-                _ => return Err(fuel_core::Error::Msg(
+                _ => return Err(fuel_ir::error::Error::Msg(
                     "QuantizedLFM2Model::from_f32_bake: source weights must be WeightStorage::F32"
                         .into(),
                 )
                 .bt()),
             };
             if f32_in_out.len() != in_features * out_features {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "QuantizedLFM2Model::from_f32_bake: weight has {} elems, expected {in_features}x{out_features}",
                     f32_in_out.len(),
                 )).bt());
@@ -186,7 +186,7 @@ impl QuantizedLFM2Model {
         }
 
         let output = quantize_linear(&src.output, h, cfg.vocab_size)
-            .map_err(|e| fuel_core::Error::Msg(format!("output: {e}")).bt())?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("output: {e}")).bt())?;
 
         let inner = LFM2Model {
             config: cfg,
@@ -218,7 +218,7 @@ impl QuantizedLFM2Model {
         let get_tensor_bytes =
             |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
+                    fuel_ir::error::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
                 let elems = info.shape.elem_count();
                 let block_size = info.ggml_dtype.block_size();
@@ -242,7 +242,7 @@ impl QuantizedLFM2Model {
                     return load_f32(name);
                 }
             }
-            Err(fuel_core::Error::Msg(format!(
+            Err(fuel_ir::error::Error::Msg(format!(
                 "gguf: none of the tensors {candidates:?} are present",
             ))
             .bt())
@@ -256,7 +256,7 @@ impl QuantizedLFM2Model {
             let expected = out_features * in_features;
             let actual: usize = dims.iter().product();
             if actual != expected {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "gguf: tensor {name:?} has {actual} elements, expected {expected} for [{out_features}, {in_features}]",
                 )).bt());
             }
@@ -289,7 +289,7 @@ impl QuantizedLFM2Model {
                     return load_weight(name, out_features, in_features);
                 }
             }
-            Err(fuel_core::Error::Msg(format!(
+            Err(fuel_ir::error::Error::Msg(format!(
                 "gguf: none of the tensors {candidates:?} are present",
             ))
             .bt())
@@ -307,7 +307,7 @@ impl QuantizedLFM2Model {
             "model.embed_tokens.weight",
         ])?;
         if token_embedding.len() != cfg.vocab_size * h {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "gguf token embedding: {} elems, expected {}*{}",
                 token_embedding.len(),
                 cfg.vocab_size,
@@ -488,14 +488,14 @@ impl QuantizedLFM2Model {
     }
 }
 
-fn layer_err(idx: usize, name: &str, e: fuel_core::Error) -> fuel_core::Error {
-    fuel_core::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
+fn layer_err(idx: usize, name: &str, e: fuel_ir::error::Error) -> fuel_ir::error::Error {
+    fuel_ir::error::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
 }
 
 fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {
     const QK4_0: usize = 32;
     if !n.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "QuantizedLFM2Model::from_f32_bake: {name} ({n}) must be divisible by Q4_0 block size ({QK4_0})"
         )).bt());
     }
@@ -515,7 +515,7 @@ fn normalize_conv_kernel(
 ) -> Result<Vec<f32>> {
     let want = hidden * k;
     if raw.len() != want {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "LFM2 quantized layer {layer_idx} conv kernel: {} elems, expected hidden*k = {hidden}*{k} = {want}",
             raw.len(),
         )).bt());
@@ -536,7 +536,7 @@ fn quantize_in_out_to_q4_0(
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "Q4_0 quantize: in_features ({in_features}) must be divisible by {QK4_0}"
         ))
         .bt());

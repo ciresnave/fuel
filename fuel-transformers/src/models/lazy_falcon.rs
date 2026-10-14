@@ -33,9 +33,10 @@
 //! - No ALiBi, no `new_decoder_architecture` (Falcon-180B uses it;
 //!   add when needed).
 
-use fuel_core::lazy::{LayerNormPair, Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::LayerNormPair, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,7 +79,7 @@ impl FalconConfig {
     }
 }
 
-/// Falcon per-layer weights. Distinct from `fuel_core::lazy::LayerWeights`
+/// Falcon per-layer weights. Distinct from `fuel_tensor::lazy::LayerWeights`
 /// because:
 ///   - Input LN has both `gain` and `bias` (and an optional
 ///     post-attention LN when `parallel_attn == false`).
@@ -192,27 +193,27 @@ impl FalconModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "FalconModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "FalconModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         let head_dim = cfg.head_dim();
         if cfg.num_attention_heads * head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "FalconConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
         }
         if cfg.n_head_kv == 0 || !cfg.num_attention_heads.is_multiple_of(cfg.n_head_kv) {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "FalconConfig: num_attention_heads must be a positive multiple of n_head_kv".into(),
             )
             .bt());
@@ -389,7 +390,7 @@ impl FalconWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &FalconConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix};
 
         let h = cfg.hidden_size;
         let head_dim = cfg.head_dim();
@@ -457,7 +458,7 @@ impl FalconWeights {
                 (None, None, None)
             };
 
-            let attn_dense = fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+            let attn_dense = fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("{p}.self_attention.dense.weight"),
                 h,
@@ -473,7 +474,7 @@ impl FalconWeights {
             };
 
             let inter = 4 * h;
-            let mlp_up = fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+            let mlp_up = fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("{p}.mlp.dense_h_to_4h.weight"),
                 inter,
@@ -487,7 +488,7 @@ impl FalconWeights {
             } else {
                 None
             };
-            let mlp_down = fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+            let mlp_down = fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("{p}.mlp.dense_4h_to_h.weight"),
                 h,
@@ -524,7 +525,7 @@ impl FalconWeights {
         let final_ln_gain = Arc::from(load_tensor_as_f32(st, "transformer.ln_f.weight")?);
         let final_ln_bias = Arc::from(load_tensor_as_f32(st, "transformer.ln_f.bias")?);
         // lm_head: tied if no lm_head.weight present, else load.
-        let output = match fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+        let output = match fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
             st,
             "lm_head.weight",
             cfg.vocab_size,

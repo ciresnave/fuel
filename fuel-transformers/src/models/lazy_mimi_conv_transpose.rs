@@ -61,9 +61,9 @@
 //!   causal-only path Mimi uses).
 
 use crate::models::lazy_mimi_conv::{LazyPadMode, bake_weight_norm, pad_last_1d};
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 // Re-export for completeness so a caller only needs to bring this
@@ -138,20 +138,20 @@ impl StreamableConvTranspose1dWeights {
         causal: bool,
     ) -> Result<Self> {
         if in_channels == 0 || out_channels == 0 || kernel_size == 0 || stride == 0 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConvTranspose1dWeights: in/out/kernel/stride must be > 0 \
                  (got {in_channels}, {out_channels}, {kernel_size}, {stride})",
             )));
         }
         if groups == 0 || !out_channels.is_multiple_of(groups) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConvTranspose1dWeights: out_channels {out_channels} must be \
                  divisible by groups {groups}",
             )));
         }
         let expected_w = in_channels * (out_channels / groups) * kernel_size;
         if weight.len() != expected_w {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConvTranspose1dWeights: weight length {} != \
                  in_channels * (out_channels/groups) * kernel_size = {expected_w}",
                 weight.len(),
@@ -160,7 +160,7 @@ impl StreamableConvTranspose1dWeights {
         if let Some(b) = &bias
             && b.len() != out_channels
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConvTranspose1dWeights: bias length {} != out_channels {}",
                 b.len(),
                 out_channels,
@@ -184,7 +184,7 @@ impl StreamableConvTranspose1dWeights {
         self.kernel_size.saturating_sub(self.stride)
     }
 
-    fn build_weight_tensor(&self, anchor: &Tensor) -> fuel_core::Result<Tensor> {
+    fn build_weight_tensor(&self, anchor: &Tensor) -> fuel_ir::error::Result<Tensor> {
         // ⚠️ GAP-003 CATEGORY 3 — the ruled case, and the only kind that takes
         // `Result`. The DATA is `Arc::clone(&self.weight)`, loaded from a
         // CHECKPOINT. The SHAPE comes from CONFIG fields. There is no local
@@ -207,13 +207,13 @@ impl StreamableConvTranspose1dWeights {
                 ]),
             )
             .map_err(|e| {
-                fuel_core::Error::Msg(format!(
+                fuel_ir::error::Error::Msg(format!(
                     "conv weight from the checkpoint does not match the config: {e} \n                     (config implies in_channels * (out_channels / groups) * kernel_size)"
                 ))
             })
     }
 
-    fn build_bias_tensor(&self, anchor: &Tensor) -> fuel_core::Result<Option<Tensor>> {
+    fn build_bias_tensor(&self, anchor: &Tensor) -> fuel_ir::error::Result<Option<Tensor>> {
         // GAP-003 CATEGORY 3, same as the weight above: loaded bias data
         // against a config-derived length.
         self.bias
@@ -222,7 +222,7 @@ impl StreamableConvTranspose1dWeights {
                 anchor
                     .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
                     .map_err(|e| {
-                        fuel_core::Error::Msg(format!(
+                        fuel_ir::error::Error::Msg(format!(
                             "conv bias from the checkpoint does not match the config: {e} \n                             (config implies out_channels)"
                         ))
                     })
@@ -273,7 +273,7 @@ impl StreamableConvTranspose1dWeights {
         let dims = xs.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.in_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConvTranspose1dWeights::forward: expected input \
                  (B, {}, T), got {dims:?}",
                 self.in_channels,
@@ -286,7 +286,7 @@ impl StreamableConvTranspose1dWeights {
             return Ok(y);
         }
         if t_out < pad_total {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConvTranspose1dWeights::forward: output length {t_out} \
                  is shorter than pad_total {pad_total}; input length {} is too small",
                 dims[2],
@@ -345,7 +345,7 @@ impl StreamableConvTranspose1dWeights {
         let dims = xs.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.in_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConvTranspose1dWeights::step: expected (B, {}, L), got {dims:?}",
                 self.in_channels,
             )));
@@ -358,7 +358,7 @@ impl StreamableConvTranspose1dWeights {
             Some(prev_ys) => {
                 let pt = prev_ys.shape().dims()[2];
                 if pt > ot {
-                    return Err(fuel_core::Error::Msg(format!(
+                    return Err(fuel_ir::error::Error::Msg(format!(
                         "StreamableConvTranspose1dWeights::step: prev_ys length {pt} \
                          exceeds new chunk output length {ot}; chunk too small",
                     )));
@@ -390,7 +390,7 @@ impl StreamableConvTranspose1dWeights {
             return Ok((StreamConvTranspose1dState { prev_ys: None }, Some(merged)));
         }
         if ot < invalid_steps {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StreamableConvTranspose1dWeights::step: output length {ot} shorter \
                  than overlap {invalid_steps}; chunk too small",
             )));
@@ -418,7 +418,7 @@ fn _force_pad_imports_referenced(xs: &Tensor) -> Result<Tensor> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> Tensor {
         assert_eq!(src.len(), b * c * t);

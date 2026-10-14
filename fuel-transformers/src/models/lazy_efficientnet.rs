@@ -78,11 +78,11 @@
 //! free but typically 224 (B0) up to 600 (B7).
 
 use crate::models::lazy_convmixer::BatchNormParams;
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -363,7 +363,7 @@ fn load_conv_bn(
     groups: usize,
     bn_eps: f64,
 ) -> Result<ConvBN> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let w = WeightStorage::F32(Arc::from(load_tensor_as_f32(
         st,
         &format!("{prefix}.0.weight"),
@@ -390,7 +390,7 @@ fn load_conv_bias(
     c_in: usize,
     c_out: usize,
 ) -> Result<ConvBias> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let w = WeightStorage::F32(Arc::from(load_tensor_as_f32(
         st,
         &format!("{prefix}.weight"),
@@ -406,7 +406,9 @@ impl EfficientNetWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &EfficientNetConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let bn_eps = cfg.bn_eps;
         let first_in = 3;
         let first_out = cfg.stages[0].input_channels;

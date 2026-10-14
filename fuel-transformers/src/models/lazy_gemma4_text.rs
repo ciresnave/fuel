@@ -45,9 +45,10 @@
 //! F32. Multimodal injection (image and audio embeddings
 //! interleaved with text token embeddings via mask) is deferred.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 pub use crate::models::lazy_gemma::GemmaActivation as Gemma4Activation;
@@ -244,7 +245,7 @@ impl Gemma4TextModel {
         let dims = scaled_embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Gemma4TextModel::forward_embeds: expected scaled_embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
@@ -253,19 +254,19 @@ impl Gemma4TextModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Gemma4TextModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if cfg.num_hidden_layers == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Gemma4TextModel::forward_embeds: num_hidden_layers must be > 0".into(),
             )
             .bt());
         }
         if cfg.layer_types.len() != cfg.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Gemma4TextModel::forward_embeds: layer_types length ({}) \
                  must match num_hidden_layers ({})",
                 cfg.layer_types.len(),
@@ -473,14 +474,14 @@ impl Gemma4TextWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Gemma4TextConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.hidden_size;
         let i_dim = cfg.intermediate_size;
         let n_heads = cfg.num_attention_heads;
 
         if cfg.layer_types.len() != cfg.num_hidden_layers {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "Gemma4TextWeights::load_from_mmapped: layer_types length ({}) \
                  must match num_hidden_layers ({})",
                 cfg.layer_types.len(),
@@ -490,7 +491,7 @@ impl Gemma4TextWeights {
 
         let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
                 token_embedding.len(),
                 cfg.vocab_size * h,
