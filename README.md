@@ -23,7 +23,7 @@ For the in-flight phase work and the planned order, see
 
 ## Get started
 
-Make sure that you have [`fuel-core`](https://github.com/ciresnave/fuel/tree/main/fuel-core) correctly installed as described in [**Installation**](https://huggingface.github.io/candle/guide/installation.html).
+Make sure that you have [`fuel`](https://github.com/ciresnave/fuel/tree/main/fuel) correctly installed as described in [**Installation**](https://huggingface.github.io/candle/guide/installation.html).
 
 Let's see how to run a simple matrix multiplication.
 Write the following to your `myapp/src/main.rs` file:
@@ -175,7 +175,7 @@ installed. GPU support is opt-in via Cargo feature flags:
 | `aocl`       | AMD AOCL-BLAS / BLIS (CPU). Faster on Zen-class AMD CPUs.    | AMD AOCL runtime        |
 
 Multiple CPU backends can coexist: with `--features mkl,aocl` both will register
-on startup, the [Phase 6b judge](fuel-core/src/judge.rs) profiles each, and the
+on startup, the [Phase 6b judge](fuel-tensor/src/judge) profiles each, and the
 dispatch table picks the winner per `(op, dtype, size_class)` empirically. The
 "wrong" backend for a given CPU (MKL on AMD, AOCL on Intel) just loses the
 profile race — it doesn't break anything, and there's no need to gate via
@@ -315,9 +315,9 @@ To add GPU support to your own project:
 ```toml
 # Cargo.toml
 [dependencies]
-fuel-core = { version = "0.10.2", features = ["cuda"] }   # NVIDIA
-fuel-core = { version = "0.10.2", features = ["metal"] }  # Apple
-fuel-core = { version = "0.10.2" }                        # CPU only
+fuel = { version = "0.19", features = ["cuda"] }   # NVIDIA
+fuel = { version = "0.19", features = ["metal"] }  # Apple
+fuel = { version = "0.19" }                        # CPU only
 ```
 
 There are also some wasm examples for whisper and
@@ -451,7 +451,8 @@ Cheatsheet:
 
 ## Structure
 
-- [fuel-core](./fuel-core): Core ops, devices, and `Tensor` struct definition
+- [fuel](./fuel): The public facade crate; re-exports the framework's API
+- [fuel-tensor](./fuel-tensor): Devices and the `Tensor` struct definition
 - [fuel-nn](./fuel-nn/): Tools to build real models
 - [fuel-examples](./fuel-examples/): Examples of using the library in realistic settings
 - [fuel-cuda-kernels](./fuel-cuda-kernels/): CUDA custom kernels
