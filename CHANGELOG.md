@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.1 - 2026-10-14
+
+### Changed
+
+- CI/hygiene (CodeRipper triage SUP-008, WSP-001, DOC-009): every GitHub Action pinned to a full commit SHA at the ref the workflows already named (checkout/setup-python v6, trufflehog main), top-level `permissions: contents: read`, `.github/CODEOWNERS`, `GLOSSARY.md`. No behaviour change.
+
 ## v0.19.0 - 2026-10-14
 
 ### Changed
