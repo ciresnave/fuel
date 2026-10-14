@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.2 - 2026-10-14
+
+### Changed
+
+- KISS `ops-int-wrap` (440 integer cells) conformance through the CPU binary op, GAP-356 filed; tracked `Cargo.lock` regenerated (was 0.18.7 + fuel-core).
+
 ## v0.19.1 - 2026-10-14
 
 ### Changed
