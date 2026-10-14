@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.13 - 2026-10-14
+
+### Changed
+
+- Repointed `fuel_core::` to fuel-ir / fuel-tensor in fuel-nn (GAP-348 step 3); registry: GAP-357 filed (phi loader complexity), GAP-305 ownership and KISS-side facts recorded.
+
 ## v0.18.12 - 2026-10-14
 
 ### Changed
