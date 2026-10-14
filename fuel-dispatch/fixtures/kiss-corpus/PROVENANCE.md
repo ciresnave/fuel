@@ -1,25 +1,31 @@
 # Vendored KISS conformance corpus — provenance
 
 **Source repo:** KISS (ThinkersJournal/KISS, private) — `conformance/corpus/`
-**Pinned commit:** **per file** — see the table. Two files are pinned at KISS
-`5b28bf51` (sk5 / `contract_version` 3, conformance 0.2.1, vendored 2026-10-11);
-the other four are still at `f4952b4c` (2026-09-02). Three of those four have
-the same blob at `5b28bf51`; `op_manifest.json` does not, and was deliberately
-left at `f4952b4c` (see below).
+**Pinned commit:** **per file** -- see the table. Every file is at KISS `5b28bf51`
+(sk5 / `contract_version` 3, conformance 0.2.1) or has the SAME blob there:
+`ops-arith`, `ops-minmax-ordinary` and `ops-minmax-signed-zero` were vendored
+at `f4952b4c` (2026-09-02) and are byte-identical at `5b28bf51`. `dtype_manifest`
+and `structure_key_vectors` were vendored 2026-10-11; `op_manifest` and the three
+NaN files 2026-10-14.
 **Vendored by:** fuel GAP-236 Step 0 (re-vendor + loader extension, 2026-09-02);
-the sk5 deriver binding (2026-10-11) re-vendored the two files marked below.
+the sk5 deriver binding (2026-10-11) re-vendored two files; the NaN-vector
+vendoring (2026-10-14) added `ops-narrow-move-nan`, `ops-narrow-select-nan`,
+`ops-transcendental-nan` and moved `op_manifest` to `5b28bf51`.
 **Supersedes:** the `c9153b2` pin of 2026-07-23 (2 files)
 
 ## Files (copied verbatim — DO NOT EDIT)
 
 | file | pinned at | KISS blob (`git ls-tree <pin> conformance/corpus/`) | schema |
 |------|-----------|-------------------------------------------------------|--------|
-| `op_manifest.json` | `f4952b4c` | `9c7176ed4c16e34844f01abd826b0c9a74a6c461` | `kiss-op-manifest-v1` |
+| `op_manifest.json` | **`5b28bf51`** | `f656b625ab8e5371c7a4a73df92863d193c31b74` | `kiss-op-manifest-v1` |
 | `ops-arith.json` | `f4952b4c` (same blob at `5b28bf51`) | `aee2de79a709e722f3c439047bf90c638aec9b24` | `kiss-oracle-vectors-v1.json` |
 | `ops-minmax-ordinary.json` | `f4952b4c` (same blob at `5b28bf51`) | `7bd6cc394bd247f9ca34edfc957d70a37432af97` | `kiss-oracle-vectors-v1.json` |
 | `ops-minmax-signed-zero.json` | `f4952b4c` (same blob at `5b28bf51`) | `d06bdb85c8e626750318b61585b4af3ea5c8d4b4` | `kiss-oracle-vectors-v1.json` |
 | `dtype_manifest.json` | **`5b28bf51`** (same blob at `a33282c`) | `24ff38f068aa18be723c07d307c86ae572c1333f` | `kiss-dtype-manifest` |
 | `structure_key_vectors.json` | **`5b28bf51`** | `e5eec85c82754f030f1ee2f0ab4bf7829fa7e5d2` | `kiss-structure-key-vectors` |
+| `ops-narrow-move-nan.json` | **`5b28bf51`** | `c108226af556aa1c6a45e8e43b85ab29b96dec2d` | `kiss-oracle-vectors-v1.json` |
+| `ops-narrow-select-nan.json` | **`5b28bf51`** | `2efbfd259c43936d8cf6dc24b1375f6c9b5ae81b` | `kiss-oracle-vectors-v1.json` |
+| `ops-transcendental-nan.json` | **`5b28bf51`** | `7e46250295361bdbd27f4812ed1027dcde624c22` | `kiss-oracle-vectors-v1.json` |
 
 Blob hashes were verified by computing `git hash-object --no-filters` on each
 vendored file and matching the value `git rev-parse <pin>:conformance/corpus/<file>`
@@ -59,15 +65,17 @@ KISS's own hand-written stamp (KISS #218), unchanged by this event. It is NOT
 the pin of this vendoring; the table above is. The leg's own provenance test
 asserts both so a swap of either cannot pass quietly.
 
-**Left at `f4952b4c` on purpose:** `op_manifest.json` differs at `a33282c`
-(blob `f656b625…`), but nothing in the structure-key deriver reads it; moving it
-would change `kiss_corpus.rs`'s inputs, which is a different change with a
-different gate. Likewise the six NEW corpus files at `a33282c`
-(`announce_vectors`, `contract_vectors`, `grammar_vectors`, `opattrs_vectors`,
-`ops-narrow-*-nan`, `ops-transcendental-nan`) are **not** vendored here and
-have **not been read** for this change: whether they close the NaN-vector ask in
-the "does not cover" section below is unmeasured, and adopting them is its own
-change with its own gate.
+**2026-10-14 -- the paragraph that stood here is superseded.** It said `op_manifest.json`
+was left at `f4952b4c` on purpose and that the NaN files were "not vendored and not
+read". Both are now done, each as its own change with its own gate: `op_manifest.json`
+moved to `f656b625...` (106 -> 122 ops: `argmin` and the 15 complex ops `cadd`..`cmake`;
+nothing removed; a new `coverage` object `{declared: 1, total: 122}`), and the three
+oracle-vector NaN files were vendored and read (below). **Still NOT vendored, on
+purpose:** `announce_vectors`, `contract_vectors`, `grammar_vectors`,
+`opattrs_vectors`. They are Announce/Contract/OpAttrs vectors with their own schemas;
+Fuel claims Classify + Ops evaluation only (`docs/outreach/kiss-conformance-and-divergences.md`),
+so there is no reader for them and vendoring them would only make the directory look
+current.
 
 ## Drift since the `c9153b2` pin — smaller than "six weeks stale" suggests
 
@@ -85,8 +93,10 @@ output bit pattern (`class: "exact-byte"`, `ulp_bound: 0`), MSB-first hex. An
 **oracle** (reference outputs for fixed inputs), NOT an `(op, dtype) ->
 adopt/reject` verdict table.
 
-Vector counts at this pin: `ops-arith` 5, `ops-minmax-ordinary` 24,
-`ops-minmax-signed-zero` 48 — **77 total**.
+Vector counts: `ops-arith` 5, `ops-minmax-ordinary` 24, `ops-minmax-signed-zero` 48
+(**77**, the 2026-09-02 set), plus `ops-narrow-move-nan` 30, `ops-narrow-select-nan` 40,
+`ops-transcendental-nan` 12 (**82**, 2026-10-14) -- **159 total**, of which 147 are
+`exact-byte` and the 12 transcendental ones are class `ULP` with a non-zero bound.
 
 `ops-minmax-signed-zero.json` is about **signed-zero tie-breaking**, not NaN.
 `+0` and `-0` compare EQUAL, so on a tie the result is decided by operand order
@@ -95,7 +105,31 @@ value-compare of `0.0 == -0.0` passes vacuously; the expected values are BIT
 PATTERNS."* Any implementation compared by value passes these without testing
 anything.
 
-## ⚠️ WHAT THIS CORPUS DOES NOT COVER — measured, not assumed
+## 2026-10-14 update: the NaN axis is covered for the narrow dtypes, NOT for f32/f64
+
+Measured over all vendored minmax vectors (`max_prop` 26, `min_prop` 26, `fmax_ieee` 30,
+`fmin_ieee` 30) grouped into `(dtype, input-bytes)` cells:
+
+```
+distinct cells                                   30   (was 18)
+cells where MAX disagrees with MIN               control, > 0
+cells where PROP disagrees with IEEE              8   (was 0)
+  of which carry a NaN operand                    8   (all of them)
+  dtypes                              bf16 f16 f8e5m2 f8e4m3fn   (2 orderings each)
+  f32 / f64 cells where PROP disagrees with IEEE  0
+```
+
+Every discriminating cell is `(sNaN, finite)` or `(finite, sNaN)`, and a moved sNaN
+keeps its payload (`ops-narrow-move-nan`, KISS-OPS-6.16-0009). **The blind spot the
+next section describes is narrowed, not closed:** an `fmaxf`/`fmax` mis-lifted as a
+NaN-propagating `Max` on `f32` or `f64` still passes every vendored vector.
+`kiss_corpus::tests::the_corpus_still_cannot_discriminate_prop_from_ieee_minmax_for_f32_and_f64`
+pins that zero and goes red when KISS ships f32/f64 select-NaN vectors. The
+propagating-vs-IEEE question was NOT run against any Fuel kernel in this change: the
+corpus is loaded and its shape pinned, and no evaluator exists in `fuel-dispatch` for
+these vectors (see "How Fuel reads it").
+
+## (SUPERSEDED 2026-10-14 for the narrow dtypes; text below is the 2026-09-02 measurement at `f4952b4c`) WHAT THIS CORPUS DOES NOT COVER — measured, not assumed
 
 **It cannot distinguish NaN-propagating minmax (`max_prop`/`min_prop`) from IEEE
 minmax (`fmax_ieee`/`fmin_ieee`).**
