@@ -286,14 +286,41 @@ impl UnaryOpCore for Abs {
     }
 }
 
+/// A COMPUTED float result that is NaN must be a QUIET NaN (IEEE 754 default
+/// exception handling; KISS-OPS-6.16-0010: an op whose decomposition contains
+/// arithmetic delivers a quiet NaN on a signalling operand). Hardware arithmetic
+/// does this by itself; a `libm` call does not have to. Measured: on Apple's
+/// `logf`, `log(sNaN)` returns the signalling NaN `7F800001` UNCHANGED, while
+/// `expf`/`sinf` (and every x86 libm tried) return `7FC00000`. Setting the quiet
+/// bit of a NaN result is idempotent, keeps the payload, and never touches a
+/// non-NaN, so it is applied to every direct `libm` transcendental below.
+#[inline]
+pub(crate) fn quiet_f32(r: f32) -> f32 {
+    if r.is_nan() {
+        f32::from_bits(r.to_bits() | 0x0040_0000)
+    } else {
+        r
+    }
+}
+
+/// [`quiet_f32`] for `f64` (the quiet bit is bit 51).
+#[inline]
+pub(crate) fn quiet_f64(r: f64) -> f64 {
+    if r.is_nan() {
+        f64::from_bits(r.to_bits() | 0x0008_0000_0000_0000)
+    } else {
+        r
+    }
+}
+
 /// Hyperbolic tangent.
 pub struct Tanh;
 impl UnaryOpCore for Tanh {
     fn f32(x: f32) -> f32 {
-        x.tanh()
+        quiet_f32(x.tanh())
     }
     fn f64(x: f64) -> f64 {
-        x.tanh()
+        quiet_f64(x.tanh())
     }
 }
 
@@ -301,10 +328,10 @@ impl UnaryOpCore for Tanh {
 pub struct Exp;
 impl UnaryOpCore for Exp {
     fn f32(x: f32) -> f32 {
-        x.exp()
+        quiet_f32(x.exp())
     }
     fn f64(x: f64) -> f64 {
-        x.exp()
+        quiet_f64(x.exp())
     }
 }
 
@@ -312,10 +339,10 @@ impl UnaryOpCore for Exp {
 pub struct Log;
 impl UnaryOpCore for Log {
     fn f32(x: f32) -> f32 {
-        x.ln()
+        quiet_f32(x.ln())
     }
     fn f64(x: f64) -> f64 {
-        x.ln()
+        quiet_f64(x.ln())
     }
 }
 
@@ -323,10 +350,10 @@ impl UnaryOpCore for Log {
 pub struct Sin;
 impl UnaryOpCore for Sin {
     fn f32(x: f32) -> f32 {
-        x.sin()
+        quiet_f32(x.sin())
     }
     fn f64(x: f64) -> f64 {
-        x.sin()
+        quiet_f64(x.sin())
     }
 }
 
@@ -334,10 +361,10 @@ impl UnaryOpCore for Sin {
 pub struct Cos;
 impl UnaryOpCore for Cos {
     fn f32(x: f32) -> f32 {
-        x.cos()
+        quiet_f32(x.cos())
     }
     fn f64(x: f64) -> f64 {
-        x.cos()
+        quiet_f64(x.cos())
     }
 }
 
@@ -490,6 +517,52 @@ impl UnaryOpCore for GeluTanh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A libm transcendental returns a QUIET NaN for a signalling operand. Apple's
+    /// `logf` does not (it returns `7F800001` unchanged), which the KISS NaN
+    /// vectors caught on the macOS CI leg; `quiet_f32`/`quiet_f64` close it. On
+    /// x86 libm this passes WITHOUT the helper, so the assertion states the
+    /// contract and macOS CI is where it earns its keep. CONTROL: the input
+    /// really is signalling (quiet bit clear), so a fixture that was never
+    /// signalling cannot make this pass vacuously.
+    #[test]
+    fn transcendentals_return_a_quiet_nan_for_a_signalling_operand() {
+        let snan32 = f32::from_bits(0x7F80_0001);
+        let snan64 = f64::from_bits(0x7FF0_0000_0000_0001);
+        assert!(
+            snan32.is_nan() && snan32.to_bits() & 0x0040_0000 == 0,
+            "f32 fixture must be signalling"
+        );
+        assert!(
+            snan64.is_nan() && snan64.to_bits() & 0x0008_0000_0000_0000 == 0,
+            "f64 fixture must be signalling"
+        );
+        fn q32(r: f32) -> bool {
+            r.is_nan() && r.to_bits() & 0x0040_0000 != 0
+        }
+        fn q64(r: f64) -> bool {
+            r.is_nan() && r.to_bits() & 0x0008_0000_0000_0000 != 0
+        }
+        assert!(q32(<Exp as UnaryOpCore>::f32(snan32)), "exp f32");
+        assert!(q32(<Log as UnaryOpCore>::f32(snan32)), "log f32");
+        assert!(q32(<Sin as UnaryOpCore>::f32(snan32)), "sin f32");
+        assert!(q32(<Cos as UnaryOpCore>::f32(snan32)), "cos f32");
+        assert!(q32(<Tanh as UnaryOpCore>::f32(snan32)), "tanh f32");
+        assert!(q64(<Exp as UnaryOpCore>::f64(snan64)), "exp f64");
+        assert!(q64(<Log as UnaryOpCore>::f64(snan64)), "log f64");
+        assert!(q64(<Sin as UnaryOpCore>::f64(snan64)), "sin f64");
+        assert!(q64(<Cos as UnaryOpCore>::f64(snan64)), "cos f64");
+        assert!(q64(<Tanh as UnaryOpCore>::f64(snan64)), "tanh f64");
+        // The helper changes nothing else: finite values and infinities pass through.
+        assert_eq!(quiet_f32(1.5), 1.5);
+        assert_eq!(quiet_f32(f32::INFINITY), f32::INFINITY);
+        assert_eq!(quiet_f64(-2.5), -2.5);
+        // A quiet NaN keeps its payload.
+        assert_eq!(
+            quiet_f32(f32::from_bits(0x7FC0_1234)).to_bits(),
+            0x7FC0_1234
+        );
+    }
 
     /// KISS #355: SIGN-BIT and SELECT ops must not QUIET a signalling NaN.
     ///

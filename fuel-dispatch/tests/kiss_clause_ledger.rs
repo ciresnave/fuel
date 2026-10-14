@@ -172,6 +172,20 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-CONFORM-6.8-0010",
+        disposition: Obligation,
+        test: Some(
+            "fuel-tensor/tests/kiss_nan_conformance.rs::nan_vectors_conform_except_the_pinned_known_failing_set",
+        ),
+        reason: "Computed-NaN results compare by NaN-ness and QUIETNESS only; sign and payload MUST NOT be compared. \
+                 The evaluator applies exactly that to every `nan_provenance: computed` vector (x86 returns the \
+                 negative real-indefinite `FFC00000` for `log(-1)`, which a bit or ULP compare would misreport as a \
+                 defect; a harness doing so reported 7 false failures before this was applied). Its control test \
+                 `the_evaluator_can_fail_and_measures_distance` pins both directions: a sign-only difference passes, \
+                 finite-where-NaN-expected fails.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-CONTRACT-6.4-0011",
         disposition: Obligation,
         test: Some("fuel-kernel-seam-types/src/shape_expr.rs::out_differs_from_operands"),
