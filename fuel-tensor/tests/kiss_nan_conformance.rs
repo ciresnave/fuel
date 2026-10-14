@@ -330,6 +330,15 @@ fn nan_vectors_conform_except_the_pinned_known_failing_set() {
         vs.len(),
         "accounting does not sum"
     );
+    // DETECTOR for GAP-352 / GAP-353 (the vectors Fuel cannot exercise): 34 are the
+    // 8-bit float dtypes and 2 are `copysign`. When Fuel gains either path this
+    // count drops and this reddens, so those rows are re-measured and closed in
+    // the same change. 36 is the 82-vector corpus minus the 46 that pass.
+    assert_eq!(
+        not_ex, 36,
+        "the not-exercised count changed: a new Fuel path (8-bit floats or copysign) \
+         now runs vectors that used to be skipped. Re-measure and update GAP-352 / GAP-353"
+    );
     // Control: the evaluator exercised something, so zero failures is a finding
     // about Fuel and not about an evaluator that ran nothing.
     assert!(pass > 0, "no vector was exercised: the evaluator is inert");
