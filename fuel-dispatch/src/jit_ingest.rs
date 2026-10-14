@@ -118,6 +118,7 @@ pub enum IngestOutcome {
 /// advisory diff's tolerance band (`Exact` vs 2×-widened for transcendentals);
 /// it does NOT gate the verdict (§6.6-0007: kiss-ref never verdicts, any class).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub enum OpClass {
     Exact,
     Transcendental,
@@ -126,6 +127,7 @@ pub enum OpClass {
 /// Fuel-side summary of a kiss-ref differential (no kiss-ref types cross this
 /// boundary, keeping `classify_floor_verdict` cuda- and dependency-independent).
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub struct DiffOutcome {
     pub within: bool,
     pub max_ulp: Option<u64>,
@@ -135,6 +137,7 @@ pub struct DiffOutcome {
 /// Fuel-side summary of the recipe-realize reference verdict (today's interim
 /// authority for every op class).
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub struct RefOutcome {
     pub pass: bool,
     pub claim: &'static str,
@@ -144,6 +147,7 @@ pub struct RefOutcome {
 /// Fuel-side summary of a corpus verdict. Produced only when a covering frozen
 /// corpus cell exists — which is never, today (`corpus_verdict` returns None).
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub struct CorpusOutcome {
     pub adopt: bool,
     pub claim: &'static str,
@@ -156,6 +160,7 @@ pub struct CorpusOutcome {
 /// recipe-realize (interim, all classes) → kiss-only ⇒ escalate → none ⇒ fail.
 /// kiss-ref NEVER produces a Pass/Fail here: agreement is not Adopt and a
 /// discrepancy is not Reject — it can only escalate.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub fn classify_floor_verdict(
     kiss: Option<&DiffOutcome>,
     recipe: Option<&RefOutcome>,
@@ -221,6 +226,7 @@ pub fn classify_floor_verdict(
 /// authority. Activation needs the seam correction recorded in
 /// `docs/design-notes/2026-07-23-kiss-corpus-verdict-seam-mismatch.md` — the
 /// precedence wiring in `verify_candidate_impl` is already live for it.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub fn corpus_verdict(
     _op: fuel_graph::jit::OpTag,
     _dtype: fuel_ir::DType,
@@ -1125,6 +1131,7 @@ mod flag_not_verdict_tests {
 /// positional `inputs[index]` bind resolution can never index out of bounds:
 /// one past the largest bind index the region references (0 for a bind-free
 /// region).
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn region_arity(region: &fuel_graph::jit::PatternNode) -> usize {
     region
         .bind_indices()
@@ -1140,6 +1147,7 @@ fn region_arity(region: &fuel_graph::jit::PatternNode) -> usize {
 /// [`base_map_hash`](fuel_graph::opt::base_map_hash) (which folds a const's
 /// shape/dtype and silently no-ops on an unpopulated storage slot) for a
 /// cross-graph base-map comparison to be meaningful.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn push_placeholder_leaves(g: &mut fuel_graph::Graph, arity: usize) -> Vec<fuel_graph::NodeId> {
     (0..arity)
         .map(|_| {
@@ -1159,6 +1167,7 @@ fn push_placeholder_leaves(g: &mut fuel_graph::Graph, arity: usize) -> Vec<fuel_
 /// `emit_region` — caught by [`recipe_identity_matches`]'s wrapper — a poisoned
 /// lock, or an empty lowering result); the caller treats `None` as "not a
 /// match" (conservative reject).
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn base_map_hash_of_region(region: &fuel_graph::jit::PatternNode) -> Option<u64> {
     let graph = std::sync::Arc::new(std::sync::RwLock::new(fuel_graph::Graph::new()));
     let sink = {
@@ -1181,6 +1190,7 @@ fn base_map_hash_of_region(region: &fuel_graph::jit::PatternNode) -> Option<u64>
 /// bind count so the leaf hashes line up; a genuine same-op match has equal
 /// arity, a mismatch merely yields a different base map (conservative
 /// non-match). `None` on any structural failure.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn base_map_hash_of_fused(
     claimed_op: fuel_graph::registry::FusedOpId,
     arity: usize,
@@ -1227,6 +1237,7 @@ fn base_map_hash_of_fused(
 /// the gate; rejecting it is the safe direction. The whole body is
 /// `catch_unwind`-wrapped so it never panics even when called directly (no
 /// outer guard) from unit tests.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn recipe_identity_matches(
     claimed_op: fuel_graph::registry::FusedOpId,
     submitted: &fuel_graph::jit::PatternNode,
@@ -1256,6 +1267,7 @@ fn recipe_identity_matches(
 /// a match arm keyed on `id`. Anything unmapped falling through to `Rope` at
 /// worst yields a non-matching base map or a wrong realize that fails the
 /// numeric bound — a conservative reject, never a wrong adopt.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn fused_params_for(id: fuel_graph::registry::FusedOpId) -> fuel_graph::registry::FusedOpParams {
     // No per-id branch needed yet — see doc above. `id` is bound for the
     // future match arm and to document intent.
