@@ -397,7 +397,7 @@ fn the_evaluator_can_fail_and_measures_distance() {
 #[test]
 fn nan_vectors_conform_except_the_pinned_known_failing_set() {
     let vs = all_vectors();
-    assert_eq!(vs.len(), 198, "corpus size changed: 30 + 40 + 12 + 44 + 72");
+    assert_eq!(vs.len(), 199, "corpus size changed: 30 + 40 + 13 + 44 + 72");
 
     let (mut pass, mut not_ex) = (0usize, 0usize);
     let mut failing: Vec<(&'static str, u64)> = Vec::new();
