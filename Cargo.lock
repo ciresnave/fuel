@@ -2352,11 +2352,11 @@ dependencies = [
 name = "fuel-nn"
 version = "0.18.7"
 dependencies = [
- "fuel-core",
  "fuel-graph",
  "fuel-ir",
  "fuel-loaders",
  "fuel-quantized",
+ "fuel-tensor",
  "half",
  "rand 0.9.5",
  "rand_distr 0.5.1",

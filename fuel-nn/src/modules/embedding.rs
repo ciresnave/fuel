@@ -10,9 +10,9 @@
 //! semantics.
 
 use crate::modules::Module;
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 /// Lookup-table embedding over `Tensor`.
@@ -27,7 +27,7 @@ impl Embedding {
     /// Build an embedding from a `[vocab_size, hidden]` weight buffer.
     pub fn new(table: Arc<[f32]>, vocab_size: usize, hidden: usize) -> Result<Self> {
         if table.len() != vocab_size * hidden {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Embedding::new: table has {} elements but \
                  vocab_size * hidden = {} * {} = {}",
                 table.len(),
@@ -64,8 +64,8 @@ impl Embedding {
     /// output has the input's shape with a trailing `hidden` dim
     /// appended.
     pub fn forward(&self, token_ids: &Tensor) -> Result<Tensor> {
-        if token_ids.dtype() != fuel_core::DType::U32 {
-            return Err(fuel_core::Error::Msg(format!(
+        if token_ids.dtype() != fuel_tensor::DType::U32 {
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Embedding::forward: token_ids must be U32, got {:?}",
                 token_ids.dtype(),
             ))
@@ -99,7 +99,7 @@ impl Module for Embedding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn make_table(vocab: usize, hidden: usize) -> Vec<f32> {
         (0..(vocab * hidden))

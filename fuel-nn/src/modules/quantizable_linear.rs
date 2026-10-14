@@ -13,9 +13,9 @@
 //! intentionally checkpoint-format-polymorphic").
 
 use crate::modules::Module;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Linear layer over `Tensor` whose weight may be F32, BF16,
@@ -43,7 +43,7 @@ impl QuantizableLinear {
         out_features: usize,
     ) -> Result<Self> {
         if matches!(weight, WeightStorage::WithLoRA { .. }) {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "QuantizableLinear::new: WithLoRA must be \
                  wrapped in LoraLinear, not QuantizableLinear"
                     .into(),
@@ -51,7 +51,7 @@ impl QuantizableLinear {
             .bt());
         }
         if weight.elem_count() != in_features * out_features {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "QuantizableLinear::new: weight has {} elements but \
                  in_features * out_features = {} * {} = {}",
                 weight.elem_count(),
@@ -64,7 +64,7 @@ impl QuantizableLinear {
         if let Some(b) = bias.as_ref()
             && b.len() != out_features
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "QuantizableLinear::new: bias has length {} but \
                      out_features = {}",
                 b.len(),
@@ -135,7 +135,7 @@ impl Module for QuantizableLinear {
 mod tests {
     use super::*;
     use crate::modules::Linear;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()

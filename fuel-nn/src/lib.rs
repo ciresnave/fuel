@@ -3,7 +3,7 @@
 //!
 //! Extracted from `fuel-core` (2026-08-19). This crate sits **above**
 //! `fuel-core`: the whole surface is built on `Tensor`, which lives in
-//! `fuel_core::lazy`, so `fuel-nn` is a *consumer* of `fuel-core` and
+//! `fuel_tensor::lazy`, so `fuel-nn` is a *consumer* of `fuel-core` and
 //! `fuel-core` deliberately does **not** re-export it — that would be a
 //! dependency cycle.
 //!
@@ -23,7 +23,7 @@
 //!
 //! And this surface never depended on the EAGER tensor type in the first place:
 //! measured across all 22 files, every tensor mention is the lazy
-//! `fuel_core::lazy::Tensor` or a doc comment, with one exception
+//! `fuel_tensor::lazy::Tensor` or a doc comment, with one exception
 //! (`optim.rs`, `fuel_graph::NodeHandle::from_existing`) which is the graph
 //! handle from a crate already *below* `fuel-core`.
 //!
@@ -42,17 +42,15 @@ pub mod varbuilder;
 pub mod varmap;
 
 // GAP-347 PR 4 (bail! consolidation): before/after test for this consumer
-// crate family. `fuel_core::bail!` is now `fuel_ir::bail!` re-exported
+// crate family. `fuel_ir::bail!` is now `fuel_ir::bail!` re-exported
 // (the fuel-core-local `macro_rules!` duplicate was deleted), which can
 // change `$crate::Error` resolution silently across a macro-path swap.
 // This proves the error text/variant this crate actually relies on
-// (gru.rs/two_proj_attention.rs/prelu.rs's `fuel_core::bail!`) is unchanged.
+// (gru.rs/two_proj_attention.rs/prelu.rs's `fuel_ir::bail!`) is unchanged.
 #[cfg(test)]
 mod bail_consolidation_tests {
-    fn always_bails() -> fuel_core::Result<()> {
-        fuel_core::bail!(
-            "deliberate failure for the fuel-core dissolution bail! consolidation test"
-        );
+    fn always_bails() -> fuel_ir::error::Result<()> {
+        fuel_ir::bail!("deliberate failure for the fuel-core dissolution bail! consolidation test");
         #[allow(unreachable_code)]
         Ok(())
     }
