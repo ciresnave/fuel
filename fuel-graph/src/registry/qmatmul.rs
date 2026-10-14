@@ -443,7 +443,7 @@ mod tests {
     /// product-collapsed `M'`). Born-red with the recipe absent (a
     /// fixpoint-returning `decompose`): `new_root == fused` trips the assert_ne.
     /// Value parity is the real-backend oracle in
-    /// `fuel-core/tests/incc_qmatmul_q4_0_oracle.rs` (fuel-graph can't realize).
+    /// `fuel-tensor/tests/incc_qmatmul_q4_0_oracle.rs` (fuel-graph can't realize).
     #[test]
     fn qmatmul_q4_0_decompose_fires_and_is_shape_correct() {
         for leading in [vec![1usize], vec![4usize], vec![2usize, 3]] {

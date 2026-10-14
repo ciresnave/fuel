@@ -20,12 +20,12 @@
 //! group split or the weight tiling drives the relative error far above 1e-5.
 
 use fuel_conv::{ConvShape, conv2d_direct};
-use fuel_core::Device;
-use fuel_core::lazy::Tensor;
-use fuel_core::pipelined_bridge::realize_one_as;
 use fuel_graph::Op;
 use fuel_graph::registry::FusedOps;
 use fuel_ir::Shape;
+use fuel_tensor::Device;
+use fuel_tensor::lazy::Tensor;
+use fuel_tensor::pipelined_bridge::realize_one_as;
 
 /// Lower + realize one `groups>1` conv config on the CPU backend and compare to
 /// the direct-conv oracle. `bias` toggles the optional broadcast-`Add` tail.

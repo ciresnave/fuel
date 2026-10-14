@@ -41,7 +41,7 @@
 //! real-backend numerical test vs the native CPU kernel (the col2im math
 //! reorders the accumulation vs the kernel's `vec_dot`, so `rel<1e-5`
 //! sabotage-calibrated, not bit-exact) — see
-//! `fuel-core/tests/incc_conv_transpose_im2col_oracle.rs`.
+//! `fuel-tensor/tests/incc_conv_transpose_im2col_oracle.rs`.
 //!
 //! The matcher is stubbed for the same reason: ConvTranspose2D nodes
 //! originate from `NodeHandle::conv_transpose2d` (and from `Conv2D`'s

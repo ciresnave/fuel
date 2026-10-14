@@ -6,7 +6,7 @@
 //! that no shipped test exercised the full pipeline: every existing
 //! test stubbed one side or the other. This file is the integration
 //! verifier — it drives the public APIs of `fuel-correctness-fixtures`
-//! and `fuel-core::judge` in the same order a real capture-and-deploy
+//! and `fuel_tensor::judge` in the same order a real capture-and-deploy
 //! workflow does.
 //!
 //! ## Pipeline under test
@@ -33,15 +33,15 @@
 //! The test is CPU-only — no GPU features required — and finishes
 //! well under one second.
 
-use fuel_core::judge::{Judge, OpKind, OpSize, SizeClass};
-use fuel_core::probe::ProbeReport;
 use fuel_correctness_fixtures::ToleranceBand;
 use fuel_correctness_fixtures::capture::{
     ConsensusDecision, MeasuredOutput, derive_seed, deterministic_f32_input,
     fixture_from_consensus, group_fixtures_for_emission, write_fixture_file,
 };
+use fuel_hardware::probe::ProbeReport;
 use fuel_ir::DType;
 use fuel_ir::probe::BackendId;
+use fuel_tensor::judge::{Judge, OpKind, OpSize, SizeClass};
 
 /// Per-element output of the CPU AddElementwise kernel for the
 /// capture pipeline's deterministic input. Mirrors

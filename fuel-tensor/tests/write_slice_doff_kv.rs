@@ -10,13 +10,13 @@
 //! OpKind/OpParams plumbing, the WorkItemKind::WriteSliceDoff execute
 //! arm, and the CPU byte kernel (offset override + bounds check).
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 
 /// Basic append: offset 1, slab 1 row → writes to row 1 only.
 #[test]
 fn doff_writes_at_device_offset() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     // dest [4, 2] starts at zero; write [7, 8] at device offset 1.
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
@@ -35,7 +35,7 @@ fn doff_writes_at_device_offset() {
 /// Offset 0 lands at the leading row (no wrap, unlike rotating).
 #[test]
 fn doff_offset_zero_writes_leading_row() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -55,7 +55,7 @@ fn doff_offset_zero_writes_leading_row() {
 /// No wrap: each token lands at a distinct row.
 #[test]
 fn doff_decode_loop_appends_at_cached_len() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let max_seq = 4_usize;
     let head_dim = 2_usize;
     let mut cache = Tensor::from_f32(
@@ -99,7 +99,7 @@ fn doff_decode_loop_appends_at_cached_len() {
 /// [2, 5] buffer, slab width 2.
 #[test]
 fn doff_writes_on_non_leading_axis() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device).unwrap();
     // slab [2, 2] written at columns [2, 4) on axis 1.
     let src = dest
@@ -126,7 +126,7 @@ fn doff_writes_on_non_leading_axis() {
 /// Offset must be I64 (device-resident start); a U32 offset errors.
 #[test]
 fn doff_rejects_non_i64_offset() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -141,7 +141,7 @@ fn doff_rejects_non_i64_offset() {
 /// Offset must be a rank-0 scalar.
 #[test]
 fn doff_rejects_nonscalar_offset() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -156,7 +156,7 @@ fn doff_rejects_nonscalar_offset() {
 /// Static write width on `axis` must equal the source dim there.
 #[test]
 fn doff_rejects_source_axis_mismatch() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![1.0_f32; 4], Shape::from_dims(&[2, 2]))
@@ -171,7 +171,7 @@ fn doff_rejects_source_axis_mismatch() {
 /// Axis out of bounds must error.
 #[test]
 fn doff_rejects_axis_out_of_bounds() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -189,7 +189,7 @@ fn doff_rejects_axis_out_of_bounds() {
 #[test]
 #[should_panic(expected = "dest_shape")]
 fn doff_offset_overflow_errors_at_realize_cpu() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
