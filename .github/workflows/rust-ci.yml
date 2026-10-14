@@ -265,17 +265,17 @@ jobs:
       # Pure-host, seconds-scale: neither feature pulls a baracuda dependency,
       # so no nvcc, no forge, no SDK. One OS deliberately — feature-gated
       # compilation is platform-independent, so a matrix buys copies of one
-      # answer. The vulkan-gated code lives in the CONSUMERS (fuel-core /
+      # answer. The vulkan-gated code lives in the CONSUMERS (fuel-tensor /
       # fuel-dispatch); fuel-vulkan-backend itself is a default-member already
       # compiled by "Run normal cpu".
       #
       # Both consumers are named with `--all-targets` in ONE invocation so
       # fuel-dispatch's OWN vulkan-gated TEST targets (`vulkan_dispatch_live`)
-      # compile too — `-p fuel-core --features vulkan` alone builds only
+      # compile too — `-p fuel-tensor --features vulkan` alone builds only
       # fuel-dispatch's LIB, and a vulkan-gated test is the code most likely to
       # reference a binding nobody else uses (n_bytes happened to be lib code,
       # which is exactly why a lib-only gate would have missed the CLASS while
-      # catching the instance). `fuel-core/vulkan` forwards to
+      # catching the instance). `fuel-tensor/vulkan` forwards to
       # `fuel-dispatch/vulkan`; one invocation resolves features once and shares
       # a cache — two `-p` legs resolve differently and share none (that cost
       # 2.5h on the CUDA gate once). The artifact that proves the test targets
@@ -290,7 +290,7 @@ jobs:
       #     backends — same reasons as WORKSPACE_EXCLUDES at the top of file.
       - name: Check vulkan-gated compilation (GAP-233)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-core -p fuel-dispatch --features fuel-core/vulkan --all-targets
+        run: cargo check -p fuel-tensor -p fuel-dispatch --features fuel-tensor/vulkan --all-targets
       - name: Check jit-gated compilation (GAP-233)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-dispatch --features jit --all-targets

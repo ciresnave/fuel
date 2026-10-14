@@ -2,87 +2,96 @@
 //! # Fuel
 //!
 //! Fuel is a DAG-first, lazy-only ML framework for Rust. This crate is the
-//! **public facade** for the framework: it re-exports the entire public surface
-//! of [`fuel_core`], so `use fuel::…` resolves exactly as it did when `fuel` was
-//! a manifest alias for `fuel-core` (restructure Stage 1). The
-//! byte-identical-public-API gate (`cargo public-api`, run per feature set)
-//! enforces that the surface is unchanged; feature flags are forwarded 1:1 to
-//! `fuel-core` (see this crate's manifest).
+//! **public facade** for the framework: it re-exports the public surface that
+//! `fuel-core` used to carry, from the crates that own those items now
+//! (`fuel-tensor`, `fuel-ir`, `fuel-hardware`, `fuel-dispatch`,
+//! `fuel-backend-contract`, `fuel-cpu-backend`, `fuel-loaders`, `fuel-kv-pool`,
+//! `fuel-transformers`), so `use fuel::...` resolves exactly as it did when
+//! `fuel` re-exported `fuel-core` (GAP-348, the fuel-core dissolution; `fuel-core`
+//! itself no longer exists). Feature flags are forwarded to the owning crates
+//! (see this crate's manifest).
 //!
 //! See `docs/restructure-migration-design.md` §Stage 1.
 
-// The entire public surface of fuel-core, in the type/value namespaces — every
-// public module (and thus every path beneath it), type, function, and re-export.
-// Feature-gated items ride along: they are present in fuel-core only when the
-// corresponding feature is on, and this crate forwards those features, so the
-// glob carries exactly what fuel-core exposes under the active feature set.
-pub use fuel_core::*;
+// The surface `fuel-core` used to carry, written out against the crates that
+// own each item (GAP-348). Feature-gated items are gated on this crate's
+// forwarded features exactly as they were on `fuel-core`'s.
+//
+// The `lazy_<model>` modules come from `fuel_transformers::models::*` below;
+// `tests/facade_disjoint.rs` asserts that set is disjoint from the names here.
+pub use fuel_dispatch::topology;
+pub use fuel_hardware::probe;
+pub use fuel_hardware::transfer_cost;
+pub use fuel_tensor::metal_backend;
+#[cfg(feature = "vulkan")]
+pub use fuel_tensor::vulkan_backend;
+pub use fuel_tensor::{
+    cuda_backend, decode_shape, factories, inference_context, judge, kv_block_pool_device, lazy,
+    lazy_latent_cache, nf4, persistent_decode, pipelined_bridge, planner, scheduling, test_utils,
+};
 
-// `telemetry` retired from fuel-core (fuel-core dissolution, GAP-347 PR 1):
-// the module was already a pure `pub use fuel_dispatch::telemetry::judge_sink::*;`
-// shim with zero real external consumers (checked: only this crate's own
-// tests/feature_forwarding.rs referenced `fuel::telemetry`). Re-exported
-// directly here under the same name and feature gate so that test, and any
-// future `fuel::telemetry` caller, is unaffected by the module leaving
-// fuel-core — `fuel_core::*` above no longer carries it.
+/// Error types, re-exported from `fuel-ir`.
+pub mod error {
+    pub use fuel_ir::bail;
+    pub use fuel_ir::error::{Context, Error, MatMulUnexpectedStriding, Result, zip};
+}
+pub use error::{Context, Error, Result};
+
+/// Hardware / build-feature probes.
+pub mod utils {
+    pub use fuel_cpu_backend::{has_accelerate, has_mkl};
+    pub use fuel_hardware::utils::*;
+
+    /// `true` iff this build has the `metal` feature (the Metal backend is
+    /// compiled in). Like the function it replaces, it is deliberately not
+    /// platform-gated: forcing `--features metal` elsewhere returns `true`.
+    pub fn metal_is_available() -> bool {
+        cfg!(feature = "metal")
+    }
+}
+
+pub use fuel_backend_contract::Storage;
+pub use fuel_ir::layout::Layout;
+pub use fuel_ir::shape::{D, Shape};
+pub use fuel_ir::strided_index::{StridedBlocks, StridedIndex};
+pub use fuel_ir::{CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
+pub use fuel_tensor::{DType, DTypeParseError, FloatDType, IntDType, WithDType};
+pub use fuel_tensor::{Device, DeviceLocation, NdArray};
+
+#[cfg(feature = "cuda")]
+pub use fuel_tensor::builder_arg;
+#[doc(hidden)]
+#[cfg(feature = "cuda")]
+pub use fuel_tensor::cuda_backend as cuda;
+#[cfg(feature = "cuda")]
+pub use fuel_tensor::cuda_backend::{CudaDevice, CudaStorage};
+#[cfg(feature = "metal")]
+pub use fuel_tensor::metal_backend::{MetalDevice, MetalError, MetalStorage};
+
+// Modules that left `fuel-core` earlier in the dissolution (GAP-347) and are
+// re-exported here, from the crates that own them, so `fuel::<name>` callers are
+// unaffected. All are unconditional except `telemetry`, which keeps the feature
+// gate it always had.
 #[cfg(feature = "telemetry")]
 pub use fuel_dispatch::telemetry::judge_sink as telemetry;
 
-// `kv_block_pool` retired from fuel-core (fuel-core dissolution, GAP-347
-// PR 2): the module was already a pure `pub use fuel_kv_pool::*;` shim.
-// Real consumers reaching it via `fuel_core::kv_block_pool::` directly
-// (not through this facade) were repointed to `fuel_kv_pool` directly in
-// the same change (fuel-model-llama). Re-exported here, unconditionally
-// (never feature-gated in fuel-core), so `fuel::kv_block_pool` callers
-// (fuel-inference, and the lightbulb sibling project) are unaffected by
-// the module leaving fuel-core — `fuel_core::*` above no longer carries it.
 pub use fuel_kv_pool as kv_block_pool;
 
-// `hf_config` retired from fuel-core (fuel-core dissolution, GAP-347 PR 3):
-// the module was already a pure `pub use fuel_loaders::hf_config::*;` shim.
-// Real consumers reaching it via `fuel_core::hf_config::` directly (not
-// through this facade) were repointed to `fuel_loaders::hf_config`
-// directly in the same change (fuel-model-llama, fuel-model-phi,
-// fuel-transformers's 30 model files). Re-exported here, unconditionally
-// (never feature-gated in fuel-core), for API-surface stability — zero
-// known consumers reach it via `fuel::hf_config` today, but `fuel_core::*`
-// above no longer carries it, so this keeps the path alive regardless.
 pub use fuel_loaders::hf_config;
 
-// `safetensors` retired from fuel-core (fuel-core dissolution, GAP-347 PR 5):
-// the module was already a pure `pub use fuel_loaders::safetensors::*;` shim.
-// Real consumers reaching it via `fuel_core::safetensors::` directly (not
-// through this facade) were repointed to `fuel_loaders::safetensors`
-// directly in the same change (fuel-model-llama, fuel-model-phi,
-// fuel-transformers's model files). Re-exported here, unconditionally
-// (never feature-gated in fuel-core), so `fuel::safetensors` callers
-// (fuel-examples, fuel-tensor-tools) are unaffected by the module leaving
-// fuel-core — `fuel_core::*` above no longer carries it.
 pub use fuel_loaders::safetensors;
 
-// `quantized` retired from fuel-core (fuel-core dissolution, GAP-347 PR 6):
-// the module was already a pure `pub use fuel_loaders::quantized::*;` shim.
-// Real consumers reaching it via `fuel_core::quantized::` directly (not
-// through this facade) were repointed to `fuel_loaders::quantized` directly
-// in the same change (fuel-model-phi, fuel-transformers's quantized model
-// files and qwen3_cpu_yardstick test). Re-exported here, unconditionally
-// (never feature-gated in fuel-core), so `fuel::quantized` callers
-// (fuel-examples, fuel-lazy-examples) are unaffected by the module leaving
-// fuel-core — `fuel_core::*` above no longer carries it.
 pub use fuel_loaders::quantized;
 
-// `#[macro_export]` macros are placed at the CRATE ROOT in the MACRO namespace,
-// which a glob re-export (`pub use fuel_core::*`) does NOT carry. `bail!` is the
-// framework's one exported macro (used in ~60 consumer files), so it is
-// re-exported explicitly here. The public-API gate reports it (`pub macro
-// fuel::bail!`), so its presence is verified, not assumed.
-pub use fuel_core::bail;
+// `#[macro_export]` macros live at the CRATE ROOT of their defining crate, in
+// the MACRO namespace, which a glob re-export does not carry. `bail!` is the
+// framework's one exported macro (used in ~60 consumer files); it is defined in
+// `fuel-ir` and re-exported explicitly here.
+pub use fuel_ir::bail;
 
-// Stage 2: the model zoo moved from fuel-core into fuel-transformers (Models
-// tier). Re-export it so `fuel::lazy_bert` etc. still resolve — the consumer
-// path set is unchanged (147 − 1: lazy_latent_cache stays in fuel-core). This
-// glob carries exactly the moved models; `fuel_transformers::models` is exactly
-// the `lazy_<model>` modules, disjoint from `fuel_core::*` by the stay-list
-// (fuel-core keeps `lazy` and `lazy_latent_cache`, neither a `lazy_<model>`
-// re-export collision) — asserted in tests/facade_disjoint.rs.
+// The model zoo lives in fuel-transformers (Models tier). Re-exported so
+// `fuel::lazy_bert` etc. resolve. `fuel_transformers::models` is exactly the
+// `lazy_<model>` modules, disjoint from the names above (`lazy` and
+// `lazy_latent_cache` are not `lazy_<model>` modules) -- asserted in
+// tests/facade_disjoint.rs.
 pub use fuel_transformers::models::*;

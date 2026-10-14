@@ -96,9 +96,9 @@
     the declared-vs-derived tension is GAP-161's question one level up.
 
     ⚠️ AND A FEATURE BEING NON-DEFAULT IN ITS OWN CRATE DOES NOT MAKE IT
-    UNBUILT. `fuel-core/Cargo.toml` enables `capture` on
+    UNBUILT. `fuel-tensor/Cargo.toml` enables `capture` on
     `fuel-correctness-fixtures`, so that crate's gated code compiles under a
-    plain `-p fuel-core`. Anything that later derives this list must resolve
+    plain `-p fuel-tensor`. Anything that later derives this list must resolve
     the feature GRAPH, not per-crate `default` tables — an earlier version of
     the scan got exactly this wrong and over-reported a site as invisible.
 

@@ -81,12 +81,12 @@
   The command + args to run under the lock (everything after `--`).
 
 .EXAMPLE
-  pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-core --features cuda -- --ignored
+  pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-tensor --features cuda -- --ignored
 
 .EXAMPLE
   # Demand the device: absence becomes a FAILURE rather than a declared skip.
   $env:FUEL_REQUIRE_CUDA = '1'
-  pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-core --features cuda -- --ignored
+  pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-tensor --features cuda -- --ignored
 
 .EXAMPLE
   pwsh scripts/gpu-run.ps1 -Project vulkane -- cargo test --workspace

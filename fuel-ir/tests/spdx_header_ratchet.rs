@@ -215,9 +215,6 @@ const NON_SOURCE_EXTENSIONS: &[(&str, &str)] = &[
         "compiled SPIR-V: a build OUTPUT of the .slang/.glsl sources, which ARE stamped",
     ),
     ("safetensors", "binary model weights"),
-    ("pt", "binary torch fixture"),
-    ("pth", "binary torch fixture"),
-    ("npy", "binary numpy fixture"),
     ("bytes", "binary fixture"),
     ("jpg", "binary image asset"),
     ("png", "binary image asset"),
@@ -233,7 +230,6 @@ const NON_SOURCE_EXTENSIONS: &[(&str, &str)] = &[
 const NON_SOURCE_PATHS_WITHOUT_EXTENSION: &[(&str, &str)] = &[
     ("LICENSE-APACHE", "licence text"),
     ("LICENSE-MIT", "licence text"),
-    ("fuel-core/LICENSE", "licence text"),
     (
         "fuel-kernel-seam/LICENSE-APACHE",
         "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
@@ -294,8 +290,6 @@ const NON_SOURCE_PATHS_WITHOUT_EXTENSION: &[(&str, &str)] = &[
 /// Either way it leaves this list.
 const INHERITED_WITHOUT_NOTICE: &[&str] = &[
     "Makefile",
-    "fuel-core/tests/npy.py",
-    "fuel-core/tests/pth.py",
     "fuel-examples/examples/flux/t5_tokenizer.py",
     "fuel-examples/examples/marian-mt/python/convert_slow_tokenizer.py",
     "fuel-examples/examples/resnet/export_models.py",
@@ -351,7 +345,6 @@ const INHERITED_WITH_NOTICE: &[(&str, &str, &str)] = &[
 const COPYRIGHT_ACCOUNTED_FOR: &[(&str, &str)] = &[
     ("LICENSE-APACHE", "the licence text itself"),
     ("LICENSE-MIT", "the licence text itself"),
-    ("fuel-core/LICENSE", "the licence text itself"),
     (
         "fuel-kernel-seam/LICENSE-APACHE",
         "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
