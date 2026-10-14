@@ -1964,7 +1964,7 @@ name = "fuel-datasets"
 version = "0.18.7"
 dependencies = [
  "byteorder",
- "fuel-core",
+ "fuel-ir",
  "hf-hub",
  "image",
  "intel-mkl-src",
@@ -2311,12 +2311,12 @@ dependencies = [
 name = "fuel-model-llama"
 version = "0.18.7"
 dependencies = [
- "fuel-core",
  "fuel-dispatch",
  "fuel-graph",
  "fuel-ir",
  "fuel-kv-pool",
  "fuel-loaders",
+ "fuel-tensor",
  "half",
  "hf-hub",
  "serde",
@@ -2328,11 +2328,11 @@ dependencies = [
 name = "fuel-model-phi"
 version = "0.18.7"
 dependencies = [
- "fuel-core",
  "fuel-graph",
  "fuel-ir",
  "fuel-loaders",
  "fuel-quantized",
+ "fuel-tensor",
  "half",
  "hf-hub",
  "serde",
@@ -2390,8 +2390,8 @@ dependencies = [
 name = "fuel-posttrain"
 version = "0.18.7"
 dependencies = [
- "fuel-core",
  "fuel-ir",
+ "fuel-tensor",
 ]
 
 [[package]]

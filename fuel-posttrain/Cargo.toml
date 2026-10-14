@@ -9,5 +9,5 @@
     version.workspace    = true
 
 [dependencies]
-    fuel-core = { workspace = true }
-    fuel-ir   = { workspace = true }
+    fuel-ir     = { workspace = true }
+    fuel-tensor = { workspace = true }
