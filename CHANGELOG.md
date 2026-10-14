@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.9 - 2026-10-14
+
+### Changed
+
+- sk5 deriver now declines (typed `DeriveDecline`) a collapsed reduction output and an out-of-range reduced axis, as KISS requires; derivation vectors 28 pass + 5 not-expressible (canonicalized 29 + 4). GAP-354.
+
 ## v0.18.8 - 2026-10-14
 
 ### Changed
