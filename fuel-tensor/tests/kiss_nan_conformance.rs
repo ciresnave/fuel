@@ -187,59 +187,57 @@ fn apply_minmax(op: &str, a: &Tensor, b: &Tensor) -> Tensor {
 
 /// `max_prop` / `min_prop` / `fmax_ieee` / `fmin_ieee` on bf16, f16, f32, f64.
 fn run_minmax(v: &Vector) -> Option<Vec<u8>> {
-    let dev = Device::cpu();
-    let op = v.op.as_str();
     match v.dtype.as_str() {
-        "bf16" => {
-            let a = bf16::from_bits(u16::from_be_bytes(bytes::<2>(v, 0)));
-            let b = bf16::from_bits(u16::from_be_bytes(bytes::<2>(v, 1)));
-            let ta = Tensor::from_bf16(vec![a], one(), &dev).unwrap();
-            let tb = ta.const_bf16_like(vec![b], one()).unwrap();
-            Some(
-                apply_minmax(op, &ta, &tb).realize_bf16()[0]
-                    .to_bits()
-                    .to_be_bytes()
-                    .to_vec(),
-            )
-        }
-        "f16" => {
-            let a = f16::from_bits(u16::from_be_bytes(bytes::<2>(v, 0)));
-            let b = f16::from_bits(u16::from_be_bytes(bytes::<2>(v, 1)));
-            let ta = Tensor::from_f16(vec![a], one(), &dev).unwrap();
-            let tb = ta.const_f16_like(vec![b], one()).unwrap();
-            Some(
-                apply_minmax(op, &ta, &tb).realize_f16()[0]
-                    .to_bits()
-                    .to_be_bytes()
-                    .to_vec(),
-            )
-        }
-        "f32" => {
-            let a = f32::from_be_bytes(bytes::<4>(v, 0));
-            let b = f32::from_be_bytes(bytes::<4>(v, 1));
-            let ta = Tensor::from_f32(vec![a], one(), &dev).unwrap();
-            let tb = ta.const_f32_like(vec![b], one()).unwrap();
-            Some(
-                apply_minmax(op, &ta, &tb).realize_f32()[0]
-                    .to_bits()
-                    .to_be_bytes()
-                    .to_vec(),
-            )
-        }
-        "f64" => {
-            let a = f64::from_be_bytes(bytes::<8>(v, 0));
-            let b = f64::from_be_bytes(bytes::<8>(v, 1));
-            let ta = Tensor::from_f64(vec![a], one(), &dev).unwrap();
-            let tb = ta.const_f64_like(vec![b], one()).unwrap();
-            Some(
-                apply_minmax(op, &ta, &tb).realize_f64()[0]
-                    .to_bits()
-                    .to_be_bytes()
-                    .to_vec(),
-            )
-        }
+        "bf16" => Some(minmax_bf16(v)),
+        "f16" => Some(minmax_f16(v)),
+        "f32" => Some(minmax_f32(v)),
+        "f64" => Some(minmax_f64(v)),
         _ => None,
     }
+}
+
+fn minmax_bf16(v: &Vector) -> Vec<u8> {
+    let a = bf16::from_bits(u16::from_be_bytes(bytes::<2>(v, 0)));
+    let b = bf16::from_bits(u16::from_be_bytes(bytes::<2>(v, 1)));
+    let ta = Tensor::from_bf16(vec![a], one(), &Device::cpu()).unwrap();
+    let tb = ta.const_bf16_like(vec![b], one()).unwrap();
+    apply_minmax(&v.op, &ta, &tb).realize_bf16()[0]
+        .to_bits()
+        .to_be_bytes()
+        .to_vec()
+}
+
+fn minmax_f16(v: &Vector) -> Vec<u8> {
+    let a = f16::from_bits(u16::from_be_bytes(bytes::<2>(v, 0)));
+    let b = f16::from_bits(u16::from_be_bytes(bytes::<2>(v, 1)));
+    let ta = Tensor::from_f16(vec![a], one(), &Device::cpu()).unwrap();
+    let tb = ta.const_f16_like(vec![b], one()).unwrap();
+    apply_minmax(&v.op, &ta, &tb).realize_f16()[0]
+        .to_bits()
+        .to_be_bytes()
+        .to_vec()
+}
+
+fn minmax_f32(v: &Vector) -> Vec<u8> {
+    let a = f32::from_be_bytes(bytes::<4>(v, 0));
+    let b = f32::from_be_bytes(bytes::<4>(v, 1));
+    let ta = Tensor::from_f32(vec![a], one(), &Device::cpu()).unwrap();
+    let tb = ta.const_f32_like(vec![b], one()).unwrap();
+    apply_minmax(&v.op, &ta, &tb).realize_f32()[0]
+        .to_bits()
+        .to_be_bytes()
+        .to_vec()
+}
+
+fn minmax_f64(v: &Vector) -> Vec<u8> {
+    let a = f64::from_be_bytes(bytes::<8>(v, 0));
+    let b = f64::from_be_bytes(bytes::<8>(v, 1));
+    let ta = Tensor::from_f64(vec![a], one(), &Device::cpu()).unwrap();
+    let tb = ta.const_f64_like(vec![b], one()).unwrap();
+    apply_minmax(&v.op, &ta, &tb).realize_f64()[0]
+        .to_bits()
+        .to_be_bytes()
+        .to_vec()
 }
 
 /// `floor` / `ceil` / `trunc` / `round_even` on f32. Fuel's `round` is
