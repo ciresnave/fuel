@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.14 - 2026-10-14
+
+### Changed
+
+- Repointed `fuel_core::` to fuel-ir / fuel-tensor / fuel-loaders in fuel-transformers (GAP-348 step 3); manifest no longer depends on fuel-core.
+
 ## v0.18.13 - 2026-10-14
 
 ### Changed
