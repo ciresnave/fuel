@@ -13,46 +13,41 @@ publish time, so this check makes the property a CI failure.
 Rule: every dev-dependency of a workspace package that names another workspace
 member must be path-only (`{ path = "../x" }`), never `workspace = true`.
 
-Usage: python3 scripts/check-dev-dep-publish-cycles.py [path/to/metadata.json]
-(without an argument it runs `cargo metadata --no-deps --format-version 1`).
+Usage: cargo metadata --no-deps --format-version 1 > metadata.json
+       python3 scripts/check-dev-dep-publish-cycles.py metadata.json
 """
 import json
-import subprocess
 import sys
 
 
-def load():
-    if len(sys.argv) > 1:
-        with open(sys.argv[1], "rb") as f:
-            return json.load(f)
-    out = subprocess.run(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-        check=True, capture_output=True,
-    ).stdout
-    return json.loads(out)
+def versioned_dev_deps(meta):
+    """Return (checked, bad): workspace dev-deps seen, and those carrying a version."""
+    names = {p["name"] for p in meta["packages"]}
+    checked, bad = 0, []
+    for p in sorted(meta["packages"], key=lambda p: p["name"]):
+        for d in p["dependencies"]:
+            if d["kind"] == "dev" and d["name"] in names:
+                checked += 1
+                if d["req"] != "*":
+                    bad.append((p["name"], d["name"], d["req"]))
+    return checked, bad
 
 
 def main():
-    meta = load()
-    names = {p["name"] for p in meta["packages"]}
-    bad = []
-    checked = 0
-    for p in sorted(meta["packages"], key=lambda p: p["name"]):
-        for d in p["dependencies"]:
-            if d["kind"] != "dev" or d["name"] not in names:
-                continue
-            checked += 1
-            if d["req"] != "*":
-                bad.append((p["name"], d["name"], d["req"]))
-    print(f"workspace packages: {len(names)}; workspace dev-deps checked: {checked}")
+    if len(sys.argv) != 2:
+        print(__doc__)
+        return 2
+    with open(sys.argv[1], "rb") as f:
+        meta = json.load(f)
+    checked, bad = versioned_dev_deps(meta)
+    print(f"workspace packages: {len(meta['packages'])}; "
+          f"workspace dev-deps checked: {checked}")
     for pkg, dev, req in bad:
         print(f"VERSIONED DEV-DEP: {pkg} [dev-dependencies] {dev} = {req!r}; "
               f"make it path-only (no version, not `workspace = true`)")
-    if bad:
-        print(f"{len(bad)} versioned workspace dev-dependenc(ies)")
-        return 1
-    print("no versioned workspace dev-dependencies")
-    return 0
+    print(f"{len(bad)} versioned workspace dev-dependenc(ies)" if bad
+          else "no versioned workspace dev-dependencies")
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

@@ -827,7 +827,9 @@ jobs:
       # publish` and must resolve on crates.io, so it breaks publish ordering (or is
       # a cycle). Path-only dev-deps are stripped. Invisible until publish time.
       - name: Workspace dev-dependencies are path-only (publish ordering)
-        run: python3 scripts/check-dev-dep-publish-cycles.py
+        run: |
+          cargo metadata --no-deps --format-version 1 > "$RUNNER_TEMP/metadata.json"
+          python3 scripts/check-dev-dep-publish-cycles.py "$RUNNER_TEMP/metadata.json"
 
   clippy:
     name: Clippy
