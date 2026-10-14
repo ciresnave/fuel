@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.12 - 2026-10-14
+
+### Changed
+
+- Repointed `fuel_core::` to the real crates in fuel-model-llama, fuel-model-phi, fuel-datasets and fuel-posttrain (GAP-348 step 3, batch A); their manifests now depend on fuel-tensor / fuel-ir instead of fuel-core.
+
 ## v0.18.11 - 2026-10-14
 
 ### Changed
