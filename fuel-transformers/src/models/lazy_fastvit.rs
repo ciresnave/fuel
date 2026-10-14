@@ -28,9 +28,9 @@
 //!
 //! v1 scope: F32, batch == 1, forward-only inference.
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -506,7 +506,7 @@ impl FastVitWeights {
         _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &FastVitConfig,
     ) -> Result<Self> {
-        Err(fuel_core::Error::Msg(
+        Err(fuel_ir::error::Error::Msg(
             "FastVitWeights::load_from_mmapped: HF reparameterized-checkpoint \
              support is not yet wired (RepMixer/Attention stage mapping pending). \
              Construct FastVitWeights directly or contribute the loader via \
@@ -522,7 +522,7 @@ impl FastVitWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

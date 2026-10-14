@@ -18,9 +18,10 @@
 //! cos/sin tables from `rope_dim` (not `head_dim`); the suffix
 //! never sees RoPE.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,7 +92,7 @@ fn default_stablelm_partial_rotary_factor() -> f64 {
 impl StableLmConfigRaw {
     fn from_json_str(json: &str) -> Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing StableLM config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing StableLM config.json: {e}")))
     }
 
     fn resolve(self) -> Result<StableLmConfig> {
@@ -231,20 +232,20 @@ impl StableLmModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "StableLmModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "StableLmModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "StableLmConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -362,7 +363,7 @@ impl StableLmWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &StableLmConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;

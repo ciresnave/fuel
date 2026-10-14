@@ -49,11 +49,11 @@
 //! `H == W` and divisible by 32 (typically 224). Returns
 //! `(1, nclasses)` after the final FC + ReLU.
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +160,7 @@ impl VggModel {
         let h = final_dims[2];
         let w = final_dims[3];
         if h != cfg.head_spatial || w != cfg.head_spatial {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "VGG head: post-conv spatial dims ({}, {}) must equal head_spatial {}; a mismatch \
                  otherwise panics deeper in the fc1 flat-dim check rather than declining here",
                 h, w, cfg.head_spatial,
@@ -242,7 +242,9 @@ impl VggWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &VggConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         // Conv index sequence for each variant (features.{i}.weight).
         // VGG-{13,16,19} = N convs interleaved with MaxPool2d at boundaries.
         let convs_per_block = cfg.variant.convs_per_block();

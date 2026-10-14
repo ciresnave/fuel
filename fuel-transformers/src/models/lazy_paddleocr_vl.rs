@@ -50,9 +50,10 @@ use crate::models::lazy_paddleocr_vl_vision::{
     PaddleOcrVlVisionConfig, PaddleOcrVlVisionModel, PaddleOcrVlVisionWeights,
 };
 pub use crate::models::lazy_paddleocr_vl_vision::{aspect_ratio_chooser, partition_image};
-use fuel_core::lazy::Tensor;
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 /// Bundled configuration for the full PaddleOCR-VL stack.
@@ -114,7 +115,7 @@ impl PaddleOcrVlModel {
         start_pos: usize,
     ) -> Result<Tensor> {
         if text_tokens.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "PaddleOcrVlModel: text_tokens must be non-empty".into(),
             )
             .bt());
@@ -123,7 +124,7 @@ impl PaddleOcrVlModel {
         match image_pixels {
             None => {
                 if text_tokens.contains(&image_token_id) {
-                    return Err(fuel_core::Error::Msg(
+                    return Err(fuel_ir::error::Error::Msg(
                         "PaddleOcrVlModel: text_tokens contain image_token_id but image_pixels is None".into(),
                     ).bt());
                 }
@@ -147,7 +148,7 @@ impl PaddleOcrVlModel {
         let dims = image_pixels.shape();
         let dims = dims.dims().to_vec();
         if dims.len() != 3 || dims[0] != v_cfg.num_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlModel: image_pixels must be (C={}, H, W), got {:?}",
                 v_cfg.num_channels, dims,
             ))
@@ -157,7 +158,7 @@ impl PaddleOcrVlModel {
         let height = dims[1];
         let width = dims[2];
         if height == 0 || width == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "PaddleOcrVlModel: image height/width must be > 0".into(),
             )
             .bt());
@@ -168,7 +169,7 @@ impl PaddleOcrVlModel {
         let tile_h = height / rows;
         let tile_w = width / cols;
         if tile_h == 0 || tile_w == 0 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlModel: tile dim collapsed (H={height}, W={width}, rows={rows}, cols={cols})",
             )).bt());
         }
@@ -177,7 +178,7 @@ impl PaddleOcrVlModel {
         // tile to (image_size, image_size) via nearest neighbor.
         let pixel_data = image_pixels.realize_f32();
         if pixel_data.len() != channels * height * width {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlModel: image_pixels realize length {} mismatch C*H*W = {}",
                 pixel_data.len(),
                 channels * height * width,
@@ -217,7 +218,7 @@ impl PaddleOcrVlModel {
         let v_dims = vision_features.shape();
         let v_dims = v_dims.dims().to_vec();
         if v_dims.len() != 2 || v_dims[1] != t_cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlModel: vision features shape {:?} must be (N, text_hidden={})",
                 v_dims, t_cfg.hidden_size,
             ))
@@ -228,7 +229,7 @@ impl PaddleOcrVlModel {
         // Count image placeholders in text_tokens; must equal vision token count.
         let num_placeholders = text_tokens.iter().filter(|&&t| t == image_token_id).count();
         if num_placeholders != num_vision_tokens {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlModel: text_tokens have {num_placeholders} image placeholders but vision produced {num_vision_tokens} feature tokens",
             )).bt());
         }
@@ -368,7 +369,7 @@ pub fn bilinear_resize_to_grid(
     supported_grids: &[(usize, usize)],
 ) -> Result<(Tensor, usize, usize)> {
     if supported_grids.is_empty() {
-        return Err(fuel_core::Error::Msg(
+        return Err(fuel_ir::error::Error::Msg(
             "bilinear_resize_to_grid: supported_grids must be non-empty".into(),
         )
         .bt());
@@ -376,7 +377,7 @@ pub fn bilinear_resize_to_grid(
     let src_w = image.width() as usize;
     let src_h = image.height() as usize;
     if src_w == 0 || src_h == 0 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "bilinear_resize_to_grid: image dimensions must be > 0 (got {src_w}x{src_h})",
         ))
         .bt());
@@ -386,7 +387,7 @@ pub fn bilinear_resize_to_grid(
         .enumerate()
         .find(|&(_, &(gh, gw))| gh == 0 || gw == 0)
     {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "bilinear_resize_to_grid: supported_grids[{idx}] = ({gh}, {gw}) has a zero dim",
         ))
         .bt());
@@ -481,7 +482,7 @@ mod tests {
         PaddleOcrVlVisionActivation, PaddleOcrVlVisionBlockWeights,
         PaddleOcrVlVisionProjectorWeights, PaddleOcrVlVisionWeights,
     };
-    use fuel_core::lazy::{LayerWeights, WeightStorage};
+    use fuel_tensor::{lazy::LayerWeights, lazy::WeightStorage};
 
     fn tiny_text_cfg() -> PaddleOcrVlTextConfig {
         PaddleOcrVlTextConfig {

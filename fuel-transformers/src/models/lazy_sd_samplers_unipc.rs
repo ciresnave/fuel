@@ -32,8 +32,8 @@
 use std::collections::HashSet;
 
 use crate::models::lazy_sd_samplers::{PredictionType, SdScheduler};
-use fuel_core::lazy::Tensor;
-use fuel_core::{Error, Result};
+use fuel_ir::{error::Error, error::Result};
+use fuel_tensor::lazy::Tensor;
 
 /// Sigma-to-timestep mapping strategy.
 #[derive(Debug, Clone, Copy)]
@@ -788,8 +788,8 @@ impl SdScheduler for UniPcScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
     use fuel_ir::Shape;
+    use fuel_tensor::Device;
 
     fn lazy_from(values: &[f32], shape: &[usize]) -> Tensor {
         Tensor::from_f32(values.to_vec(), Shape::from_dims(shape), &Device::cpu()).unwrap()

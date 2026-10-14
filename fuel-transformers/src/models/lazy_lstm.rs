@@ -26,9 +26,9 @@
 //!     concern, not handled here).
 //!   - Bidirectional and packed sequences are out of scope.
 
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 /// Per-layer weights matching PyTorch's `nn.LSTM` convention:
@@ -158,7 +158,7 @@ fn lstm_layer_forward(x: &Tensor, w: &LstmCellWeights) -> Result<Tensor> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     /// Reference Rust implementation of a single LSTM layer with
     /// zero initial state, applied to a single batch and explicit

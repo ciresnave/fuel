@@ -30,7 +30,7 @@
 //!
 //! ## Field set
 //!
-//! [`fuel_core::lazy::LayerWeights`](fuel_core::lazy::LayerWeights) is shared
+//! [`fuel_tensor::lazy::LayerWeights`](fuel_tensor::lazy::LayerWeights) is shared
 //! with SmolLM3 / Mistral / Qwen2 / etc.; the LLaMA wrapper only
 //! quantizes the seven Linear weight matrices per layer plus the
 //! output projection. Optional Qwen2-style attention biases
@@ -47,9 +47,9 @@
 //! [`crate::models::lazy_llama_full::tied_lm_head_from_embeddings`] convention.
 
 use crate::models::lazy_llama_full::{Llama3Model, LlamaFullConfig};
-use fuel_core::Result;
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
+use fuel_ir::error::Result;
 use fuel_model_llama::{LlamaModel, LlamaWeights};
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// GGUF-quantized LLaMA-family causal language model with optional
@@ -172,12 +172,12 @@ impl QuantizedLlama3Model {
          -> Result<WeightStorage> {
             let f32_in_out = match w {
                 WeightStorage::F32(a) => a.to_vec(),
-                _ => return Err(fuel_core::Error::Msg(
+                _ => return Err(fuel_ir::error::Error::Msg(
                     "QuantizedLlama3Model::from_f32_bake: source weights must be WeightStorage::F32".into(),
                 ).bt()),
             };
             if f32_in_out.len() != in_features * out_features {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "QuantizedLlama3Model::from_f32_bake: weight has {} elems, expected {}×{}",
                     f32_in_out.len(),
                     in_features,
@@ -221,13 +221,13 @@ impl QuantizedLlama3Model {
         }
 
         let output = quantize_linear(&src.output, h, cfg.vocab_size)
-            .map_err(|e| fuel_core::Error::Msg(format!("output: {e}")).bt())?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("output: {e}")).bt())?;
 
         let lazy_cfg = cfg.to_lazy_config();
         let llama = LlamaModel {
             config: lazy_cfg,
             weights: LlamaWeights {
-                instance: fuel_core::decode_shape::ModelInstanceId::next(),
+                instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -273,7 +273,7 @@ impl QuantizedLlama3Model {
         let get_tensor_bytes =
             |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
+                    fuel_ir::error::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
                 let elems = info.shape.elem_count();
                 let block_size = info.ggml_dtype.block_size();
@@ -299,7 +299,7 @@ impl QuantizedLlama3Model {
             let expected = out_features * in_features;
             let actual: usize = dims.iter().product();
             if actual != expected {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "gguf: tensor {name:?} has {actual} elements, expected {expected} for [{out_features}, {in_features}]",
                 )).bt());
             }
@@ -330,7 +330,7 @@ impl QuantizedLlama3Model {
 
         let token_embedding = load_f32("token_embd.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "gguf token_embd.weight: {} elems, expected {}×{}",
                 token_embedding.len(),
                 cfg.vocab_size,
@@ -400,7 +400,7 @@ impl QuantizedLlama3Model {
         let llama = LlamaModel {
             config: lazy_cfg,
             weights: LlamaWeights {
-                instance: fuel_core::decode_shape::ModelInstanceId::next(),
+                instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers,
                 final_norm_gain,
@@ -412,14 +412,14 @@ impl QuantizedLlama3Model {
     }
 }
 
-fn layer_err(idx: usize, name: &str, e: fuel_core::Error) -> fuel_core::Error {
-    fuel_core::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
+fn layer_err(idx: usize, name: &str, e: fuel_ir::error::Error) -> fuel_ir::error::Error {
+    fuel_ir::error::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
 }
 
 fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {
     const QK4_0: usize = 32;
     if !n.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "QuantizedLlama3Model::from_f32_bake: {name} ({n}) must be divisible by Q4_0 block size ({QK4_0})"
         )).bt());
     }
@@ -438,7 +438,7 @@ fn quantize_in_out_to_q4_0(
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "Q4_0 quantize: in_features ({in_features}) must be divisible by {QK4_0}"
         ))
         .bt());
@@ -506,9 +506,9 @@ fn dequant_bytes_to_f32(
 mod tests {
     use super::*;
     use crate::models::lazy_llama_full::{Llama3RopeConfig, Llama3RopeType, LlamaEosToks};
-    use fuel_core::Device;
     use fuel_ir::Shape;
     use fuel_model_llama::LlamaConfig;
+    use fuel_tensor::Device;
 
     fn test_cfg() -> LlamaFullConfig {
         LlamaFullConfig {
@@ -560,7 +560,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
         LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,

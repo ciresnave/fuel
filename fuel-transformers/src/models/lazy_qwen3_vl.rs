@@ -35,9 +35,10 @@ use crate::models::lazy_qwen3_vl_text::{
 use crate::models::lazy_qwen3_vl_vision::{
     Qwen3VlVisionConfig, Qwen3VlVisionModel, Qwen3VlVisionWeights,
 };
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Patch grid `(t_patches, h_patches, w_patches)` describing the
@@ -117,26 +118,26 @@ impl Qwen3VlModel {
         let v_cfg = &cfg.vision_config;
         let t_cfg = &cfg.text_config;
         if text_tokens.is_empty() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen3VlModel::forward: text_tokens must be non-empty".into(),
             )
             .bt());
         }
         if v_cfg.out_hidden_size == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen3VlModel: vision_config.out_hidden_size must be > 0".into(),
             )
             .bt());
         }
         if image_pixels.is_some() != image_grid.is_some() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen3VlModel::forward: image_pixels and image_grid must be both Some or both None"
                     .into(),
             )
             .bt());
         }
         if video_pixels.is_some() != video_grid.is_some() {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen3VlModel::forward: video_pixels and video_grid must be both Some or both None"
                     .into(),
             )
@@ -176,7 +177,7 @@ impl Qwen3VlModel {
             .collect();
         if let Some(grid) = image_grid {
             if image_slot_positions.len() != grid.num_patches() {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "Qwen3VlModel::forward: {} image_token_id slots in text_tokens \
                      do not match image_grid patch count {}",
                     image_slot_positions.len(),
@@ -185,7 +186,7 @@ impl Qwen3VlModel {
                 .bt());
             }
         } else if !image_slot_positions.is_empty() {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlModel::forward: text_tokens contain {} image_token_id slots but \
                  image_pixels is None",
                 image_slot_positions.len(),
@@ -194,7 +195,7 @@ impl Qwen3VlModel {
         }
         if let Some(grid) = video_grid {
             if video_slot_positions.len() != grid.num_patches() {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "Qwen3VlModel::forward: {} video_token_id slots in text_tokens \
                      do not match video_grid patch count {}",
                     video_slot_positions.len(),
@@ -203,7 +204,7 @@ impl Qwen3VlModel {
                 .bt());
             }
         } else if !video_slot_positions.is_empty() {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlModel::forward: text_tokens contain {} video_token_id slots but \
                  video_pixels is None",
                 video_slot_positions.len(),
@@ -283,7 +284,7 @@ impl Qwen3VlModel {
         let dims = pixels.shape();
         let dims = dims.dims();
         if dims.is_empty() || dims[0] != n {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlModel: pixels[0] ({:?}) must equal grid.num_patches() ({n})",
                 dims.first(),
             ))
@@ -361,7 +362,7 @@ fn substitute_visual_embeds(
     let dims = text_embeds.shape();
     let dims = dims.dims();
     if dims.len() != 3 || dims[0] != 1 || dims[2] != text_hidden {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "substitute_visual_embeds: text_embeds expected (1, seq, {text_hidden}), got {:?}",
             dims,
         ))
@@ -371,14 +372,14 @@ fn substitute_visual_embeds(
     let v_dims = visual_embeds.shape();
     let v_dims = v_dims.dims();
     if v_dims.len() != 2 || v_dims[1] != text_hidden {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "substitute_visual_embeds: visual_embeds expected (N, {text_hidden}), got {:?}",
             v_dims,
         ))
         .bt());
     }
     if v_dims[0] != slot_positions.len() {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "substitute_visual_embeds: visual_embeds rows ({}) must match slot count ({})",
             v_dims[0],
             slot_positions.len(),
@@ -387,7 +388,7 @@ fn substitute_visual_embeds(
     }
     for &p in slot_positions {
         if p >= seq {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "substitute_visual_embeds: slot position {p} out of range for seq {seq}",
             ))
             .bt());
@@ -573,7 +574,7 @@ impl Qwen3VlWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen3VlConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let vision = Qwen3VlVisionWeights::load_from_mmapped(st, &cfg.vision_config)?;
         let text = Qwen3VlTextWeights::load_from_mmapped(st, &cfg.text_config)?;
@@ -634,7 +635,7 @@ mod tests {
     use crate::models::lazy_qwen3_vl_vision::{
         Qwen3VlVisionDeepStackProjection, Qwen3VlVisionLayerWeights,
     };
-    use fuel_core::lazy::LayerWeights;
+    use fuel_tensor::lazy::LayerWeights;
 
     fn rng(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

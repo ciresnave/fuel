@@ -55,11 +55,11 @@
 //! Forward-only, batch == 1, F32. Returns `(1, nclasses)`
 //! with the classifier head or `(1, last_channels)` without.
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage, load_tensor_as_f32};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32};
 use std::sync::Arc;
 
 const STAGE_BLOCKS: [usize; 5] = [1, 2, 8, 10, 1];
@@ -300,7 +300,7 @@ impl MobileOneWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MobileOneConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let has_se = cfg.has_se();
         // Stem: k=1, kernel=3, stride=2, groups=1, no identity. SE on stem
         // only if has_se && timm wrote one — eager Fuel does add the SE
@@ -362,7 +362,7 @@ impl MobileOneWeights {
             let fc_w_t = mobileone_load_transposed(st, "head.fc.weight", n, last_c)?;
             let fc_b = load_tensor_as_f32(st, "head.fc.bias")?;
             if fc_b.len() != n {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "MobileOne head.fc.bias expected {n} entries, got {}",
                     fc_b.len(),
                 ))
@@ -393,7 +393,7 @@ fn mobileone_load_layer(
     groups: usize,
     k: usize,
     has_se: bool,
-) -> fuel_core::Result<MobileOneLayerWeights> {
+) -> fuel_ir::error::Result<MobileOneLayerWeights> {
     let _ = cfg;
     let c_in_per_group = c_in / groups;
     let kernel_elems = kernel * kernel;
@@ -583,7 +583,7 @@ fn mobileone_load_bn(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     channels: usize,
-) -> fuel_core::Result<BatchNormParams> {
+) -> fuel_ir::error::Result<BatchNormParams> {
     let gain = mobileone_load_check(st, &format!("{prefix}.weight"), channels)?;
     let bias = mobileone_load_check(st, &format!("{prefix}.bias"), channels)?;
     let mean = mobileone_load_check(st, &format!("{prefix}.running_mean"), channels)?;
@@ -595,10 +595,10 @@ fn mobileone_load_check(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     expected_len: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let v = load_tensor_as_f32(st, name)?;
     if v.len() != expected_len {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "MobileOne load {name:?}: got {} elements, expected {}",
             v.len(),
             expected_len,
@@ -613,7 +613,7 @@ fn mobileone_load_transposed(
     name: &str,
     out_features: usize,
     in_features: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let flat = mobileone_load_check(st, name, out_features * in_features)?;
     let mut out = vec![0.0_f32; out_features * in_features];
     for i in 0..out_features {
@@ -637,11 +637,11 @@ impl MobileOneModel {
         config: MobileOneConfig,
     ) -> Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
-        let weights_path = repo
-            .get(filename)
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub mobileone safetensors: {e}")))?;
+        let weights_path = repo.get(filename).map_err(|e| {
+            fuel_ir::error::Error::Msg(format!("hf-hub mobileone safetensors: {e}"))
+        })?;
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&weights_path) }?;
         let weights = MobileOneWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })

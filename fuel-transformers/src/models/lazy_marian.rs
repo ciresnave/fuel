@@ -36,9 +36,10 @@
 //! sees the full target sequence (teacher-forced layout); a
 //! production decode loop is out of scope.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,14 +168,14 @@ impl MarianModel {
         );
         // GAP-281: a typed decline, not a panic.
         if !cfg.d_model.is_multiple_of(cfg.encoder_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MarianConfig: d_model ({}) must be divisible by encoder_attention_heads ({})",
                 cfg.d_model, cfg.encoder_attention_heads,
             )));
         }
         // GAP-281: a typed decline, not a panic.
         if !cfg.d_model.is_multiple_of(cfg.decoder_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MarianConfig: d_model ({}) must be divisible by decoder_attention_heads ({})",
                 cfg.d_model, cfg.decoder_attention_heads,
             )));
@@ -220,7 +221,7 @@ impl MarianModel {
         );
         // GAP-281: a typed decline, not a panic.
         if !cfg.d_model.is_multiple_of(cfg.encoder_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MarianConfig: d_model ({}) must be divisible by encoder_attention_heads ({})",
                 cfg.d_model, cfg.encoder_attention_heads,
             )));
@@ -324,7 +325,7 @@ impl MarianModel {
         );
         // GAP-281: a typed decline, not a panic.
         if !cfg.d_model.is_multiple_of(cfg.decoder_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MarianConfig: d_model ({}) must be divisible by decoder_attention_heads ({})",
                 cfg.d_model, cfg.decoder_attention_heads,
             )));
@@ -369,7 +370,7 @@ impl MarianModel {
         let dims = src_embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.d_model {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MarianModel::forward_encoder_embeds: expected shape (1, src_len, d_model={}), got {:?}",
                 cfg.d_model, dims,
             )).bt());
@@ -377,7 +378,7 @@ impl MarianModel {
         let src_len = dims[1];
         let batch = dims[0];
         if src_len == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MarianModel::forward_encoder_embeds: src_len must be > 0".into(),
             )
             .bt());
@@ -425,7 +426,7 @@ impl MarianModel {
         let dims = tgt_embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.d_model {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MarianModel::forward_decoder_embeds: expected tgt shape (1, tgt_len, d_model={}), got {:?}",
                 cfg.d_model, dims,
             )).bt());
@@ -433,7 +434,7 @@ impl MarianModel {
         let tgt_len = dims[1];
         let batch = dims[0];
         if tgt_len == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MarianModel::forward_decoder_embeds: tgt_len must be > 0".into(),
             )
             .bt());
@@ -635,7 +636,7 @@ fn build_sinusoidal_table(max_positions: usize, d_model: usize) -> Result<Vec<f3
     // GAP-281: a CONFIG property -- reject it rather than panicking. The
     // half-dimension split below assumes an even d_model.
     if !d_model.is_multiple_of(2) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "build_sinusoidal_table: d_model ({d_model}) must be even"
         )));
     }
@@ -667,7 +668,9 @@ impl MarianAttentionWeights {
         prefix: &str,
         d_model: usize,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let q_proj = ltm(st, &format!("{prefix}.q_proj.weight"), d_model, d_model)?;
         let q_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.q_proj.bias"))?);
         let k_proj = ltm(st, &format!("{prefix}.k_proj.weight"), d_model, d_model)?;
@@ -695,7 +698,9 @@ impl MarianWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MarianConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let d = cfg.d_model;
         let enc_ffn = cfg.encoder_ffn_dim;
         let dec_ffn = cfg.decoder_ffn_dim;

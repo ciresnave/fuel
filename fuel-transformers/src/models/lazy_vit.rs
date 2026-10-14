@@ -43,11 +43,11 @@
 //! `use_mask_token` (masked autoencoding pre-training) and
 //! position interpolation (variable image sizes) deferred.
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +168,7 @@ impl VitModel {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "VitModel: input spatial dims ({}, {}) must equal image_size {}; this model is \
                  fixed-resolution (position interpolation deferred), and the patch reshape targets \
                  a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
@@ -276,7 +276,7 @@ impl VitModel {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "VitModel: input spatial dims ({}, {}) must equal image_size {}; this model is \
                  fixed-resolution (position interpolation deferred), and the patch reshape targets \
                  a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
@@ -456,7 +456,7 @@ impl VitWeights {
         cfg: &VitConfig,
         num_classes: Option<usize>,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 

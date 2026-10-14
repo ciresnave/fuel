@@ -32,11 +32,11 @@
 //!   `axes_dim = [16, 56, 56]` partitions the head dim across three
 //!   independent rotary frequency bands).
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{ConvWeightBias, Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::ConvWeightBias, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 // ---- Config -----------------------------------------------------------------
@@ -201,14 +201,14 @@ impl FluxModulation {
         // and split into num_chunks (shift, scale, gate) triples.
         let dims = y.shape().dims().to_vec();
         if dims.len() != 2 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "FluxModulation::forward: expected rank-2 output, got {dims:?}",
             ))
             .bt());
         }
         let (b, total) = (dims[0], dims[1]);
         if total % (3 * self.num_chunks) != 0 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "FluxModulation: trailing dim {total} not divisible by 3 * num_chunks ({})",
                 3 * self.num_chunks,
             ))
@@ -302,16 +302,17 @@ pub struct FluxWeights {
 /// `t * 1000`. Output `(B, dim)`.
 fn timestep_embedding(t: &Tensor, dim: usize) -> Result<Tensor> {
     if !dim.is_multiple_of(2) {
-        return Err(
-            fuel_core::Error::Msg(format!("timestep_embedding: dim {dim} must be even",)).bt(),
-        );
+        return Err(fuel_ir::error::Error::Msg(format!(
+            "timestep_embedding: dim {dim} must be even",
+        ))
+        .bt());
     }
     let time_factor = 1000.0_f64;
     let max_period = 10_000.0_f64;
     let half = dim / 2;
     let dims = t.shape().dims().to_vec();
     if dims.len() != 1 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "timestep_embedding: t must be rank-1, got {dims:?}",
         ))
         .bt());
@@ -340,7 +341,7 @@ fn timestep_embedding(t: &Tensor, dim: usize) -> Result<Tensor> {
 /// `[[cos, -sin], [sin, cos]]`.
 fn rope_axis(pos: &Tensor, dim: usize, theta: usize) -> Result<Tensor> {
     if !dim.is_multiple_of(2) {
-        return Err(fuel_core::Error::Msg(format!("rope_axis: dim {dim} must be even",)).bt());
+        return Err(fuel_ir::error::Error::Msg(format!("rope_axis: dim {dim} must be even",)).bt());
     }
     let theta_f = theta as f64;
     let half = dim / 2;
@@ -349,7 +350,7 @@ fn rope_axis(pos: &Tensor, dim: usize, theta: usize) -> Result<Tensor> {
         .collect();
     let pos_dims = pos.shape().dims().to_vec();
     if pos_dims.len() != 2 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "rope_axis: pos must be rank-2 (B, N), got {pos_dims:?}",
         ))
         .bt());
@@ -384,14 +385,14 @@ fn rope_axis(pos: &Tensor, dim: usize, theta: usize) -> Result<Tensor> {
 fn embed_nd(ids: &Tensor, axes_dim: &[usize], theta: usize) -> Result<Tensor> {
     let dims = ids.shape().dims().to_vec();
     if dims.len() != 3 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "embed_nd: ids must be rank-3 (B, N, n_axes), got {dims:?}",
         ))
         .bt());
     }
     let n_axes = dims[2];
     if n_axes != axes_dim.len() {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "embed_nd: ids trailing dim {n_axes} != axes_dim.len() {}",
             axes_dim.len(),
         ))
@@ -417,14 +418,16 @@ fn embed_nd(ids: &Tensor, axes_dim: &[usize], theta: usize) -> Result<Tensor> {
 fn apply_rope(x: &Tensor, pe: &Tensor) -> Result<Tensor> {
     let x_dims = x.shape().dims().to_vec();
     if x_dims.len() != 4 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "apply_rope: x must be rank-4 (B, H, S, D), got {x_dims:?}",
         ))
         .bt());
     }
     let (b, h, s, d) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
     if d % 2 != 0 {
-        return Err(fuel_core::Error::Msg(format!("apply_rope: head dim {d} must be even",)).bt());
+        return Err(
+            fuel_ir::error::Error::Msg(format!("apply_rope: head dim {d} must be even",)).bt(),
+        );
     }
     // x: (B, H, S, D/2, 2)
     let x5 = x.reshape(Shape::from_dims(&[b, h, s, d / 2, 2]))?;
@@ -434,7 +437,7 @@ fn apply_rope(x: &Tensor, pe: &Tensor) -> Result<Tensor> {
     // pe slices: get_on_dim(-1, k) drops the last dim.
     let pe_dims = pe.shape().dims().to_vec();
     if pe_dims.len() != 6 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "apply_rope: pe must be rank-6 (B, 1, S, D/2, 2, 2), got {pe_dims:?}",
         ))
         .bt());
@@ -477,7 +480,7 @@ fn split_qkv_with_qknorm(
 ) -> Result<(Tensor, Tensor, Tensor)> {
     let dims = qkv.shape().dims().to_vec();
     if dims.len() != 3 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "split_qkv_with_qknorm: input must be rank-3, got {dims:?}",
         ))
         .bt());
@@ -515,7 +518,7 @@ fn apply_double_stream(
     let img_mods = blk.img_mod.forward(vec_c)?;
     let txt_mods = blk.txt_mod.forward(vec_c)?;
     if img_mods.len() != 2 || txt_mods.len() != 2 {
-        return Err(fuel_core::Error::Msg(
+        return Err(fuel_ir::error::Error::Msg(
             "apply_double_stream: each modulation must produce 2 chunks".into(),
         )
         .bt());
@@ -592,7 +595,7 @@ fn apply_single_stream(
 ) -> Result<Tensor> {
     let mods = blk.modulation.forward(vec_c)?;
     if mods.len() != 1 {
-        return Err(fuel_core::Error::Msg(
+        return Err(fuel_ir::error::Error::Msg(
             "apply_single_stream: modulation must produce 1 chunk".into(),
         )
         .bt());
@@ -620,7 +623,7 @@ fn apply_last_layer(xs: &Tensor, vec_c: &Tensor, last: &FluxLastLayer) -> Result
     let proj = last.ada_ln_modulation.apply(&h)?;
     let chunks = proj.chunk(2, 1_usize)?;
     if chunks.len() != 2 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "apply_last_layer: expected 2 chunks from adaLN, got {}",
             chunks.len(),
         ))
@@ -661,14 +664,14 @@ impl FluxModel {
     ) -> Result<Tensor> {
         let cfg = &self.config;
         if txt.rank() != 3 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "FluxModel::forward: txt must be rank-3, got {}",
                 txt.rank(),
             ))
             .bt());
         }
         if img.rank() != 3 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "FluxModel::forward: img must be rank-3, got {}",
                 img.rank(),
             ))
@@ -796,7 +799,7 @@ fn bake_linear(l: &mut FluxLinear) -> Result<()> {
         WeightStorage::Q4_0 { .. } => return Ok(()),
         other => {
             let _ = other;
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "bake_linear: source weight must be F32 or already Q4_0".into(),
             )
             .bt());
@@ -814,7 +817,7 @@ fn quantize_in_out_to_q4_0(
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "quantize_in_out_to_q4_0: in_features ({in_features}) must be divisible by {QK4_0}",
         ))
         .bt());
@@ -1180,7 +1183,7 @@ fn group_norm(
     w: usize,
 ) -> Result<Tensor> {
     if !c.is_multiple_of(groups) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "group_norm: C={c} not divisible by groups={groups}",
         ))
         .bt());
@@ -1331,7 +1334,7 @@ fn load_flux_linear(
     out_features: usize,
     bias: bool,
 ) -> Result<FluxLinear> {
-    use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
     let weight = load_transposed_matrix_preserve_dtype(
         st,
         &format!("{prefix}.weight"),
@@ -1341,7 +1344,7 @@ fn load_flux_linear(
     let bias = if bias {
         let b = load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
         if b.len() != out_features {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "load_flux_linear: bias {prefix}.bias has {} elements, expected {out_features}",
                 b.len(),
             ))
@@ -1364,11 +1367,11 @@ fn load_flux_qknorm(
     prefix: &str,
     head_dim: usize,
 ) -> Result<FluxQkNorm> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let q = load_tensor_as_f32(st, &format!("{prefix}.query_norm.scale"))?;
     let k = load_tensor_as_f32(st, &format!("{prefix}.key_norm.scale"))?;
     if q.len() != head_dim || k.len() != head_dim {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "load_flux_qknorm: norm gain length mismatch at {prefix} (q={}, k={}, head_dim={head_dim})",
             q.len(), k.len(),
         )).bt());

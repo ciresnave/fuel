@@ -41,9 +41,10 @@
 //! Forward-only, single sequence (`batch == 1`), no KV cache,
 //! F32, attention-only layers (eager's Mamba branch bails too).
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,10 +175,10 @@ impl GraniteMoeHybridWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &GraniteMoeHybridConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         if cfg.layer_types.len() != cfg.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "GraniteMoeHybridWeights::load_from_mmapped: \
                  cfg.layer_types length ({}) must match num_hidden_layers ({})",
                 cfg.layer_types.len(),
@@ -194,7 +195,7 @@ impl GraniteMoeHybridWeights {
 
         let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
                 token_embedding.len(),
                 cfg.vocab_size * h,
@@ -374,20 +375,20 @@ impl GraniteMoeHybridModel {
         let dims = scaled_embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "GraniteMoeHybridModel::forward_embeds: expected scaled_embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "GraniteMoeHybridModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim() != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -396,13 +397,13 @@ impl GraniteMoeHybridModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
             .bt());
         }
         if weights.layers.len() != cfg.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "weights.layers length ({}) must match num_hidden_layers ({})",
                 weights.layers.len(),
                 cfg.num_hidden_layers,
@@ -410,7 +411,7 @@ impl GraniteMoeHybridModel {
             .bt());
         }
         if cfg.layer_types.len() != cfg.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "layer_types length ({}) must match num_hidden_layers ({})",
                 cfg.layer_types.len(),
                 cfg.num_hidden_layers,
@@ -458,14 +459,14 @@ impl GraniteMoeHybridModel {
                     )?;
                 }
                 (GraniteMoeHybridLayerWeights::Mamba, GraniteLayerType::Mamba) => {
-                    return Err(fuel_core::Error::Msg(format!(
+                    return Err(fuel_ir::error::Error::Msg(format!(
                         "GraniteMoeHybrid layer {idx}: Mamba layers not yet supported \
                          (matches eager scope); use a non-Mamba layer kind",
                     ))
                     .bt());
                 }
                 _ => {
-                    return Err(fuel_core::Error::Msg(format!(
+                    return Err(fuel_ir::error::Error::Msg(format!(
                         "GraniteMoeHybrid layer {idx}: weight kind does not match \
                      layer_types[{idx}] — config + weights are inconsistent",
                     ))
@@ -586,7 +587,7 @@ fn build_granite_rope_tables(
     // GAP-281: a CONFIG property -- reject it rather than panicking. The
     // half-dimension split below assumes an even head_dim.
     if !head_dim.is_multiple_of(2) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "build_granite_rope_tables: head_dim ({head_dim}) must be even"
         )));
     }

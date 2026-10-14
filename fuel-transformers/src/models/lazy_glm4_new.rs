@@ -43,9 +43,10 @@
 //! config field.
 
 use crate::models::lazy_glm4::apply_interleaved_partial_rope;
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,12 +115,12 @@ impl Glm4NewConfig {
 /// Map a HuggingFace `hidden_act` string to [`Glm4NewActivation`]. Unknown values
 /// ERROR rather than silently defaulting — a config naming an activation this port
 /// does not implement is a fact worth surfacing, not swallowing.
-fn glm4_new_activation_from_str(s: &str) -> fuel_core::Result<Glm4NewActivation> {
+fn glm4_new_activation_from_str(s: &str) -> fuel_ir::error::Result<Glm4NewActivation> {
     match s {
         "silu" | "swish" => Ok(Glm4NewActivation::Silu),
         "gelu" => Ok(Glm4NewActivation::Gelu),
         "gelu_pytorch_tanh" => Ok(Glm4NewActivation::GeluPytorchTanh),
-        other => Err(fuel_core::Error::Msg(format!(
+        other => Err(fuel_ir::error::Error::Msg(format!(
             "unsupported GLM-4 hidden_act {other:?} (expected silu/gelu/gelu_pytorch_tanh)"
         ))),
     }
@@ -168,12 +169,12 @@ fn default_glm4_new_rms_norm_eps() -> f64 {
 }
 
 impl Glm4NewConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing GLM-4 config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing GLM-4 config.json: {e}")))
     }
 
-    fn resolve(self) -> fuel_core::Result<Glm4NewConfig> {
+    fn resolve(self) -> fuel_ir::error::Result<Glm4NewConfig> {
         let hidden_act = match self.hidden_act.as_deref() {
             None => Glm4NewActivation::Silu,
             Some(s) => glm4_new_activation_from_str(s)?,
@@ -207,7 +208,7 @@ impl Glm4NewConfig {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `glm4_new_config_from_hf_json_parses_the_artifact_not_a_preset`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         Glm4NewConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -321,14 +322,14 @@ impl Glm4NewModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Glm4NewModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Glm4NewModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
@@ -340,7 +341,7 @@ impl Glm4NewModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Glm4NewConfig: num_attention_heads must be a multiple of num_key_value_heads"
                     .into(),
             )
@@ -494,7 +495,7 @@ impl Glm4NewWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Glm4NewConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;

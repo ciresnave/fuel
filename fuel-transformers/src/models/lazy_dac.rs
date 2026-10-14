@@ -28,9 +28,9 @@
 //!   - F32 weights and activations.
 //!   - `batch == 1`.
 
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 /// DAC config. The standard preset (`Config::default_preset`)
@@ -156,7 +156,7 @@ impl DacModel {
         assert_eq!(dims.len(), 3, "codes must be rank 3 [B, num_codebooks, T]");
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
         if dims[1] != self.config.num_codebooks {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "DAC decode_codes: expected {} codebooks (the model's quantizer count), got {} on \
                  the codebook axis (dims[1]); the RVQ decode loop iterates the model's quantizers, \
                  so a mismatch does not surface on its own — an over-long axis is silently \
@@ -349,16 +349,16 @@ fn fuse_weight_norm_conv1d(
     c_out: usize,
     c_in: usize,
     k: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     if weight_v.len() != c_out * c_in * k {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "fuse_weight_norm_conv1d: weight_v has {} elements, expected {} ({c_out}×{c_in}×{k})",
             weight_v.len(),
             c_out * c_in * k,
         );
     }
     if weight_g.len() != c_out {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "fuse_weight_norm_conv1d: weight_g has {} elements, expected {c_out}",
             weight_g.len(),
         );
@@ -394,16 +394,16 @@ fn fuse_weight_norm_conv_transpose1d(
     c_in: usize,
     c_out: usize,
     k: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     if weight_v.len() != c_in * c_out * k {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "fuse_weight_norm_conv_transpose1d: weight_v has {} elements, expected {} ({c_in}×{c_out}×{k})",
             weight_v.len(),
             c_in * c_out * k,
         );
     }
     if weight_g.len() != c_in {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "fuse_weight_norm_conv_transpose1d: weight_g has {} elements, expected {c_in}",
             weight_g.len(),
         );
@@ -437,13 +437,13 @@ fn load_wn_conv1d(
     stride: usize,
     pad: usize,
     dilation: usize,
-) -> fuel_core::Result<Conv1dWeights> {
-    let weight_g = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_g"))?;
-    let weight_v = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_v"))?;
+) -> fuel_ir::error::Result<Conv1dWeights> {
+    let weight_g = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_g"))?;
+    let weight_v = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_v"))?;
     let fused = fuse_weight_norm_conv1d(&weight_v, &weight_g, c_out, c_in, k)?;
-    let bias = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
+    let bias = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
     if bias.len() != c_out {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "load_wn_conv1d {prefix:?}: bias has {} elements, expected {c_out}",
             bias.len(),
         );
@@ -469,13 +469,13 @@ fn load_wn_conv_transpose1d(
     k: usize,
     stride: usize,
     pad: usize,
-) -> fuel_core::Result<ConvTranspose1dWeights> {
-    let weight_g = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_g"))?;
-    let weight_v = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_v"))?;
+) -> fuel_ir::error::Result<ConvTranspose1dWeights> {
+    let weight_g = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_g"))?;
+    let weight_v = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_v"))?;
     let fused = fuse_weight_norm_conv_transpose1d(&weight_v, &weight_g, c_in, c_out, k)?;
-    let bias = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
+    let bias = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
     if bias.len() != c_out {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "load_wn_conv_transpose1d {prefix:?}: bias has {} elements, expected {c_out}",
             bias.len(),
         );
@@ -495,10 +495,10 @@ fn load_snake(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     channels: usize,
-) -> fuel_core::Result<Snake1dWeights> {
-    let alpha = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.alpha"))?;
+) -> fuel_ir::error::Result<Snake1dWeights> {
+    let alpha = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.alpha"))?;
     if alpha.len() != channels {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "load_snake {prefix:?}: alpha has {} elements, expected {channels}",
             alpha.len(),
         );
@@ -514,7 +514,7 @@ fn load_residual_unit(
     prefix: &str,
     dim: usize,
     dilation: usize,
-) -> fuel_core::Result<ResidualUnitWeights> {
+) -> fuel_ir::error::Result<ResidualUnitWeights> {
     let pad = ((7 - 1) * dilation) / 2;
     // Eager `ResidualUnit::new` calls `vb.pp("block")` then numbers
     // children 0..3: snake1, conv1 (k=7, dilated), snake2, conv2 (k=1).
@@ -533,7 +533,7 @@ fn load_decoder_block(
     in_dim: usize,
     out_dim: usize,
     stride: usize,
-) -> fuel_core::Result<DecoderBlockWeights> {
+) -> fuel_ir::error::Result<DecoderBlockWeights> {
     let pad = stride.div_ceil(2);
     // Eager `DecoderBlock::new` uses `vb.pp("block")` then 0..4:
     // snake1, conv_tr1 (weight-norm transposed), res1, res2, res3.
@@ -607,10 +607,10 @@ impl DacWeights {
                 1,
             )?;
             let codebook =
-                fuel_core::lazy::load_tensor_as_f32(st, &format!("{p}.codebook.weight"))?;
+                fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{p}.codebook.weight"))?;
             let expected = cfg.codebook_size * cfg.codebook_dim;
             if codebook.len() != expected {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "DAC codebook {i}: {} elements, expected {expected}",
                     codebook.len(),
                 );
@@ -668,7 +668,7 @@ impl DacWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

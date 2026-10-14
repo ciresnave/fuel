@@ -23,9 +23,9 @@
 //!     type is a follow-up.
 
 use crate::models::lazy_convmixer::BatchNormParams;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage, load_tensor_as_f32};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -562,7 +562,7 @@ impl Mv4Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Mv4Config,
         with_head: Option<usize>,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         // Stem.
         let stem_w = mv4_load_check(st, "conv_stem.weight", cfg.stem_dim * 3 * 3 * 3)?;
         let stem_bn = mv4_load_bn(st, "bn1", cfg.stem_dim)?;
@@ -628,7 +628,7 @@ fn mv4_load_block(
     prefix: &str,
     spec: &BlockSpec,
     in_ch: usize,
-) -> fuel_core::Result<(BlockWeights, usize)> {
+) -> fuel_ir::error::Result<(BlockWeights, usize)> {
     match *spec {
         BlockSpec::Convolutional {
             out_channels,
@@ -773,7 +773,9 @@ fn mv4_load_block(
             kv_stride,
         } => {
             if stride != 1 {
-                return Err(fuel_core::Error::Msg("Mobile-MQA v1: stride must be 1".into()).bt());
+                return Err(
+                    fuel_ir::error::Error::Msg("Mobile-MQA v1: stride must be 1".into()).bt(),
+                );
             }
             // Input residual BN: in eager Fuel the BN dim is `out_channels`
             // (relies on in_channels == out_channels for Attention blocks).
@@ -854,7 +856,7 @@ fn mv4_load_conv_bn(
     stride: usize,
     pad: usize,
     groups: usize,
-) -> fuel_core::Result<Conv2dBnWeights> {
+) -> fuel_ir::error::Result<Conv2dBnWeights> {
     let w = mv4_load_check(
         st,
         &format!("{conv_prefix}.weight"),
@@ -880,7 +882,7 @@ fn mv4_load_proj(
     prefix: &str,
     c_in: usize,
     c_out: usize,
-) -> fuel_core::Result<Conv2dBnWeights> {
+) -> fuel_ir::error::Result<Conv2dBnWeights> {
     // Eager Fuel uses `conv2d_no_bias` for the MQA projections WITHOUT
     // a BN; the lazy Conv2dBnWeights still carries a BN, so we bake an
     // identity BN (gain=1, bias=0, mean=0, var=1) here. The lazy
@@ -910,7 +912,7 @@ fn mv4_load_dw(
     channels: usize,
     kernel: usize,
     stride: usize,
-) -> fuel_core::Result<Conv2dBnWeights> {
+) -> fuel_ir::error::Result<Conv2dBnWeights> {
     let w = mv4_load_check(
         st,
         &format!("{conv_prefix}.weight"),
@@ -933,7 +935,7 @@ fn mv4_load_bn(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     channels: usize,
-) -> fuel_core::Result<BatchNormParams> {
+) -> fuel_ir::error::Result<BatchNormParams> {
     let gain = mv4_load_check(st, &format!("{prefix}.weight"), channels)?;
     let bias = mv4_load_check(st, &format!("{prefix}.bias"), channels)?;
     let mean = mv4_load_check(st, &format!("{prefix}.running_mean"), channels)?;
@@ -947,10 +949,10 @@ fn mv4_load_check(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     expected_len: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let v = load_tensor_as_f32(st, name)?;
     if v.len() != expected_len {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "MobileNetV4 load {name:?}: got {} elements, expected {}",
             v.len(),
             expected_len,
@@ -965,7 +967,7 @@ fn mv4_load_transposed(
     name: &str,
     out_features: usize,
     in_features: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let flat = mv4_load_check(st, name, out_features * in_features)?;
     let mut out = vec![0.0_f32; out_features * in_features];
     for i in 0..out_features {
@@ -996,11 +998,11 @@ impl Mv4Model {
         nclasses: Option<usize>,
     ) -> Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         let weights_path = repo
             .get(filename)
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub mv4 safetensors: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub mv4 safetensors: {e}")))?;
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&weights_path) }?;
         let weights = Mv4Weights::load_from_mmapped(&st, &config, nclasses)?;
         Ok(Self { config, weights })
@@ -1012,7 +1014,7 @@ impl Mv4Model {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

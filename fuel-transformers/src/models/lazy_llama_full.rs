@@ -44,10 +44,10 @@
 //! Generation loops (Lightbulb) consult
 //! [`LlamaEosToks::is_eos`](LlamaEosToks::is_eos) per token.
 
-use fuel_core::lazy::Tensor;
-use fuel_core::{Error, Result};
 use fuel_ir::Shape;
+use fuel_ir::{error::Error, error::Result};
 use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
+use fuel_tensor::lazy::Tensor;
 use serde::Deserialize;
 use std::f64::consts::PI;
 use std::sync::Arc;
@@ -433,8 +433,8 @@ impl Llama3Model {
     pub fn forward_with_kv_context(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::KvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
+        cache: &mut fuel_tensor::inference_context::KvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
     ) -> Result<Vec<f32>> {
         let inv = self.rope_inv_freq();
         self.inner
@@ -453,9 +453,9 @@ impl Llama3Model {
     pub fn forward_with_kv_context_persistent(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::KvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        cache: &mut fuel_tensor::inference_context::KvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
     ) -> Result<Vec<f32>> {
         let inv = self.rope_inv_freq();
         self.inner.forward_with_kv_context_persistent_inv_freq(
@@ -477,7 +477,7 @@ impl Llama3Model {
         let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let h = embed
@@ -530,7 +530,7 @@ impl Llama3Model {
 /// Construct a tied-embedding [`LlamaWeights::output`] when the HF
 /// `tie_word_embeddings` flag is set. The lm_head's weight is the
 /// transposed token embedding matrix; this helper materializes that
-/// view as a flat F32 [`fuel_core::lazy::WeightStorage`].
+/// view as a flat F32 [`fuel_tensor::lazy::WeightStorage`].
 ///
 /// For untied checkpoints the safetensors loader produces a separate
 /// `lm_head.weight` tensor — this helper isn't used in that path.
@@ -538,7 +538,7 @@ pub fn tied_lm_head_from_embeddings(
     token_embedding: &Arc<[f32]>,
     vocab_size: usize,
     hidden_size: usize,
-) -> fuel_core::lazy::WeightStorage {
+) -> fuel_tensor::lazy::WeightStorage {
     // `apply_linear`'s convention is weight shape `[in_features,
     // out_features]` for a `(B, T, in) → (B, T, out)` projection.
     // Token embedding is stored as `[vocab_size, hidden]` i.e.
@@ -557,7 +557,7 @@ pub fn tied_lm_head_from_embeddings(
             out[h * vocab_size + v] = token_embedding[v * hidden_size + h];
         }
     }
-    fuel_core::lazy::WeightStorage::F32(Arc::from(out))
+    fuel_tensor::lazy::WeightStorage::F32(Arc::from(out))
 }
 
 /// Build a complete [`Llama3Model`] from parsed HF config + weights.
@@ -644,7 +644,7 @@ impl LlamaFullConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::lazy::{LayerWeights, WeightStorage};
+    use fuel_tensor::{lazy::LayerWeights, lazy::WeightStorage};
 
     fn tiny_weights(cfg: &LlamaConfig) -> LlamaWeights {
         let mut s: u32 = 12345;
@@ -679,7 +679,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(buf(h * cfg.vocab_size, &mut *next_box));
         LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -1052,7 +1052,7 @@ mod tests {
         );
         let lm = tied_lm_head_from_embeddings(&wte, vocab_size, hidden_size);
         let lm_data = match &lm {
-            fuel_core::lazy::WeightStorage::F32(a) => a.clone(),
+            fuel_tensor::lazy::WeightStorage::F32(a) => a.clone(),
             _ => panic!("expected F32"),
         };
         // lm shape: [hidden_size, vocab_size]; wte shape: [vocab_size, hidden_size].
@@ -1116,8 +1116,8 @@ mod tests {
     /// returning the LAST step's logits.
     fn decode_persistent(m: &Llama3Model, prompt: &[u32], extra: &[u32]) -> Vec<f32> {
         let cfg = &m.inner.config;
-        let dev = fuel_core::Device::cpu();
-        let mut cache = fuel_core::inference_context::KvCache::with_capacity(
+        let dev = fuel_tensor::Device::cpu();
+        let mut cache = fuel_tensor::inference_context::KvCache::with_capacity(
             cfg.n_layers,
             cfg.n_kv_heads,
             cfg.head_dim,
@@ -1126,7 +1126,7 @@ mod tests {
             &dev,
         )
         .unwrap();
-        let mut ctx = fuel_core::inference_context::InferenceContext::new(dev);
+        let mut ctx = fuel_tensor::inference_context::InferenceContext::new(dev);
         let mut session = None;
         let mut logits = m
             .forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut session)

@@ -29,9 +29,9 @@
 //!   - F32 weights and activations.
 
 use crate::models::lazy_dinov2::{Dinov2Config, Dinov2Model, Dinov2Weights};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -386,7 +386,7 @@ impl DepthAnythingV2Weights {
         _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &DepthAnythingV2Config,
     ) -> Result<Self> {
-        Err(fuel_core::Error::Msg(
+        Err(fuel_ir::error::Error::Msg(
             "DepthAnythingV2Weights::load_from_mmapped: DPT scratch/fusion \
              block naming pending; construct DepthAnythingV2Weights via \
              the explicit struct literal or contribute the loader."
@@ -402,7 +402,7 @@ impl DepthAnythingV2Weights {
 mod tests {
     use super::*;
     use crate::models::lazy_dinov2::{Dinov2BlockWeights, Dinov2Weights};
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

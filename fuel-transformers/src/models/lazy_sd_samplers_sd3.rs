@@ -43,9 +43,9 @@
 //! [`Tensor::const_f32_like`] (or any of the typed equivalents)
 //! seeded from whatever RNG the binary owns.
 
-use fuel_core::lazy::Tensor;
-use fuel_core::{Error, Result};
 use fuel_ir::Shape;
+use fuel_ir::{error::Error, error::Result};
+use fuel_tensor::lazy::Tensor;
 
 /// Skip-Layer-Guidance + CFG + time-shift configuration for the SD3
 /// flow-match Euler sampler.
@@ -309,7 +309,7 @@ pub fn time_snr_shift(alpha: f64, t: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     /// Dummy denoiser used for shape / panic tests. Returns the input
     /// `latent` scaled by a tiny constant so the sampler exercises the

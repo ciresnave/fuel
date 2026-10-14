@@ -18,7 +18,7 @@
 //! `CHUNK_LENGTH = 30` seconds → `N_SAMPLES = 480000`,
 //! `N_FRAMES = N_SAMPLES / HOP_LENGTH + 1 = 3001`.
 
-use fuel_core::Result;
+use fuel_ir::error::Result;
 
 pub const SAMPLE_RATE: usize = 16000;
 pub const N_FFT: usize = 400;
@@ -168,7 +168,7 @@ pub fn log_mel(
 ) -> Result<Vec<f32>> {
     let n_bins = n_fft / 2 + 1;
     if mel_filters.len() != n_mels * n_bins {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "log_mel: mel_filters has {} entries, expected n_mels({}) * (n_fft/2+1)({}) = {}",
             mel_filters.len(),
             n_mels,
@@ -181,7 +181,7 @@ pub fn log_mel(
 
     for (f, frame) in power_spec.iter().enumerate() {
         if frame.len() != n_bins {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "log_mel: frame {} has {} bins, expected {}",
                 f,
                 frame.len(),

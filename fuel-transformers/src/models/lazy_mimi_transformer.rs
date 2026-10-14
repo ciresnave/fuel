@@ -25,9 +25,9 @@
 //!
 //! v1 scope: F32, batch == 1, prefill only.
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -386,7 +386,7 @@ impl ProjectedTransformerWeights {
         input_dim: usize,
         output_dims: &[usize],
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let d = cfg.d_model;
 
         // ---- transformer layers --------------------------------------------
@@ -400,7 +400,7 @@ impl ProjectedTransformerWeights {
             let n2_g = load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?;
             let n2_b = load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.bias"))?;
             if n1_g.len() != d || n1_b.len() != d || n2_g.len() != d || n2_b.len() != d {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p} LN sizes: input_g {} input_b {} post_g {} post_b {} expected {d}",
                     n1_g.len(),
                     n1_b.len(),
@@ -453,7 +453,7 @@ impl ProjectedTransformerWeights {
             let ls1 = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_scale.scale"))?;
             let ls2 = load_tensor_as_f32(st, &format!("{p}.mlp_layer_scale.scale"))?;
             if ls1.len() != d || ls2.len() != d {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p} layer_scale sizes: ls1 {} ls2 {} expected {d}",
                     ls1.len(),
                     ls2.len(),
@@ -525,7 +525,7 @@ impl ProjectedTransformerWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

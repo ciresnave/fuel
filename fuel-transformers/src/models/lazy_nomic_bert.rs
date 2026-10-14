@@ -43,9 +43,10 @@
 //! a one-liner on the caller side and trivially composable.
 
 use crate::models::lazy_glm4::apply_interleaved_partial_rope;
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,7 +182,7 @@ impl NomicBertModel {
         assert!(seq > 0);
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.n_positions {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "NomicBertModel: seq {seq} > n_positions {}",
                 cfg.n_positions,
             ))
@@ -191,7 +192,9 @@ impl NomicBertModel {
         // so a config whose n_embd is not divisible by n_head violates this -- a
         // CONFIG property to reject, not an invariant to assert.
         if cfg.n_head * cfg.head_dim() != cfg.n_embd {
-            return Err(fuel_core::Error::Msg("n_head * head_dim must equal n_embd".into()).bt());
+            return Err(
+                fuel_ir::error::Error::Msg("n_head * head_dim must equal n_embd".into()).bt(),
+            );
         }
 
         // ---- Embeddings -----------------------------------------------------
@@ -283,7 +286,7 @@ impl NomicBertModel {
         assert!(seq > 0);
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.n_positions {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "NomicBertModel: seq {seq} > n_positions {}",
                 cfg.n_positions,
             ))
@@ -293,7 +296,9 @@ impl NomicBertModel {
         // so a config whose n_embd is not divisible by n_head violates this -- a
         // CONFIG property to reject, not an invariant to assert.
         if cfg.n_head * cfg.head_dim() != cfg.n_embd {
-            return Err(fuel_core::Error::Msg("n_head * head_dim must equal n_embd".into()).bt());
+            return Err(
+                fuel_ir::error::Error::Msg("n_head * head_dim must equal n_embd".into()).bt(),
+            );
         }
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
@@ -531,7 +536,9 @@ impl NomicBertWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &NomicBertConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.n_embd;
         let inter = cfg.n_inner;
 

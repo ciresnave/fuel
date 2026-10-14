@@ -34,9 +34,10 @@
 //! both deferred. Optional additive attention mask of shape
 //! `(1, 1, seq, seq)` for padding masking.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +133,7 @@ impl XlmrModel {
         // GAP-308 (CONFIG_FIELD): input length (plus RoBERTa's padding_idx offset)
         // vs config limit — reject, do not assert.
         if seq + (cfg.pad_token_id as usize) >= cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
                 seq + cfg.pad_token_id as usize + 1,
                 cfg.max_position_embeddings,
@@ -212,7 +213,7 @@ impl XlmrModel {
         // GAP-308 (CONFIG_FIELD): input length (plus RoBERTa's padding_idx offset)
         // vs config limit — reject, do not assert.
         if seq + (cfg.pad_token_id as usize) >= cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
                 seq + cfg.pad_token_id as usize + 1,
                 cfg.max_position_embeddings,
@@ -353,7 +354,9 @@ impl XlmrWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &XlmrConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 
@@ -542,7 +545,9 @@ impl ForMaskedLMWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &XlmrConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let v = cfg.vocab_size;
         let lm_head_dense_weight = ltm(st, "lm_head.dense.weight", h, h)?;
@@ -653,7 +658,9 @@ impl ForSequenceClassificationWeights {
         cfg: &XlmrConfig,
         num_labels: usize,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let classifier_dense_weight = ltm(st, "classifier.dense.weight", h, h)?;
         let classifier_dense_bias = Arc::from(load_tensor_as_f32(st, "classifier.dense.bias")?);

@@ -35,9 +35,10 @@
 
 use crate::models::lazy_convmixer::BatchNormParams;
 use crate::models::lazy_sam::SamLayerNormWeights;
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 // ---- Config ---------------------------------------------------------------
@@ -283,7 +284,7 @@ fn apply_patch_merging(x: &Tensor, w: &PatchMergingWeights) -> Result<Tensor> {
         let (b, _l, c) = (dims[0], dims[1], dims[2]);
         let (h, ww) = w.input_resolution;
         if c != w.dim {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PatchMerging: input C={c} != expected dim={}",
                 w.dim,
             ))
@@ -379,7 +380,7 @@ fn apply_tiny_vit_block(x: &Tensor, w: &TinyVitBlockWeights) -> Result<Tensor> {
     let (b, l, c) = (dims[0], dims[1], dims[2]);
     let (h, ww) = w.input_resolution;
     if c != w.dim {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "TinyViTBlock: input C={c} != block dim={}",
             w.dim,
         ))
@@ -518,7 +519,7 @@ impl TinyVitModel {
         let weights = &self.weights;
         let img = cfg.img_size;
         if image_chw.len() != cfg.in_chans * img * img {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "TinyViTModel: expected {} f32s ({}x{}x{}), got {}",
                 cfg.in_chans * img * img,
                 cfg.in_chans,
@@ -555,7 +556,7 @@ impl TinyVitModel {
         let (b, l, c) = (dims[0], dims[1], dims[2]);
         let last_side = (l as f64).sqrt() as usize;
         if last_side * last_side != l {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "TinyViTModel::forward: post-stages token count L={l} is not a perfect square",
             ))
             .bt());
@@ -596,7 +597,7 @@ fn load_conv2d_bn(
     padding: usize,
     bn_eps: f64,
 ) -> Result<Conv2dBnWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let conv_w = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.c.weight"))?);
     let gain = load_tensor_as_f32(st, &format!("{prefix}.bn.weight"))?;
     let bias = load_tensor_as_f32(st, &format!("{prefix}.bn.bias"))?;
@@ -622,7 +623,9 @@ impl TinyVitWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &TinyVitConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let bn_eps = 1e-5;
         let in_chans = cfg.in_chans;
         let first_dim = cfg.embed_dims[0];

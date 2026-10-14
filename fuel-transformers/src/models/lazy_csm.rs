@@ -50,9 +50,9 @@
 //!
 //! v1 scope: F32, batch == 1, forward-only inference.
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -134,14 +134,14 @@ impl CsmWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &CsmConfig,
-    ) -> fuel_core::Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    ) -> fuel_ir::error::Result<Self> {
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         // ---- audio_embeddings ------------------------------------
         let audio_embedding = load_tensor_as_f32(st, "audio_embeddings.weight")?;
         let expected_ae = cfg.audio_num_codebooks * cfg.audio_vocab_size * cfg.backbone_dim;
         if audio_embedding.len() != expected_ae {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "audio_embeddings.weight: {} elements, expected {expected_ae} \
                  ({} × {} × {})",
                 audio_embedding.len(),
@@ -155,7 +155,7 @@ impl CsmWeights {
         let text_embedding = load_tensor_as_f32(st, "text_embeddings.weight")?;
         let expected_te = cfg.text_vocab_size * cfg.backbone_dim;
         if text_embedding.len() != expected_te {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "text_embeddings.weight: {} elements, expected {expected_te} \
                  ({} × {})",
                 text_embedding.len(),
@@ -184,7 +184,7 @@ impl CsmWeights {
         let audio_head = load_tensor_as_f32(st, "audio_head")?;
         let expected_ah = (cfg.audio_num_codebooks - 1) * cfg.decoder_dim * cfg.audio_vocab_size;
         if audio_head.len() != expected_ah {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "audio_head: {} elements, expected {expected_ah} \
                  ({} × {} × {})",
                 audio_head.len(),
@@ -316,7 +316,7 @@ impl CsmModel {
         // GAP-308 (CONFIG_FIELD): a caller-supplied codebook index outside the
         // configured range is input to reject, not an invariant to assert.
         if codebook_idx == 0 || codebook_idx >= cfg.audio_num_codebooks {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "codebook_idx {codebook_idx} must be in 1..{}",
                 cfg.audio_num_codebooks
             )));
@@ -394,7 +394,7 @@ impl CsmModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

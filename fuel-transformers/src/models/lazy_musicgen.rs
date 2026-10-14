@@ -37,12 +37,13 @@
 //! real T5 stack should use
 //! [`MusicGenModel::forward_with_encoder_states`].
 
-use fuel_core::lazy::{
-    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix,
-    load_transposed_matrix_preserve_dtype,
-};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{
+    lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32, lazy::load_transposed_matrix,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,7 +214,7 @@ impl MusicGenModel {
         let dims = encoder_states.shape();
         let dims = dims.dims().to_vec();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.encoder_hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "forward_with_encoder_states: expected encoder_states shape \
                  (1, text_len, encoder_hidden={}), got {:?}",
                 cfg.encoder_hidden_size, dims,
@@ -270,7 +271,7 @@ impl MusicGenModel {
         // so a head count that does not divide hidden_size violates this -- a CONFIG
         // property to reject, not an invariant to assert.
         if cfg.num_attention_heads * cfg.head_dim() != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -345,7 +346,7 @@ impl MusicGenModel {
         }
         let refs: Vec<&Tensor> = per_codebook.iter().collect();
         Tensor::stack(&refs, 0_usize)
-            .map_err(|e| fuel_core::Error::Msg(format!("stack lm_heads: {e}")).bt())
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("stack lm_heads: {e}")).bt())
     }
 
     fn apply_decoder_layer(
@@ -523,7 +524,7 @@ impl MusicGenWeights {
             let name = format!("{prefix}.embed_tokens.{cb}.weight");
             let v = load_tensor_as_f32(st, &name)?;
             if v.len() != embed_dim * h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{name}: {} elts, expected {} ({}×{})",
                     v.len(),
                     embed_dim * h,
@@ -665,7 +666,7 @@ impl MusicGenWeights {
                 let v = load_tensor_as_f32(st, "text_encoder.shared.weight")?;
                 let expected = cfg.text_vocab_size * cfg.encoder_hidden_size;
                 if v.len() != expected {
-                    fuel_core::bail!(
+                    fuel_ir::bail!(
                         "text_encoder.shared.weight: {} elts, expected {expected}",
                         v.len(),
                     );

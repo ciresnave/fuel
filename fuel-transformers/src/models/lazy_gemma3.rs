@@ -39,13 +39,19 @@
 //! (recomputes each call), F32 activations. The lm_head reuses
 //! `token_embedding` as a tied projection.
 
-use fuel_core::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::persistent_decode::{
-    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel, RopePlan,
-};
-use fuel_core::{Device, Result};
+use fuel_ir::error::Result;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::Device;
+use fuel_tensor::{
+    inference_context::DecodeSession, inference_context::DecodeTokenData,
+    inference_context::InferenceContext, inference_context::KvCache,
+};
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
+use fuel_tensor::{
+    persistent_decode::DecodeBackbone, persistent_decode::DecodeDims,
+    persistent_decode::DecodeLayerInputs, persistent_decode::MaskPlan,
+    persistent_decode::PersistentDecodeModel, persistent_decode::RopePlan,
+};
 use std::sync::Arc;
 
 pub use crate::models::lazy_gemma::GemmaActivation;
@@ -79,11 +85,11 @@ pub struct Gemma3Config {
 /// configs carry the CORRECTED key `hidden_activation` with `gelu_pytorch_tanh`
 /// (unlike Gemma-1, whose `hidden_act: "gelu"` is a known misnomer). Unknown
 /// values error rather than silently defaulting.
-fn gemma3_activation_from_str(s: &str) -> fuel_core::Result<GemmaActivation> {
+fn gemma3_activation_from_str(s: &str) -> fuel_ir::error::Result<GemmaActivation> {
     match s {
         "gelu" => Ok(GemmaActivation::Gelu),
         "gelu_pytorch_tanh" | "gelu_new" => Ok(GemmaActivation::GeluPytorchTanh),
-        other => Err(fuel_core::Error::Msg(format!(
+        other => Err(fuel_ir::error::Error::Msg(format!(
             "unsupported Gemma-3 hidden_activation {other:?} (expected gelu/gelu_pytorch_tanh)"
         ))),
     }
@@ -144,12 +150,12 @@ fn default_gemma3_sliding_window_pattern() -> usize {
 }
 
 impl Gemma3ConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Gemma-3 config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Gemma-3 config.json: {e}")))
     }
 
-    fn resolve(self) -> fuel_core::Result<Gemma3Config> {
+    fn resolve(self) -> fuel_ir::error::Result<Gemma3Config> {
         let hidden_activation = match self.hidden_activation.as_deref() {
             None => GemmaActivation::GeluPytorchTanh,
             Some(s) => gemma3_activation_from_str(s)?,
@@ -188,7 +194,7 @@ impl Gemma3Config {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `gemma3_config_from_hf_json_parses_the_artifact`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         Gemma3ConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -220,8 +226,8 @@ pub struct Gemma3LayerWeights {
 pub struct Gemma3Weights {
     /// Process-unique identity for THIS weight set — what lets a held decode
     /// plan tell two same-architecture models apart (GAP-029). Mint with
-    /// [`fuel_core::decode_shape::ModelInstanceId::next`].
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    /// [`fuel_tensor::decode_shape::ModelInstanceId::next`].
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<Gemma3LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -334,7 +340,7 @@ impl Gemma3Model {
         let dims = scaled_embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Gemma3Model::forward_embeds: expected scaled_embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
@@ -343,7 +349,7 @@ impl Gemma3Model {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Gemma3Model::forward_embeds: seq must be > 0".into(),
             )
             .bt());
@@ -352,14 +358,14 @@ impl Gemma3Model {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Gemma3Config: num_attention_heads must be a multiple of num_key_value_heads"
                     .into(),
             )
             .bt());
         }
         if cfg.sliding_window_pattern == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Gemma3Config: sliding_window_pattern must be > 0".into(),
             )
             .bt());
@@ -574,7 +580,7 @@ impl Gemma3Model {
     /// the base values are data, rebound per token, and excluded.
     pub fn decode_shape_key(&self) -> u64 {
         let cfg = &self.config;
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("gemma3")
             .mix_instance(self.weights.instance)
             .mix_u64(cfg.num_hidden_layers as u64)
@@ -602,7 +608,9 @@ impl Gemma3Model {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+        fuel_tensor::persistent_decode::forward_with_kv_context(
+            self, tokens, cache, ctx, false, None,
+        )
     }
 
     /// Plan-once persistent decode.
@@ -613,7 +621,7 @@ impl Gemma3Model {
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context_persistent(
+        fuel_tensor::persistent_decode::forward_with_kv_context_persistent(
             self, tokens, cache, ctx, session, None,
         )
     }
@@ -735,7 +743,7 @@ impl Gemma3Model {
         // consumer (the permute) can be named as the flash arm's reconverge —
         // arm-0 runnability requires the merge to read arm 0.
         let attn_v_permuted = attn_v.permute([0, 2, 1, 3_usize])?;
-        fuel_core::lazy::offer_flash_decode_arm_for_region(
+        fuel_tensor::lazy::offer_flash_decode_arm_for_region(
             q_r.graph(),
             q_r.node_id(),
             full_k.node_id(),
@@ -854,14 +862,14 @@ impl PersistentDecodeModel for Gemma3Model {
         cache: &KvCache,
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
-        let host = fuel_core::persistent_decode::compute_decode_token_host(
+        let host = fuel_tensor::persistent_decode::compute_decode_token_host(
             self,
             cached_len,
             tokens,
             session.max_seq_len(),
             rope_inv_freq,
         );
-        fuel_core::persistent_decode::upload_decode_token_data(
+        fuel_tensor::persistent_decode::upload_decode_token_data(
             device,
             &host,
             cache.dtype.unwrap_or(DType::F32),
@@ -964,7 +972,7 @@ impl Gemma3Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Gemma3Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.hidden_size;
         let i_dim = cfg.intermediate_size;
@@ -973,7 +981,7 @@ impl Gemma3Weights {
 
         let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
                 token_embedding.len(),
                 cfg.vocab_size * h,
@@ -1103,7 +1111,7 @@ impl Gemma3Weights {
         let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
 
         Ok(Gemma3Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
             layers,
             final_norm_gain,
@@ -1306,7 +1314,7 @@ mod tests {
             .collect();
         let final_norm_gain = Arc::from(vec![0.05_f32; h]);
         Gemma3Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,

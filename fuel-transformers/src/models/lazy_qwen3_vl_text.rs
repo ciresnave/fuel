@@ -22,9 +22,10 @@
 //! biases, sliding-window gate — is inherited from the Qwen3 shape and
 //! re-implemented here without disturbing [`crate::models::lazy_qwen3`].
 
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Per-token MROPE position tuple: `(temporal, height, width)`.
@@ -114,9 +115,9 @@ fn default_qwen3_vl_rms_norm_eps() -> f64 {
 }
 
 impl Qwen3VlTextConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen3-VL config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Qwen3-VL config.json: {e}")))
     }
 
     fn resolve(self) -> Result<Qwen3VlTextConfig> {
@@ -156,7 +157,7 @@ impl Qwen3VlTextConfig {
     ///
     /// ROADMAP item 8 (II), nested-artifact extension — see the born-red
     /// `qwen3_vl_text_config_from_hf_json_parses_the_nested_text_config`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         Qwen3VlTextConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -259,7 +260,7 @@ impl Qwen3VlTextModel {
         let weights = &self.weights;
         let seq = tokens.len();
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen3VlTextModel::forward: tokens must be non-empty".into(),
             )
             .bt());
@@ -290,7 +291,7 @@ impl Qwen3VlTextModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlTextModel::forward_embeds: expected embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
@@ -299,13 +300,13 @@ impl Qwen3VlTextModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen3VlTextModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if mrope_positions.len() != seq {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlTextModel::forward_embeds: mrope_positions.len() ({}) \
                  must equal seq ({seq})",
                 mrope_positions.len(),
@@ -313,13 +314,13 @@ impl Qwen3VlTextModel {
             .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen3VlTextConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
         }
         if weights.layers.len() != weights.layer_extras.len() {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3VlTextWeights: layers ({}) must have matching layer_extras ({})",
                 weights.layers.len(),
                 weights.layer_extras.len(),
@@ -461,14 +462,14 @@ impl Qwen3VlTextModel {
 fn validate_mrope_section(section: &[usize; 3], head_dim: usize) -> Result<()> {
     let half = head_dim / 2;
     if head_dim == 0 || !head_dim.is_multiple_of(2) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "mrope_section: head_dim ({head_dim}) must be a positive even number",
         ))
         .bt());
     }
     let sum: usize = section.iter().sum();
     if sum != half {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "mrope_section {section:?} must sum to head_dim/2 ({half}), got {sum}",
         ))
         .bt());
@@ -557,7 +558,7 @@ impl Qwen3VlTextWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen3VlTextConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;

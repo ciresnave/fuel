@@ -39,11 +39,11 @@
 //! on patch positions in eager guards against negative
 //! positions; v1 assumes non-negative inputs.
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 pub use crate::models::lazy_gemma::GemmaActivation as Gemma4VisionActivation;
@@ -475,7 +475,7 @@ impl Gemma4VisionWeights {
         cfg: &Gemma4VisionConfig,
         prefix: &str,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.hidden_size;
         let i_dim = cfg.intermediate_size;
@@ -503,7 +503,7 @@ impl Gemma4VisionWeights {
         )?;
         let expected_pe = 2 * pe * h;
         if position_embedding_table.len() != expected_pe {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{prefix}patch_embedder.position_embedding_table: {} elts, expected {} (2 * {} * {})",
                 position_embedding_table.len(),
                 expected_pe,

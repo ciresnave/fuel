@@ -7,11 +7,12 @@
 //! `Yi`/`Mistral` shells with `head_dim` derived as
 //! `hidden_size / num_attention_heads`.
 //!
-//! Reuses `fuel_core::lazy::LayerWeights`.
+//! Reuses `fuel_tensor::lazy::LayerWeights`.
 
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,9 +65,9 @@ fn default_granite_rope_theta() -> f64 {
 }
 
 impl GraniteConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Granite config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Granite config.json: {e}")))
     }
 
     fn resolve(self) -> Result<GraniteConfig> {
@@ -92,7 +93,7 @@ impl GraniteConfig {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `granite_config_from_hf_json_parses_the_artifact`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         GraniteConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -175,21 +176,21 @@ impl GraniteModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "GraniteModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "GraniteModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         let head_dim = cfg.head_dim();
         if cfg.num_attention_heads * head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "GraniteConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -198,7 +199,7 @@ impl GraniteModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "GraniteConfig: num_attention_heads must be a multiple of num_key_value_heads"
                     .into(),
             )
@@ -302,7 +303,9 @@ impl GraniteWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &GraniteConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim();
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim();

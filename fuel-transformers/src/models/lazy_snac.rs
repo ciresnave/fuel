@@ -27,9 +27,9 @@
 //!     summation.
 
 use crate::models::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -478,8 +478,8 @@ fn load_conv1d_weight_norm(
     groups: usize,
     dilation: usize,
     bias: bool,
-) -> fuel_core::Result<Conv1dWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+) -> fuel_ir::error::Result<Conv1dWeights> {
+    use fuel_tensor::lazy::load_tensor_as_f32;
     // weight_g shape: [c_out, 1, 1]  → c_out floats.
     let g = load_tensor_as_f32(st, &format!("{prefix}.parametrizations.weight.original0"))?;
     // weight_v shape: [c_out, c_in/groups, k]  → c_out * c_in/groups * k floats.
@@ -519,8 +519,8 @@ fn load_conv_transpose1d_weight_norm(
     pad: usize,
     out_pad: usize,
     bias: bool,
-) -> fuel_core::Result<ConvTranspose1dWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+) -> fuel_ir::error::Result<ConvTranspose1dWeights> {
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let g = load_tensor_as_f32(st, &format!("{prefix}.parametrizations.weight.original0"))?;
     let v = load_tensor_as_f32(st, &format!("{prefix}.parametrizations.weight.original1"))?;
     let fused = fuse_weight_norm(&g, &v, c_in, c_out * k);
@@ -548,12 +548,12 @@ fn load_snake1d(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
     channels: usize,
-) -> fuel_core::Result<Snake1dWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+) -> fuel_ir::error::Result<Snake1dWeights> {
+    use fuel_tensor::lazy::load_tensor_as_f32;
     // Stored shape: [1, channels, 1] — flat length is `channels`.
     let alpha = load_tensor_as_f32(st, &format!("{prefix}.alpha"))?;
     if alpha.len() != channels {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "snake1d alpha at {prefix:?}: {} elements, expected {channels}",
             alpha.len(),
         );
@@ -570,7 +570,7 @@ fn load_residual_unit(
     dim: usize,
     dilation: usize,
     groups: usize,
-) -> fuel_core::Result<ResidualUnitWeights> {
+) -> fuel_ir::error::Result<ResidualUnitWeights> {
     // Eager `ResidualUnit::new` does `vb = vb.pp("block")` then
     // - block.0: snake1
     // - block.1: conv1 (k=7, weight-norm, with bias, dilation)
@@ -610,7 +610,7 @@ fn load_decoder_block(
     stride: usize,
     groups: usize,
     noise: bool,
-) -> fuel_core::Result<DecoderBlockWeights> {
+) -> fuel_ir::error::Result<DecoderBlockWeights> {
     // Eager `DecoderBlock::new` does `vb = vb.pp("block")` then
     // - block.0: snake1
     // - block.1: conv_tr1 (weight-norm, with bias, k=2*stride)
@@ -668,8 +668,8 @@ fn load_local_mha(
     prefix: &str,
     dim: usize,
     dim_head: usize,
-) -> fuel_core::Result<LocalMhaWeights> {
-    use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
+) -> fuel_ir::error::Result<LocalMhaWeights> {
+    use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix};
     // norm: LayerNorm (`weight`, `bias`)
     let norm_gain = load_tensor_as_f32(st, &format!("{prefix}.norm.weight"))?;
     let norm_bias = load_tensor_as_f32(st, &format!("{prefix}.norm.bias"))?;
@@ -694,8 +694,8 @@ fn load_vector_quantizer(
     codebook_size: usize,
     codebook_dim: usize,
     stride: usize,
-) -> fuel_core::Result<VectorQuantizerWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+) -> fuel_ir::error::Result<VectorQuantizerWeights> {
+    use fuel_tensor::lazy::load_tensor_as_f32;
     // Eager builds `in_proj`, `out_proj`, and an embedding `codebook`.
     // Our lazy `VectorQuantizerWeights` only retains `out_proj` and the
     // codebook table (we decode codes → embedded vectors directly,
@@ -714,7 +714,7 @@ fn load_vector_quantizer(
     )?;
     let codebook = load_tensor_as_f32(st, &format!("{prefix}.codebook.weight"))?;
     if codebook.len() != codebook_size * codebook_dim {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "codebook {prefix:?}: {} elements, expected {} ({}×{})",
             codebook.len(),
             codebook_size * codebook_dim,
@@ -759,7 +759,7 @@ impl SnacWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SnacConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let num_strides = cfg.decoder_rates.len();
         let in_c = cfg.encoder_dim * (1usize << num_strides);
         let mut channels = cfg.decoder_dim;
@@ -887,7 +887,7 @@ impl SnacWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

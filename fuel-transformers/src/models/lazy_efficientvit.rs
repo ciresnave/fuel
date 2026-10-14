@@ -26,9 +26,9 @@
 //!   - Forward-only (no autograd in scope).
 
 use crate::models::lazy_convmixer::BatchNormParams;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// EfficientViT config. Channels, blocks-per-stage, heads-per-stage,
@@ -496,7 +496,7 @@ impl EfficientVitWeights {
         _st: &fuel_loaders::safetensors::MmapedSafetensors,
         _cfg: &EfficientVitConfig,
     ) -> Result<Self> {
-        Err(fuel_core::Error::Msg(
+        Err(fuel_ir::error::Error::Msg(
             "EfficientVitWeights::load_from_mmapped: HF tensor naming is \
              nested across CGA / Sandwich / MBConv stages; canonical mapping \
              is pending. Construct weights directly or contribute the loader."
@@ -511,7 +511,7 @@ impl EfficientVitWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

@@ -8,16 +8,22 @@
 //! GQA + RmsNorm + SwiGLU + RoPE + per-layer sliding-window gating
 //! + optional Q/K/V/O biases.
 //!
-//! Reuses `fuel_core::lazy::LayerWeights` for the standard fields and
+//! Reuses `fuel_tensor::lazy::LayerWeights` for the standard fields and
 //! stores the per-head QK-norm gains in `Qwen3LayerExtras`.
 
-use fuel_core::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
-use fuel_core::persistent_decode::{
-    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
-};
-use fuel_core::{Device, Result};
+use fuel_ir::error::Result;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::Device;
+use fuel_tensor::{
+    inference_context::DecodeSession, inference_context::DecodeTokenData,
+    inference_context::InferenceContext, inference_context::KvCache,
+};
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
+use fuel_tensor::{
+    persistent_decode::DecodeBackbone, persistent_decode::DecodeDims,
+    persistent_decode::DecodeLayerInputs, persistent_decode::MaskPlan,
+    persistent_decode::PersistentDecodeModel,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,7 +86,7 @@ fn default_qwen3_rms_norm_eps() -> f64 {
 impl Qwen3ConfigRaw {
     fn from_json_str(json: &str) -> Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen3 config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Qwen3 config.json: {e}")))
     }
 
     fn resolve(self) -> Result<Qwen3Config> {
@@ -134,8 +140,8 @@ pub struct Qwen3LayerExtras {
 pub struct Qwen3Weights {
     /// Process-unique identity for THIS weight set — what lets a held decode
     /// plan tell two same-architecture models apart (GAP-029). Mint with
-    /// [`fuel_core::decode_shape::ModelInstanceId::next`].
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    /// [`fuel_tensor::decode_shape::ModelInstanceId::next`].
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<LayerWeights>,
     pub layer_extras: Vec<Qwen3LayerExtras>,
@@ -237,7 +243,7 @@ impl Qwen3Model {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3Model::forward_embeds: expected embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
@@ -246,13 +252,13 @@ impl Qwen3Model {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen3Model::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if weights.layers.len() != weights.layer_extras.len() {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen3Weights: layers ({}) must have matching layer_extras ({})",
                 weights.layers.len(),
                 weights.layer_extras.len(),
@@ -527,7 +533,7 @@ pub(crate) fn qwen3_attn_with_kv_writes(
     // runnability requires the merge to read arm 0. Same split `LlamaModel`
     // makes, for the same reason.
     let attn_v_permuted = attn_v.permute([0, 2, 1, 3_usize])?;
-    fuel_core::lazy::offer_flash_decode_arm_for_region(
+    fuel_tensor::lazy::offer_flash_decode_arm_for_region(
         q_r.graph(),
         q_r.node_id(),
         full_k.node_id(),
@@ -606,7 +612,7 @@ impl Qwen3Model {
     /// assignment).
     pub fn decode_shape_key(&self) -> u64 {
         let cfg = &self.config;
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("qwen3")
             .mix_instance(self.weights.instance)
             .mix_u64(cfg.num_hidden_layers as u64)
@@ -629,7 +635,9 @@ impl Qwen3Model {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+        fuel_tensor::persistent_decode::forward_with_kv_context(
+            self, tokens, cache, ctx, false, None,
+        )
     }
 
     /// Plan-once persistent decode: the first `seq == 1` token builds and
@@ -641,7 +649,7 @@ impl Qwen3Model {
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context_persistent(
+        fuel_tensor::persistent_decode::forward_with_kv_context_persistent(
             self, tokens, cache, ctx, session, None,
         )
     }
@@ -674,14 +682,14 @@ impl PersistentDecodeModel for Qwen3Model {
         cache: &KvCache,
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
-        let host = fuel_core::persistent_decode::compute_decode_token_host(
+        let host = fuel_tensor::persistent_decode::compute_decode_token_host(
             self,
             cached_len,
             tokens,
             session.max_seq_len(),
             rope_inv_freq,
         );
-        fuel_core::persistent_decode::upload_decode_token_data(
+        fuel_tensor::persistent_decode::upload_decode_token_data(
             device,
             &host,
             cache.dtype.unwrap_or(DType::F32),
@@ -717,8 +725,8 @@ impl DecodeBackbone for Qwen3Model {
         Qwen3Model::decode_mask_plan(self)
     }
 
-    fn decode_rope_plan(&self) -> fuel_core::persistent_decode::RopePlan {
-        fuel_core::persistent_decode::RopePlan::single(
+    fn decode_rope_plan(&self) -> fuel_tensor::persistent_decode::RopePlan {
+        fuel_tensor::persistent_decode::RopePlan::single(
             self.config.rope_theta,
             self.decode_dims().n_layers,
         )
@@ -795,7 +803,7 @@ impl Qwen3Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen3Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
@@ -913,7 +921,7 @@ impl Qwen3Weights {
             load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?
         };
         Ok(Self {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             layer_extras,
@@ -977,7 +985,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
         Qwen3Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             layer_extras,
@@ -1036,7 +1044,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
         Qwen3Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             layer_extras,

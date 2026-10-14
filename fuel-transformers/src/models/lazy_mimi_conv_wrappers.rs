@@ -22,8 +22,8 @@ use crate::models::lazy_mimi_conv::{LazyPadMode, StreamConv1dState, StreamableCo
 use crate::models::lazy_mimi_conv_transpose::{
     StreamConvTranspose1dState, StreamableConvTranspose1dWeights,
 };
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 /// Learnable downsampling block — a single strided
@@ -111,8 +111,8 @@ impl ConvTrUpsample1dWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
     use fuel_ir::Shape;
+    use fuel_tensor::Device;
 
     fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> Tensor {
         assert_eq!(src.len(), b * c * t);

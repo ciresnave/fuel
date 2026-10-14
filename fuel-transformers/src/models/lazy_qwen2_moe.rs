@@ -36,8 +36,8 @@
 //!   `Qwen/Qwen1.5-MoE-A2.7B-Chat` at ~14 GB — real-weights validation
 //!   needs that download.
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -70,17 +70,17 @@ fn default_norm_topk_prob() -> bool {
 }
 
 impl Qwen2MoeConfig {
-    pub fn from_hf_json_str(s: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(s: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str::<Self>(s)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing qwen2_moe config: {e}")).bt())
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing qwen2_moe config: {e}")).bt())
     }
 
-    pub fn head_dim(&self) -> fuel_core::Result<usize> {
+    pub fn head_dim(&self) -> fuel_ir::error::Result<usize> {
         // GAP-281 (dim/head relation): a typed decline, not a panic. The
         // quotient below is integer division, so a non-dividing head count
         // truncates silently -- a CONFIG property to reject, not an invariant.
         if !self.hidden_size.is_multiple_of(self.num_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen2MoeConfig: hidden_size ({}) must be divisible by num_attention_heads ({})",
                 self.hidden_size, self.num_attention_heads,
             )));
@@ -143,7 +143,7 @@ impl Qwen2MoeModel {
     /// Run a forward pass on a single sequence of token IDs. Returns
     /// `[1, seq, vocab_size]` logits. No KV cache — this is the
     /// "prefill from scratch" path.
-    pub fn forward(&self, tokens: &[u32]) -> fuel_core::Result<Tensor> {
+    pub fn forward(&self, tokens: &[u32]) -> fuel_ir::error::Result<Tensor> {
         let h_norm = self.run_backbone(tokens)?;
         self.apply_lm_head(&h_norm)
     }
@@ -155,20 +155,20 @@ impl Qwen2MoeModel {
     /// Gemma / MixFormer / Qwen2 — useful for any embedding
     /// adapter or custom pooler built on top of a Qwen2-MoE
     /// backbone.
-    pub fn forward_hidden(&self, tokens: &[u32]) -> fuel_core::Result<Tensor> {
+    pub fn forward_hidden(&self, tokens: &[u32]) -> fuel_ir::error::Result<Tensor> {
         self.run_backbone(tokens)
     }
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. Qwen2-MoE does NOT scale embeddings
     /// and has no start_pos (matches eager forward signature).
-    pub fn forward_embeds(&self, embeds: &Tensor) -> fuel_core::Result<Tensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor) -> fuel_ir::error::Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(&self, embeds: &Tensor) -> fuel_core::Result<Tensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor) -> fuel_ir::error::Result<Tensor> {
         self.run_backbone_embeds(embeds)
     }
 
@@ -177,7 +177,7 @@ impl Qwen2MoeModel {
         &self,
         anchor: &Tensor,
         tokens: &[u32],
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -187,7 +187,7 @@ impl Qwen2MoeModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &Tensor) -> fuel_core::Result<Tensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let lm = h_norm.const_f32_like(
             self.weights.lm_head.clone(),
@@ -199,7 +199,7 @@ impl Qwen2MoeModel {
     /// Shared backbone: embed → per-layer attn+MoE → final
     /// RmsNorm. Used by `forward` (then matmuls with `lm_head`)
     /// and `forward_hidden` (returns hidden states directly).
-    fn run_backbone(&self, tokens: &[u32]) -> fuel_core::Result<Tensor> {
+    fn run_backbone(&self, tokens: &[u32]) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let seq = tokens.len();
@@ -208,7 +208,7 @@ impl Qwen2MoeModel {
         let embed = Tensor::from_f32(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         let input_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let x = embed
@@ -217,20 +217,20 @@ impl Qwen2MoeModel {
         self.run_backbone_embeds(&x)
     }
 
-    fn run_backbone_embeds(&self, embeds: &Tensor) -> fuel_core::Result<Tensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != h {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen2MoeModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 h, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen2MoeModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
@@ -248,7 +248,7 @@ fn decoder_layer(
     lw: &Qwen2MoeLayerWeights,
     cfg: &Qwen2MoeConfig,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h = cfg.hidden_size;
     // Attention sublayer
     let x_ln = rms_norm_affine(x, &lw.input_ln, cfg.rms_norm_eps, h, seq)?;
@@ -266,7 +266,7 @@ fn qwen2_attn(
     lw: &Qwen2MoeLayerWeights,
     cfg: &Qwen2MoeConfig,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim()?;
@@ -317,7 +317,7 @@ fn moe_block(
     lw: &Qwen2MoeLayerWeights,
     cfg: &Qwen2MoeConfig,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h = cfg.hidden_size;
     let e = cfg.num_experts;
 
@@ -371,7 +371,7 @@ fn swiglu_mlp(
     h: usize,
     h_ff: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let g = linear(x, gate_w, None, h, h_ff, seq)?.silu();
     let u = linear(x, up_w, None, h, h_ff, seq)?;
     let gated = g.mul(&u)?;
@@ -384,7 +384,7 @@ fn rms_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     // RMS norm: x * rsqrt(mean(x^2) + eps) * gamma
     let sq = x.mul(x)?;
     let ms = sq.mean_dim(2)?; // [1, seq]
@@ -423,7 +423,7 @@ fn apply_rope(
     sin: &[f32],
     seq: usize,
     d_head: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let x_shape = x.shape();
     let x_dims = x_shape.dims();
     let n_heads = x_dims[1];
@@ -451,7 +451,7 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
@@ -475,8 +475,8 @@ impl Qwen2MoeWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen2MoeConfig,
-    ) -> fuel_core::Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
+    ) -> fuel_ir::error::Result<Self> {
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix};
         let h = cfg.hidden_size;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim()?;
         let moe_int = cfg.moe_intermediate_size;
@@ -704,7 +704,7 @@ mod tests {
 
         // Phase 6a oracle gate.
         let flat_ref = logits.realize_f32();
-        fuel_core::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
+        fuel_tensor::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
     }
 
     #[test]
@@ -819,7 +819,7 @@ mod tests {
         let anchor = Tensor::from_f32(
             vec![0.0_f32],
             Shape::from_dims(&[1]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
@@ -842,7 +842,7 @@ mod tests {
         let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         assert!(model.forward_embeds(&bad).is_err());
@@ -856,7 +856,7 @@ mod tests {
         let anchor = Tensor::from_f32(
             vec![0.0_f32],
             Shape::from_dims(&[1]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();

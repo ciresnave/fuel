@@ -25,9 +25,9 @@
 //! v1 scope: F32, batch == 1, fused-affine BN at the decode head.
 
 use crate::models::lazy_convmixer::BatchNormParams;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -562,7 +562,7 @@ fn load_arc_f32(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
 ) -> Result<Arc<[f32]>> {
-    Ok(Arc::from(fuel_core::lazy::load_tensor_as_f32(st, name)?))
+    Ok(Arc::from(fuel_tensor::lazy::load_tensor_as_f32(st, name)?))
 }
 
 /// Load a HuggingFace LayerNorm (`<prefix>.weight`, `<prefix>.bias`).
@@ -593,7 +593,7 @@ fn load_conv2d(
     let w = load_arc_f32(st, &format!("{prefix}.weight"))?;
     let expected = c_out * (c_in / groups) * k * k;
     if w.len() != expected {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "load_conv2d {prefix:?}: weight has {} elements, expected {expected} \
              ([{c_out}, {} = {c_in}/{groups}, {k}, {k}])",
             w.len(),
@@ -604,7 +604,7 @@ fn load_conv2d(
     let b = if has_bias {
         let bias = load_arc_f32(st, &format!("{prefix}.bias"))?;
         if bias.len() != c_out {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "load_conv2d {prefix:?}: bias has {} elements, expected {c_out}",
                 bias.len(),
             ))
@@ -635,7 +635,7 @@ fn load_linear(
     in_features: usize,
     out_features: usize,
 ) -> Result<(WeightStorage, Arc<[f32]>)> {
-    let w = fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+    let w = fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
         st,
         &format!("{prefix}.weight"),
         out_features,
@@ -643,7 +643,7 @@ fn load_linear(
     )?;
     let bias = load_arc_f32(st, &format!("{prefix}.bias"))?;
     if bias.len() != out_features {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "load_linear {prefix:?}: bias has {} elements, expected {out_features}",
             bias.len(),
         ))
@@ -660,16 +660,16 @@ fn load_bn(
     channels: usize,
     eps: f64,
 ) -> Result<BatchNormParams> {
-    let gain = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight"))?;
-    let bias = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
-    let mean = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.running_mean"))?;
-    let var = fuel_core::lazy::load_tensor_as_f32(st, &format!("{prefix}.running_var"))?;
+    let gain = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight"))?;
+    let bias = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
+    let mean = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.running_mean"))?;
+    let var = fuel_tensor::lazy::load_tensor_as_f32(st, &format!("{prefix}.running_var"))?;
     if gain.len() != channels
         || bias.len() != channels
         || mean.len() != channels
         || var.len() != channels
     {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "load_bn {prefix:?}: expected {channels} elements per stat, \
              got gain={} bias={} mean={} var={}",
             gain.len(),
@@ -1017,7 +1017,7 @@ impl SemanticSegmentationModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

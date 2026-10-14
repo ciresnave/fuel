@@ -57,11 +57,11 @@
 //! checkpoint distributed by the RepVGG authors) can plug in
 //! the same way without going through `fuse_repvgg_block`.
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage, load_tensor_as_f32};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32};
 use std::sync::Arc;
 
 const CHANNELS_PER_STAGE: [usize; 5] = [64, 64, 128, 256, 512];
@@ -446,7 +446,7 @@ impl RepVggWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &RepVggConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let stem_dim = cfg.channels_at(0);
         let stem = repvgg_load_layer(
             st, "stem", /* has_identity = */ false, 3, stem_dim, /* stride = */ 2,
@@ -490,7 +490,7 @@ impl RepVggWeights {
             let fc_w_t = repvgg_load_transposed(st, "head.fc.weight", n, last_c)?;
             let fc_b = load_tensor_as_f32(st, "head.fc.bias")?;
             if fc_b.len() != n {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "RepVGG head.fc.bias expected {n} entries, got {}",
                     fc_b.len(),
                 ))
@@ -516,7 +516,7 @@ fn repvgg_load_layer(
     c_out: usize,
     stride: usize,
     groups: usize,
-) -> fuel_core::Result<RepVggLayerWeights> {
+) -> fuel_ir::error::Result<RepVggLayerWeights> {
     let c_in_per_group = c_in / groups;
     let expected_3x3 = c_out * c_in_per_group * 3 * 3;
     let expected_1x1 = c_out * c_in_per_group;
@@ -579,10 +579,10 @@ fn repvgg_load_check(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
     expected_len: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let v = load_tensor_as_f32(st, name)?;
     if v.len() != expected_len {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "RepVGG load {name:?}: got {} elements, expected {}",
             v.len(),
             expected_len,
@@ -597,7 +597,7 @@ fn repvgg_load_transposed(
     name: &str,
     out_features: usize,
     in_features: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let flat = repvgg_load_check(st, name, out_features * in_features)?;
     let mut out = vec![0.0_f32; out_features * in_features];
     for i in 0..out_features {
@@ -624,11 +624,11 @@ impl RepVggModel {
         config: RepVggConfig,
     ) -> Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         let weights_path = repo
             .get(filename)
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub repvgg safetensors: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub repvgg safetensors: {e}")))?;
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&weights_path) }?;
         let weights = RepVggWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })

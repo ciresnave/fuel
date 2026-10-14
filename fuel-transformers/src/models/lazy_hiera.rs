@@ -19,9 +19,9 @@
 //! v1 scope: F32, batch == 1, forward-only inference, fixed
 //! 224×224 input (the unroll math assumes a 56×56 grid).
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 const TOKEN_GRID: usize = 56;
@@ -450,7 +450,9 @@ impl HieraWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &HieraConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
 
         let conv_w = Arc::from(load_tensor_as_f32(st, "patch_embed.proj.weight")?);
         let conv_b = Arc::from(load_tensor_as_f32(st, "patch_embed.proj.bias")?);
@@ -557,7 +559,7 @@ impl HieraWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

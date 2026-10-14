@@ -17,15 +17,21 @@
 //! - **Optional sliding window** (Mistral-style).
 //!
 //! Otherwise: GQA + RmsNorm + SwiGLU FFN + optional Q/K/V/O biases
-//! via `cfg.attention_bias`. Reuses `fuel_core::lazy::LayerWeights`.
+//! via `cfg.attention_bias`. Reuses `fuel_tensor::lazy::LayerWeights`.
 
-use fuel_core::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
-use fuel_core::persistent_decode::{
-    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
-};
-use fuel_core::{Device, Result};
+use fuel_ir::error::Result;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::Device;
+use fuel_tensor::{
+    inference_context::DecodeSession, inference_context::DecodeTokenData,
+    inference_context::InferenceContext, inference_context::KvCache,
+};
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
+use fuel_tensor::{
+    persistent_decode::DecodeBackbone, persistent_decode::DecodeDims,
+    persistent_decode::DecodeLayerInputs, persistent_decode::MaskPlan,
+    persistent_decode::PersistentDecodeModel,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,9 +99,9 @@ fn default_smollm3_rope_theta() -> f64 {
 }
 
 impl SmolLm3ConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing SmolLM3 config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing SmolLM3 config.json: {e}")))
     }
 
     fn resolve(self) -> Result<SmolLm3Config> {
@@ -130,7 +136,7 @@ impl SmolLm3Config {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `smollm3_config_from_hf_json_parses_the_artifact`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         SmolLm3ConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -140,7 +146,7 @@ pub struct SmolLm3Weights {
     /// Identity of this weight set, folded into [`SmolLm3Model::decode_shape_key`]
     /// so a held decode plan (which bakes these weights as graph Consts) is
     /// never reused for a different SmolLm3 model that shares a config.
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -220,20 +226,20 @@ impl SmolLm3Model {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "SmolLm3Model::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "SmolLm3Model::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "SmolLm3Config: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -365,7 +371,9 @@ impl SmolLm3Model {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+        fuel_tensor::persistent_decode::forward_with_kv_context(
+            self, tokens, cache, ctx, false, None,
+        )
     }
 
     /// Plan-once persistent decode: the first `seq == 1` token builds + optimizes
@@ -378,7 +386,7 @@ impl SmolLm3Model {
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context_persistent(
+        fuel_tensor::persistent_decode::forward_with_kv_context_persistent(
             self, tokens, cache, ctx, session, None,
         )
     }
@@ -408,7 +416,7 @@ impl SmolLm3Model {
     /// [`MaskPlan::mix_into`]). `instance` distinguishes weight sets.
     pub fn decode_shape_key(&self) -> u64 {
         let cfg = &self.config;
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("smollm3")
             .mix_instance(self.weights.instance)
             .mix_u64(cfg.num_hidden_layers as u64)
@@ -567,14 +575,14 @@ impl PersistentDecodeModel for SmolLm3Model {
         cache: &KvCache,
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
-        let host = fuel_core::persistent_decode::compute_decode_token_host(
+        let host = fuel_tensor::persistent_decode::compute_decode_token_host(
             self,
             cached_len,
             tokens,
             session.max_seq_len(),
             rope_inv_freq,
         );
-        fuel_core::persistent_decode::upload_decode_token_data(
+        fuel_tensor::persistent_decode::upload_decode_token_data(
             device,
             &host,
             cache.dtype.unwrap_or(DType::F32),
@@ -621,8 +629,8 @@ impl DecodeBackbone for SmolLm3Model {
     ///
     /// Variation in DATA needs a variant axis; variation in WHETHER-TO-APPLY
     /// does not.
-    fn decode_rope_plan(&self) -> fuel_core::persistent_decode::RopePlan {
-        fuel_core::persistent_decode::RopePlan::single(
+    fn decode_rope_plan(&self) -> fuel_tensor::persistent_decode::RopePlan {
+        fuel_tensor::persistent_decode::RopePlan::single(
             self.config.rope_theta,
             self.decode_dims().n_layers,
         )
@@ -673,7 +681,7 @@ impl SmolLm3Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SmolLm3Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
@@ -781,7 +789,7 @@ impl SmolLm3Weights {
             load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?;
 
         Ok(Self {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -948,7 +956,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
         SmolLm3Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,

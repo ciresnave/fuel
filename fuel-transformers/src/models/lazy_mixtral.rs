@@ -36,9 +36,10 @@
 //! - F32 activations; weights via `WeightStorage`.
 //! - **No shared expert** (Mixtral has none; Qwen2-MoE does).
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,7 +116,7 @@ fn default_mixtral_rope_theta() -> f64 {
 impl MixtralConfigRaw {
     fn from_json_str(json: &str) -> Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Mixtral config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Mixtral config.json: {e}")))
     }
 
     fn resolve(self) -> Result<MixtralConfig> {
@@ -263,7 +264,7 @@ impl MixtralModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MixtralModel::forward_embeds: expected embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
@@ -272,13 +273,13 @@ impl MixtralModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MixtralModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MixtralConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -287,7 +288,7 @@ impl MixtralModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MixtralConfig: num_attention_heads must be a multiple of num_key_value_heads"
                     .into(),
             )
@@ -445,7 +446,9 @@ impl MixtralWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MixtralConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;

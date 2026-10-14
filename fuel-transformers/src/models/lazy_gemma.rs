@@ -17,9 +17,9 @@
 //!   4. **Optional Q/K/V/O biases** — `attention_bias: bool` switches
 //!      the biases on. Gemma 2B-it leaves them off; some forks turn
 //!      them on. Carried as the standard optional-bias fields on
-//!      [`fuel_core::lazy::LayerWeights`].
+//!      [`fuel_tensor::lazy::LayerWeights`].
 //!
-//! Gemma 2 already ships as part of `fuel_core::lazy` (`Gemma2Model`).
+//! Gemma 2 already ships as part of `fuel_tensor::lazy` (`Gemma2Model`).
 //! Gemma v1 doesn't share the v2-only soft-cap or local/global
 //! attention alternation, so it's its own module.
 //!
@@ -28,9 +28,10 @@
 //! Forward-only, single sequence (`batch == 1`), no KV cache
 //! (recomputes each call), F32 activations.
 
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Which GELU variant the FFN's gate path uses. Defaults to
@@ -93,10 +94,10 @@ impl GemmaConfig {
 /// architecture; encoding it more widely would be a guard asserting a false
 /// claim. Overriding an EXPLICIT artifact value (unlike glm4, which filled an
 /// ABSENT one) is the stronger act, and this arch-scoped truth is its licence.
-fn gemma_activation_from_str(s: &str) -> fuel_core::Result<GemmaActivation> {
+fn gemma_activation_from_str(s: &str) -> fuel_ir::error::Result<GemmaActivation> {
     match s {
         "gelu" | "gelu_pytorch_tanh" | "gelu_new" => Ok(GemmaActivation::GeluPytorchTanh),
-        other => Err(fuel_core::Error::Msg(format!(
+        other => Err(fuel_ir::error::Error::Msg(format!(
             "unsupported Gemma hidden_act {other:?} (Gemma uses the tanh-approximate GELU)"
         ))),
     }
@@ -138,12 +139,12 @@ fn default_gemma_rope_theta() -> f64 {
 }
 
 impl GemmaConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Gemma config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Gemma config.json: {e}")))
     }
 
-    fn resolve(self) -> fuel_core::Result<GemmaConfig> {
+    fn resolve(self) -> fuel_ir::error::Result<GemmaConfig> {
         let hidden_activation = match self.hidden_act.as_deref() {
             None => GemmaActivation::GeluPytorchTanh,
             Some(s) => gemma_activation_from_str(s)?,
@@ -177,7 +178,7 @@ impl GemmaConfig {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `gemma_config_from_hf_json_corrects_the_gelu_misnomer`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         GemmaConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -207,7 +208,7 @@ impl GemmaModel {
         // property a real checkpoint can violate, so it is an error to return,
         // not an invariant to assert.
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "GemmaConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -246,7 +247,7 @@ impl GemmaModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "GemmaConfig: num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
             .bt());
@@ -444,7 +445,7 @@ impl GemmaWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &GemmaConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.hidden_size;
         let i_dim = cfg.intermediate_size;
@@ -452,7 +453,7 @@ impl GemmaWeights {
 
         let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
                 token_embedding.len(),
                 cfg.vocab_size * h,
