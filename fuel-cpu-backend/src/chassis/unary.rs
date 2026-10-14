@@ -518,7 +518,7 @@ impl UnaryOpCore for GeluTanh {
 mod tests {
     use super::*;
 
-    /// GAP-355: the REST of the direct-libm unary ops (`erf`, `floor`, `ceil`,
+    /// The REST of the direct-libm unary ops (`erf`, `floor`, `ceil`,
     /// `round_even`, `sqrt`) also return a quiet NaN for a signalling operand,
     /// and so do the compositions over them. Same caveat as the sibling test:
     /// x86 passes without the helper; the macOS CI leg is the instrument that

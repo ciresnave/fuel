@@ -5,7 +5,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Changed
 
-- Repointed `fuel_core::` to fuel-ir / fuel-tensor in fuel-nn (GAP-348 step 3); registry: GAP-357 filed (phi loader complexity), GAP-305 ownership and KISS-side facts recorded.
+- Repointed `fuel_core::` to fuel-ir / fuel-tensor in fuel-nn (GAP-348 step 3); registry: GAP-357 filed (phi loader complexity), GAP-305 ownership and KISS-side facts recorded. GAP-355 closed and its row deleted (a struck row cannot carry an owner and the owner-less ceiling only goes down): the quiet-NaN fix for the remaining direct-libm ops landed in fuel#360, and the macOS CI legs (`Check` and `Test Suite`, macOS-latest) were green on fuel#360 and on fuel#361 head 9659d4a0, the instrument the row named.
 
 ## v0.18.12 - 2026-10-14
 

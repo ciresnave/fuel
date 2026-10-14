@@ -344,7 +344,7 @@ impl BinaryOpCore for Rem {
 mod tests {
     use super::*;
 
-    /// GAP-355: `powf` is a direct libm call; a signalling operand must give a
+    /// `powf` is a direct libm call; a signalling operand must give a
     /// QUIET NaN (see `chassis::unary::tests::transcendentals_return_a_quiet_nan_*`).
     /// x86 libm passes without the helper; the macOS CI leg is the instrument that
     /// can see a libm that returns the signalling NaN unchanged.
