@@ -231,6 +231,10 @@ const NON_SOURCE_PATHS_WITHOUT_EXTENSION: &[(&str, &str)] = &[
     ("LICENSE-APACHE", "licence text"),
     ("LICENSE-MIT", "licence text"),
     (
+        ".github/CODEOWNERS",
+        "GitHub ownership declaration (WSP-001): data, not authored source",
+    ),
+    (
         "fuel-kernel-seam/LICENSE-APACHE",
         "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
     ),

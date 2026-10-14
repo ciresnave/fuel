@@ -6,6 +6,12 @@ on:
 
 name: Continuous integration
 
+# Least privilege (SUP-008): every job here only reads the repository; the one
+# secret use is the GITHUB_TOKEN passed to setup-protoc as `repo-token`, which
+# needs release-asset read and works under `contents: read`. No job raises it.
+permissions:
+  contents: read
+
 # ⚠️ `--workspace` HERE IS NOT "the whole repo builds" — it excludes FIVE
 # crates, and every job below that uses `$WORKSPACE_EXCLUDES` is making a
 # NARROWER claim than it looks like. Never report a green from this workflow as
@@ -104,8 +110,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04, windows-latest, macOS-latest, ubuntu-24.04-arm]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
       # ENFORCEMENT half of the gaps.md registry gates. Until 2026-09-06 there
@@ -139,7 +145,7 @@ jobs:
       - name: Remove cargo config (macOS ring crate fix)
         if: runner.os == 'macOS'
         run: rm -f .cargo/config.toml
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
 
       # `fuel-onnx`'s build script calls `prost_build::compile_protos`, and
       # prost-build 0.13 does NOT bundle a `protoc` (dropped in 0.11) — so
@@ -154,7 +160,7 @@ jobs:
       # for a few seconds of CI time. Prefer installing a missing tool over
       # excluding a crate whenever the tool is actually installable.
       - name: Install protoc (fuel-onnx build script)
-        uses: arduino/setup-protoc@v3
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -590,14 +596,14 @@ jobs:
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           df -h
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
       - name: Remove cargo config (macOS ring crate fix)
         if: runner.os == 'macOS'
         run: rm -f .cargo/config.toml
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       # `fuel-onnx`'s build script calls `prost_build::compile_protos`, and
       # prost-build 0.13 does NOT bundle a `protoc` (dropped in 0.11) — so
       # without one the crate fails at BUILD SCRIPT time, before compiling a
@@ -611,7 +617,7 @@ jobs:
       # for a few seconds of CI time. Prefer installing a missing tool over
       # excluding a crate whenever the tool is actually installable.
       - name: Install protoc (fuel-onnx build script)
-        uses: arduino/setup-protoc@v3
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -755,7 +761,7 @@ jobs:
     # Cheap and unconditional on purpose: a grep over tracked files, seconds,
     # no toolchain, no matrix.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Reject unresolved conflict markers
         run: |
           set -eu
@@ -807,8 +813,8 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -817,14 +823,14 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: clippy
       # See the identical step in the `check` job for why protoc is INSTALLED
       # rather than fuel-onnx being excluded.
       - name: Install protoc (fuel-onnx build script)
-        uses: arduino/setup-protoc@v3
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # Runs on ubuntu-latest, so it needs the full non-Apple exclusion set —
