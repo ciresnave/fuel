@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.10 - 2026-10-14
+
+### Changed
+
+- CPU backend quiets a signalling NaN operand for Erf/Floor/Ceil/Round/Sqrt/Pow (and the dyn_impl paths), as KISS-OPS-6.16 requires; GAP-355.
+
 ## v0.18.9 - 2026-10-14
 
 ### Changed
