@@ -818,6 +818,11 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+      # The tracked Cargo.lock must resolve as committed: `--locked` fails if the
+      # lock is stale (a version bump or a removed crate left it behind). It builds
+      # nothing. It lives in this job so no new required-check name is needed.
+      - name: Tracked Cargo.lock is current (cargo metadata --locked)
+        run: cargo metadata --locked --format-version 1 > /dev/null
 
   clippy:
     name: Clippy
