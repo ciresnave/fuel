@@ -10,18 +10,18 @@
 //! `pipelined_bridge::realize_one_as` → `PipelinedExecutor` →
 //! binding-table dispatch onto baracuda's `unary_recip_f32` /
 //! `unary_abs_f32`. The file moved here because the pipelined entries
-//! live in fuel-core (fuel-cuda-backend cannot depend on fuel-core).
+//! live in fuel-tensor (fuel-cuda-backend cannot depend on fuel-tensor).
 //! Reference values and tolerances are unchanged from the original.
 //!
 //! Gated `#[ignore]` — run with
-//! `cargo test -p fuel-core --features cuda --test recip_abs_realize_live -- --ignored`
+//! `cargo test -p fuel-tensor --features cuda --test recip_abs_realize_live -- --ignored`
 //! on a host with an NVIDIA GPU + CUDA Runtime SDK installed.
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::Tensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::lazy::Tensor;
 
 fn dev_or_skip() -> Option<CudaDevice> {
     // The machine-wide GPU mutex must be held before we touch the card
@@ -57,7 +57,7 @@ fn recip_realize_on_cuda_matches_reference() {
     let a = Tensor::from_f32(
         vec![2.0_f32, 4.0, 8.0, 16.0],
         Shape::from_dims(&[4]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let r = a.recip();
@@ -85,7 +85,7 @@ fn abs_realize_on_cuda_matches_reference() {
     let a = Tensor::from_f32(
         vec![-3.0_f32, 0.0, 3.0, -1.5, 2.5],
         Shape::from_dims(&[5]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let b = a.abs();

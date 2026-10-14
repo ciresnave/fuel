@@ -14,8 +14,8 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::{Shape, probe::BackendId};
+use fuel_tensor::lazy::Tensor;
 
 /// A live CUDA device is **required** here, not optional.
 ///
@@ -26,7 +26,7 @@ use fuel_ir::{Shape, probe::BackendId};
 /// from a `#[test]` is a PASS, no coverage mechanism could see it. The device
 /// requirement is real; it was simply never *declared*, so now it fails loudly.
 fn require_cuda() {
-    let probe = fuel_core::probe::ProbeReport::probe_all();
+    let probe = fuel_hardware::probe::ProbeReport::probe_all();
     fuel_test_support::require(
         "a live CUDA device",
         probe.devices.iter().any(|d| d.backend == BackendId::Cuda),
@@ -42,7 +42,7 @@ fn cuda_device() -> fuel_cuda_backend::CudaDevice {
 #[test]
 fn doff_writes_at_device_offset_cuda() {
     require_cuda();
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -63,7 +63,7 @@ fn doff_writes_at_device_offset_cuda() {
 #[test]
 fn doff_offset_zero_writes_leading_row_cuda() {
     require_cuda();
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -86,7 +86,7 @@ fn doff_offset_zero_writes_leading_row_cuda() {
 #[test]
 fn doff_decode_loop_appends_at_cached_len_cuda() {
     require_cuda();
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let max_seq = 4_usize;
     let head_dim = 2_usize;
     let mut cache = Tensor::from_f32(
@@ -121,7 +121,7 @@ fn doff_decode_loop_appends_at_cached_len_cuda() {
 #[test]
 fn doff_writes_on_non_leading_axis_cuda() {
     require_cuda();
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]))

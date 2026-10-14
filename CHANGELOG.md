@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.15 - 2026-10-14
+
+### Changed
+
+- Tests moved (GAP-348 c, batch 2): the 13 feature-gated integration tests under `fuel-core/tests/` (CUDA, Vulkan, aocl, mkl/onemkl) now live in `fuel-tensor/tests/` with `fuel_core::` rewritten to the real crates. Run on an RTX 4070 before the move was rebased: 7 CUDA files 19 passed, vulkan and cuda+vulkan files and the overlap bench passed; the 3 aocl/onemkl files were compile-checked only. GAP-358 filed (fuel-transformers model methods over Codacy complexity limits).
+
 ## v0.18.14 - 2026-10-14
 
 ### Changed
