@@ -45,6 +45,20 @@ const OPS_MINMAX_ORDINARY_JSON: &str =
 /// BIT comparison can see it.
 const OPS_MINMAX_SIGNED_ZERO_JSON: &str =
     include_str!("../fixtures/kiss-corpus/ops-minmax-signed-zero.json");
+/// NaN-operand vectors for the sign-edit moves (`neg`/`abs`/`copysign`) on the narrow
+/// float dtypes (KISS-OPS-6.16-0009). A moved NaN keeps its payload; only the sign bit
+/// is edited, so a kernel that canonicalises a NaN fails here and nowhere else.
+const OPS_NARROW_MOVE_NAN_JSON: &str =
+    include_str!("../fixtures/kiss-corpus/ops-narrow-move-nan.json");
+/// NaN-operand vectors for `max_prop`/`min_prop`/`fmax_ieee`/`fmin_ieee` on the narrow
+/// float dtypes: the cells where the propagating and IEEE families DIFFER, which the
+/// signed-zero file structurally cannot supply (see the discriminator test below).
+const OPS_NARROW_SELECT_NAN_JSON: &str =
+    include_str!("../fixtures/kiss-corpus/ops-narrow-select-nan.json");
+/// NaN-operand vectors for the transcendental atoms (`exp`/`log`/`sin`), class `ULP`
+/// with a non-zero bound: a computed NaN is canonical, not payload-preserving.
+const OPS_TRANSCENDENTAL_NAN_JSON: &str =
+    include_str!("../fixtures/kiss-corpus/ops-transcendental-nan.json");
 
 /// A never-panic parse/schema failure. The embedded snapshot is a build-time
 /// constant, so in practice `load_vendored_corpus` always succeeds — the
@@ -321,6 +335,9 @@ pub fn load_vendored_corpus() -> Result<Corpus, CorpusError> {
         (OPS_ARITH_JSON, "ops-arith.json"),
         (OPS_MINMAX_ORDINARY_JSON, "ops-minmax-ordinary.json"),
         (OPS_MINMAX_SIGNED_ZERO_JSON, "ops-minmax-signed-zero.json"),
+        (OPS_NARROW_MOVE_NAN_JSON, "ops-narrow-move-nan.json"),
+        (OPS_NARROW_SELECT_NAN_JSON, "ops-narrow-select-nan.json"),
+        (OPS_TRANSCENDENTAL_NAN_JSON, "ops-transcendental-nan.json"),
     ] {
         vectors.extend(parse_vector_file(json, file)?);
     }
@@ -410,13 +427,22 @@ mod tests {
     #[test]
     fn the_minmax_vectors_are_loaded_not_merely_vendored() {
         let corpus = load_vendored_corpus().expect("vendored corpus parses");
-        for op in ["max_prop", "min_prop", "fmax_ieee", "fmin_ieee"] {
+        // 18 per op from the ordinary (6) + signed-zero (12) files, plus the NaN
+        // select file: 8 for each prop op (2 per narrow dtype) and 12 for each
+        // ieee op (3 per narrow dtype). Counted from the vendored JSON at KISS
+        // `5b28bf51`, not predicted.
+        for (op, want) in [
+            ("max_prop", 26usize),
+            ("min_prop", 26),
+            ("fmax_ieee", 30),
+            ("fmin_ieee", 30),
+        ] {
             let n = corpus.vectors.iter().filter(|v| v.op == op).count();
             assert_eq!(
-                n, 18,
-                "expected 18 vectors for `{op}` (6 ordinary + 12 signed-zero); \
-                 got {n}. A zero here means the file is in the directory but not \
-                 in `include_str!`."
+                n, want,
+                "expected {want} vectors for `{op}`; got {n}. A shortfall of 8 \
+                 (prop) or 12 (ieee) means `ops-narrow-select-nan.json` is in the \
+                 directory but not in `include_str!`."
             );
         }
         // Control: the pre-existing arith vectors are still present and did not
@@ -428,29 +454,6 @@ mod tests {
         );
     }
 
-    /// ⚠️ TRIPWIRE, AND IT IS SUPPOSED TO PASS TODAY AND FAIL LATER.
-    ///
-    /// The vendored corpus CANNOT distinguish NaN-propagating minmax
-    /// (`max_prop`/`min_prop`) from IEEE minmax (`fmax_ieee`/`fmin_ieee`).
-    /// Measured at KISS `f4952b4c`: of the 18 distinct `(dtype, input-pair)`
-    /// cells, ALL 18 carry all four ops and ZERO of them give the prop and ieee
-    /// forms different expected bits.
-    ///
-    /// That is structural, not accidental — the corpus's own provenance note
-    /// says so: §6.6 signed-zero equality makes both comparisons true on a ±0
-    /// tie, so operand `a` wins every tie in all four ops. NaN is the axis on
-    /// which the two families differ, and the corpus contains NO NaN INPUT AT
-    /// ALL (77 vectors, 0 with a NaN operand).
-    ///
-    /// So these vectors buy real coverage — signed-zero tie-breaking and
-    /// max-vs-min — and they do NOT close the defect GAP-236 is about: an
-    /// `fmaxf` mis-lifted as a NaN-propagating `Max` passes every one of them.
-    ///
-    /// WHY THIS IS A TEST AND NOT A COMMENT: a comment recording "the corpus is
-    /// blind here" is read only by someone already standing here, and nothing
-    /// fires when it stops being true. When KISS ships the NaN vectors, this
-    /// test GOES RED — which is the signal to re-measure and close the row.
-    /// A prose note would have gone silently stale instead.
     /// Group minmax vectors into `(dtype, input-bytes) -> {op -> expected}`
     /// cells, so the four ops line up per cell and can be compared.
     fn minmax_cells(
@@ -486,19 +489,49 @@ mod tests {
         differs("max_prop", "fmax_ieee") || differs("min_prop", "fmin_ieee")
     }
 
+    /// True iff `bytes` (big-endian value bytes) is a NaN in `dtype`. Only the
+    /// dtypes the minmax corpus uses are decoded; anything else is `false`.
+    fn is_nan_bits(dtype: &str, bytes: &[u8]) -> bool {
+        match (dtype, bytes) {
+            ("bf16", [h, l]) => {
+                let v = u16::from_be_bytes([*h, *l]);
+                v & 0x7F80 == 0x7F80 && v & 0x007F != 0
+            }
+            ("f16", [h, l]) => {
+                let v = u16::from_be_bytes([*h, *l]);
+                v & 0x7C00 == 0x7C00 && v & 0x03FF != 0
+            }
+            ("f8e5m2", [b]) => b & 0x7C == 0x7C && b & 0x03 != 0,
+            // E4M3FN has no infinities: S.1111.111 is the only NaN encoding.
+            ("f8e4m3fn", [b]) => b & 0x7F == 0x7F,
+            ("f32", [a, b, c, d]) => {
+                let v = u32::from_be_bytes([*a, *b, *c, *d]);
+                v & 0x7F80_0000 == 0x7F80_0000 && v & 0x007F_FFFF != 0
+            }
+            ("f64", b) if b.len() == 8 => {
+                let v = u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+                v & 0x7FF0_0000_0000_0000 == 0x7FF0_0000_0000_0000 && v & 0x000F_FFFF_FFFF_FFFF != 0
+            }
+            _ => false,
+        }
+    }
+
+    /// The corpus now SEPARATES NaN-propagating minmax (`max_prop`/`min_prop`)
+    /// from IEEE minmax (`fmax_ieee`/`fmin_ieee`) -- on the narrow dtypes only.
+    ///
+    /// This test replaced `the_corpus_cannot_yet_discriminate_prop_from_ieee_minmax`,
+    /// a tripwire that was written to go red the day KISS shipped NaN vectors. It
+    /// went red when `ops-narrow-select-nan.json` was vendored (KISS `5b28bf51`):
+    /// 8 of the 30 distinct `(dtype, input-pair)` cells now give the two families
+    /// different expected bits. Every one is a `(sNaN, finite)` or `(finite, sNaN)`
+    /// pair -- the NaN axis, which the signed-zero file structurally cannot reach
+    /// (§6.6 signed-zero equality makes `a` win every tie in all four ops).
     #[test]
-    fn the_corpus_cannot_yet_discriminate_prop_from_ieee_minmax() {
+    fn the_corpus_discriminates_prop_from_ieee_minmax_on_the_nan_axis() {
         let corpus = load_vendored_corpus().expect("vendored corpus parses");
         let cells = minmax_cells(&corpus);
 
-        let discriminating = cells
-            .values()
-            .filter(|ops| cell_discriminates_prop_from_ieee(ops))
-            .count();
-
-        // POSITIVE CONTROL: the corpus is not simply inert. It DOES separate max
-        // from min, so a zero above is a statement about the prop/ieee axis
-        // specifically, not about the cell grouping being broken.
+        // CONTROL: cell grouping works -- the corpus still separates max from min.
         let max_vs_min = cells
             .values()
             .filter(|ops| {
@@ -510,14 +543,99 @@ mod tests {
             .count();
         assert!(
             max_vs_min > 0,
-            "control failed: the corpus should separate max from min on at least one cell — if this is 0 the cell grouping is broken and the prop-vs-ieee count below means nothing"
+            "control failed: no cell separates max from min, so the cell grouping is broken"
         );
 
+        let discriminating: Vec<_> = cells
+            .iter()
+            .filter(|(_, ops)| cell_discriminates_prop_from_ieee(ops))
+            .collect();
         assert_eq!(
-            discriminating,
-            0,
-            "the corpus now HAS a cell where prop and ieee minmax differ ({discriminating} of {} cells). This test existing and passing recorded a KNOWN BLIND SPOT; a red here is GOOD NEWS — NaN vectors have landed. Re-measure the discrimination, wire the assertion the other way, and close the registry row that tracks this.",
-            cells.len()
+            discriminating.len(),
+            8,
+            "expected 8 prop-vs-ieee discriminating cells (2 orderings x 4 narrow dtypes)"
         );
+        for ((dtype, inputs), _) in &discriminating {
+            assert!(
+                inputs.iter().any(|b| is_nan_bits(dtype, b)),
+                "a discriminating cell with no NaN operand ({dtype} {inputs:?}) would mean the \
+                 separation is NOT on the NaN axis, so the reading above is wrong"
+            );
+        }
+        let mut dtypes: Vec<&str> = discriminating
+            .iter()
+            .map(|((d, _), _)| d.as_str())
+            .collect();
+        dtypes.sort_unstable();
+        dtypes.dedup();
+        assert_eq!(dtypes, ["bf16", "f16", "f8e4m3fn", "f8e5m2"]);
+    }
+
+    /// TRIPWIRE for the REMAINING blind spot: `f32` and `f64` minmax.
+    ///
+    /// `ops-narrow-select-nan.json` covers bf16/f16/f8e5m2/f8e4m3fn only. No
+    /// vendored cell carries a NaN operand for `f32` or `f64` minmax, so an
+    /// `fmaxf`/`fmax` mis-lifted as a NaN-propagating `Max` still passes every
+    /// f32/f64 vector. That is the GAP-236 defect on the two dtypes that matter
+    /// most, and it is NOT closed by vendoring the narrow file. This PASSES today
+    /// and goes RED when KISS ships f32/f64 NaN select vectors.
+    #[test]
+    fn the_corpus_still_cannot_discriminate_prop_from_ieee_minmax_for_f32_and_f64() {
+        let corpus = load_vendored_corpus().expect("vendored corpus parses");
+        let cells = minmax_cells(&corpus);
+
+        // CONTROL: f32 and f64 minmax cells exist and separate max from min, so a
+        // zero below is about the prop/ieee axis, not about missing dtypes.
+        for dtype in ["f32", "f64"] {
+            let separates_max_min = cells.iter().any(|((d, _), ops)| {
+                d == dtype
+                    && matches!(
+                        (ops.get("max_prop"), ops.get("min_prop")),
+                        (Some(a), Some(b)) if a != b
+                    )
+            });
+            assert!(separates_max_min, "control failed for {dtype}");
+        }
+
+        let wide_discriminating = cells
+            .iter()
+            .filter(|((d, _), ops)| {
+                (d == "f32" || d == "f64") && cell_discriminates_prop_from_ieee(ops)
+            })
+            .count();
+        assert_eq!(
+            wide_discriminating, 0,
+            "the corpus now has {wide_discriminating} f32/f64 cells where prop and ieee minmax \
+             differ. That is GOOD NEWS: re-measure, flip this assertion, and update \
+             PROVENANCE.md and the GAP-236 row."
+        );
+    }
+
+    /// The three NaN files were loaded, not merely vendored: every cell they
+    /// introduce is reachable through `covers`, and the total is the sum of all
+    /// six vector files (5 + 24 + 48 + 30 + 40 + 12).
+    #[test]
+    fn the_nan_vectors_are_loaded_not_merely_vendored() {
+        let corpus = load_vendored_corpus().expect("vendored corpus parses");
+        assert_eq!(corpus.vectors.len(), 159);
+        for (op, dtype) in [
+            ("neg", "bf16"),
+            ("abs", "f8e4m3fn"),
+            ("copysign", "f16"),
+            ("exp", "f32"),
+            ("log", "f64"),
+            ("sin", "f32"),
+        ] {
+            assert!(
+                corpus.covers(op, dtype),
+                "({op}, {dtype}) is in a NaN file but not covered: the file is not in `include_str!`"
+            );
+        }
+        // The transcendental file is the only `ULP`-class one: a computed NaN is
+        // canonical, so these cells carry a non-zero bound, unlike every
+        // exact-byte cell.
+        let ulp: Vec<_> = corpus.vectors.iter().filter(|v| v.class == "ULP").collect();
+        assert_eq!(ulp.len(), 12);
+        assert!(ulp.iter().all(|v| v.ulp_bound > 0));
     }
 }
