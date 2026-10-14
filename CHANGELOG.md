@@ -1,6 +1,14 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.7 - 2026-10-14
+
+### Changed
+
+- Tests moved (GAP-348 c, batch 1): the 16 CPU-only, un-gated integration tests under `fuel-core/tests/` now live in `fuel-tensor/tests/`
+  with `fuel_core::` rewritten to the real crates; `fuel-core` drops its now-unused `fuel-conv` dev-dependency. 47 passed + 2 ignored in the
+  new location, the same counts as before. No library change.
+
 ## v0.18.6 - 2026-10-14
 
 ### Changed
