@@ -148,36 +148,62 @@ fn the_harness_can_fail() {
     assert_eq!(run(&ok), Outcome::Pass);
 }
 
-#[test]
-fn int_wrap_vectors_conform_except_the_pinned_sets() {
-    let vs = load();
-    assert_eq!(vs.len(), 440, "corpus size changed");
-    let (mut pass, mut not_expr) = (0usize, 0usize);
-    let mut failing: Vec<(String, String)> = Vec::new();
-    let mut errors = Vec::new();
-    for v in &vs {
+/// Outcome counts over the whole corpus.
+struct Tally {
+    pass: usize,
+    not_expr: usize,
+    failing: Vec<(String, String)>,
+    errors: Vec<String>,
+}
+
+/// Runs every vector, printing each failure and error and a one-line summary.
+fn tally(vs: &[Vector]) -> Tally {
+    let mut t = Tally {
+        pass: 0,
+        not_expr: 0,
+        failing: Vec::new(),
+        errors: Vec::new(),
+    };
+    for v in vs {
         match run(v) {
-            Outcome::Pass => pass += 1,
-            Outcome::NotExpressible => not_expr += 1,
+            Outcome::Pass => t.pass += 1,
+            Outcome::NotExpressible => t.not_expr += 1,
             Outcome::Fail { got } => {
                 println!(
                     "[kiss-int-wrap] FAIL tcId {} {} {} a={:02x?} b={:02x?} got {:02x?} want {:02x?}",
                     v.tc_id, v.op, v.dtype, v.a, v.b, got, v.expected
                 );
-                failing.push((v.op.clone(), v.dtype.clone()));
+                t.failing.push((v.op.clone(), v.dtype.clone()));
             }
-            Outcome::Error(e) => errors.push(format!("tcId {} {} {}: {e}", v.tc_id, v.op, v.dtype)),
+            Outcome::Error(e) => t
+                .errors
+                .push(format!("tcId {} {} {}: {e}", v.tc_id, v.op, v.dtype)),
         }
     }
     println!(
-        "[kiss-int-wrap] {} vectors: {pass} pass, {} fail, {not_expr} not expressible, {} errors",
+        "[kiss-int-wrap] {} vectors: {} pass, {} fail, {} not expressible, {} errors",
         vs.len(),
-        failing.len(),
-        errors.len()
+        t.pass,
+        t.failing.len(),
+        t.not_expr,
+        t.errors.len()
     );
-    for e in &errors {
+    for e in &t.errors {
         println!("[kiss-int-wrap] ERROR {e}");
     }
+    t
+}
+
+#[test]
+fn int_wrap_vectors_conform_except_the_pinned_sets() {
+    let vs = load();
+    assert_eq!(vs.len(), 440, "corpus size changed");
+    let Tally {
+        pass,
+        not_expr,
+        mut failing,
+        errors,
+    } = tally(&vs);
     // `i8` add/sub/mul: the CPU backend has a `HostBuffer::I8` variant but its
     // binary op has no `(I8, I8)` arm, so the call returns a typed error
     // (`dtype mismatch in add, lhs: I8, rhs: I8`: the message is misleading, the
