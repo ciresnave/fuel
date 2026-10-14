@@ -823,6 +823,11 @@ jobs:
       # nothing. It lives in this job so no new required-check name is needed.
       - name: Tracked Cargo.lock is current (cargo metadata --locked)
         run: cargo metadata --locked --format-version 1 > /dev/null
+      # A versioned dev-dependency on another workspace crate is kept by `cargo
+      # publish` and must resolve on crates.io, so it breaks publish ordering (or is
+      # a cycle). Path-only dev-deps are stripped. Invisible until publish time.
+      - name: Workspace dev-dependencies are path-only (publish ordering)
+        run: python3 scripts/check-dev-dep-publish-cycles.py
 
   clippy:
     name: Clippy

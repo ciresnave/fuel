@@ -91,13 +91,13 @@ fuel-metal-backend = { workspace = true, optional = true }
 
 [dev-dependencies]
 # QMatMul tests construct Q4_0 weight blocks directly.
-fuel-quantized = { workspace = true }
+fuel-quantized = { path = "../fuel-quantized" }
 # Conv2D live-GPU tests compare against fuel-conv's CPU reference.
-fuel-conv = { workspace = true }
+fuel-conv = { path = "../fuel-conv" }
 # Telemetry sink tests write JSONL to a scratch dir (atomic tmp+rename).
 tempfile = { workspace = true }
 # GAP-224: live-GPU tests assert the machine-wide GPU mutex via require_gpu_run_lock.
-fuel-test-support = { workspace = true }
+fuel-test-support = { path = "../fuel-test-support" }
 
 [features]
 # FKC is NOT a feature — it is unconditional core infrastructure. serde /

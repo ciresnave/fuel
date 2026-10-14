@@ -19,4 +19,4 @@
     # Phase 7.5 G2: tests construct a CPU device via fuel-cpu-backend's
     # CpuBackendDevice so the slot-populating constructors have an
     # Arc<dyn DynBackendDevice> to allocate against.
-    fuel-cpu-backend = { workspace = true }
+    fuel-cpu-backend = { path = "../fuel-cpu-backend" }
