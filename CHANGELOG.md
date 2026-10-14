@@ -1,6 +1,15 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.3 - 2026-10-14
+
+### Changed
+
+- Vendors the KISS NaN-operand conformance vectors (`ops-narrow-move-nan`, `ops-narrow-select-nan`,
+  `ops-transcendental-nan`) and the 122-op `op_manifest.json` at KISS `5b28bf51`; `kiss_corpus` loads them and its
+  prop-vs-ieee minmax tripwire is replaced (8 discriminating cells, narrow dtypes only; f32/f64 still blind). Tests and
+  fixtures only, no runtime change.
+
 ## v0.18.2 - 2026-10-14
 
 ### Changed
