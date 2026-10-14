@@ -12,8 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
       - name: Secret Scanning
-        uses: trufflesecurity/trufflehog@6404b6330c2f75f3d62757f3e642bebdde6bbc7b # main
+        uses: trufflesecurity/trufflehog@27d8ea2876d990b274996fc97aff0f8d952d364c # main (SHA of the ref the workflow named, at pin time)
