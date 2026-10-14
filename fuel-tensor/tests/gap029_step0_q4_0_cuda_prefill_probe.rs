@@ -24,12 +24,12 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::Device;
-use fuel_core::lazy::Tensor;
-use fuel_core::pipelined_bridge::realize_one_as;
 use fuel_graph::QuantType;
 use fuel_ir::Shape;
 use fuel_quantized::{BlockQ4_0, GgmlType};
+use fuel_tensor::Device;
+use fuel_tensor::lazy::Tensor;
+use fuel_tensor::pipelined_bridge::realize_one_as;
 
 /// Outcome of one realize attempt, with enough detail to tell a real bail from
 /// a broken probe.

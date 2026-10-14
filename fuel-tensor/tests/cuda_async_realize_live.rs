@@ -20,13 +20,13 @@
 //! twin assert, so the `optimize_graph` realize path is proven identical on CUDA.
 //!
 //! Gated `#[ignore]`; requires a live NVIDIA GPU + CUDA Runtime SDK. Run:
-//!   cargo test -p fuel-core --features cuda --test cuda_async_realize_live -- --ignored --test-threads=1
+//!   cargo test -p fuel-tensor --features cuda --test cuda_async_realize_live -- --ignored --test-threads=1
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::Tensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_ir::{DType, DeviceLocation, Shape};
+use fuel_tensor::lazy::Tensor;
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {
@@ -50,7 +50,7 @@ fn mul_add_realize_on_cuda_matches_reference() {
     let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     // `const_f32_like` keeps `b` in `a`'s graph (a bare second `from_f32` would
@@ -82,7 +82,7 @@ fn deep_chain_realize_on_cuda_matches_reference() {
     let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let b = a
@@ -130,7 +130,7 @@ fn long_chain_pool_reuse_on_cuda_matches_reference() {
     let a = Tensor::from_f32(
         a_host.clone(),
         Shape::from_dims(&[N]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let one = a

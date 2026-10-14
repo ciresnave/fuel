@@ -10,7 +10,7 @@
 //!
 //! Run:
 //!
-//!   cargo test -p fuel-core --features vulkan --test vulkan_bridge_realize_live -- --ignored --test-threads=1
+//!   cargo test -p fuel-tensor --features vulkan --test vulkan_bridge_realize_live -- --ignored --test-threads=1
 //!
 //! Gated `#[ignore]`; requires a live Vulkan device (RTX 4070 on the dev box).
 
@@ -18,8 +18,8 @@
 
 use std::sync::Arc;
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::lazy::Tensor;
 use fuel_vulkan_backend::VulkanBackend;
 
 fn backend_or_skip() -> Option<Arc<VulkanBackend>> {
@@ -46,7 +46,7 @@ fn mul_add_realize_on_vulkan_matches_reference() {
     let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     // `const_f32_like` keeps `b` in `a`'s graph (a bare second
@@ -83,7 +83,7 @@ fn deep_chain_realize_on_vulkan_matches_reference() {
     let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let b = a
