@@ -6,11 +6,15 @@
 `ops-arith`, `ops-minmax-ordinary` and `ops-minmax-signed-zero` were vendored
 at `f4952b4c` (2026-09-02) and are byte-identical at `5b28bf51`. `dtype_manifest`
 and `structure_key_vectors` were vendored 2026-10-11; `op_manifest` and the three
-NaN files 2026-10-14.
+NaN files 2026-10-14. Three files moved to KISS `0af5d3b6` on 2026-10-14 (second pass):
+`ops-transcendental-nan` (gained a `harness_rule`; same 12 vectors), and the new
+`ops-minmax-nan` and `ops-rounding`.
 **Vendored by:** fuel GAP-236 Step 0 (re-vendor + loader extension, 2026-09-02);
 the sk5 deriver binding (2026-10-11) re-vendored two files; the NaN-vector
 vendoring (2026-10-14) added `ops-narrow-move-nan`, `ops-narrow-select-nan`,
-`ops-transcendental-nan` and moved `op_manifest` to `5b28bf51`.
+`ops-transcendental-nan` and moved `op_manifest` to `5b28bf51`; the evaluator pass
+(2026-10-14) re-vendored `ops-transcendental-nan` and added `ops-minmax-nan` and
+`ops-rounding` at `0af5d3b6`.
 **Supersedes:** the `c9153b2` pin of 2026-07-23 (2 files)
 
 ## Files (copied verbatim — DO NOT EDIT)
@@ -25,7 +29,9 @@ vendoring (2026-10-14) added `ops-narrow-move-nan`, `ops-narrow-select-nan`,
 | `structure_key_vectors.json` | **`5b28bf51`** | `e5eec85c82754f030f1ee2f0ab4bf7829fa7e5d2` | `kiss-structure-key-vectors` |
 | `ops-narrow-move-nan.json` | **`5b28bf51`** | `c108226af556aa1c6a45e8e43b85ab29b96dec2d` | `kiss-oracle-vectors-v1.json` |
 | `ops-narrow-select-nan.json` | **`5b28bf51`** | `2efbfd259c43936d8cf6dc24b1375f6c9b5ae81b` | `kiss-oracle-vectors-v1.json` |
-| `ops-transcendental-nan.json` | **`5b28bf51`** | `7e46250295361bdbd27f4812ed1027dcde624c22` | `kiss-oracle-vectors-v1.json` |
+| `ops-transcendental-nan.json` | **`0af5d3b6`** | `c03fe444ad019b75c12050af7d5f50eb89812db8` | `kiss-oracle-vectors-v1.json` |
+| `ops-minmax-nan.json` | **`0af5d3b6`** | `576d69ab693f6acb835c1c91307dba26bb0390d3` | `kiss-oracle-vectors-v1.json` |
+| `ops-rounding.json` | **`0af5d3b6`** | `f8f84610bc59bffe4e77c1ea2546482668fe5d77` | `kiss-oracle-vectors-v1.json` |
 
 Blob hashes were verified by computing `git hash-object --no-filters` on each
 vendored file and matching the value `git rev-parse <pin>:conformance/corpus/<file>`
@@ -95,8 +101,10 @@ adopt/reject` verdict table.
 
 Vector counts: `ops-arith` 5, `ops-minmax-ordinary` 24, `ops-minmax-signed-zero` 48
 (**77**, the 2026-09-02 set), plus `ops-narrow-move-nan` 30, `ops-narrow-select-nan` 40,
-`ops-transcendental-nan` 12 (**82**, 2026-10-14) -- **159 total**, of which 147 are
-`exact-byte` and the 12 transcendental ones are class `ULP` with a non-zero bound.
+`ops-transcendental-nan` 12 (**82**, 2026-10-14), plus `ops-minmax-nan` 44 and
+`ops-rounding` 72 (**116**, KISS `0af5d3b6`) -- **275 total**, of which 263 are
+`exact-byte` and the 12 transcendental ones are class `ULP` with a NaN expected,
+compared by NaN-ness and quietness (KISS-CONFORM-6.8-0010), never by ULP distance.
 
 `ops-minmax-signed-zero.json` is about **signed-zero tie-breaking**, not NaN.
 `+0` and `-0` compare EQUAL, so on a tie the result is decided by operand order
@@ -105,29 +113,34 @@ value-compare of `0.0 == -0.0` passes vacuously; the expected values are BIT
 PATTERNS."* Any implementation compared by value passes these without testing
 anything.
 
-## 2026-10-14 update: the NaN axis is covered for the narrow dtypes, NOT for f32/f64
+## 2026-10-14 update: the NaN axis is covered for the narrow dtypes AND f32/f64
 
-Measured over all vendored minmax vectors (`max_prop` 26, `min_prop` 26, `fmax_ieee` 30,
-`fmin_ieee` 30) grouped into `(dtype, input-bytes)` cells:
+Measured over all vendored minmax vectors (`max_prop` 38, `min_prop` 38, `fmax_ieee` 40,
+`fmin_ieee` 40) grouped into `(dtype, input-bytes)` cells, at KISS `0af5d3b6`:
 
 ```
-distinct cells                                   30   (was 18)
+distinct cells                                   42   (was 18 at f4952b4c, 30 at 5b28bf51)
 cells where MAX disagrees with MIN               control, > 0
-cells where PROP disagrees with IEEE              8   (was 0)
-  of which carry a NaN operand                    8   (all of them)
-  dtypes                              bf16 f16 f8e5m2 f8e4m3fn   (2 orderings each)
-  f32 / f64 cells where PROP disagrees with IEEE  0
+cells where PROP disagrees with IEEE             18   (was 0, then 8)
+  of which carry a NaN operand                   18   (all of them)
+  bf16 f16 f8e5m2 f8e4m3fn                       2 each (ops-narrow-select-nan)
+  f32 f64                                        5 each (ops-minmax-nan)
 ```
 
-Every discriminating cell is `(sNaN, finite)` or `(finite, sNaN)`, and a moved sNaN
-keeps its payload (`ops-narrow-move-nan`, KISS-OPS-6.16-0009). **The blind spot the
-next section describes is narrowed, not closed:** an `fmaxf`/`fmax` mis-lifted as a
-NaN-propagating `Max` on `f32` or `f64` still passes every vendored vector.
-`kiss_corpus::tests::the_corpus_still_cannot_discriminate_prop_from_ieee_minmax_for_f32_and_f64`
-pins that zero and goes red when KISS ships f32/f64 select-NaN vectors. The
-propagating-vs-IEEE question was NOT run against any Fuel kernel in this change: the
-corpus is loaded and its shape pinned, and no evaluator exists in `fuel-dispatch` for
-these vectors (see "How Fuel reads it").
+Every discriminating cell carries a NaN operand, and a moved sNaN keeps its payload
+(`ops-narrow-move-nan`, KISS-OPS-6.16-0009). **The blind spot the next section describes is
+CLOSED on the corpus side**: an `fmaxf`/`fmax` mis-lifted as a NaN-propagating `Max` on
+`f32` or `f64` now fails five cells per dtype.
+`kiss_corpus::tests::the_corpus_discriminates_prop_from_ieee_minmax_for_f32_and_f64` pins
+that, replacing the tripwire that went red on vendoring `ops-minmax-nan`.
+
+**These vectors ARE now run against Fuel**, through the lazy `Tensor` on CPU:
+`fuel-tensor/tests/kiss_nan_conformance.rs` evaluates 198 vectors (all of the NaN files, plus
+`ops-minmax-nan` and `ops-rounding`): **162 pass, 0 fail, 36 not exercised**. The 36 are
+the two 8-bit float dtypes (34) and `copysign` (2), which Fuel has no CPU `Tensor` path or
+op for; they are unmeasured, not passes (registry rows GAP-352 and GAP-353).
+`ops-rounding` is what `trunc` never had: Fuel's own expansion passes all 18 `f32`
+`trunc` cells (signed zero, halves and ties, 2^23, max finite, +-inf, subnormals).
 
 ## (SUPERSEDED 2026-10-14 for the narrow dtypes; text below is the 2026-09-02 measurement at `f4952b4c`) WHAT THIS CORPUS DOES NOT COVER — measured, not assumed
 
@@ -167,6 +180,10 @@ it exists because a prose note would have gone silently stale instead.
 
 Reader: `fuel-dispatch/src/kiss_corpus.rs`. Every vector file goes through one
 `parse_vector_file`, so a second copy cannot drift from the first.
+
+Evaluator: `fuel-tensor/tests/kiss_nan_conformance.rs` (it reads these same files by
+relative path, because `fuel-dispatch` cannot dev-depend on `fuel-tensor`). A NaN-expected
+`ULP` cell is compared per KISS-CONFORM-6.8-0010; anything else bit-exact.
 
 **Adding a file here is not enough to use it.** The reader takes files by name
 through `include_str!`; a JSON dropped into this directory and not added to the

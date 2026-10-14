@@ -40,6 +40,9 @@ const SELECT: &str =
     include_str!("../../fuel-dispatch/fixtures/kiss-corpus/ops-narrow-select-nan.json");
 const TRANSC: &str =
     include_str!("../../fuel-dispatch/fixtures/kiss-corpus/ops-transcendental-nan.json");
+const MINMAX_NAN: &str =
+    include_str!("../../fuel-dispatch/fixtures/kiss-corpus/ops-minmax-nan.json");
+const ROUNDING: &str = include_str!("../../fuel-dispatch/fixtures/kiss-corpus/ops-rounding.json");
 
 #[derive(Debug, Clone)]
 struct Vector {
@@ -92,6 +95,8 @@ fn all_vectors() -> Vec<Vector> {
     let mut v = load("ops-narrow-move-nan", MOVE);
     v.extend(load("ops-narrow-select-nan", SELECT));
     v.extend(load("ops-transcendental-nan", TRANSC));
+    v.extend(load("ops-minmax-nan", MINMAX_NAN));
+    v.extend(load("ops-rounding", ROUNDING));
     v
 }
 
@@ -191,6 +196,47 @@ fn run(v: &Vector) -> Outcome {
             }
             .unwrap();
             r.realize_f16()[0].to_bits().to_be_bytes().to_vec()
+        }
+        ("max_prop" | "min_prop" | "fmax_ieee" | "fmin_ieee", "f32") => {
+            let a = f32::from_be_bytes(v.inputs[0].clone().try_into().unwrap());
+            let b = f32::from_be_bytes(v.inputs[1].clone().try_into().unwrap());
+            let ta = Tensor::from_f32(vec![a], one(), &dev).unwrap();
+            let tb = ta.const_f32_like(vec![b], one()).unwrap();
+            let r = match op {
+                "max_prop" => ta.maximum(&tb),
+                "min_prop" => ta.minimum(&tb),
+                "fmax_ieee" => ta.fmax_ieee(&tb),
+                _ => ta.fmin_ieee(&tb),
+            }
+            .unwrap();
+            r.realize_f32()[0].to_bits().to_be_bytes().to_vec()
+        }
+        ("max_prop" | "min_prop" | "fmax_ieee" | "fmin_ieee", "f64") => {
+            let a = f64::from_be_bytes(v.inputs[0].clone().try_into().unwrap());
+            let b = f64::from_be_bytes(v.inputs[1].clone().try_into().unwrap());
+            let ta = Tensor::from_f64(vec![a], one(), &dev).unwrap();
+            let tb = ta.const_f64_like(vec![b], one()).unwrap();
+            let r = match op {
+                "max_prop" => ta.maximum(&tb),
+                "min_prop" => ta.minimum(&tb),
+                "fmax_ieee" => ta.fmax_ieee(&tb),
+                _ => ta.fmin_ieee(&tb),
+            }
+            .unwrap();
+            r.realize_f64()[0].to_bits().to_be_bytes().to_vec()
+        }
+        ("floor" | "ceil" | "trunc" | "round_even", "f32") => {
+            let x = f32::from_be_bytes(v.inputs[0].clone().try_into().unwrap());
+            let t = Tensor::from_f32(vec![x], one(), &dev).unwrap();
+            // Fuel's `round` is round-half-to-even (IEEE roundeven), which is KISS's
+            // `round_even`; `trunc` is Fuel's own expansion (GAP-300), not a primitive.
+            let r = match op {
+                "floor" => t.floor(),
+                "ceil" => t.ceil(),
+                "trunc" => t.trunc(),
+                _ => t.round(),
+            };
+            r.realize_f32()[0].to_bits().to_be_bytes().to_vec()
         }
         ("exp" | "log" | "sin", "f32") => {
             let x = f32::from_be_bytes(v.inputs[0].clone().try_into().unwrap());
@@ -299,7 +345,7 @@ fn the_evaluator_can_fail_and_measures_distance() {
 #[test]
 fn nan_vectors_conform_except_the_pinned_known_failing_set() {
     let vs = all_vectors();
-    assert_eq!(vs.len(), 82, "corpus size changed: 30 + 40 + 12");
+    assert_eq!(vs.len(), 198, "corpus size changed: 30 + 40 + 12 + 44 + 72");
 
     let (mut pass, mut not_ex) = (0usize, 0usize);
     let mut failing: Vec<(&'static str, u64)> = Vec::new();
