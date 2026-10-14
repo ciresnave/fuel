@@ -35,9 +35,9 @@
 //! to be weight/moment statistics wearing an activation-calibration API —
 //! worth knowing if a third one shows up.
 
-use fuel_core::Device;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Result;
+use fuel_tensor::Device;
+use fuel_tensor::lazy::Tensor;
 
 /// Configuration for Norm Tweaking calibration.
 ///

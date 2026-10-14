@@ -27,7 +27,7 @@
 //!
 //! ```rust,no_run
 //! use fuel_datasets::vision::mnist;
-//! # fn main() -> fuel_core::Result<()> {
+//! # fn main() -> fuel_ir::error::Result<()> {
 //! let dataset = mnist::load()?; // downloads if needed
 //! println!(
 //!     "train: {} samples of {:?} ({} floats)",
@@ -48,17 +48,15 @@ pub mod nlp;
 pub mod vision;
 
 // GAP-347 PR 4 (bail! consolidation): before/after test for this consumer
-// crate family. `fuel_core::bail!` is now `fuel_ir::bail!` re-exported
+// crate family. `fuel_ir::bail!` is now `fuel_ir::bail!` re-exported
 // (the fuel-core-local `macro_rules!` duplicate was deleted), which can
 // change `$crate::Error` resolution silently across a macro-path swap.
 // This proves the error text/variant this crate actually relies on
-// (nlp/tinystories.rs's `fuel_core::bail!`) is unchanged.
+// (nlp/tinystories.rs's `fuel_ir::bail!`) is unchanged.
 #[cfg(test)]
 mod bail_consolidation_tests {
-    fn always_bails() -> fuel_core::Result<()> {
-        fuel_core::bail!(
-            "deliberate failure for the fuel-core dissolution bail! consolidation test"
-        );
+    fn always_bails() -> fuel_ir::error::Result<()> {
+        fuel_ir::bail!("deliberate failure for the fuel-core dissolution bail! consolidation test");
         #[allow(unreachable_code)]
         Ok(())
     }

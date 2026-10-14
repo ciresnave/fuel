@@ -7,9 +7,9 @@
 //! and the one this crate depends on). Here `fuel_core` is an ordinary single
 //! dependency, so the diamond does not arise.
 
-use fuel_core::decode_shape::ModelInstanceId;
-use fuel_core::lazy::WeightStorage;
 use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
+use fuel_tensor::decode_shape::ModelInstanceId;
+use fuel_tensor::lazy::WeightStorage;
 
 /// The end-to-end property, through the real predicate rather than the
 /// hasher: two models at IDENTICAL geometry must not share a held plan.

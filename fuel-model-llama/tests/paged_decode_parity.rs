@@ -12,13 +12,13 @@
 
 use std::sync::Arc;
 
-use fuel_core::Device;
-use fuel_core::inference_context::{InferenceContext, KvCache};
-use fuel_core::kv_block_pool_device::{BlockKind, DeviceKvPool};
-use fuel_core::lazy::LayerWeights;
 use fuel_ir::DType;
 use fuel_kv_pool::KvGeometry;
 use fuel_model_llama::{LlamaConfig, LlamaModel, LlamaWeights};
+use fuel_tensor::Device;
+use fuel_tensor::lazy::LayerWeights;
+use fuel_tensor::{inference_context::InferenceContext, inference_context::KvCache};
+use fuel_tensor::{kv_block_pool_device::BlockKind, kv_block_pool_device::DeviceKvPool};
 
 /// Deterministic tiny weights sized to `cfg` (mirrors lazy.rs's test builder).
 fn tiny_weights(cfg: &LlamaConfig, seed: u32) -> LlamaWeights {
@@ -33,7 +33,7 @@ fn tiny_weights(cfg: &LlamaConfig, seed: u32) -> LlamaWeights {
     };
     let kv_dim = cfg.n_kv_heads * cfg.head_dim;
     LlamaWeights {
-        instance: fuel_core::decode_shape::ModelInstanceId::next(),
+        instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
         token_embedding: vec_of(cfg.vocab_size * cfg.dim),
         layers: (0..cfg.n_layers)
             .map(|_| LayerWeights {
