@@ -29,7 +29,7 @@ vendoring (2026-10-14) added `ops-narrow-move-nan`, `ops-narrow-select-nan`,
 | `structure_key_vectors.json` | **`5b28bf51`** | `e5eec85c82754f030f1ee2f0ab4bf7829fa7e5d2` | `kiss-structure-key-vectors` |
 | `ops-narrow-move-nan.json` | **`5b28bf51`** | `c108226af556aa1c6a45e8e43b85ab29b96dec2d` | `kiss-oracle-vectors-v1.json` |
 | `ops-narrow-select-nan.json` | **`5b28bf51`** | `2efbfd259c43936d8cf6dc24b1375f6c9b5ae81b` | `kiss-oracle-vectors-v1.json` |
-| `ops-transcendental-nan.json` | **`0af5d3b6`** | `c03fe444ad019b75c12050af7d5f50eb89812db8` | `kiss-oracle-vectors-v1.json` |
+| `ops-transcendental-nan.json` | **`ff9f52f5`** (blob first at `9ea8c05d`) | `d4f8b7486ca2b082252f4d305dff8edff2db5672` | `kiss-oracle-vectors-v1.json` |
 | `ops-minmax-nan.json` | **`0af5d3b6`** | `576d69ab693f6acb835c1c91307dba26bb0390d3` | `kiss-oracle-vectors-v1.json` |
 | `ops-rounding.json` | **`0af5d3b6`** | `f8f84610bc59bffe4e77c1ea2546482668fe5d77` | `kiss-oracle-vectors-v1.json` |
 
@@ -102,8 +102,8 @@ adopt/reject` verdict table.
 Vector counts: `ops-arith` 5, `ops-minmax-ordinary` 24, `ops-minmax-signed-zero` 48
 (**77**, the 2026-09-02 set), plus `ops-narrow-move-nan` 30, `ops-narrow-select-nan` 40,
 `ops-transcendental-nan` 12 (**82**, 2026-10-14), plus `ops-minmax-nan` 44 and
-`ops-rounding` 72 (**116**, KISS `0af5d3b6`) -- **275 total**, of which 263 are
-`exact-byte` and the 12 transcendental ones are class `ULP` with a NaN expected,
+`ops-rounding` 72 (**116**, KISS `0af5d3b6`) -- **276 total** (13 transcendental, KISS#550 added tcId 13: f64 `log` of a signalling NaN), of which 263 are
+`exact-byte` and the 13 transcendental ones are class `ULP` with a NaN expected,
 compared by NaN-ness and quietness (KISS-CONFORM-6.8-0010), never by ULP distance.
 
 `ops-minmax-signed-zero.json` is about **signed-zero tie-breaking**, not NaN.
@@ -135,8 +135,8 @@ CLOSED on the corpus side**: an `fmaxf`/`fmax` mis-lifted as a NaN-propagating `
 that, replacing the tripwire that went red on vendoring `ops-minmax-nan`.
 
 **These vectors ARE now run against Fuel**, through the lazy `Tensor` on CPU:
-`fuel-tensor/tests/kiss_nan_conformance.rs` evaluates 198 vectors (all of the NaN files, plus
-`ops-minmax-nan` and `ops-rounding`): **162 pass, 0 fail, 36 not exercised**. The 36 are
+`fuel-tensor/tests/kiss_nan_conformance.rs` evaluates 199 vectors (all of the NaN files, plus
+`ops-minmax-nan` and `ops-rounding`): **163 pass, 0 fail, 36 not exercised** (on x86 Windows; the macOS leg is CI). The 36 are
 the two 8-bit float dtypes (34) and `copysign` (2), which Fuel has no CPU `Tensor` path or
 op for; they are unmeasured, not passes (registry rows GAP-352 and GAP-353).
 `ops-rounding` is what `trunc` never had: Fuel's own expansion passes all 18 `f32`
