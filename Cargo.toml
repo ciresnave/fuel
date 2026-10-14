@@ -50,7 +50,7 @@ members = [
     "fuel-transformers",
     "fuel-tensor-tools",
     "fuel-test-support",
-    "fuel-compression",
+    "fuel-posttrain",
 ]
 # What `cargo build`, `cargo check`, `cargo test` without `-p` or
 # `--workspace` will actually build. Matches the pre-restructure
@@ -92,7 +92,7 @@ default-members = [
     # plain `cargo check` must build the helper that every live test's gate now
     # routes through (GAP-157).
     "fuel-test-support",
-    "fuel-compression",
+    "fuel-posttrain",
 ]
 resolver = "2"
 
@@ -163,7 +163,7 @@ fuel-quantized = { path = "./fuel-quantized", version = "0.17.0" }
 fuel-memory = { path = "./fuel-memory", version = "0.17.0" }
 fuel-training = { path = "./fuel-training", version = "0.17.0" }
 fuel-transformers = { path = "./fuel-transformers", version = "0.17.0" }
-fuel-compression = { path = "./fuel-compression", version = "0.17.0" }
+fuel-posttrain = { path = "./fuel-posttrain", version = "0.17.0" }
 clap = { version = "4", features = ["derive"] }
 criterion = { version = "0.8", default-features = false }
 # --- CUDA FFI layer: baracuda -----------------------------------------------

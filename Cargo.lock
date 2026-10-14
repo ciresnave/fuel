@@ -1816,14 +1816,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuel-compression"
-version = "0.17.3"
-dependencies = [
- "fuel-core",
- "fuel-ir",
-]
-
-[[package]]
 name = "fuel-conv"
 version = "0.17.3"
 dependencies = [
@@ -2395,6 +2387,14 @@ dependencies = [
  "fuel-vulkan-backend",
  "half",
  "serde",
+]
+
+[[package]]
+name = "fuel-posttrain"
+version = "0.17.3"
+dependencies = [
+ "fuel-core",
+ "fuel-ir",
 ]
 
 [[package]]
