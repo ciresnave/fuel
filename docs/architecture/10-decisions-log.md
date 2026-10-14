@@ -1551,6 +1551,16 @@ entry's *why* is the interim protection. GAP-016 census: this removes the
 
 ---
 
+## 2026-10-14 — `fuel-core` is dissolved (GAP-348)
+
+**Decision (CireSnave: dissolve, not rename).** The `fuel-core` crate no longer exists. Its public surface is re-exported by the `fuel` facade, by explicit name, from the crates that own each item. The two modules that were real code rather than re-exports (`error`, `utils`) are now thin modules in the facade over `fuel-ir` / `fuel-hardware` / `fuel-cpu-backend`.
+
+**What moved where.** Tensor/Device/lazy/judge/etc. -> `fuel-tensor`; errors/layout/shape/host buffers -> `fuel-ir`; probes/transfer cost -> `fuel-hardware`; topology -> `fuel-dispatch`; `Storage` -> `fuel-backend-contract`; `has_accelerate`/`has_mkl` -> `fuel-cpu-backend`; `bail!` -> `fuel-ir`. The ten backend features are owned by `fuel-tensor`, and the facade forwards to them 1:1 (`fuel/tests/feature_forwarding.rs` derives that rule from the manifests).
+
+**Consequences.** Version 0.19.0 (breaking: `fuel-core` is gone; a downstream that named it as a dependency must name `fuel` or the owning crate). The 29 integration tests that lived under `fuel-core/tests/` moved to `fuel-tensor/tests/`; the six torch/numpy fixture files that no test referenced were deleted.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.0 - 2026-10-14
+
+### Changed
+
+- BREAKING: `fuel-core` is dissolved and deleted (GAP-348). The `fuel` facade now re-exports the former `fuel-core` surface by explicit name from the crates that own each item (`fuel-tensor`, `fuel-ir`, `fuel-hardware`, `fuel-dispatch`, `fuel-backend-contract`, `fuel-cpu-backend`), and forwards the ten backend features to `fuel-tensor` 1:1. A dependent that named `fuel-core` must name `fuel` (or the owning crate); `fuel::` paths are unchanged. The 13 remaining gated integration tests moved to `fuel-tensor/tests/` earlier (0.18.15); the six unreferenced torch/numpy fixture files under `fuel-core/tests/` are deleted. CI: the vulkan-gated compile step now names `fuel-tensor`. docs: architecture 02-layers status, decisions-log entry, README install snippet.
+
 ## v0.18.15 - 2026-10-14
 
 ### Changed

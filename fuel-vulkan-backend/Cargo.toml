@@ -65,7 +65,7 @@
 # silent early return that reports `ok` having asserted nothing.
 fuel-test-support = { workspace = true }
     fuel-conv      = { workspace = true }
-    fuel-core      = { path = "../fuel-core", features = ["vulkan"] }
+    fuel-tensor    = { workspace = true, features = ["vulkan"] }
     # Phase 7.5 G2: tests need a CpuBackendDevice handle for
     # slot-populating constructors (cpu_dev() helper).
     fuel-cpu-backend = { workspace = true }
