@@ -68,7 +68,7 @@ filtered read of this same list.
   `3e3833a0`); the two duplicates themselves are NOT yet resolved to a
   single home — that follow-up is still open and un-ticketed (no GAP row
   yet), tracked only by this struck bullet until one is filed.
-- **`fuel-compression` renamed to `fuel-posttrain`** — **collision-forced,
+- ~~**`fuel-compression` renamed to `fuel-posttrain`** — **collision-forced,
   not just a naming clarity choice**: `fuel-compression` is already owned
   on crates.io by the unrelated FuelLabs blockchain project (confirmed via
   the crates.io API, same owner as the `fuel-core` collision below), so
@@ -78,7 +78,7 @@ filtered read of this same list.
   model-definition crate (the `fuel-model-*` family is reserved for those);
   also names the lifecycle stage it actually performs, pairing with
   `fuel-training` — a real secondary benefit, but the rename exists because
-  the old name is unavailable, not primarily for that reason.
+  the old name is unavailable, not primarily for that reason.~~ Done 2026-10-13: directory, package name, workspace entry and tier file renamed; no other consumer existed (`git grep` for the old name at `1ad1097f` hit only these sites).
 - **Facade path changes:** any `pub use` the above items add, move, or
   remove in `fuel/src/lib.rs` — tracked per-item above rather than
   separately; this bullet exists so a reader checking "did anything in the
