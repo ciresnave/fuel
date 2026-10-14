@@ -454,18 +454,17 @@ mod tests {
         );
     }
 
-    /// Group minmax vectors into `(dtype, input-bytes) -> {op -> expected}`
-    /// cells, so the four ops line up per cell and can be compared.
-    fn minmax_cells(
-        corpus: &Corpus,
-    ) -> std::collections::BTreeMap<
+    /// `(dtype, input-bytes) -> {op -> expected-bytes}`: one cell per distinct
+    /// input tuple, holding each minmax op's expected output for it.
+    type MinmaxCells = std::collections::BTreeMap<
         (String, Vec<Vec<u8>>),
         std::collections::BTreeMap<String, Vec<u8>>,
-    > {
-        let mut cells: std::collections::BTreeMap<
-            (String, Vec<Vec<u8>>),
-            std::collections::BTreeMap<String, Vec<u8>>,
-        > = std::collections::BTreeMap::new();
+    >;
+
+    /// Group minmax vectors into `(dtype, input-bytes) -> {op -> expected}`
+    /// cells, so the four ops line up per cell and can be compared.
+    fn minmax_cells(corpus: &Corpus) -> MinmaxCells {
+        let mut cells = MinmaxCells::new();
         for v in &corpus.vectors {
             if matches!(
                 v.op.as_str(),
