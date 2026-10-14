@@ -1,6 +1,14 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.2 - 2026-10-14
+
+### Changed
+
+- Manifest fixes so `cargo publish --workspace` can package: `fuel-kiss-ref-backend` gains license/repository and
+  versioned path deps (`fuel-dispatch`'s optional dep on it too); `fuel-training` and `fuel-inference` gain the README.md
+  their manifests already named. No code change.
+
 ## v0.18.1 - 2026-10-14
 
 ### Changed
