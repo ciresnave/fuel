@@ -172,12 +172,32 @@ fn cpu_unary_op(s: &HostBuffer, layout: &Layout, op: UnaryOp) -> Result<HostBuff
         Neg => all_unary_neg(s, layout),
         Recip => float_unary(s, layout, |v: f32| v.recip(), |v: f64| v.recip()),
         Sqr => all_unary_sqr(s, layout),
-        Sqrt => float_unary(s, layout, |v: f32| v.sqrt(), |v: f64| v.sqrt()),
+        Sqrt => float_unary(
+            s,
+            layout,
+            |v: f32| quiet_f32(v.sqrt()),
+            |v: f64| quiet_f64(v.sqrt()),
+        ),
         Abs => all_unary_abs(s, layout),
         Relu => all_unary_relu(s, layout),
-        Floor => float_unary_identity_int(s, layout, |v: f32| v.floor(), |v: f64| v.floor()),
-        Ceil => float_unary_identity_int(s, layout, |v: f32| v.ceil(), |v: f64| v.ceil()),
-        Round => float_unary_identity_int(s, layout, |v: f32| v.round(), |v: f64| v.round()),
+        Floor => float_unary_identity_int(
+            s,
+            layout,
+            |v: f32| quiet_f32(v.floor()),
+            |v: f64| quiet_f64(v.floor()),
+        ),
+        Ceil => float_unary_identity_int(
+            s,
+            layout,
+            |v: f32| quiet_f32(v.ceil()),
+            |v: f64| quiet_f64(v.ceil()),
+        ),
+        Round => float_unary_identity_int(
+            s,
+            layout,
+            |v: f32| quiet_f32(v.round()),
+            |v: f64| quiet_f64(v.round()),
+        ),
         Sign => all_unary_sign(s, layout),
         GeluTanh => float_unary(s, layout, gelu_f32, gelu_f64),
         Gelu => float_unary(s, layout, gelu_erf_f32, gelu_erf_f64),
@@ -718,8 +738,12 @@ impl DynBackendStorage for CpuStorage {
             HostBuffer::F16(d) => {
                 HostBuffer::F16(unary_map(d, layout, |v: f16| v.powf(f16::from_f64(e))))
             }
-            HostBuffer::F32(d) => HostBuffer::F32(unary_map(d, layout, |v: f32| v.powf(e as f32))),
-            HostBuffer::F64(d) => HostBuffer::F64(unary_map(d, layout, |v: f64| v.powf(e))),
+            HostBuffer::F32(d) => {
+                HostBuffer::F32(unary_map(d, layout, |v: f32| quiet_f32(v.powf(e as f32))))
+            }
+            HostBuffer::F64(d) => {
+                HostBuffer::F64(unary_map(d, layout, |v: f64| quiet_f64(v.powf(e))))
+            }
             HostBuffer::F8E4M3(d) => HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| {
                 v.powf(F8E4M3::from_f64(e))
             })),
