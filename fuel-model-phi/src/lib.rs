@@ -12,19 +12,22 @@
 //! `load_transposed_matrix*`, or `apply_affine_rms_norm`, all textually near `PhiModel` in
 //! the original file but used by dozens of unrelated models and left in `fuel-core`.
 
-use fuel_core::inference_context::{InferenceContext, KvCache, KvSlot};
-use fuel_core::lazy::{
-    SamplingStrategy, Tensor, TokenDataHost, WeightStorage, build_decode_causal_mask,
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype, refresh_decode_session,
-    sample_logits,
+use fuel_ir::shape::Shape;
+use fuel_tensor::{DType, Device};
+use fuel_tensor::{
+    inference_context::InferenceContext, inference_context::KvCache, inference_context::KvSlot,
+};
+use fuel_tensor::{
+    lazy::SamplingStrategy, lazy::Tensor, lazy::TokenDataHost, lazy::WeightStorage,
+    lazy::build_decode_causal_mask, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix_preserve_dtype, lazy::refresh_decode_session, lazy::sample_logits,
 };
 #[cfg(feature = "cuda")]
-use fuel_core::lazy::{TokenDataBytes, captured_output_to_f32};
-use fuel_core::{DType, Device, Shape};
+use fuel_tensor::{lazy::TokenDataBytes, lazy::captured_output_to_f32};
 use serde::Deserialize;
 use std::sync::Arc;
 
-impl fuel_core::persistent_decode::PersistentDecodeModel for PhiModel {
+impl fuel_tensor::persistent_decode::PersistentDecodeModel for PhiModel {
     fn decode_n_layers(&self) -> usize {
         self.config.n_layers
     }
@@ -39,10 +42,10 @@ impl fuel_core::persistent_decode::PersistentDecodeModel for PhiModel {
         device: &Device,
         cached_len: usize,
         tokens: &[u32],
-        session: &fuel_core::inference_context::DecodeSession,
+        session: &fuel_tensor::inference_context::DecodeSession,
         _cache: &KvCache,
         _rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<fuel_core::inference_context::DecodeTokenData> {
+    ) -> fuel_ir::error::Result<fuel_tensor::inference_context::DecodeTokenData> {
         self.build_token_rope_mask_arcs(device, cached_len, tokens, session.max_seq_len())
     }
 }
@@ -137,12 +140,12 @@ pub(crate) struct PhiConfigRaw {
 }
 
 impl PhiConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing config.json: {e}")))
     }
 
-    fn resolve(self) -> fuel_core::Result<PhiConfig> {
+    fn resolve(self) -> fuel_ir::error::Result<PhiConfig> {
         // ORDERED, not a flat map: rotary_dim reads the resolved head_dim.
         let head_dim = fuel_loaders::hf_config::head_dim(
             self.head_dim,
@@ -151,7 +154,7 @@ impl PhiConfigRaw {
         )?;
         let rotary_dim = (self.partial_rotary_factor * head_dim as f64).round() as usize;
         if !rotary_dim.is_multiple_of(2) {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "PhiConfig: rotary_dim {rotary_dim} must be even (partial_rotary_factor={}, head_dim={head_dim})",
                 self.partial_rotary_factor
             );
@@ -176,7 +179,7 @@ impl PhiConfig {
     ///
     /// `PhiConfigRaw` is the wire shape; `PhiConfigRaw::resolve` applies
     /// the CHAINED derivation and the evenness check.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         PhiConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -229,7 +232,7 @@ pub struct PhiLayerWeights {
 #[derive(Debug, Clone)]
 pub struct PhiWeights {
     /// See `LlamaWeights::instance`.
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>, // [vocab_size, dim]
     pub layers: Vec<PhiLayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -247,7 +250,7 @@ pub struct PhiModel {
 impl PhiModel {
     /// See `LlamaModel::decode_shape_key`.
     pub fn decode_shape_key(&self) -> u64 {
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("phi")
             .mix_instance(self.weights.instance)
             .mix_u64(self.config.n_layers as u64)
@@ -303,7 +306,7 @@ impl PhiModel {
         rope_cos: &Tensor,
         rope_sin: &Tensor,
         mask: &Tensor,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -438,7 +441,7 @@ impl PhiModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-    ) -> fuel_core::Result<Vec<f32>> {
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -627,8 +630,8 @@ impl PhiModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
-    ) -> fuel_core::Result<Vec<f32>> {
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         let cfg = &self.config;
         let seq = tokens.len();
         let max_seq_len = cache.max_seq_len;
@@ -672,7 +675,7 @@ impl PhiModel {
                 let res = self.rebind_and_realize_prebuilt(tokens, cache, &*ctx, &*session);
                 match res {
                     Ok(logits) => Ok(logits),
-                    Err(fuel_core::Error::TopologyChanged { .. }) => {
+                    Err(fuel_ir::error::Error::TopologyChanged { .. }) => {
                         self.drop_decode_session(session, ctx);
                         self.forward_with_kv_context(tokens, cache, ctx)
                     }
@@ -691,8 +694,8 @@ impl PhiModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
-    ) -> fuel_core::Result<Vec<f32>> {
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -844,7 +847,7 @@ impl PhiModel {
             ctx.remove(*v);
         }
 
-        *session = Some(fuel_core::inference_context::DecodeSession::new(
+        *session = Some(fuel_tensor::inference_context::DecodeSession::new(
             graph,
             optimized,
             effective_target,
@@ -893,8 +896,8 @@ impl PhiModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &InferenceContext,
-        session: &Option<fuel_core::inference_context::DecodeSession>,
-    ) -> fuel_core::Result<Vec<f32>> {
+        session: &Option<fuel_tensor::inference_context::DecodeSession>,
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         // GAP-029 2b: forwards to the shared driver. Phi previously built its
         // own `SymEnv` binding ONLY `cached_len_sym`; the shared
         // `per_token_sym_env` also binds `attended_len_sym`. That extra binding
@@ -902,7 +905,7 @@ impl PhiModel {
         // `phi_attended_len_sym_is_unreferenced_negative_control`, on the SymEnv
         // path where a wrong `cached_len_sym` DOES move the logits, so the env
         // is provably live while this symbol is inert.
-        fuel_core::persistent_decode::rebind_and_realize_prebuilt(
+        fuel_tensor::persistent_decode::rebind_and_realize_prebuilt(
             self, tokens, cache, ctx, session, None,
         )
     }
@@ -931,7 +934,7 @@ impl PhiModel {
         cached_len: usize,
         tokens: &[u32],
         max_seq_len: usize,
-    ) -> fuel_core::Result<TokenDataHost> {
+    ) -> fuel_ir::error::Result<TokenDataHost> {
         let cfg = &self.config;
         let seq = tokens.len();
         // Phi's RoPE tables are sized for `rotary_dim` (partial RoPE).
@@ -956,10 +959,10 @@ impl PhiModel {
         cached_len: usize,
         tokens: &[u32],
         max_seq_len: usize,
-    ) -> fuel_core::Result<fuel_core::inference_context::DecodeTokenData> {
+    ) -> fuel_ir::error::Result<fuel_tensor::inference_context::DecodeTokenData> {
         let host = self.compute_token_rope_mask_host_data(cached_len, tokens, max_seq_len)?;
-        let upload = fuel_core::pipelined_bridge::upload_host_buffer_to_device;
-        Ok(fuel_core::inference_context::DecodeTokenData {
+        let upload = fuel_tensor::pipelined_bridge::upload_host_buffer_to_device;
+        Ok(fuel_tensor::inference_context::DecodeTokenData {
             token_ids: upload(device, host.token_ids)?,
             rope_cos: upload(device, host.rope_cos)?,
             rope_sin: upload(device, host.rope_sin)?,
@@ -980,13 +983,13 @@ impl PhiModel {
         cached_len: usize,
         tokens: &[u32],
         max_seq_len: usize,
-    ) -> fuel_core::Result<TokenDataBytes> {
+    ) -> fuel_ir::error::Result<TokenDataBytes> {
         let host = self.compute_token_rope_mask_host_data(cached_len, tokens, max_seq_len)?;
         Ok(TokenDataBytes {
-            token_ids: fuel_core::pipelined_bridge::host_buffer_to_bytes(&host.token_ids),
-            rope_cos: fuel_core::pipelined_bridge::host_buffer_to_bytes(&host.rope_cos),
-            rope_sin: fuel_core::pipelined_bridge::host_buffer_to_bytes(&host.rope_sin),
-            mask: fuel_core::pipelined_bridge::host_buffer_to_bytes(&host.mask),
+            token_ids: fuel_tensor::pipelined_bridge::host_buffer_to_bytes(&host.token_ids),
+            rope_cos: fuel_tensor::pipelined_bridge::host_buffer_to_bytes(&host.rope_cos),
+            rope_sin: fuel_tensor::pipelined_bridge::host_buffer_to_bytes(&host.rope_sin),
+            mask: fuel_tensor::pipelined_bridge::host_buffer_to_bytes(&host.mask),
             offset: None,
         })
     }
@@ -1025,9 +1028,9 @@ impl PhiModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
         captured: &mut Option<fuel_dispatch::pipelined::CapturedDecodeSession>,
-    ) -> fuel_core::Result<Vec<f32>> {
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         let cfg = &self.config;
         let seq = tokens.len();
 
@@ -1163,7 +1166,7 @@ impl PhiModel {
     /// data-Const / KV bindings from `ctx` (defensive). No-op if `None`.
     fn drop_decode_session(
         &self,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
         ctx: &mut InferenceContext,
     ) {
         if let Some(s) = session.take() {
@@ -1192,7 +1195,7 @@ impl PhiModel {
         device: &Device,
         dtype: DType,
         mut on_token: impl FnMut(u32),
-    ) -> fuel_core::Result<Vec<u32>> {
+    ) -> fuel_ir::error::Result<Vec<u32>> {
         let cfg = &self.config;
         if prompt_tokens.is_empty() {
             return Err(fuel_ir::Error::Msg(
@@ -1224,7 +1227,7 @@ impl PhiModel {
         // decode step (seq==1) builds the held graph on the FIRST token
         // (optimize once) and reuses it — skipping optimize — thereafter.
         // The session is loop-internal; the public signature is unchanged.
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // CUDA-graph capture is ON BY DEFAULT here, matching
         // `LlamaModel::generate_streaming_with_kv_context`. Measured on Llama:
@@ -1291,7 +1294,7 @@ impl PhiModel {
         eos_id: Option<u32>,
         device: &Device,
         dtype: DType,
-    ) -> fuel_core::Result<Vec<u32>> {
+    ) -> fuel_ir::error::Result<Vec<u32>> {
         self.generate_streaming_with_kv_context(
             prompt_tokens,
             max_new_tokens,
@@ -1304,14 +1307,14 @@ impl PhiModel {
     }
 
     /// Load weights from a HuggingFace Hub repo (e.g. "microsoft/phi-2").
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
 
         let config_path = repo
             .get("config.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub config.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub config.json: {e}")))?;
         let config_str = std::fs::read_to_string(&config_path)?;
         let config = PhiConfig::from_hf_json_str(&config_str)?;
 
@@ -1319,12 +1322,12 @@ impl PhiModel {
             Ok(index_path) => {
                 let index_str = std::fs::read_to_string(&index_path)?;
                 let index: serde_json::Value = serde_json::from_str(&index_str)
-                    .map_err(|e| fuel_core::Error::Msg(format!("parsing index: {e}")))?;
+                    .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing index: {e}")))?;
                 let weight_map = index
                     .get("weight_map")
                     .and_then(|x| x.as_object())
                     .ok_or_else(|| {
-                        fuel_core::Error::Msg("index.json: missing weight_map".into())
+                        fuel_ir::error::Error::Msg("index.json: missing weight_map".into())
                     })?;
                 let mut unique = std::collections::HashSet::new();
                 for v in weight_map.values() {
@@ -1334,17 +1337,17 @@ impl PhiModel {
                 }
                 let mut paths: Vec<std::path::PathBuf> = Vec::new();
                 for shard_name in unique {
-                    let p = repo
-                        .get(&shard_name)
-                        .map_err(|e| fuel_core::Error::Msg(format!("hf-hub {shard_name}: {e}")))?;
+                    let p = repo.get(&shard_name).map_err(|e| {
+                        fuel_ir::error::Error::Msg(format!("hf-hub {shard_name}: {e}"))
+                    })?;
                     paths.push(p);
                 }
                 paths
             }
             Err(_) => {
-                let p = repo
-                    .get("model.safetensors")
-                    .map_err(|e| fuel_core::Error::Msg(format!("hf-hub model.safetensors: {e}")))?;
+                let p = repo.get("model.safetensors").map_err(|e| {
+                    fuel_ir::error::Error::Msg(format!("hf-hub model.safetensors: {e}"))
+                })?;
                 vec![p]
             }
         };
@@ -1358,21 +1361,21 @@ impl PhiModel {
     /// quantized Phi-2 releases). Q4_0 tensors stay quantized on-device;
     /// other dtypes dequantize to F32 at load time. Config is derived
     /// from the GGUF metadata.
-    pub fn from_gguf<P: AsRef<std::path::Path>>(path: P) -> fuel_core::Result<Self> {
+    pub fn from_gguf<P: AsRef<std::path::Path>>(path: P) -> fuel_ir::error::Result<Self> {
         use fuel_loaders::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(&path)?;
         let meta = mc.metadata();
-        let get_u32 = |k: &str| -> fuel_core::Result<u32> {
+        let get_u32 = |k: &str| -> fuel_ir::error::Result<u32> {
             meta.get(k)
-                .ok_or_else(|| fuel_core::Error::Msg(format!("gguf metadata: missing {k:?}")))?
+                .ok_or_else(|| fuel_ir::error::Error::Msg(format!("gguf metadata: missing {k:?}")))?
                 .to_u32()
-                .map_err(|e| fuel_core::Error::Msg(format!("gguf metadata {k:?}: {e:?}")))
+                .map_err(|e| fuel_ir::error::Error::Msg(format!("gguf metadata {k:?}: {e:?}")))
         };
-        let get_f32 = |k: &str| -> fuel_core::Result<f32> {
+        let get_f32 = |k: &str| -> fuel_ir::error::Result<f32> {
             meta.get(k)
-                .ok_or_else(|| fuel_core::Error::Msg(format!("gguf metadata: missing {k:?}")))?
+                .ok_or_else(|| fuel_ir::error::Error::Msg(format!("gguf metadata: missing {k:?}")))?
                 .to_f32()
-                .map_err(|e| fuel_core::Error::Msg(format!("gguf metadata {k:?}: {e:?}")))
+                .map_err(|e| fuel_ir::error::Error::Msg(format!("gguf metadata {k:?}: {e:?}")))
         };
         // Phi-2 metadata keys (llama.cpp convention).
         let dim = get_u32("phi2.embedding_length")? as usize;
@@ -1393,7 +1396,7 @@ impl PhiModel {
             .content()
             .tensor_infos
             .get("token_embd.weight")
-            .ok_or_else(|| fuel_core::Error::Msg("gguf: missing token_embd.weight".into()))?
+            .ok_or_else(|| fuel_ir::error::Error::Msg("gguf: missing token_embd.weight".into()))?
             .shape
             .dims()[0];
 
@@ -1425,11 +1428,11 @@ impl PhiWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &PhiConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let kv_dim = cfg.n_heads * cfg.head_dim;
         let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
         if token_embedding.len() != cfg.vocab_size * cfg.dim {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "embed_tokens: {} elements, expected {}",
                 token_embedding.len(),
                 cfg.vocab_size * cfg.dim,
@@ -1550,7 +1553,7 @@ impl PhiWeights {
         let output_bias = load_tensor_as_f32(st, "lm_head.bias").ok().map(Arc::from);
 
         Ok(PhiWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
             layers,
             final_norm_gain,
@@ -1575,7 +1578,7 @@ impl PhiWeights {
     pub fn load_from_gguf<P: AsRef<std::path::Path>>(
         path: P,
         cfg: &PhiConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         use fuel_loaders::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(path)?;
         let content = mc.content();
@@ -1584,15 +1587,14 @@ impl PhiWeights {
         let data_off = content.tensor_data_offset as usize;
 
         // Extract a raw byte slice for a tensor.
-        let get_tensor_bytes = |name: &str| -> fuel_core::Result<(
+        let get_tensor_bytes = |name: &str| -> fuel_ir::error::Result<(
             &[u8],
             fuel_loaders::quantized::GgmlDType,
             Vec<usize>,
         )> {
-            let info = content
-                .tensor_infos
-                .get(name)
-                .ok_or_else(|| fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}")))?;
+            let info = content.tensor_infos.get(name).ok_or_else(|| {
+                fuel_ir::error::Error::Msg(format!("gguf: missing tensor {name:?}"))
+            })?;
             let elems = info.shape.elem_count();
             let block_size = info.ggml_dtype.block_size();
             let bytes_len = elems / block_size * info.ggml_dtype.type_size();
@@ -1606,7 +1608,7 @@ impl PhiWeights {
 
         // Load an F32 vector (for biases, norms, embedding). Dequantizes
         // if necessary.
-        let load_f32 = |name: &str| -> fuel_core::Result<Vec<f32>> {
+        let load_f32 = |name: &str| -> fuel_ir::error::Result<Vec<f32>> {
             let (bytes, dt, _dims) = get_tensor_bytes(name)?;
             dequant_gguf_bytes_to_f32(bytes, dt, name)
         };
@@ -1617,13 +1619,13 @@ impl PhiWeights {
         let load_weight = |name: &str,
                            out_features: usize,
                            in_features: usize|
-         -> fuel_core::Result<WeightStorage> {
+         -> fuel_ir::error::Result<WeightStorage> {
             let (bytes, dt, dims) = get_tensor_bytes(name)?;
             // GGUF stores weights as [out, in] — matches our Q4_0 block layout.
             let expected_elems = out_features * in_features;
             let actual_elems: usize = dims.iter().product();
             if actual_elems != expected_elems {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "gguf: tensor {name:?} has {actual_elems} elements, expected {expected_elems} for [{out_features}, {in_features}]",
                 );
             }
@@ -1659,7 +1661,7 @@ impl PhiWeights {
 
         let token_embedding = load_f32("token_embd.weight")?;
         if token_embedding.len() != cfg.vocab_size * cfg.dim {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "gguf token_embd: {} elems, expected {}×{}",
                 token_embedding.len(),
                 cfg.vocab_size,
@@ -1683,7 +1685,7 @@ impl PhiWeights {
                 load_weight(&format!("{prefix}.attn_qkv.weight"), 3 * cfg.dim, cfg.dim)?;
             let qkv_bias_vec = load_f32(&format!("{prefix}.attn_qkv.bias"))?;
             if qkv_bias_vec.len() != 3 * cfg.dim {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "gguf attn_qkv.bias: {} elems, expected {}",
                     qkv_bias_vec.len(),
                     3 * cfg.dim
@@ -1728,7 +1730,7 @@ impl PhiWeights {
         let output_bias = load_f32("output.bias").ok().map(Arc::from);
 
         Ok(PhiWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
             layers,
             final_norm_gain,
@@ -1747,13 +1749,13 @@ fn dequant_gguf_bytes_to_f32(
     bytes: &[u8],
     dt: fuel_loaders::quantized::GgmlDType,
     name: &str,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     use fuel_loaders::quantized::GgmlDType;
     use half::{bf16, f16};
     match dt {
         GgmlDType::F32 => {
             if !bytes.len().is_multiple_of(4) {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "gguf {name}: F32 byte count {} not multiple of 4",
                     bytes.len()
                 );
@@ -1767,7 +1769,7 @@ fn dequant_gguf_bytes_to_f32(
         }
         GgmlDType::F16 => {
             if !bytes.len().is_multiple_of(2) {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "gguf {name}: F16 byte count {} not multiple of 2",
                     bytes.len()
                 );
@@ -1781,7 +1783,7 @@ fn dequant_gguf_bytes_to_f32(
         }
         GgmlDType::BF16 => {
             if !bytes.len().is_multiple_of(2) {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "gguf {name}: BF16 byte count {} not multiple of 2",
                     bytes.len()
                 );
@@ -1805,7 +1807,7 @@ fn dequant_gguf_bytes_to_f32(
         GgmlDType::Q4K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ4K>(bytes)),
         GgmlDType::Q3K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ3K>(bytes)),
         GgmlDType::Q2K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ2K>(bytes)),
-        other => fuel_core::bail!(
+        other => fuel_ir::bail!(
             "gguf {name}: dequant-to-f32 for dtype {other:?} not implemented in lazy loader"
         ),
     }
@@ -1924,16 +1926,18 @@ fn partial_rope(
 impl PhiConfig {
     /// The hand-rolled parser this type used before the `serde` split, kept
     /// verbatim and test-only as the differential's oracle.
-    pub(crate) fn from_hf_json_str_legacy(json: &str) -> fuel_core::Result<Self> {
+    pub(crate) fn from_hf_json_str_legacy(json: &str) -> fuel_ir::error::Result<Self> {
         let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing config.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing config.json: {e}")))?;
 
-        let get_usize = |key: &str| -> fuel_core::Result<usize> {
+        let get_usize = |key: &str| -> fuel_ir::error::Result<usize> {
             v.get(key)
                 .and_then(|x| x.as_u64())
                 .map(|x| x as usize)
                 .ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("config.json: missing/invalid field {key:?}"))
+                    fuel_ir::error::Error::Msg(format!(
+                        "config.json: missing/invalid field {key:?}"
+                    ))
                 })
         };
         let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
@@ -1953,7 +1957,7 @@ impl PhiConfig {
         let partial_rotary_factor = get_f64("partial_rotary_factor").unwrap_or(0.4);
         let rotary_dim = (partial_rotary_factor * head_dim as f64).round() as usize;
         if !rotary_dim.is_multiple_of(2) {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "PhiConfig: rotary_dim {rotary_dim} must be even (partial_rotary_factor={partial_rotary_factor}, head_dim={head_dim})"
             );
         }
@@ -2078,7 +2082,7 @@ mod phi_config_tests {
 #[cfg(test)]
 mod phi_kv_context_tests {
     use super::*;
-    use fuel_core::inference_context::{InferenceContext, KvCache};
+    use fuel_tensor::{inference_context::InferenceContext, inference_context::KvCache};
 
     // Parity with the retired Phi `_gpu_on` family
     // (`forward_with_cache_gpu_on` prefill + decode logits;
@@ -2103,7 +2107,7 @@ mod phi_kv_context_tests {
         let d = cfg.dim;
         let kv_dim = cfg.n_heads * cfg.head_dim;
         PhiWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * d),
             layers: (0..cfg.n_layers)
                 .map(|_| PhiLayerWeights {
@@ -2454,7 +2458,7 @@ mod phi_kv_context_tests {
         )
         .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // Prefill (seq>1 → falls back to the rebuild path; NO session).
         let _ = model_d2
@@ -2468,7 +2472,7 @@ mod phi_kv_context_tests {
         // Decode ≥3 tokens through the persistent path ONLY. Snapshot the
         // thread-local optimize count just before the loop (isolated from
         // other suite threads' concurrent optimizes).
-        let opt_before = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_before = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
         let mut len_at_token2: Option<usize> = None;
 
         for (i, &tok) in decode_tokens.iter().enumerate() {
@@ -2499,7 +2503,7 @@ mod phi_kv_context_tests {
         }
 
         // (a) optimize bumped EXACTLY ONCE across all decode tokens.
-        let opt_after = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_after = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
         assert_eq!(
             opt_after - opt_before,
             1,
@@ -2583,7 +2587,7 @@ mod phi_kv_context_tests {
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev.clone());
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // Prefill, then ONE decode token to BUILD the held session.
         let _ = model
@@ -2749,7 +2753,7 @@ mod phi_kv_context_tests {
         // ---- D2 (persistent) generate loop — mirrors the wired production
         // loop. Snapshot the thread-local optimize count around the WHOLE
         // loop (prefill + decode). ----
-        let opt_before = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_before = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
 
         let dev2 = Device::cpu();
         let mut cache2 = KvCache::with_capacity(
@@ -2763,7 +2767,7 @@ mod phi_kv_context_tests {
         .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
         let mut rng2: u64 = 0;
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut d2_tokens: Vec<u32> = prompt.to_vec();
         let mut d2_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
         let mut last2 = model
@@ -2782,7 +2786,7 @@ mod phi_kv_context_tests {
             d2_step_logits.push(last2.clone());
         }
 
-        let opt_after = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_after = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
 
         // (a) Byte-identical token sequence over N greedy tokens.
         assert_eq!(
@@ -2878,7 +2882,7 @@ mod phi_kv_context_tests {
             .expect("with_capacity");
             let mut ctx = InferenceContext::new(device);
             let mut rng: u64 = 0;
-            let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+            let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
             let mut tokens: Vec<u32> = prompt.to_vec();
             let mut last = model
                 .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
@@ -2922,7 +2926,7 @@ mod phi_kv_context_tests {
 
         let alloc_before = ow_cache.alloc_id();
         let loc_before = ow_cache.device_location();
-        let opt_before_write = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_before_write = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
 
         // A distinctive, non-zero payload — n=1 position, n_kv_heads*head_dim
         // f32 values, head-major (`[1, n_kv_heads, 1, head_dim]`).
@@ -2951,7 +2955,7 @@ mod phi_kv_context_tests {
         // real, expected, cheap cost, not the thing under test. Measure the
         // DECODE STEP's own delta separately: THAT must be zero, or the write
         // forced the expensive held-plan rebuild.
-        let opt_after_write = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_after_write = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
         assert_eq!(
             opt_after_write - opt_before_write,
             1,
@@ -2969,7 +2973,7 @@ mod phi_kv_context_tests {
             )
             .expect("overwrite-run decode (post-overwrite)");
 
-        let opt_after_decode = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_after_decode = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
         assert_eq!(
             opt_after_decode, opt_after_write,
             "the decode step AFTER write_bytes must not trigger a plan rebuild — \
@@ -3037,7 +3041,7 @@ mod phi_kv_context_tests {
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev.clone());
-        let mut sess: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut sess: Option<fuel_tensor::inference_context::DecodeSession> = None;
         model
             .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut sess)
             .expect("prefill");
@@ -3166,7 +3170,7 @@ mod phi_kv_context_tests {
         )
         .expect("with_capacity ref");
         let mut ctx_ref = InferenceContext::new(dev.clone());
-        let mut sess_ref: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut sess_ref: Option<fuel_tensor::inference_context::DecodeSession> = None;
         model_ref
             .forward_with_kv_context_persistent(
                 &prompt,
@@ -3200,7 +3204,7 @@ mod phi_kv_context_tests {
         )
         .expect("with_capacity captured");
         let mut ctx_cap = InferenceContext::new(dev.clone());
-        let mut sess_cap: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut sess_cap: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
         model_cap
             .forward_with_kv_context_captured(
@@ -3271,17 +3275,15 @@ mod phi_kv_context_tests {
 }
 
 // GAP-347 PR 4 (bail! consolidation): before/after test for this consumer
-// crate family. `fuel_core::bail!` is now `fuel_ir::bail!` re-exported
+// crate family. `fuel_ir::bail!` is now `fuel_ir::bail!` re-exported
 // (the fuel-core-local `macro_rules!` duplicate was deleted), which can
 // change `$crate::Error` resolution silently across a macro-path swap.
 // This proves the error text/variant this crate actually relies on
-// (src/lib.rs's `fuel_core::bail!`) is unchanged.
+// (src/lib.rs's `fuel_ir::bail!`) is unchanged.
 #[cfg(test)]
 mod bail_consolidation_tests {
-    fn always_bails() -> fuel_core::Result<()> {
-        fuel_core::bail!(
-            "deliberate failure for the fuel-core dissolution bail! consolidation test"
-        );
+    fn always_bails() -> fuel_ir::error::Result<()> {
+        fuel_ir::bail!("deliberate failure for the fuel-core dissolution bail! consolidation test");
         #[allow(unreachable_code)]
         Ok(())
     }

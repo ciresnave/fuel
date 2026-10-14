@@ -3,7 +3,7 @@
 //! A slightly more difficult dataset that is drop-in compatible with MNIST.
 //!
 //! Taken from here: https://huggingface.co/datasets/zalando-datasets/fashion_mnist
-use fuel_core::Result;
+use fuel_ir::error::Result;
 
 /// Load the Fashion-MNIST dataset.
 ///
@@ -13,7 +13,7 @@ use fuel_core::Result;
 /// use fuel_datasets::vision::fashion_mnist;
 /// let dataset = fashion_mnist::load()?;
 /// println!("train samples: {}, dims: {:?}", dataset.train_samples, dataset.image_dims);
-/// # Ok::<(), fuel_core::Error>(())
+/// # Ok::<(), fuel_ir::error::Error>(())
 /// ```
 pub fn load() -> Result<crate::vision::Dataset> {
     crate::vision::mnist::load_mnist_like(

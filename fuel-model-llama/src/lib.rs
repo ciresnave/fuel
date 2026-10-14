@@ -21,7 +21,7 @@
 //! and `fuel-model-phi` (`TokenDataHost`/`TokenDataBytes`/`captured_output_to_f32`), and
 //! stayed in `fuel-core` on purpose: moving the generic set here would have made this crate a
 //! de facto shared-utilities dependency for the entire zoo, the opposite of "one architecture
-//! per crate". This crate calls back into `fuel_core::lazy::X` for all of them, and that
+//! per crate". This crate calls back into `fuel_tensor::lazy::X` for all of them, and that
 //! callback is itself deferred debt — see docs/session-prompts/fuel-core-dissolution-b1.md's
 //! shim-debt ledger. The Tensor bridge type and the paged/persistent-decode machinery this
 //! model is built on have no rehomed destination yet either (NOT `fuel-tensor`†, which is a
@@ -33,28 +33,33 @@
 // house idiom there, not new debt here. See fuel-core's lib.rs for the full ruling.
 #![allow(clippy::identity_op)]
 
-use fuel_core::inference_context::{InferenceContext, KvCache, KvSlot};
+use fuel_ir::shape::Shape;
 #[cfg(test)]
-use fuel_core::lazy::sample_multinomial;
-use fuel_core::lazy::{
-    LayerWeights, SamplingStrategy, SessionDisposition, Tensor, TokenDataHost, WeightStorage,
-    apply_affine_rms_norm, build_decode_causal_mask, invalidate_decode_pair_if_stale,
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype, offer_flash_decode_arm_for_region,
-    sample_logits, spec_argmax, spec_next_u01, spec_sample_cat, spec_softmax_temp,
+use fuel_tensor::lazy::sample_multinomial;
+use fuel_tensor::{DType, Device};
+use fuel_tensor::{
+    inference_context::InferenceContext, inference_context::KvCache, inference_context::KvSlot,
+};
+use fuel_tensor::{
+    lazy::LayerWeights, lazy::SamplingStrategy, lazy::SessionDisposition, lazy::Tensor,
+    lazy::TokenDataHost, lazy::WeightStorage, lazy::apply_affine_rms_norm,
+    lazy::build_decode_causal_mask, lazy::invalidate_decode_pair_if_stale,
+    lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype,
+    lazy::offer_flash_decode_arm_for_region, lazy::sample_logits, lazy::spec_argmax,
+    lazy::spec_next_u01, lazy::spec_sample_cat, lazy::spec_softmax_temp,
 };
 #[cfg(feature = "cuda")]
-use fuel_core::lazy::{TokenDataBytes, captured_output_to_f32};
-use fuel_core::{DType, Device, Shape};
+use fuel_tensor::{lazy::TokenDataBytes, lazy::captured_output_to_f32};
 use serde::Deserialize;
 use std::sync::Arc;
 
 // ===========================================================================
 // GAP-029 increment 2b — the per-model half of the shared persistent-decode
-// rebind driver. The driver itself lives in `fuel_core::persistent_decode`; these
+// rebind driver. The driver itself lives in `fuel_tensor::persistent_decode`; these
 // impls are the ONLY places the two models are allowed to differ on this path.
 // ===========================================================================
 
-impl fuel_core::persistent_decode::PersistentDecodeModel for LlamaModel {
+impl fuel_tensor::persistent_decode::PersistentDecodeModel for LlamaModel {
     fn decode_n_layers(&self) -> usize {
         self.config.n_layers
     }
@@ -68,10 +73,10 @@ impl fuel_core::persistent_decode::PersistentDecodeModel for LlamaModel {
         device: &Device,
         cached_len: usize,
         tokens: &[u32],
-        session: &fuel_core::inference_context::DecodeSession,
+        session: &fuel_tensor::inference_context::DecodeSession,
         cache: &KvCache,
         rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<fuel_core::inference_context::DecodeTokenData> {
+    ) -> fuel_ir::error::Result<fuel_tensor::inference_context::DecodeTokenData> {
         let cache_dtype = cache.dtype.unwrap_or(DType::F32);
         self.build_token_rope_mask_arcs(
             device,
@@ -85,17 +90,17 @@ impl fuel_core::persistent_decode::PersistentDecodeModel for LlamaModel {
     }
 }
 /// GAP-029 increment 3 — `LlamaModel`'s half of the shared decode **build**
-/// path. The body it used to own now lives in [`fuel_core::persistent_decode`];
+/// path. The body it used to own now lives in [`fuel_tensor::persistent_decode`];
 /// what remains here is the architecture, which is the only part that was ever
 /// Llama-specific.
-impl fuel_core::persistent_decode::DecodeBackbone for LlamaModel {
+impl fuel_tensor::persistent_decode::DecodeBackbone for LlamaModel {
     fn decode_family(&self) -> &'static str {
         "LlamaModel"
     }
 
-    fn decode_dims(&self) -> fuel_core::persistent_decode::DecodeDims {
+    fn decode_dims(&self) -> fuel_tensor::persistent_decode::DecodeDims {
         let cfg = &self.config;
-        fuel_core::persistent_decode::DecodeDims {
+        fuel_tensor::persistent_decode::DecodeDims {
             n_layers: cfg.n_layers,
             n_kv_heads: cfg.n_kv_heads,
             head_dim: cfg.head_dim,
@@ -115,12 +120,12 @@ impl fuel_core::persistent_decode::DecodeBackbone for LlamaModel {
     /// `sliding_window` hits in this file, against a positive control of hits in
     /// five sibling model files. The uniform plan emits no slice node, so
     /// Llama's decode graph is byte-identical to the pre-GAP-029 one.
-    fn decode_mask_plan(&self) -> fuel_core::persistent_decode::MaskPlan {
-        fuel_core::persistent_decode::MaskPlan::dense(self.config.n_layers)
+    fn decode_mask_plan(&self) -> fuel_tensor::persistent_decode::MaskPlan {
+        fuel_tensor::persistent_decode::MaskPlan::dense(self.config.n_layers)
     }
 
-    fn decode_rope_plan(&self) -> fuel_core::persistent_decode::RopePlan {
-        fuel_core::persistent_decode::RopePlan::single(
+    fn decode_rope_plan(&self) -> fuel_tensor::persistent_decode::RopePlan {
+        fuel_tensor::persistent_decode::RopePlan::single(
             self.config.rope_base,
             self.decode_dims().n_layers,
         )
@@ -133,8 +138,8 @@ impl fuel_core::persistent_decode::DecodeBackbone for LlamaModel {
     fn decode_apply_layer(
         &self,
         layer_idx: usize,
-        inputs: &fuel_core::persistent_decode::DecodeLayerInputs<'_>,
-    ) -> fuel_core::Result<Tensor> {
+        inputs: &fuel_tensor::persistent_decode::DecodeLayerInputs<'_>,
+    ) -> fuel_ir::error::Result<Tensor> {
         self.apply_layer_with_kv_writes(
             inputs.x,
             &self.weights.layers[layer_idx],
@@ -150,7 +155,7 @@ impl fuel_core::persistent_decode::DecodeBackbone for LlamaModel {
         )
     }
 
-    fn decode_final_norm_and_head(&self, h: &Tensor) -> fuel_core::Result<Tensor> {
+    fn decode_final_norm_and_head(&self, h: &Tensor) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let h_norm = apply_affine_rms_norm(h, &self.weights.final_norm_gain, cfg.dim, cfg.norm_eps);
         self.weights
@@ -218,12 +223,12 @@ pub(crate) struct LlamaConfigRaw {
 }
 
 impl LlamaConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing config.json: {e}")))
     }
 
-    fn resolve(self) -> fuel_core::Result<LlamaConfig> {
+    fn resolve(self) -> fuel_ir::error::Result<LlamaConfig> {
         Ok(LlamaConfig {
             vocab_size: self.vocab_size,
             dim: self.hidden_size,
@@ -264,7 +269,7 @@ impl LlamaConfig {
     /// `LlamaConfigRaw` is the wire shape under HF's own field names;
     /// `LlamaConfigRaw::resolve` applies the two cross-field defaults and
     /// renames into this crate's vocabulary.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         LlamaConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -279,10 +284,10 @@ pub struct LlamaWeights {
     /// It lives on the weights rather than the model because the weights are
     /// what a held graph bakes as `Const`s: two `LlamaModel`s sharing one
     /// `Arc` weight set may legitimately share a plan, while two with distinct
-    /// weights must not. Minted with [`fuel_core::decode_shape::ModelInstanceId::next`];
+    /// weights must not. Minted with [`fuel_tensor::decode_shape::ModelInstanceId::next`];
     /// never recycled, so no lifetime reasoning is required (see that module for
     /// the pointer-identity scheme this replaced and how it failed).
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     /// `[vocab_size, dim]` token embedding table. Stays f32 — the
     /// downstream `index_select` + graph traversal requires activation
     /// dtype to be f32, and the table is used directly as activations.
@@ -301,7 +306,7 @@ pub struct LlamaWeights {
 /// config + weights as plain vectors; each `forward` call rebuilds a
 /// graph using those vectors as `Const` leaves.
 ///
-/// This lives in `fuel_core::lazy` rather than `fuel_transformers`
+/// This lives in `fuel_tensor::lazy` rather than `fuel_transformers`
 /// because it was built directly on top of the Phase 6a bridge
 /// primitives and predates the migration of `fuel_transformers`'
 /// existing model code onto `Tensor`. Once that migration lands,
@@ -324,7 +329,7 @@ impl LlamaModel {
     /// internally; it recomputes the full attention each call. Adding
     /// a KV cache is orthogonal plumbing that doesn't change the graph
     /// structure.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> fuel_core::Result<Tensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -359,7 +364,11 @@ impl LlamaModel {
     /// Pixtral, Qwen-VL, etc.) that interleave image embeddings
     /// with text embeddings before running the LLaMA decoder
     /// stack.
-    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> fuel_core::Result<Tensor> {
+    pub fn forward_embeds(
+        &self,
+        embeds: &Tensor,
+        start_pos: usize,
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
@@ -379,11 +388,15 @@ impl LlamaModel {
         &self,
         embeds: &Tensor,
         start_pos: usize,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> fuel_core::Result<Tensor> {
+    fn run_backbone_embeds(
+        &self,
+        embeds: &Tensor,
+        start_pos: usize,
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let shape = embeds.shape();
@@ -429,7 +442,7 @@ impl LlamaModel {
         embeds: &Tensor,
         attention_mask: &Tensor,
         start_pos: usize,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let shape = embeds.shape();
@@ -477,7 +490,7 @@ impl LlamaModel {
         tokens: &[u32],
         start_pos: usize,
         anchor: &Tensor,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -530,7 +543,7 @@ impl LlamaModel {
         rope_cos: &Tensor,
         rope_sin: &Tensor,
         mask: &Tensor,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let shape = embeds.shape();
@@ -566,7 +579,7 @@ impl LlamaModel {
         rope_cos: &Tensor,
         rope_sin: &Tensor,
         mask: &Tensor,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -751,7 +764,7 @@ impl LlamaModel {
         // truth rather than asserting `None`. Always `None` for Llama — but
         // DERIVED from its mask plan, not assumed.
         attn_window: Option<usize>,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -860,7 +873,7 @@ impl LlamaModel {
     /// counterpart of [`Self::forward_with_kv_context`] (multi-session serving,
     /// paged-storage integration PS2). Feeds ONE `token` (a prompt token during
     /// prefill, or a sampled token during decode), writes its K/V into the
-    /// session's [`DeviceKvPool`](fuel_core::kv_block_pool_device::DeviceKvPool)
+    /// session's [`DeviceKvPool`](fuel_tensor::kv_block_pool_device::DeviceKvPool)
     /// blocks, attends via `Op::PagedAttn` over the session's block table, and
     /// returns last-position logits `[vocab_size]`.
     ///
@@ -898,9 +911,9 @@ impl LlamaModel {
     pub fn forward_paged_step(
         &self,
         token: u32,
-        pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
         session: fuel_kv_pool::SessionHandle,
-    ) -> fuel_core::Result<Vec<f32>> {
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
         // The activation dtype IS the pool dtype (BF16-throughout decode, Phase D
@@ -1014,7 +1027,7 @@ impl LlamaModel {
         let logits_root = logits
             .reshape(Shape::from_dims(&[cfg.vocab_size]))?
             .to_dtype(DType::F32)?;
-        fuel_core::pipelined_bridge::realize_one_as_with_initial::<f32>(
+        fuel_tensor::pipelined_bridge::realize_one_as_with_initial::<f32>(
             logits_root.graph_tensor().graph(),
             logits_root.graph_tensor().id(),
             &dev,
@@ -1024,7 +1037,7 @@ impl LlamaModel {
 
     /// **Plan-once persistent sibling of [`Self::forward_paged_step`]** — builds
     /// the paged decode graph + optimized plan ONCE (held in a
-    /// [`fuel_core::inference_context::PagedDecodeSession`]) and REUSES it for every
+    /// [`fuel_tensor::inference_context::PagedDecodeSession`]) and REUSES it for every
     /// subsequent token, paying the optimizer (Lightbulb: ~90% of per-token
     /// paged cost) once instead of per token. The paged twin of
     /// [`Self::forward_with_kv_context_persistent`].
@@ -1047,7 +1060,7 @@ impl LlamaModel {
     /// [`Self::forward_paged_step`] (the session rebuilds on the next token).
     /// f32/bf16/f16; CPU-verifiable (the win is CPU-side planning).
     ///
-    /// `plan` is the runtime flag ([`fuel_core::inference_context::PagedDecodePlan`]):
+    /// `plan` is the runtime flag ([`fuel_tensor::inference_context::PagedDecodePlan`]):
     /// `Replan` drops any held session and re-plans this token via
     /// [`Self::forward_paged_step`] (the pre-plan-once behavior, now an explicit
     /// opt-OUT); `PlanOnce` — **the driver default** — builds-once / rebinds as
@@ -1055,18 +1068,21 @@ impl LlamaModel {
     pub fn forward_paged_step_persistent(
         &self,
         token: u32,
-        pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
         session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
-        plan: fuel_core::inference_context::PagedDecodePlan,
-        decode_session: &mut Option<fuel_core::inference_context::PagedDecodeSession>,
-    ) -> fuel_core::Result<Vec<f32>> {
+        plan: fuel_tensor::inference_context::PagedDecodePlan,
+        decode_session: &mut Option<fuel_tensor::inference_context::PagedDecodeSession>,
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         // Runtime flag (`plan`). `Replan` is the pre-plan-once path: drop any
         // held session (so nothing stale lingers across a flag flip) and re-plan
         // this token via `forward_paged_step`. `PlanOnce` builds-once / rebinds
         // below. This is the exact toggle the paged driver ships (off by
         // default) and the correctness gate flips per arm.
-        if matches!(plan, fuel_core::inference_context::PagedDecodePlan::Replan) {
+        if matches!(
+            plan,
+            fuel_tensor::inference_context::PagedDecodePlan::Replan
+        ) {
             *decode_session = None;
             return self.forward_paged_step(token, pool, session);
         }
@@ -1122,7 +1138,7 @@ impl LlamaModel {
         };
         match res {
             Ok(logits) => Ok(logits),
-            Err(fuel_core::Error::TopologyChanged { .. }) => {
+            Err(fuel_ir::error::Error::TopologyChanged { .. }) => {
                 // Stale cached generation — drop the session and re-plan this
                 // token via the D1 paged path; the session rebuilds next token.
                 *decode_session = None;
@@ -1140,10 +1156,14 @@ impl LlamaModel {
     /// Takes `&mut pool` and returns owned data so the caller's `&mut` borrow
     /// ends before the (immutable) graph build.
     fn advance_paged_session(
-        pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
         session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
-    ) -> fuel_core::Result<(usize, usize, fuel_core::kv_block_pool_device::PageTableHost)> {
+    ) -> fuel_ir::error::Result<(
+        usize,
+        usize,
+        fuel_tensor::kv_block_pool_device::PageTableHost,
+    )> {
         let block_size = pool.geometry().block_size;
         let tok_pos = pool.core().filled_tokens(session).ok_or_else(|| {
             fuel_ir::Error::Msg("forward_paged_step_persistent: unknown session".to_string()).bt()
@@ -1179,11 +1199,11 @@ impl LlamaModel {
         token: u32,
         tok_pos: usize,
         linear: usize,
-        pt: &fuel_core::kv_block_pool_device::PageTableHost,
+        pt: &fuel_tensor::kv_block_pool_device::PageTableHost,
         use_device_offset: bool,
-    ) -> fuel_core::Result<fuel_core::inference_context::PagedDecodeTokenData> {
+    ) -> fuel_ir::error::Result<fuel_tensor::inference_context::PagedDecodeTokenData> {
         let cfg = &self.config;
-        let upload = fuel_core::pipelined_bridge::upload_host_buffer_to_device;
+        let upload = fuel_tensor::pipelined_bridge::upload_host_buffer_to_device;
         let token_ids = upload(dev, fuel_ir::HostBuffer::U32(vec![token]))?;
         let (cos_data, sin_data) =
             fuel_graph::build_rope_tables(cfg.rope_base, tok_pos, 1, cfg.head_dim);
@@ -1196,7 +1216,7 @@ impl LlamaModel {
         } else {
             None
         };
-        Ok(fuel_core::inference_context::PagedDecodeTokenData {
+        Ok(fuel_tensor::inference_context::PagedDecodeTokenData {
             token_ids,
             rope_cos,
             rope_sin,
@@ -1213,11 +1233,11 @@ impl LlamaModel {
     fn build_and_realize_first_paged_token(
         &self,
         token: u32,
-        pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
         session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
-        decode_session: &mut Option<fuel_core::inference_context::PagedDecodeSession>,
-    ) -> fuel_core::Result<Vec<f32>> {
+        decode_session: &mut Option<fuel_tensor::inference_context::PagedDecodeSession>,
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dev = pool.device().clone();
@@ -1347,7 +1367,7 @@ impl LlamaModel {
         sym_env.bind(write_sym, linear)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
-            fuel_core::pipelined_bridge::prebuild_optimized_env_capturing_cache::<f32>(
+            fuel_tensor::pipelined_bridge::prebuild_optimized_env_capturing_cache::<f32>(
                 &graph,
                 logits_node,
                 &dev,
@@ -1355,7 +1375,7 @@ impl LlamaModel {
                 &sym_env,
             )?;
 
-        *decode_session = Some(fuel_core::inference_context::PagedDecodeSession::new(
+        *decode_session = Some(fuel_tensor::inference_context::PagedDecodeSession::new(
             graph,
             optimized,
             effective_target,
@@ -1390,11 +1410,11 @@ impl LlamaModel {
     fn rebind_and_realize_paged_prebuilt(
         &self,
         token: u32,
-        pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
         session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
-        decode_session: &fuel_core::inference_context::PagedDecodeSession,
-    ) -> fuel_core::Result<Vec<f32>> {
+        decode_session: &fuel_tensor::inference_context::PagedDecodeSession,
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         let dev = pool.device().clone();
         // Source of truth for the offset carrier = what the graph was built
         // with (its offset_node presence), so build + rebind never disagree.
@@ -1428,9 +1448,9 @@ impl LlamaModel {
     pub fn forward_paged_step_batched(
         &self,
         tokens: &[u32],
-        pool: &mut fuel_core::kv_block_pool_device::DeviceKvPool,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
         sessions: &[fuel_kv_pool::SessionHandle],
-    ) -> fuel_core::Result<Vec<Vec<f32>>> {
+    ) -> fuel_ir::error::Result<Vec<Vec<f32>>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let k = tokens.len();
@@ -1588,7 +1608,7 @@ impl LlamaModel {
         let logits_flat = logits
             .reshape(Shape::from_dims(&[k * cfg.vocab_size]))?
             .to_dtype(DType::F32)?; // f32 for the realize (no-op under an f32 pool)
-        let flat = fuel_core::pipelined_bridge::realize_one_as_with_initial::<f32>(
+        let flat = fuel_tensor::pipelined_bridge::realize_one_as_with_initial::<f32>(
             logits_flat.graph_tensor().graph(),
             logits_flat.graph_tensor().id(),
             &dev,
@@ -1607,7 +1627,7 @@ impl LlamaModel {
         &self,
         x: &Tensor,
         layer: &LayerWeights,
-        pool: &fuel_core::kv_block_pool_device::DeviceKvPool,
+        pool: &fuel_tensor::kv_block_pool_device::DeviceKvPool,
         k_pool_ph: &Tensor,
         v_pool_ph: &Tensor,
         rope_cos: &Tensor,
@@ -1616,7 +1636,7 @@ impl LlamaModel {
         context_lens: &Tensor,
         writes: &[(fuel_kv_pool::PhysBlockId, usize)],
         scale: f32,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let xs = x.shape();
         let batch = xs.dims()[0];
@@ -1645,7 +1665,7 @@ impl LlamaModel {
     /// One transformer layer of the paged decode step: the projection/RoPE of
     /// [`Self::apply_layer_with_kv_writes`] (duplicated so the tested contiguous
     /// forward is untouched), with the KV write + sliced attention replaced by
-    /// [`DeviceKvPool::build_decode_attn`](fuel_core::kv_block_pool_device::DeviceKvPool::build_decode_attn)
+    /// [`DeviceKvPool::build_decode_attn`](fuel_tensor::kv_block_pool_device::DeviceKvPool::build_decode_attn)
     /// — write the new token's K/V into its pool slot, then `Op::PagedAttn`. The
     /// o-projection + residual + SwiGLU FFN tail is identical to the contiguous
     /// layer. `seq == batch == 1` (single-token decode step).
@@ -1654,7 +1674,7 @@ impl LlamaModel {
         &self,
         x: &Tensor,
         layer: &LayerWeights,
-        pool: &fuel_core::kv_block_pool_device::DeviceKvPool,
+        pool: &fuel_tensor::kv_block_pool_device::DeviceKvPool,
         k_pool_ph: &Tensor,
         v_pool_ph: &Tensor,
         rope_cos: &Tensor,
@@ -1664,7 +1684,7 @@ impl LlamaModel {
         phys: fuel_kv_pool::PhysBlockId,
         slot: usize,
         scale: f32,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let (batch, seq) = (1usize, 1usize);
         let (q_r, k_r, v_h) = self.project_qkv_roped(x, layer, rope_cos, rope_sin)?;
@@ -1696,7 +1716,7 @@ impl LlamaModel {
     /// **Plan-once sibling of [`Self::apply_layer_paged`]** — identical
     /// attention front half + o-projection + FFN, but the paged KV write +
     /// attend go through
-    /// [`DeviceKvPool::build_decode_attn_off`](fuel_core::kv_block_pool_device::DeviceKvPool::build_decode_attn_off)
+    /// [`DeviceKvPool::build_decode_attn_off`](fuel_tensor::kv_block_pool_device::DeviceKvPool::build_decode_attn_off)
     /// (flattened, runtime-resolved write offset) so the layer's graph is
     /// structurally IDENTICAL across decode steps — only the bound offset
     /// changes. `k_pool_ph`/`v_pool_ph` are `pool_shape_flat()` placeholders;
@@ -1707,7 +1727,7 @@ impl LlamaModel {
         &self,
         x: &Tensor,
         layer: &LayerWeights,
-        pool: &fuel_core::kv_block_pool_device::DeviceKvPool,
+        pool: &fuel_tensor::kv_block_pool_device::DeviceKvPool,
         k_pool_ph: &Tensor,
         v_pool_ph: &Tensor,
         rope_cos: &Tensor,
@@ -1717,7 +1737,7 @@ impl LlamaModel {
         write_off: Option<&Tensor>,
         write_sym: fuel_ir::SymId,
         scale: f32,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let (batch, seq) = (1usize, 1usize);
         let (q_r, k_r, v_h) = self.project_qkv_roped(x, layer, rope_cos, rope_sin)?;
@@ -1760,7 +1780,7 @@ impl LlamaModel {
         layer: &LayerWeights,
         rope_cos: &Tensor,
         rope_sin: &Tensor,
-    ) -> fuel_core::Result<(Tensor, Tensor, Tensor)> {
+    ) -> fuel_ir::error::Result<(Tensor, Tensor, Tensor)> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -1834,7 +1854,7 @@ impl LlamaModel {
         layer: &LayerWeights,
         rope_cos: &Tensor,
         rope_sin: &Tensor,
-    ) -> fuel_core::Result<(Tensor, Tensor, Tensor)> {
+    ) -> fuel_ir::error::Result<(Tensor, Tensor, Tensor)> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -1898,7 +1918,7 @@ impl LlamaModel {
     /// Shared attention **tail** — pre-FFN RmsNorm → SwiGLU (`gate.silu() * up`) →
     /// down-projection → residual. `h1` is the post-attention residual
     /// (`x + o_proj(merged_heads)`). Identical for contiguous + paged decode.
-    fn ffn_block(&self, h1: &Tensor, layer: &LayerWeights) -> fuel_core::Result<Tensor> {
+    fn ffn_block(&self, h1: &Tensor, layer: &LayerWeights) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let h1_norm = apply_affine_rms_norm(h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
         let gate = layer
@@ -1934,7 +1954,7 @@ impl LlamaModel {
     /// - Backends: CPU, CUDA, and Vulkan all run this path via the
     ///   pipelined executor + binding-table dispatch.
     ///
-    /// The [`fuel_core::decode_shape`] key a held decode plan for THIS model is
+    /// The [`fuel_tensor::decode_shape`] key a held decode plan for THIS model is
     /// baked against: family + the config values that change graph structure +
     /// this weight set's identity.
     ///
@@ -1942,7 +1962,7 @@ impl LlamaModel {
     /// not baked, so including it would forfeit plan reuse across a frequency
     /// change that is already handled correctly. See the module docs.
     pub fn decode_shape_key(&self) -> u64 {
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("llama")
             .mix_instance(self.weights.instance)
             .mix_u64(self.config.n_layers as u64)
@@ -1957,7 +1977,7 @@ impl LlamaModel {
         // layer reads which), so a session built under one plan must not be
         // reused under another. Uniform for Llama — mixed unconditionally
         // anyway, so the key cannot silently stop covering it if that changes.
-        fuel_core::persistent_decode::MaskPlan::dense(self.config.n_layers).mix_into(&mut h);
+        fuel_tensor::persistent_decode::MaskPlan::dense(self.config.n_layers).mix_into(&mut h);
         h.finish()
     }
 
@@ -1966,7 +1986,7 @@ impl LlamaModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-    ) -> fuel_core::Result<Vec<f32>> {
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         self.forward_with_kv_context_impl(tokens, cache, ctx, false, None)
     }
 
@@ -1984,7 +2004,7 @@ impl LlamaModel {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
         rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<Vec<f32>> {
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         self.forward_with_kv_context_impl(tokens, cache, ctx, false, rope_inv_freq)
     }
 
@@ -2004,7 +2024,7 @@ impl LlamaModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-    ) -> fuel_core::Result<Vec<f32>> {
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         self.forward_with_kv_context_impl(tokens, cache, ctx, true, None)
     }
 
@@ -2015,8 +2035,8 @@ impl LlamaModel {
         ctx: &mut InferenceContext,
         return_all_positions: bool,
         rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context(
+    ) -> fuel_ir::error::Result<Vec<f32>> {
+        fuel_tensor::persistent_decode::forward_with_kv_context(
             self,
             tokens,
             cache,
@@ -2054,7 +2074,7 @@ impl LlamaModel {
     /// the first `seq == 1` token builds it; later tokens rebind and skip
     /// optimize. Output is byte-identical to `forward_with_kv_context` either
     /// way. The plan self-heals on a cache resize / dtype change
-    /// ([`fuel_core::inference_context::DecodeSession::is_valid_for`]).
+    /// ([`fuel_tensor::inference_context::DecodeSession::is_valid_for`]).
     ///
     /// **One `InferenceContext` per model** — already the invariant here
     /// (speculative decoding builds a separate context for draft and target).
@@ -2063,7 +2083,7 @@ impl LlamaModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-    ) -> fuel_core::Result<Vec<f32>> {
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         // Take/put rather than borrow: the persistent forward needs `&mut ctx`
         // and `&mut Option<DecodeSession>` simultaneously. The result is bound
         // BEFORE the put so the session returns to the context on the error
@@ -2119,8 +2139,8 @@ impl LlamaModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
-    ) -> fuel_core::Result<Vec<f32>> {
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         self.forward_with_kv_context_persistent_inv_freq(tokens, cache, ctx, session, None)
     }
 
@@ -2141,10 +2161,10 @@ impl LlamaModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
         rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context_persistent(
+    ) -> fuel_ir::error::Result<Vec<f32>> {
+        fuel_tensor::persistent_decode::forward_with_kv_context_persistent(
             self,
             tokens,
             cache,
@@ -2159,11 +2179,11 @@ impl LlamaModel {
     /// `session`, and return the first token's logits. Only called for
     /// the first `seq == 1` decode token when there is no valid session.
     /// Delegates to the shared decode BUILD path — see
-    /// [`fuel_core::persistent_decode`], which now owns this body for every
+    /// [`fuel_tensor::persistent_decode`], which now owns this body for every
     /// LLaMA-shaped family. A change there is a change for all of them.
     // Only remaining caller is `forward_with_kv_context_captured`, which is
     // `#[cfg(feature = "cuda")]` — GAP-029 increment 3 moved the non-CUDA
-    // callers onto the shared seam in `fuel_core::persistent_decode`. So "never
+    // callers onto the shared seam in `fuel_tensor::persistent_decode`. So "never
     // used" on a default build is a FALSE signal from a feature-gated caller,
     // not an orphan: deleting this breaks `--features cuda`, which no gate on
     // this machine compiles cheaply.
@@ -2173,10 +2193,10 @@ impl LlamaModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
         rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<Vec<f32>> {
-        fuel_core::persistent_decode::build_and_realize_first_decode_token(
+    ) -> fuel_ir::error::Result<Vec<f32>> {
+        fuel_tensor::persistent_decode::build_and_realize_first_decode_token(
             self,
             tokens,
             cache,
@@ -2205,7 +2225,7 @@ impl LlamaModel {
     /// Mechanism (spec risk #2 (a), copy-in/copy-out into a per-call shared
     /// buffer; all-or-nothing commit, spec risk #7):
     /// 1. Allocate a shared `[K, n_kv_heads, max_seq_len, head_dim]` K/V buffer
-    ///    per layer (`fuel_core::inference_context::alloc_batched_kv`; fail-on-OOM).
+    ///    per layer (`fuel_tensor::inference_context::alloc_batched_kv`; fail-on-OOM).
     /// 2. **Copy-in:** `Op::WriteSlice` each session's `[1,…]` KV history into
     ///    its batch slot `i`.
     /// 3. **Decode:** build a batch=`K` analogue of
@@ -2234,7 +2254,7 @@ impl LlamaModel {
         last_tokens: &[u32],
         device: &Device,
         dtype: DType,
-    ) -> fuel_core::Result<Vec<Vec<f32>>> {
+    ) -> fuel_ir::error::Result<Vec<Vec<f32>>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let k = caches.len();
@@ -2302,7 +2322,7 @@ impl LlamaModel {
         let shared_shape = Shape::from_dims(&[k, n_kv_heads, max_seq_len, head_dim]);
 
         // (1) Allocate the shared [K, Hkv, msl, D] K/V buffer per layer.
-        let shared = fuel_core::inference_context::alloc_batched_kv(
+        let shared = fuel_tensor::inference_context::alloc_batched_kv(
             k,
             cfg.n_layers,
             n_kv_heads,
@@ -2532,7 +2552,7 @@ impl LlamaModel {
     /// base_cache entries) — not touched here. Called for every decode
     /// token after the first.
     /// Thin forwarder to the shared driver
-    /// ([`fuel_core::persistent_decode::rebind_and_realize_prebuilt`]). See also the
+    /// ([`fuel_tensor::persistent_decode::rebind_and_realize_prebuilt`]). See also the
     /// `PersistentDecodeModel` impls at the end of this module.
     ///
     /// GAP-029 2b: this was a hand-copied 48-line body, byte-for-byte parallel
@@ -2540,7 +2560,7 @@ impl LlamaModel {
     /// [`PersistentDecodeModel::build_decode_token_data`] below.
     // Only remaining caller is `forward_with_kv_context_captured`, which is
     // `#[cfg(feature = "cuda")]` — GAP-029 increment 3 moved the non-CUDA
-    // callers onto the shared seam in `fuel_core::persistent_decode`. So "never
+    // callers onto the shared seam in `fuel_tensor::persistent_decode`. So "never
     // used" on a default build is a FALSE signal from a feature-gated caller,
     // not an orphan: deleting this breaks `--features cuda`, which no gate on
     // this machine compiles cheaply.
@@ -2550,10 +2570,10 @@ impl LlamaModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &InferenceContext,
-        session: &Option<fuel_core::inference_context::DecodeSession>,
+        session: &Option<fuel_tensor::inference_context::DecodeSession>,
         rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<Vec<f32>> {
-        fuel_core::persistent_decode::rebind_and_realize_prebuilt(
+    ) -> fuel_ir::error::Result<Vec<f32>> {
+        fuel_tensor::persistent_decode::rebind_and_realize_prebuilt(
             self,
             tokens,
             cache,
@@ -2578,7 +2598,7 @@ impl LlamaModel {
         cache_dtype: DType,
         with_device_offset: bool,
         rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<TokenDataHost> {
+    ) -> fuel_ir::error::Result<TokenDataHost> {
         let cfg = &self.config;
         let seq = tokens.len();
 
@@ -2602,8 +2622,8 @@ impl LlamaModel {
         // until a windowed family decoded its second token. Byte-identical to the
         // dense builder for Llama's uniform plan (asserted, not assumed — see
         // `mask_variants_match_the_dense_builder_when_uniform`).
-        let mask_data = fuel_core::persistent_decode::build_decode_mask_variants(
-            &fuel_core::persistent_decode::DecodeBackbone::decode_mask_plan(self),
+        let mask_data = fuel_tensor::persistent_decode::build_decode_mask_variants(
+            &fuel_tensor::persistent_decode::DecodeBackbone::decode_mask_plan(self),
             cached_len,
             seq,
             max_seq_len,
@@ -2664,7 +2684,7 @@ impl LlamaModel {
         cache_dtype: DType,
         with_device_offset: bool,
         rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<fuel_core::inference_context::DecodeTokenData> {
+    ) -> fuel_ir::error::Result<fuel_tensor::inference_context::DecodeTokenData> {
         let host = self.compute_token_rope_mask_host_data(
             cached_len,
             tokens,
@@ -2673,7 +2693,7 @@ impl LlamaModel {
             with_device_offset,
             rope_inv_freq,
         )?;
-        let upload = fuel_core::pipelined_bridge::upload_host_buffer_to_device;
+        let upload = fuel_tensor::pipelined_bridge::upload_host_buffer_to_device;
 
         let token_ids = upload(device, host.token_ids)?;
         let rope_cos = upload(device, host.rope_cos)?;
@@ -2681,7 +2701,7 @@ impl LlamaModel {
         let mask = upload(device, host.mask)?;
         let offset = host.offset.map(|o| upload(device, o)).transpose()?;
 
-        Ok(fuel_core::inference_context::DecodeTokenData {
+        Ok(fuel_tensor::inference_context::DecodeTokenData {
             token_ids,
             rope_cos,
             rope_sin,
@@ -2704,7 +2724,7 @@ impl LlamaModel {
         cache_dtype: DType,
         with_device_offset: bool,
         rope_inv_freq: Option<&[f64]>,
-    ) -> fuel_core::Result<TokenDataBytes> {
+    ) -> fuel_ir::error::Result<TokenDataBytes> {
         let host = self.compute_token_rope_mask_host_data(
             cached_len,
             tokens,
@@ -2714,14 +2734,14 @@ impl LlamaModel {
             rope_inv_freq,
         )?;
         Ok(TokenDataBytes {
-            token_ids: fuel_core::pipelined_bridge::host_buffer_to_bytes(&host.token_ids),
-            rope_cos: fuel_core::pipelined_bridge::host_buffer_to_bytes(&host.rope_cos),
-            rope_sin: fuel_core::pipelined_bridge::host_buffer_to_bytes(&host.rope_sin),
-            mask: fuel_core::pipelined_bridge::host_buffer_to_bytes(&host.mask),
+            token_ids: fuel_tensor::pipelined_bridge::host_buffer_to_bytes(&host.token_ids),
+            rope_cos: fuel_tensor::pipelined_bridge::host_buffer_to_bytes(&host.rope_cos),
+            rope_sin: fuel_tensor::pipelined_bridge::host_buffer_to_bytes(&host.rope_sin),
+            mask: fuel_tensor::pipelined_bridge::host_buffer_to_bytes(&host.mask),
             offset: host
                 .offset
                 .as_ref()
-                .map(fuel_core::pipelined_bridge::host_buffer_to_bytes),
+                .map(fuel_tensor::pipelined_bridge::host_buffer_to_bytes),
         })
     }
 
@@ -2794,9 +2814,9 @@ impl LlamaModel {
         tokens: &[u32],
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
         captured: &mut Option<fuel_dispatch::pipelined::CapturedDecodeSession>,
-    ) -> fuel_core::Result<Vec<f32>> {
+    ) -> fuel_ir::error::Result<Vec<f32>> {
         let cfg = &self.config;
         let seq = tokens.len();
 
@@ -2990,20 +3010,20 @@ impl LlamaModel {
     /// `None`, so the ordinary "first decode token" arm rebuilds both.
     // Only remaining caller is `forward_with_kv_context_captured`, which is
     // `#[cfg(feature = "cuda")]` — GAP-029 increment 3 moved the non-CUDA
-    // callers onto the shared seam in `fuel_core::persistent_decode`. So "never
+    // callers onto the shared seam in `fuel_tensor::persistent_decode`. So "never
     // used" on a default build is a FALSE signal from a feature-gated caller,
     // not an orphan: deleting this breaks `--features cuda`, which no gate on
     // this machine compiles cheaply.
     #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     fn invalidate_decode_pair_if_stale<C>(
         &self,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
         captured: &mut Option<C>,
         ctx: &mut InferenceContext,
         seq: usize,
         max_seq_len: Option<usize>,
         cache_dtype: DType,
-        kv: &dyn fuel_core::inference_context::KvRebindSource,
+        kv: &dyn fuel_tensor::inference_context::KvRebindSource,
     ) -> SessionDisposition {
         invalidate_decode_pair_if_stale(
             session,
@@ -3025,22 +3045,22 @@ impl LlamaModel {
     /// covers the invalidation path). No-op if `session` is `None`.
     // Only remaining caller is `forward_with_kv_context_captured`, which is
     // `#[cfg(feature = "cuda")]` — GAP-029 increment 3 moved the non-CUDA
-    // callers onto the shared seam in `fuel_core::persistent_decode`. So "never
+    // callers onto the shared seam in `fuel_tensor::persistent_decode`. So "never
     // used" on a default build is a FALSE signal from a feature-gated caller,
     // not an orphan: deleting this breaks `--features cuda`, which no gate on
     // this machine compiles cheaply.
     #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     fn drop_decode_session(
         &self,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
         ctx: &mut InferenceContext,
     ) {
-        fuel_core::persistent_decode::drop_decode_session(session, ctx)
+        fuel_tensor::persistent_decode::drop_decode_session(session, ctx)
     }
 }
 
 // Phase 7.6 step 9c E.3.3.D — host-resident `LlamaKVCache` retired.
-// Its successor is `KvCache` in `fuel_core::inference_context`, which
+// Its successor is `KvCache` in `fuel_tensor::inference_context`, which
 // stores backend-erased `Arc<RwLock<fuel_memory::Storage>>` per slot
 // and supports both the legacy `with_dims` grow-by-replace shape and
 // the new `with_capacity` pre-allocated-buffer shape that
@@ -3078,7 +3098,7 @@ fn realize_kv_write_targets(
     graph: &std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>,
     targets: &[fuel_graph::NodeId],
     dtype: DType,
-) -> fuel_core::Result<()> {
+) -> fuel_ir::error::Result<()> {
     let env = fuel_ir::SymEnv::new();
     match dtype {
         DType::F32 => {
@@ -3124,11 +3144,11 @@ impl LlamaWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &LlamaConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
         let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
         if token_embedding.len() != cfg.vocab_size * cfg.dim {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "embed_tokens: {} elements, expected {} ({}×{})",
                 token_embedding.len(),
                 cfg.vocab_size * cfg.dim,
@@ -3249,7 +3269,7 @@ impl LlamaWeights {
         };
 
         Ok(LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
             layers,
             final_norm_gain: Arc::from(final_norm_gain),
@@ -3270,9 +3290,9 @@ pub struct LlamaTokenizer {
 
 impl LlamaTokenizer {
     /// Load a tokenizer from a `tokenizer.json` on disk.
-    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> fuel_core::Result<Self> {
+    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> fuel_ir::error::Result<Self> {
         let inner = tokenizers::Tokenizer::from_file(path)
-            .map_err(|e| fuel_core::Error::Msg(format!("loading tokenizer: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("loading tokenizer: {e}")))?;
         // LLaMA 3 uses `<|end_of_text|>` as EOS; LLaMA 2 uses `</s>`;
         // Qwen2 chat models use `<|im_end|>`. Try each in order and
         // take whichever the vocab has.
@@ -3284,31 +3304,31 @@ impl LlamaTokenizer {
 
     /// Load a tokenizer from a HuggingFace repo. Downloads
     /// `tokenizer.json` and calls [`Self::from_file`].
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         let path = repo
             .get("tokenizer.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub tokenizer.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub tokenizer.json: {e}")))?;
         Self::from_file(path)
     }
 
     /// Encode a prompt into token IDs. `add_special_tokens=true`
     /// prepends the model's BOS token (for LLaMA, `<|begin_of_text|>`).
-    pub fn encode(&self, text: &str, add_special_tokens: bool) -> fuel_core::Result<Vec<u32>> {
+    pub fn encode(&self, text: &str, add_special_tokens: bool) -> fuel_ir::error::Result<Vec<u32>> {
         let encoding = self
             .inner
             .encode(text, add_special_tokens)
-            .map_err(|e| fuel_core::Error::Msg(format!("tokenizer encode: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("tokenizer encode: {e}")))?;
         Ok(encoding.get_ids().to_vec())
     }
 
     /// Decode a slice of token IDs back into a string.
-    pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> fuel_core::Result<String> {
+    pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> fuel_ir::error::Result<String> {
         self.inner
             .decode(ids, skip_special_tokens)
-            .map_err(|e| fuel_core::Error::Msg(format!("tokenizer decode: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("tokenizer decode: {e}")))
     }
 
     /// The model's end-of-sequence token ID, if one was identified.
@@ -3337,7 +3357,7 @@ impl LlamaModel {
         max_new_tokens: usize,
         strategy: SamplingStrategy,
         eos_id: Option<u32>,
-    ) -> fuel_core::Result<Vec<u32>> {
+    ) -> fuel_ir::error::Result<Vec<u32>> {
         // Phase 7.6 step 9c E.3.3.D: re-pointed to the new KvCache +
         // InferenceContext + Op::WriteSlice path on CPU + F32. The
         // greedy parity test
@@ -3397,7 +3417,7 @@ impl LlamaModel {
         device: &Device,
         dtype: DType,
         mut on_token: impl FnMut(u32),
-    ) -> fuel_core::Result<Vec<u32>> {
+    ) -> fuel_ir::error::Result<Vec<u32>> {
         let cfg = &self.config;
         if prompt_tokens.is_empty() {
             return Err(fuel_ir::Error::Msg(
@@ -3431,7 +3451,7 @@ impl LlamaModel {
         // FIRST token (optimize once) and reuses it — skipping optimize —
         // for every subsequent token. The session is loop-internal; the
         // public signature is unchanged.
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // CUDA-graph capture is ON BY DEFAULT here (2026-08-06). Under `cuda`
         // the decode steps route through `forward_with_kv_context_captured`,
@@ -3513,7 +3533,7 @@ impl LlamaModel {
         eos_id: Option<u32>,
         device: &Device,
         dtype: DType,
-    ) -> fuel_core::Result<Vec<u32>> {
+    ) -> fuel_ir::error::Result<Vec<u32>> {
         self.generate_streaming_with_kv_context(
             prompt_tokens,
             max_new_tokens,
@@ -3589,7 +3609,7 @@ impl LlamaModel {
         device: &Device,
         dtype: DType,
         mut on_token: impl FnMut(u32),
-    ) -> fuel_core::Result<Vec<u32>> {
+    ) -> fuel_ir::error::Result<Vec<u32>> {
         if draft.config.vocab_size != self.config.vocab_size {
             fuel_ir::bail!(
                 "spec-decode: draft vocab {} != target vocab {}",
@@ -3843,15 +3863,15 @@ impl LlamaModel {
     ///
     /// For a 70B model this function will download ~150GB. The cache
     /// is persistent so subsequent calls are instant.
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
 
         // 1. config.json
         let config_path = repo
             .get("config.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub config.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub config.json: {e}")))?;
         let config_str = std::fs::read_to_string(&config_path)?;
         let config = LlamaConfig::from_hf_json_str(&config_str)?;
 
@@ -3860,12 +3880,12 @@ impl LlamaModel {
             Ok(index_path) => {
                 let index_str = std::fs::read_to_string(&index_path)?;
                 let index: serde_json::Value = serde_json::from_str(&index_str)
-                    .map_err(|e| fuel_core::Error::Msg(format!("parsing index: {e}")))?;
+                    .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing index: {e}")))?;
                 let weight_map = index
                     .get("weight_map")
                     .and_then(|x| x.as_object())
                     .ok_or_else(|| {
-                        fuel_core::Error::Msg("index.json: missing weight_map".into())
+                        fuel_ir::error::Error::Msg("index.json: missing weight_map".into())
                     })?;
                 let mut unique = std::collections::HashSet::new();
                 for v in weight_map.values() {
@@ -3875,18 +3895,18 @@ impl LlamaModel {
                 }
                 let mut paths: Vec<std::path::PathBuf> = Vec::new();
                 for shard_name in unique {
-                    let p = repo
-                        .get(&shard_name)
-                        .map_err(|e| fuel_core::Error::Msg(format!("hf-hub {shard_name}: {e}")))?;
+                    let p = repo.get(&shard_name).map_err(|e| {
+                        fuel_ir::error::Error::Msg(format!("hf-hub {shard_name}: {e}"))
+                    })?;
                     paths.push(p);
                 }
                 paths
             }
             Err(_) => {
                 // Single-shard model.
-                let p = repo
-                    .get("model.safetensors")
-                    .map_err(|e| fuel_core::Error::Msg(format!("hf-hub model.safetensors: {e}")))?;
+                let p = repo.get("model.safetensors").map_err(|e| {
+                    fuel_ir::error::Error::Msg(format!("hf-hub model.safetensors: {e}"))
+                })?;
                 vec![p]
             }
         };
@@ -3902,16 +3922,18 @@ impl LlamaModel {
 impl LlamaConfig {
     /// The hand-rolled parser this type used before the `serde` split, kept
     /// verbatim and test-only as the differential's oracle.
-    pub(crate) fn from_hf_json_str_legacy(json: &str) -> fuel_core::Result<Self> {
+    pub(crate) fn from_hf_json_str_legacy(json: &str) -> fuel_ir::error::Result<Self> {
         let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing config.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing config.json: {e}")))?;
 
-        let get_usize = |key: &str| -> fuel_core::Result<usize> {
+        let get_usize = |key: &str| -> fuel_ir::error::Result<usize> {
             v.get(key)
                 .and_then(|x| x.as_u64())
                 .map(|x| x as usize)
                 .ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("config.json: missing/invalid field {key:?}"))
+                    fuel_ir::error::Error::Msg(format!(
+                        "config.json: missing/invalid field {key:?}"
+                    ))
                 })
         };
         let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
@@ -4113,7 +4135,7 @@ mod generate_tests {
         };
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
         LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
@@ -4177,7 +4199,7 @@ mod generate_tests {
             }
         }
         LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: f32w.token_embedding,
             layers: f32w
                 .layers
@@ -4784,7 +4806,7 @@ mod generate_tests {
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev.clone());
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // Prefill, then ONE decode token to BUILD the held session.
         let _ = model
@@ -4983,7 +5005,7 @@ mod generate_tests {
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         let mut out = Vec::new();
         if persistent {
@@ -5018,7 +5040,7 @@ mod generate_tests {
     }
 
     /// `LlamaModel`'s decode logits, **captured on `0c04a7bb` before GAP-029
-    /// increment 3 moved the build path into `fuel_core::persistent_decode`.**
+    /// increment 3 moved the build path into `fuel_tensor::persistent_decode`.**
     ///
     /// 3 prefill tokens then 3 decode steps, flattened — see
     /// [`gap029_golden_decode`].
@@ -5096,7 +5118,7 @@ mod generate_tests {
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         model
             .forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
             .expect("prefill");
@@ -5139,7 +5161,7 @@ mod generate_tests {
     /// refactor, and the reason it is not the pre-existing suite.**
     ///
     /// Moving `LlamaModel`'s D1+D2 build path into the shared, parameterised
-    /// `fuel_core::persistent_decode` seam has **no born-red state**: "the tests
+    /// `fuel_tensor::persistent_decode` seam has **no born-red state**: "the tests
     /// still pass" is also exactly what a no-op produces. The obvious oracle —
     /// the existing decode suite — is *too loose to serve*:
     /// `forward_with_kv_context_decode_matches_non_cached_forward` asserts
@@ -5156,7 +5178,7 @@ mod generate_tests {
     /// **This test is BORN GREEN and that is stated rather than presented as
     /// evidence.** Its value is entirely in *when* the numbers were taken. Its
     /// discrimination is established separately, by the sabotage record in
-    /// `fuel_core::persistent_decode`: breaking the shared build path reddens this
+    /// `fuel_tensor::persistent_decode`: breaking the shared build path reddens this
     /// test. A golden nobody has ever seen fail is a constant, not an oracle.
     ///
     /// Both paths are asserted because the refactor parameterises **both**:
@@ -5262,7 +5284,7 @@ mod generate_tests {
         )
         .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // Prefill the D2 path (seq > 1 → the persistent path falls back to
         // the rebuild path; the session is NOT built here).
@@ -5279,7 +5301,7 @@ mod generate_tests {
         // (isolated from other suite threads' concurrent optimizes — the
         // process-global count is polluted; the thread-local delta is
         // exact). The D2 loop is the ONLY optimize source in this window.
-        let opt_before = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_before = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
         let mut len_at_token2: Option<usize> = None;
 
         for (i, &tok) in decode_tokens.iter().enumerate() {
@@ -5314,7 +5336,7 @@ mod generate_tests {
         }
 
         // (a) optimize bumped EXACTLY ONCE across all decode tokens.
-        let opt_after = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_after = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
         assert_eq!(
             opt_after - opt_before,
             1,
@@ -5728,7 +5750,7 @@ mod generate_tests {
         )
         .expect("cache");
         let mut ctx = InferenceContext::new(dev.clone());
-        let mut sess: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut sess: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut cap: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
 
         m.forward_with_kv_context_captured(&prompt, &mut cache, &mut ctx, &mut sess, &mut cap)
@@ -6056,7 +6078,7 @@ mod generate_tests {
         )
         .expect("ref cache");
         let mut x_ref = InferenceContext::new(dev.clone());
-        let mut s_ref: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut s_ref: Option<fuel_tensor::inference_context::DecodeSession> = None;
         m_ref
             .forward_with_kv_context_persistent(&prompt, &mut c_ref, &mut x_ref, &mut s_ref)
             .expect("ref prefill");
@@ -6084,7 +6106,7 @@ mod generate_tests {
         )
         .expect("cap cache");
         let mut x_cap = InferenceContext::new(dev.clone());
-        let mut s_cap: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut s_cap: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
         m_cap
             .forward_with_kv_context_captured(
@@ -6266,7 +6288,7 @@ mod generate_tests {
         )
         .expect("with_capacity persistent");
         let mut ctx_persistent = InferenceContext::new(cuda_device.clone());
-        let mut session_persistent: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session_persistent: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let _ = model_persistent
             .forward_with_kv_context_persistent(
                 &prompt,
@@ -6300,7 +6322,7 @@ mod generate_tests {
         )
         .expect("with_capacity captured");
         let mut ctx_captured = InferenceContext::new(cuda_device);
-        let mut session_captured: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session_captured: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
         let _ = model_captured
             .forward_with_kv_context_captured(
@@ -6458,7 +6480,7 @@ mod generate_tests {
         )
         .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // Prefill (seq>1 falls back to the rebuild path; no session yet).
         let _ = model_d2
@@ -6469,7 +6491,7 @@ mod generate_tests {
             "prefill (seq>1) must NOT build the held session"
         );
 
-        let opt_before = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_before = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
         let mut len_at_token2: Option<usize> = None;
 
         for (i, &tok) in decode_tokens.iter().enumerate() {
@@ -6501,7 +6523,7 @@ mod generate_tests {
         }
 
         // Optimize bumped EXACTLY ONCE across all decode tokens.
-        let opt_after = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_after = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
         assert_eq!(
             opt_after - opt_before,
             1,
@@ -6755,7 +6777,7 @@ mod generate_tests {
         // decode step through `forward_with_kv_context_persistent`). We
         // snapshot the thread-local optimize count around the WHOLE loop
         // (prefill + decode). ----
-        let opt_before = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_before = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
 
         let dev2 = Device::cpu();
         let mut cache2 = KvCache::with_capacity(
@@ -6769,7 +6791,7 @@ mod generate_tests {
         .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
         let mut rng2: u64 = 0;
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut d2_tokens: Vec<u32> = prompt.to_vec();
         let mut d2_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
         // Prefill through the persistent entry (seq>1 → falls back to the
@@ -6790,7 +6812,7 @@ mod generate_tests {
             d2_step_logits.push(last2.clone());
         }
 
-        let opt_after = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+        let opt_after = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
 
         // (a) Byte-identical token sequence over N greedy tokens. Any
         // per-token logit drift would diverge greedy argmax → this is the
@@ -7143,25 +7165,28 @@ mod generate_tests {
     #[test]
     fn gap194_window_bounds_translation() {
         assert_eq!(
-            fuel_core::lazy::flash_window_bounds(None),
+            fuel_tensor::lazy::flash_window_bounds(None),
             (None, None),
             "dense stays causal"
         );
         assert_eq!(
-            fuel_core::lazy::flash_window_bounds(Some(1)),
+            fuel_tensor::lazy::flash_window_bounds(Some(1)),
             (Some(0), Some(0))
         );
         assert_eq!(
-            fuel_core::lazy::flash_window_bounds(Some(4)),
+            fuel_tensor::lazy::flash_window_bounds(Some(4)),
             (Some(3), Some(0))
         );
         // Degenerate width must NOT silently become "no window" — `(None, None)`
         // is the one answer that would re-introduce the defect.
         assert_eq!(
-            fuel_core::lazy::flash_window_bounds(Some(0)),
+            fuel_tensor::lazy::flash_window_bounds(Some(0)),
             (Some(0), Some(0))
         );
-        assert_ne!(fuel_core::lazy::flash_window_bounds(Some(0)), (None, None));
+        assert_ne!(
+            fuel_tensor::lazy::flash_window_bounds(Some(0)),
+            (None, None)
+        );
     }
 
     /// (B) A real (f32) persistent decode session allocates the
@@ -7205,7 +7230,7 @@ mod generate_tests {
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // Prefill (seq>1 → no session), then the first decode token BUILDS
         // the held session (cached_len == prompt.len() == 3 at build).
@@ -7284,7 +7309,7 @@ mod generate_tests {
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let _ = model
             .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
             .expect("prefill");
@@ -7384,7 +7409,7 @@ mod generate_tests {
         )
         .expect("with_capacity bf16 cuda");
         let mut ctx = InferenceContext::new(cuda_device);
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let _ = model
             .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
             .expect("prefill");
@@ -7449,7 +7474,7 @@ mod generate_tests {
     ///
     /// The persistent decode (D1–D4) is CPU-verified byte-exact, but its GPU
     /// path — the non-CPU arm of
-    /// [`fuel_core::pipelined_bridge::upload_host_buffer_to_device`], which does
+    /// [`fuel_tensor::pipelined_bridge::upload_host_buffer_to_device`], which does
     /// the per-token token/RoPE/mask re-bind as a transient `Op::Const →
     /// Op::Copy { target }` H2D upload (CUDA `write_from_host`) — is wired but
     /// was never exercised live. GPU is the production decode target, so this
@@ -7532,7 +7557,7 @@ mod generate_tests {
         // assert runs for real. ----
         let cpu_step_logits: Option<Vec<Vec<f32>>> = {
             let cpu_device = Device::cpu();
-            let cpu_ref = || -> fuel_core::Result<Vec<Vec<f32>>> {
+            let cpu_ref = || -> fuel_ir::error::Result<Vec<Vec<f32>>> {
                 let mut cpu_cache = KvCache::with_capacity(
                     cfg.n_layers,
                     cfg.n_kv_heads,
@@ -7626,7 +7651,7 @@ mod generate_tests {
         .expect("cuda persistent with_capacity");
         let mut cuda_persist_ctx = InferenceContext::new(cuda_device.clone());
         let mut persist_rng: u64 = 0;
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut persist_tokens: Vec<u32> = prompt.to_vec();
         let mut persist_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
         let mut last_persist = model
@@ -7817,8 +7842,9 @@ mod generate_tests {
             head_dim: cfg.head_dim,
             elem_size: 2,
         };
-        let mut pool = fuel_core::kv_block_pool_device::DeviceKvPool::new(geom, DType::BF16, &dev)
-            .expect("bf16 DeviceKvPool");
+        let mut pool =
+            fuel_tensor::kv_block_pool_device::DeviceKvPool::new(geom, DType::BF16, &dev)
+                .expect("bf16 DeviceKvPool");
         let session = pool.core_mut().open();
         let mut paged: Vec<Vec<f32>> = Vec::new();
         for &t in &all {
@@ -7894,7 +7920,7 @@ mod generate_tests {
             config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
-        let dev = fuel_core::Device::cpu();
+        let dev = fuel_tensor::Device::cpu();
 
         // Staggered histories → DISTINCT positions {2, 5, 3} at the batched step.
         let histories: [&[u32]; 3] = [&[1, 2], &[3, 4, 5, 6, 1], &[2, 5, 1]];
@@ -7916,7 +7942,7 @@ mod generate_tests {
         let mut reference: Vec<Vec<f32>> = Vec::with_capacity(k);
         for b in 0..k {
             let mut pool =
-                fuel_core::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
+                fuel_tensor::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
                     .expect("f32 DeviceKvPool (ref)");
             let s = pool.core_mut().open();
             for &t in histories[b] {
@@ -7933,8 +7959,9 @@ mod generate_tests {
 
         // Batched: K sessions in ONE pool, primed identically per-session, then a
         // SINGLE ragged batched step over all K at once.
-        let mut pool = fuel_core::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
-            .expect("f32 DeviceKvPool (batched)");
+        let mut pool =
+            fuel_tensor::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
+                .expect("f32 DeviceKvPool (batched)");
         let mut sessions = Vec::with_capacity(k);
         for b in 0..k {
             let s = pool.core_mut().open();
@@ -7998,7 +8025,7 @@ mod generate_tests {
     /// difference is exactly the held plan.
     #[test]
     fn forward_decode_step_reuses_plan_at_the_raw_call_shape() {
-        use fuel_core::pipelined_bridge::optimize_calls_thread_local;
+        use fuel_tensor::pipelined_bridge::optimize_calls_thread_local;
 
         let cfg = LlamaConfig {
             vocab_size: 32,
@@ -8019,13 +8046,13 @@ mod generate_tests {
             config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
-        let dev = fuel_core::Device::cpu();
+        let dev = fuel_tensor::Device::cpu();
         let prompt: [u32; 3] = [1, 2, 3];
         const MSL: usize = 32;
 
         // `persistent = false` drives the raw primitive at the same call shape.
         let optimize_calls_for = |n_decode: usize, persistent: bool| -> usize {
-            let mut cache = fuel_core::inference_context::KvCache::with_capacity(
+            let mut cache = fuel_tensor::inference_context::KvCache::with_capacity(
                 cfg.n_layers,
                 cfg.n_kv_heads,
                 cfg.head_dim,
@@ -8081,7 +8108,7 @@ mod generate_tests {
         );
 
         // And the plan is actually HELD on the context, not merely fast.
-        let mut cache = fuel_core::inference_context::KvCache::with_capacity(
+        let mut cache = fuel_tensor::inference_context::KvCache::with_capacity(
             cfg.n_layers,
             cfg.n_kv_heads,
             cfg.head_dim,
@@ -8169,12 +8196,12 @@ mod generate_tests {
             config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
-        let dev = fuel_core::Device::cpu();
+        let dev = fuel_tensor::Device::cpu();
         const MSL: usize = 16;
 
         // Build a REAL held session: prefill (seq>1, no session) then one
         // decode token (seq==1, builds it).
-        let mut cache = fuel_core::inference_context::KvCache::with_capacity(
+        let mut cache = fuel_tensor::inference_context::KvCache::with_capacity(
             cfg.n_layers,
             cfg.n_kv_heads,
             cfg.head_dim,
@@ -8184,7 +8211,7 @@ mod generate_tests {
         )
         .expect("kv cache");
         let mut ctx = InferenceContext::new(dev.clone());
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         model
             .forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
             .expect("prefill");
@@ -8274,7 +8301,7 @@ mod generate_tests {
             .forward_with_kv_context_persistent(&[6], &mut cache, &mut ctx, &mut session)
             .expect("rebuild the session after invalidation");
         assert!(session.is_some(), "precondition: session rebuilt");
-        let fresh = fuel_core::inference_context::KvCache::with_capacity(
+        let fresh = fuel_tensor::inference_context::KvCache::with_capacity(
             cfg.n_layers,
             cfg.n_kv_heads,
             cfg.head_dim,
@@ -8341,7 +8368,7 @@ mod generate_tests {
         // behind an optimization. `with_dims` + `set_layer` reaches the one
         // state the storage bytes cannot describe: residency this cache never
         // measured. ---
-        let mut unprovable = fuel_core::inference_context::KvCache::with_dims(
+        let mut unprovable = fuel_tensor::inference_context::KvCache::with_dims(
             cfg.n_layers,
             cfg.n_kv_heads,
             cfg.head_dim,
@@ -8352,15 +8379,15 @@ mod generate_tests {
             let layer = fresh.layer(li).expect("fresh cache has every layer");
             unprovable.set_layer(
                 li,
-                fuel_core::inference_context::KvLayer {
+                fuel_tensor::inference_context::KvLayer {
                     k: std::sync::Arc::clone(&layer.k),
                     v: std::sync::Arc::clone(&layer.v),
                     k_layout: layer.k_layout.clone(),
                     v_layout: layer.v_layout.clone(),
                     k_version: 0,
                     v_version: 0,
-                    k_authority: fuel_core::inference_context::AuthorityState::Host,
-                    v_authority: fuel_core::inference_context::AuthorityState::Host,
+                    k_authority: fuel_tensor::inference_context::AuthorityState::Host,
+                    v_authority: fuel_tensor::inference_context::AuthorityState::Host,
                 },
             );
         }
@@ -8381,7 +8408,7 @@ mod generate_tests {
         assert_eq!(
             d,
             SessionDisposition::Dropped(Some(
-                fuel_core::inference_context::RebindRefusal::ResidencyUnknown,
+                fuel_tensor::inference_context::RebindRefusal::ResidencyUnknown,
             )),
             "an unprovable residency must be REFUSED, and refused for that reason — \
              a guard that refuses by accident is not a guard",
@@ -8417,7 +8444,7 @@ mod generate_tests {
     /// spend their full budget.
     #[test]
     fn contiguous_generate_reuses_decode_plan_by_default() {
-        use fuel_core::pipelined_bridge::optimize_calls_thread_local;
+        use fuel_tensor::pipelined_bridge::optimize_calls_thread_local;
 
         let cfg = LlamaConfig {
             vocab_size: 32,
@@ -8438,7 +8465,7 @@ mod generate_tests {
             config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
-        let dev = fuel_core::Device::cpu();
+        let dev = fuel_tensor::Device::cpu();
         let prompt: [u32; 3] = [1, 2, 3];
 
         let optimize_calls_for = |max_new: usize| -> usize {
@@ -8515,7 +8542,7 @@ mod generate_tests {
     #[ignore = "live GPU (CUDA); run via scripts/gpu-run.ps1"]
     #[cfg(feature = "cuda")]
     fn paged_decode_node_placement_report_cuda() {
-        use fuel_core::inference_context::PagedDecodePlan;
+        use fuel_tensor::inference_context::PagedDecodePlan;
         use std::collections::BTreeMap;
 
         let cfg = LlamaConfig {
@@ -8539,7 +8566,7 @@ mod generate_tests {
         };
         // `Device::new_cuda` was retired; `cuda_backend::new_device` carries its
         // ergonomics (see that module's header).
-        let dev = match fuel_core::cuda_backend::new_device(0) {
+        let dev = match fuel_tensor::cuda_backend::new_device(0) {
             Ok(d) => d,
             Err(e) => {
                 return fuel_test_support::hardware::skip(
@@ -8559,7 +8586,7 @@ mod generate_tests {
             head_dim: cfg.head_dim,
             elem_size: 4,
         };
-        let mut pool = fuel_core::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
+        let mut pool = fuel_tensor::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
             .expect("CUDA DeviceKvPool");
         let s = pool.core_mut().open();
         for &t in &[1u32, 2, 3, 4, 5, 6, 7] {
@@ -8567,7 +8594,7 @@ mod generate_tests {
         }
 
         // Build the held plan on CUDA — this is the real production decode plan.
-        let mut ds: Option<fuel_core::inference_context::PagedDecodeSession> = None;
+        let mut ds: Option<fuel_tensor::inference_context::PagedDecodeSession> = None;
         model
             .forward_paged_step_persistent(8, &mut pool, s, 8, PagedDecodePlan::PlanOnce, &mut ds)
             .expect("CUDA persistent decode token");
@@ -8703,7 +8730,7 @@ mod generate_tests {
         );
 
         // Build a real held paged session for model A on CPU.
-        let dev = fuel_core::Device::cpu();
+        let dev = fuel_tensor::Device::cpu();
         let geom = fuel_kv_pool::KvGeometry {
             n_layers: cfg.n_layers,
             num_blocks: 32,
@@ -8712,7 +8739,7 @@ mod generate_tests {
             head_dim: cfg.head_dim,
             elem_size: 4,
         };
-        let mut pool = fuel_core::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
+        let mut pool = fuel_tensor::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
             .expect("f32 DeviceKvPool");
         let handle = pool.core_mut().open();
         for &t in &[1u32, 2, 3] {
@@ -8720,14 +8747,14 @@ mod generate_tests {
                 .forward_paged_step(t, &mut pool, handle)
                 .expect("prime");
         }
-        let mut ds: Option<fuel_core::inference_context::PagedDecodeSession> = None;
+        let mut ds: Option<fuel_tensor::inference_context::PagedDecodeSession> = None;
         model_a
             .forward_paged_step_persistent(
                 4,
                 &mut pool,
                 handle,
                 8,
-                fuel_core::inference_context::PagedDecodePlan::PlanOnce,
+                fuel_tensor::inference_context::PagedDecodePlan::PlanOnce,
                 &mut ds,
             )
             .expect("model A builds a held paged plan");
@@ -8749,7 +8776,7 @@ mod generate_tests {
         // `rebind_and_realize_paged_prebuilt` never re-binds the pool buffers,
         // so this plan would keep reading the first pool's blocks — the paged
         // twin of the cross-request contamination the contiguous path had.
-        let pool_b = fuel_core::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
+        let pool_b = fuel_tensor::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
             .expect("a second pool of IDENTICAL geometry");
         assert_ne!(
             pool_b.alloc_id(),
@@ -8847,7 +8874,7 @@ mod generate_tests {
         // ---- Request A: prime a cache and BUILD a held plan welded to it. ----
         let mut cache_a = mk_cache();
         let mut ctx = InferenceContext::new(dev.clone());
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         model
             .forward_with_kv_context_persistent(&prompt_a, &mut cache_a, &mut ctx, &mut session)
             .expect("A prefill");
@@ -9004,7 +9031,7 @@ mod generate_tests {
 
         let mut cache_a = mk(8);
         let mut ctx = InferenceContext::new(dev.clone());
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         model
             .forward_with_kv_context_persistent(&[1, 2, 3], &mut cache_a, &mut ctx, &mut session)
             .expect("A prefill");
@@ -9091,14 +9118,19 @@ mod generate_tests {
                 model.decode_shape_key(),
                 wrong_heads.alloc_id(),
             ),
-            fuel_core::inference_context::PlanValidity::AllocationChanged,
+            fuel_tensor::inference_context::PlanValidity::AllocationChanged,
             "precondition: the structural key must NOT catch this — if it did, \
              the guard would never be consulted and the assertion below would \
              pass vacuously",
         );
         assert_eq!(
             s.rebind_kv(&wrong_heads),
-            Err(fuel_core::inference_context::RebindRefusal::StorageDiffers { layer: 0, which: 0 }),
+            Err(
+                fuel_tensor::inference_context::RebindRefusal::StorageDiffers {
+                    layer: 0,
+                    which: 0
+                }
+            ),
             "the guard must refuse storage of the wrong EXTENT, and name it — \
              splicing it in would give the baked graph a buffer whose bytes do \
              not match the `Const` shape it was optimized around",
@@ -9146,7 +9178,7 @@ mod generate_tests {
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev.clone());
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         model
             .forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
@@ -9159,7 +9191,7 @@ mod generate_tests {
         // and a NodeId comparison would report "reused" for a rebuild —
         // making both assertions below silently vacuous.
         let built = std::sync::Arc::clone(session.as_ref().expect("held plan").graph());
-        let reused = |s: &Option<fuel_core::inference_context::DecodeSession>| {
+        let reused = |s: &Option<fuel_tensor::inference_context::DecodeSession>| {
             s.as_ref()
                 .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
                 .unwrap_or(false)
@@ -9209,7 +9241,7 @@ mod generate_tests {
     /// wrong slots and diverges from the reference. CPU f32.
     #[test]
     fn plan_once_second_token_reuses_graph() {
-        use fuel_core::pipelined_bridge::optimize_calls_thread_local;
+        use fuel_tensor::pipelined_bridge::optimize_calls_thread_local;
 
         let cfg = LlamaConfig {
             vocab_size: 32,
@@ -9230,7 +9262,7 @@ mod generate_tests {
             config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
-        let dev = fuel_core::Device::cpu();
+        let dev = fuel_tensor::Device::cpu();
 
         let (n_layers, n_kv_heads, head_dim) = (cfg.n_layers, cfg.n_kv_heads, cfg.head_dim);
         let geom = || fuel_kv_pool::KvGeometry {
@@ -9253,7 +9285,7 @@ mod generate_tests {
 
         // Reference: re-planning `forward_paged_step` from the primed state.
         let mut ref_pool =
-            fuel_core::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
+            fuel_tensor::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
                 .expect("f32 DeviceKvPool (ref)");
         let rs = ref_pool.core_mut().open();
         for &t in &history {
@@ -9270,8 +9302,9 @@ mod generate_tests {
 
         // Persistent: prime identically via the re-planning path, then decode
         // the two tokens via the plan-once persistent path.
-        let mut pool = fuel_core::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
-            .expect("f32 DeviceKvPool (persistent)");
+        let mut pool =
+            fuel_tensor::kv_block_pool_device::DeviceKvPool::new(geom(), DType::F32, &dev)
+                .expect("f32 DeviceKvPool (persistent)");
         let s = pool.core_mut().open();
         for &t in &history {
             model
@@ -9279,7 +9312,7 @@ mod generate_tests {
                 .expect("persistent prime");
         }
 
-        let mut ds: Option<fuel_core::inference_context::PagedDecodeSession> = None;
+        let mut ds: Option<fuel_tensor::inference_context::PagedDecodeSession> = None;
 
         // ---- Token 0: builds + optimizes the plan ONCE. ----
         let before_build = optimize_calls_thread_local();
@@ -9289,7 +9322,7 @@ mod generate_tests {
                 &mut pool,
                 s,
                 CAP,
-                fuel_core::inference_context::PagedDecodePlan::PlanOnce,
+                fuel_tensor::inference_context::PagedDecodePlan::PlanOnce,
                 &mut ds,
             )
             .expect("persistent decode 0 (build)");
@@ -9309,7 +9342,7 @@ mod generate_tests {
                 &mut pool,
                 s,
                 CAP,
-                fuel_core::inference_context::PagedDecodePlan::PlanOnce,
+                fuel_tensor::inference_context::PagedDecodePlan::PlanOnce,
                 &mut ds,
             )
             .expect("persistent decode 1 (rebind)");
@@ -9433,12 +9466,12 @@ mod generate_tests {
         history: &[u32],
         decode: &[u32],
         cap: usize,
-        plan_a: fuel_core::inference_context::PagedDecodePlan,
-        plan_b: fuel_core::inference_context::PagedDecodePlan,
+        plan_a: fuel_tensor::inference_context::PagedDecodePlan,
+        plan_b: fuel_tensor::inference_context::PagedDecodePlan,
         dev: &Device,
-    ) -> fuel_core::Result<PagedGateReport> {
-        use fuel_core::pipelined_bridge::optimize_calls_thread_local;
-        type Pool = fuel_core::kv_block_pool_device::DeviceKvPool;
+    ) -> fuel_ir::error::Result<PagedGateReport> {
+        use fuel_tensor::pipelined_bridge::optimize_calls_thread_local;
+        type Pool = fuel_tensor::kv_block_pool_device::DeviceKvPool;
 
         // Two pools, IDENTICALLY primed — so plan-once (A) and re-planning (B)
         // can only differ if the plan-once rebind is wrong.
@@ -9453,8 +9486,8 @@ mod generate_tests {
             model.forward_paged_step(t, &mut pool_b, sb)?;
         }
 
-        let mut ds_a: Option<fuel_core::inference_context::PagedDecodeSession> = None;
-        let mut ds_b: Option<fuel_core::inference_context::PagedDecodeSession> = None;
+        let mut ds_a: Option<fuel_tensor::inference_context::PagedDecodeSession> = None;
+        let mut ds_b: Option<fuel_tensor::inference_context::PagedDecodeSession> = None;
         let mut steps = Vec::with_capacity(decode.len());
         for &tok in decode {
             let hits_before = ds_a.as_ref().map(|s| s.realize_count()).unwrap_or(0);
@@ -9573,7 +9606,7 @@ mod generate_tests {
     /// via the shared checker.
     #[test]
     fn plan_once_paged_matches_replanning_with_hit_asserted() {
-        use fuel_core::inference_context::PagedDecodePlan;
+        use fuel_tensor::inference_context::PagedDecodePlan;
         let (model, geom, dev) = paged_gate_fixture();
         // History 7 → decode lands at pos 7,8,9,10. The block boundary
         // (block_size 4) falls between step 0 (pos 7, fills block 1) and step 1
@@ -9605,7 +9638,7 @@ mod generate_tests {
     /// the MISS invariant).
     #[test]
     fn plan_once_gate_has_teeth() {
-        use fuel_core::inference_context::PagedDecodePlan;
+        use fuel_tensor::inference_context::PagedDecodePlan;
         let (model, geom, dev) = paged_gate_fixture();
         let history: [u32; 7] = [1, 2, 3, 4, 5, 6, 7];
         let decode: [u32; 4] = [8, 9, 10, 11];
@@ -9656,7 +9689,7 @@ mod generate_tests {
     /// session must satisfy the full gate (identity + HIT + MISS).
     #[test]
     fn plan_once_paged_ragged_matches_replanning() {
-        use fuel_core::inference_context::PagedDecodePlan;
+        use fuel_tensor::inference_context::PagedDecodePlan;
         let (model, geom, dev) = paged_gate_fixture();
         const CAP: usize = 8;
         for &hist_len in &[2usize, 5, 3] {
@@ -9732,7 +9765,7 @@ mod generate_tests {
         // success.
         let cpu_step_logits: Option<Vec<Vec<f32>>> = {
             let cpu_device = Device::cpu();
-            let cpu_ref = || -> fuel_core::Result<Vec<Vec<f32>>> {
+            let cpu_ref = || -> fuel_ir::error::Result<Vec<Vec<f32>>> {
                 let mut cpu_cache = KvCache::with_capacity(
                     cfg.n_layers,
                     cfg.n_kv_heads,
@@ -9817,7 +9850,7 @@ mod generate_tests {
         .expect("vk persistent with_capacity");
         let mut vk_persist_ctx = InferenceContext::new(vk_device.clone());
         let mut persist_rng: u64 = 0;
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut persist_tokens: Vec<u32> = prompt.to_vec();
         let mut persist_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
         let mut last_persist = model
@@ -9995,7 +10028,7 @@ mod generate_tests {
         .unwrap();
         let mut ctx2 = InferenceContext::new(dev.clone());
         let mut rng2 = 0u64;
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut last2 = model
             .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
             .unwrap();
@@ -10098,7 +10131,7 @@ mod generate_tests {
         .unwrap();
         let mut ctx2 = InferenceContext::new(dev.clone());
         let mut rng2 = 0u64;
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
         let mut last2 = model
             .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
             .unwrap();
@@ -10340,7 +10373,7 @@ mod generate_tests {
         let mut opt_prefill_delta = 0usize;
         let mut opt_decode_delta = 0usize;
         if run_d2 {
-            let opt_before_prefill = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+            let opt_before_prefill = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
             // Variant-bake telemetry: how many same-device fused variants (e.g.
             // the CUDA flash-decode arm) the optimizer actually PICKED across
             // the D2 build. > 0 confirms the flash arm fired (was baked to the
@@ -10356,7 +10389,7 @@ mod generate_tests {
             )
             .expect("d2 with_capacity");
             let mut ctx2 = InferenceContext::new(device.clone());
-            let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+            let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
             let t_pre2 = Instant::now();
             let mut last2 = model
                 .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
@@ -10368,7 +10401,7 @@ mod generate_tests {
                 session.is_none(),
                 "prefill (seq>1) must NOT build the held session"
             );
-            let opt_after_prefill = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+            let opt_after_prefill = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
             let mut rng2 = 0u64;
             for i in 0..n {
                 let next = sample_logits(&last2, strategy, &mut rng2);
@@ -10389,7 +10422,7 @@ mod generate_tests {
                 eprintln!("  D2 tok {}/{n}: {:.1} ms", i + 1, dt.as_secs_f64() * 1e3);
             }
             assert!(session.is_some(), "held session survives the decode loop");
-            let opt_after_decode = fuel_core::pipelined_bridge::optimize_calls_thread_local();
+            let opt_after_decode = fuel_tensor::pipelined_bridge::optimize_calls_thread_local();
             let vb_after = fuel_dispatch::variant_bake::variant_bakes_thread_local();
             opt_prefill_delta = opt_after_prefill.wrapping_sub(opt_before_prefill);
             opt_decode_delta = opt_after_decode.wrapping_sub(opt_after_prefill);
@@ -10447,7 +10480,7 @@ mod generate_tests {
                 )
                 .expect("d3 with_capacity");
                 let mut ctx3 = InferenceContext::new(device.clone());
-                let mut session3: Option<fuel_core::inference_context::DecodeSession> = None;
+                let mut session3: Option<fuel_tensor::inference_context::DecodeSession> = None;
                 let mut captured3: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
                 let t_pre3 = Instant::now();
                 let mut last3 = model
@@ -10855,7 +10888,7 @@ mod generate_tests {
             Some(m) => m,
             None => return,
         };
-        let cuda_device = match fuel_core::cuda_backend::new_device(0) {
+        let cuda_device = match fuel_tensor::cuda_backend::new_device(0) {
             Ok(d) => d,
             Err(e) => {
                 return fuel_test_support::hardware::skip(
@@ -10909,7 +10942,7 @@ mod generate_tests {
             Some(m) => m,
             None => return,
         };
-        let cuda_device = match fuel_core::cuda_backend::new_device(0) {
+        let cuda_device = match fuel_tensor::cuda_backend::new_device(0) {
             Ok(d) => d,
             Err(e) => {
                 return fuel_test_support::hardware::skip(
@@ -11055,7 +11088,7 @@ mod generate_tests {
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(device);
-        let mut session: Option<fuel_core::inference_context::DecodeSession> = None;
+        let mut session: Option<fuel_tensor::inference_context::DecodeSession> = None;
 
         // Prefill (seq>1 → no session).
         let _ = model
@@ -11848,7 +11881,7 @@ mod gqa_tests {
         };
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
         LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
@@ -11934,7 +11967,7 @@ mod gqa_tests {
 #[cfg(test)]
 mod llama_tests {
     use super::*;
-    use fuel_core::Shape;
+    use fuel_ir::shape::Shape;
 
     /// Build a set of tiny LLaMA weights filled with deterministic,
     /// small, "random" values. Respects `cfg.n_kv_heads` so GQA-style
@@ -11951,7 +11984,7 @@ mod llama_tests {
         };
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
         LlamaWeights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
@@ -12146,7 +12179,7 @@ mod llama_tests {
         let embed = Tensor::from_f32(
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let token_ids = embed
@@ -12214,7 +12247,7 @@ mod llama_tests {
         let embed = Tensor::from_f32(
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let token_ids = embed
@@ -12267,15 +12300,15 @@ mod llama_tests {
         let rank2 = Tensor::from_f32(
             vec![0.0; 4 * cfg.dim],
             Shape::from_dims(&[4, cfg.dim]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
 
         /// The error under any `Context` / `WithBacktrace` wrapping.
-        fn root(e: &fuel_core::Error) -> &fuel_core::Error {
+        fn root(e: &fuel_ir::error::Error) -> &fuel_ir::error::Error {
             match e {
-                fuel_core::Error::Context { inner, .. }
-                | fuel_core::Error::WithBacktrace { inner, .. } => root(inner),
+                fuel_ir::error::Error::Context { inner, .. }
+                | fuel_ir::error::Error::WithBacktrace { inner, .. } => root(inner),
                 other => other,
             }
         }
@@ -12303,7 +12336,7 @@ mod llama_tests {
             assert!(
                 matches!(
                     root(&e),
-                    fuel_core::Error::UnexpectedNumberOfDims {
+                    fuel_ir::error::Error::UnexpectedNumberOfDims {
                         expected: 3,
                         got: 2,
                         ..
@@ -12317,17 +12350,15 @@ mod llama_tests {
 }
 
 // GAP-347 PR 4 (bail! consolidation): before/after test for this consumer
-// crate family. `fuel_core::bail!` is now `fuel_ir::bail!` re-exported
+// crate family. `fuel_ir::bail!` is now `fuel_ir::bail!` re-exported
 // (the fuel-core-local `macro_rules!` duplicate was deleted), which can
 // change `$crate::Error` resolution silently across a macro-path swap.
 // This proves the error text/variant this crate actually relies on
-// (src/lib.rs's `fuel_core::bail!`) is unchanged.
+// (src/lib.rs's `fuel_ir::bail!`) is unchanged.
 #[cfg(test)]
 mod bail_consolidation_tests {
-    fn always_bails() -> fuel_core::Result<()> {
-        fuel_core::bail!(
-            "deliberate failure for the fuel-core dissolution bail! consolidation test"
-        );
+    fn always_bails() -> fuel_ir::error::Result<()> {
+        fuel_ir::bail!("deliberate failure for the fuel-core dissolution bail! consolidation test");
         #[allow(unreachable_code)]
         Ok(())
     }
