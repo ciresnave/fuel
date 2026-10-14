@@ -1,6 +1,14 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.6 - 2026-10-14
+
+### Changed
+
+- Docs only: ROADMAP item 6 and the contraction-tuple note name KISS's `MathFidelity` (not `MathPrecision`); the GAP-349 row
+  records what KISS-CLASSIFY-6.1-0001/-0013 say about reserved `f8e6m2`; `docs/outreach/kiss-conformance-and-divergences.md` gets a
+  dated staleness banner; registry rows GAP-352 (8-bit float NaN behaviour unverified) and GAP-353 (no `copysign` op) are filed.
+
 ## v0.18.5 - 2026-10-14
 
 ### Fixed

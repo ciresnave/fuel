@@ -3,6 +3,8 @@
 **Date:** 2026-07-14 · **Status:** living record · **Scope:** the kernel seam only
 (advertise / describe / discover / provision / verify), never the optimizer/executor/IR internals.
 
+> **⚠️ STALE IN PLACES — read before citing (2026-10-14).** Written 2026-07-14, i.e. before the `structure_key` move sk4 -> sk5 (Fuel deriver bound 2026-10-11 at KISS `5b28bf51`) and before KISS's Contract rewrite. NOT re-measured as a whole. What the KISS lane says Fuel has not claimed, listed here and NOT yet checked by Fuel: a Semantics op-DAG; `OpAttrs` canonical bytes; the determinism enum is re-spelled; `revision_hash` is u64 here against 32 bytes there; no availability-list / contract-query frames. Fuel claims Classify + Ops evaluation only; nothing here is wrong while that stays true, and an Announce/Contract claim would need each of those closed per clause. A real refresh is owed and is not this banner.
+
 > **OWNER: FUEL.** This is **Fuel's assessment of the Fuel↔KISS seam**, written and
 > maintained here. It is **not a KISS document** and KISS has never held a copy.
 >
