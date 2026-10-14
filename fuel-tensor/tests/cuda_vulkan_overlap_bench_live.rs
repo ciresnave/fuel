@@ -37,16 +37,16 @@
 //!
 //! Gated `#[ignore]`; requires a live NVIDIA GPU + CUDA Runtime SDK AND a Vulkan
 //! device for the AMD iGPU. Run ONE live suite at a time (12 GB dev GPU):
-//!   cargo test -p fuel-core --features "cuda vulkan" --test cuda_vulkan_overlap_bench_live -- --ignored --test-threads=1 --nocapture
+//!   cargo test -p fuel-tensor --features "cuda vulkan" --test cuda_vulkan_overlap_bench_live -- --ignored --test-threads=1 --nocapture
 
 #![cfg(all(feature = "cuda", feature = "vulkan"))]
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fuel_core::lazy::Tensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_ir::{DeviceLocation, Shape};
+use fuel_tensor::lazy::Tensor;
 use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
 /// Elements per buffer. 1<<22 = 4,194,304 f32 = 16 MiB. Each elementwise op
@@ -127,7 +127,7 @@ fn solo_chain(seed: f32, loc: DeviceLocation, len: usize) -> Tensor {
     let x0 = Tensor::from_f32(
         vec![seed; N],
         Shape::from_dims(&[N]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     extend_chain(x0, loc, len)
@@ -220,8 +220,8 @@ fn calibrate_and_baseline(cuda: &CudaDevice, vk: &Arc<VulkanBackend>) -> Baselin
 /// assert the output is finite + length `N`. Returns the per-iter samples.
 fn time_combined<F>(
     build: F,
-    primary: &fuel_core::Device,
-    extras: &[&fuel_core::Device],
+    primary: &fuel_tensor::Device,
+    extras: &[&fuel_tensor::Device],
 ) -> Vec<Duration>
 where
     F: Fn() -> (
@@ -232,7 +232,7 @@ where
     // Warm.
     {
         let (g, id) = build();
-        let _ = fuel_core::pipelined_bridge::realize_one_as_multi_device::<f32>(
+        let _ = fuel_tensor::pipelined_bridge::realize_one_as_multi_device::<f32>(
             &g, id, primary, extras,
         )
         .expect("warm-up combined realize");
@@ -241,7 +241,7 @@ where
     for _ in 0..ITERS {
         let (g, id) = build();
         let t = Instant::now();
-        let out = fuel_core::pipelined_bridge::realize_one_as_multi_device::<f32>(
+        let out = fuel_tensor::pipelined_bridge::realize_one_as_multi_device::<f32>(
             &g, id, primary, extras,
         )
         .expect("combined mixed CUDA+Vulkan realize");
@@ -443,9 +443,9 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
         return;
     };
 
-    let cuda_dev: fuel_core::Device = cuda.clone().into();
-    let vk_dev: fuel_core::Device = vk.clone().into();
-    let cpu = fuel_core::Device::cpu();
+    let cuda_dev: fuel_tensor::Device = cuda.clone().into();
+    let vk_dev: fuel_tensor::Device = vk.clone().into();
+    let cpu = fuel_tensor::Device::cpu();
     let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
     let vk_loc = DeviceLocation::Vulkan { gpu_id: vk.gpu_id };
 
@@ -572,7 +572,7 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
             let inputs = gg.node(id).inputs.clone();
             (inputs[0], inputs[1]) // [vulkan, cuda]
         };
-        let _ = fuel_core::pipelined_bridge::realize_one_as_multi_device::<f32>(
+        let _ = fuel_tensor::pipelined_bridge::realize_one_as_multi_device::<f32>(
             &g,
             id,
             &cpu,
@@ -608,7 +608,7 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
     for _ in 0..ITERS {
         let (g, id) = build_combined();
         let t = Instant::now();
-        let out = fuel_core::pipelined_bridge::realize_one_as_multi_device::<f32>(
+        let out = fuel_tensor::pipelined_bridge::realize_one_as_multi_device::<f32>(
             &g,
             id,
             &cpu,
@@ -736,7 +736,7 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
 /// is an orthogonal placement concern, out of C3's run-reorder scope.)
 ///
 /// Run ONE live suite at a time (12 GB dev GPU):
-///   cargo test -p fuel-core --features "cuda vulkan" --test cuda_vulkan_overlap_bench_live -- --ignored --test-threads=1 --nocapture
+///   cargo test -p fuel-tensor --features "cuda vulkan" --test cuda_vulkan_overlap_bench_live -- --ignored --test-threads=1 --nocapture
 #[test]
 #[ignore = "requires a live CUDA device + a cross-vendor Vulkan device (AMD iGPU)"]
 fn arbitrary_independent_subdags_auto_overlap() {
@@ -827,9 +827,9 @@ fn run_auto_overlap_case(order: OperandOrder) {
         return;
     };
 
-    let cuda_dev: fuel_core::Device = cuda.clone().into();
-    let vk_dev: fuel_core::Device = vk.clone().into();
-    let cpu = fuel_core::Device::cpu();
+    let cuda_dev: fuel_tensor::Device = cuda.clone().into();
+    let vk_dev: fuel_tensor::Device = vk.clone().into();
+    let cpu = fuel_tensor::Device::cpu();
     let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
     let vk_loc = DeviceLocation::Vulkan { gpu_id: vk.gpu_id };
 
@@ -869,7 +869,7 @@ fn run_auto_overlap_case(order: OperandOrder) {
             let gg = g.read().expect("graph");
             gg.node(id).inputs.clone()
         };
-        let _ = fuel_core::pipelined_bridge::realize_one_as_multi_device::<f32>(
+        let _ = fuel_tensor::pipelined_bridge::realize_one_as_multi_device::<f32>(
             &g,
             id,
             &cpu,

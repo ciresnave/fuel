@@ -10,8 +10,8 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::{Shape, probe::BackendId};
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 fn gen_lcg(seed: u32, n: usize) -> Vec<f32> {
@@ -33,7 +33,7 @@ fn gen_lcg(seed: u32, n: usize) -> Vec<f32> {
 /// from a `#[test]` is a PASS, no coverage mechanism could see it. The device
 /// requirement is real; it was simply never *declared*, so now it fails loudly.
 fn require_cuda() {
-    let probe = fuel_core::probe::ProbeReport::probe_all();
+    let probe = fuel_hardware::probe::ProbeReport::probe_all();
     fuel_test_support::require(
         "a live CUDA device",
         probe.devices.iter().any(|d| d.backend == BackendId::Cuda),
@@ -101,7 +101,7 @@ fn build_inputs() -> Inputs {
     let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[1, seq, dim_in]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let w1 = x
@@ -126,7 +126,7 @@ fn bisect_a_just_first_matmul() -> Result<(), Box<dyn std::error::Error>> {
     let y = i.x.matmul(&i.w1)?;
     let (r, c) = realize_both(&y);
     report("A: x @ w1 (rank-3)", &r, &c);
-    fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    fuel_tensor::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
     Ok(())
 }
 
@@ -137,7 +137,7 @@ fn bisect_b_matmul_then_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
     let y = i.x.matmul(&i.w1)?.rms_norm_last_dim(1e-5)?;
     let (r, c) = realize_both(&y);
     report("B: matmul → rms_norm", &r, &c);
-    fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    fuel_tensor::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
     Ok(())
 }
 
@@ -154,13 +154,13 @@ fn bisect_c_just_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
     let x = Tensor::from_f32(
         data,
         Shape::from_dims(&[1, seq, dim_mid]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let y = x.rms_norm_last_dim(1e-5)?;
     let (r, c) = realize_both(&y);
     report("C: rms_norm only", &r, &c);
-    fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    fuel_tensor::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
     Ok(())
 }
 
@@ -174,7 +174,7 @@ fn bisect_d_rmsnorm_then_matmul() -> Result<(), Box<dyn std::error::Error>> {
     let x = Tensor::from_f32(
         data,
         Shape::from_dims(&[1, seq, dim_mid]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let w2 = x
@@ -186,7 +186,7 @@ fn bisect_d_rmsnorm_then_matmul() -> Result<(), Box<dyn std::error::Error>> {
     let y = x.rms_norm_last_dim(1e-5)?.matmul(&w2)?;
     let (r, c) = realize_both(&y);
     report("D: rms_norm → matmul", &r, &c);
-    fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    fuel_tensor::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
     Ok(())
 }
 
@@ -197,6 +197,6 @@ fn bisect_e_full_chain() -> Result<(), Box<dyn std::error::Error>> {
     let y = i.x.matmul(&i.w1)?.rms_norm_last_dim(1e-5)?.matmul(&i.w2)?;
     let (r, c) = realize_both(&y);
     report("E: matmul → rms_norm → matmul (full)", &r, &c);
-    fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    fuel_tensor::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
     Ok(())
 }

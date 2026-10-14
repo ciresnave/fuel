@@ -28,16 +28,16 @@
 //!
 //! Gated `#[ignore]`; requires a live NVIDIA GPU + CUDA Runtime SDK AND a
 //! Vulkan device for the AMD iGPU (`DeviceSelection::ByName("AMD")`). Run:
-//!   cargo test -p fuel-core --features "cuda vulkan" --test cuda_vulkan_multidevice_realize_live -- --ignored --test-threads=1
+//!   cargo test -p fuel-tensor --features "cuda vulkan" --test cuda_vulkan_multidevice_realize_live -- --ignored --test-threads=1
 
 #![cfg(all(feature = "cuda", feature = "vulkan"))]
 
 use std::sync::Arc;
 
-use fuel_core::lazy::Tensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_graph::{NodeId, Op};
 use fuel_ir::{DeviceLocation, Shape, probe::BackendId};
+use fuel_tensor::lazy::Tensor;
 use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
 fn cuda_or_skip() -> Option<CudaDevice> {
@@ -126,7 +126,7 @@ fn two_subdags_cuda_and_vulkan_realize_in_one_pass() {
     let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let b = a
@@ -161,9 +161,9 @@ fn two_subdags_cuda_and_vulkan_realize_in_one_pass() {
     // Realize pinned to CUDA, seeding the Vulkan backend handle as a SECOND
     // device. The new multi-device entry seeds both device handles into the
     // executor's StorageCache so the Vulkan sub-DAG's H2D copies resolve.
-    let cuda_dev: fuel_core::Device = cuda.clone().into();
-    let vk_dev: fuel_core::Device = vk.clone().into();
-    let got = fuel_core::pipelined_bridge::realize_one_as_multi_device::<f32>(
+    let cuda_dev: fuel_tensor::Device = cuda.clone().into();
+    let vk_dev: fuel_tensor::Device = vk.clone().into();
+    let got = fuel_tensor::pipelined_bridge::realize_one_as_multi_device::<f32>(
         &g_arc,
         out_id,
         &cuda_dev,

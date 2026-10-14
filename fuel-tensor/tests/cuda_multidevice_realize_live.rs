@@ -29,14 +29,14 @@
 //! assert against the host oracle.
 //!
 //! Gated `#[ignore]`; requires a live NVIDIA GPU + CUDA Runtime SDK. Run:
-//!   cargo test -p fuel-core --features cuda --test cuda_multidevice_realize_live -- --ignored --test-threads=1
+//!   cargo test -p fuel-tensor --features cuda --test cuda_multidevice_realize_live -- --ignored --test-threads=1
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::Tensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_graph::{NodeId, Op};
 use fuel_ir::{DeviceLocation, Shape, probe::BackendId};
+use fuel_tensor::lazy::Tensor;
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {
@@ -86,7 +86,7 @@ fn two_subdags_cpu_and_cuda_realize_in_one_pass() {
     let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     // `const_f32_like` keeps `b` in `a`'s graph (a bare second `from_f32` would

@@ -10,8 +10,8 @@
 
 #![cfg(any(feature = "aocl", feature = "onemkl"))]
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 
 fn build_conv_graph(
     n: usize,
@@ -32,7 +32,7 @@ fn build_conv_graph(
     let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[n, c_in, h, w]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let weight = x

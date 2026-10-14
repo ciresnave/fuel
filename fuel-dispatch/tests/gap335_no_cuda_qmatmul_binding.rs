@@ -4,7 +4,7 @@
 //! So a lazy `qmatmul` realized on a CUDA device never reaches a CUDA quantized
 //! kernel (`CudaStorage::matmul_q4_0`, or the batched MMVQ runners). Registry
 //! text once reasoned from the opposite assumption (GAP-154, GAP-031, and the
-//! old wording of `fuel-core/tests/gap029_step0_q4_0_cuda_prefill_probe.rs`).
+//! old wording of `fuel-tensor/tests/gap029_step0_q4_0_cuda_prefill_probe.rs`).
 //! This test fails the day a binding is added, so that assumption can only
 //! become true on purpose.
 //!
@@ -32,7 +32,7 @@ use fuel_dispatch::fkc::parse_file;
 
 const ON_FAILURE: &str = "a CUDA QMatMul binding now exists. GAP-335 is no longer true: \
      update it, re-open GAP-154 (the m>1 CUDA route now exists and needs its \
-     numerical audit), re-point fuel-core/tests/gap029_step0_q4_0_cuda_prefill_probe.rs \
+     numerical audit), re-point fuel-tensor/tests/gap029_step0_q4_0_cuda_prefill_probe.rs \
      at the new path, and recalibrate that test's tolerance for it";
 
 fn repo_root() -> PathBuf {

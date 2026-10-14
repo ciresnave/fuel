@@ -10,8 +10,8 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::{Shape, probe::BackendId};
+use fuel_tensor::lazy::Tensor;
 
 /// A live CUDA device is **required** here, not optional.
 ///
@@ -22,7 +22,7 @@ use fuel_ir::{Shape, probe::BackendId};
 /// from a `#[test]` is a PASS, no coverage mechanism could see it. The device
 /// requirement is real; it was simply never *declared*, so now it fails loudly.
 fn require_cuda() {
-    let probe = fuel_core::probe::ProbeReport::probe_all();
+    let probe = fuel_hardware::probe::ProbeReport::probe_all();
     fuel_test_support::require(
         "a live CUDA device",
         probe.devices.iter().any(|d| d.backend == BackendId::Cuda),
@@ -38,7 +38,7 @@ fn cuda_device() -> fuel_cuda_backend::CudaDevice {
 #[test]
 fn rotating_within_window_cuda() {
     require_cuda();
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -60,7 +60,7 @@ fn rotating_within_window_cuda() {
 #[test]
 fn rotating_splits_across_boundary_cuda() {
     require_cuda();
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![10.0_f32, 11.0, 20.0, 21.0], Shape::from_dims(&[2, 2]))
@@ -82,7 +82,7 @@ fn rotating_splits_across_boundary_cuda() {
 #[test]
 fn rotating_mistral_style_decode_loop_cuda() {
     require_cuda();
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let window = 3_usize;
     let head_dim = 2_usize;
     let mut cache = Tensor::from_f32(
