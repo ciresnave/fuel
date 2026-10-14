@@ -1,6 +1,15 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.4 - 2026-10-14
+
+### Changed
+
+- Lint-only: `cargo clippy -p fuel-dispatch --features jit --all-targets -- -D warnings` is green again. 17 items in
+  `jit_ingest.rs`/`jit_ingest_probe.rs` that are dead under `--features jit` without `cuda` take the module's existing
+  `#[cfg_attr(not(feature = "cuda"), allow(dead_code))]` pattern, and the minmax cell map in `kiss_corpus` tests gets a
+  type alias for `clippy::type_complexity`. No behaviour change.
+
 ## v0.18.3 - 2026-10-14
 
 ### Changed
