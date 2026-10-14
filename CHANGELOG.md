@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.8 - 2026-10-14
+
+### Changed
+
+- KISS derivation vectors (33, re-vendored at KISS ae16d2a7) run through the sk5 deriver in fuel-dispatch tests; GAP-354 filed. No library change.
+
 ## v0.18.7 - 2026-10-14
 
 ### Changed
