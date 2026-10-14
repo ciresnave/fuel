@@ -1,6 +1,15 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.0 - 2026-10-13
+
+### Changed
+
+- **Breaking:** the `fuel-compression` crate is renamed `fuel-posttrain` (directory, package name, workspace
+  entry). The old name is owned on crates.io by an unrelated project, so it could never publish. CireSnave
+  ruled "go with fuel-posttrain for now" (2026-10-04). Code is unchanged; the crate was never published and no
+  other workspace crate depended on it. Version allocated by the PM (0.18.0, pre-1.0 breaking = second number).
+
 ## v0.17.3 - 2026-10-12
 
 ### Documentation
