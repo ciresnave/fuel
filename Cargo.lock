@@ -1826,7 +1826,6 @@ dependencies = [
 name = "fuel-core"
 version = "0.18.0"
 dependencies = [
- "accelerate-src",
  "anyhow",
  "baracuda-core",
  "baracuda-cudnn",
@@ -1863,7 +1862,6 @@ dependencies = [
  "half",
  "hf-hub",
  "image",
- "intel-mkl-src",
  "libc",
  "libm",
  "num-traits",
