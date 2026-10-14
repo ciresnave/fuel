@@ -6,8 +6,8 @@
 //! PagedAttn dispatch + reference's PagedAttn dispatch) for the lazy
 //! path.
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
     let n: usize = shape.iter().product();
@@ -37,7 +37,7 @@ fn lazy_paged_attn_decode_round_trip() {
     let q = Tensor::from_f32(
         q_data.clone(),
         Shape::from_dims(&[b, h, sq, d]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let kc = q

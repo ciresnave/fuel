@@ -25,8 +25,8 @@
 //!
 //! Instrument, not a gate: asserts nothing.
 
-use fuel_core::Device;
-use fuel_core::lazy::Tensor;
+use fuel_tensor::Device;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 #[allow(

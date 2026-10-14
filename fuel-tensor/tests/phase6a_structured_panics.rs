@@ -14,8 +14,8 @@
 //! dtype, inputs=…)" — enough to grep-locate the failing op in a
 //! large graph.
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Reach into the boxed payload and pull out a String. Mirrors
@@ -38,7 +38,7 @@ fn realize_panic_message_has_graph_location() {
     let src = Tensor::from_f32(
         vec![1.0f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let bad_idx = src

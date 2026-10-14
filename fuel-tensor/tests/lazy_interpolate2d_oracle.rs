@@ -10,8 +10,8 @@
 //! Unblocks DepthAnythingV2's DPT head and any dense-prediction
 //! head that resizes features to arbitrary targets.
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 
 /// Reproduce the eager UpsampleNearest2D convention in plain
 /// Rust so the lazy output can be checked element-wise.
@@ -52,7 +52,7 @@ fn nearest_oracle(
 
 #[test]
 fn interpolate2d_integer_uniform_matches_oracle() {
-    let dev = fuel_core::Device::cpu();
+    let dev = fuel_tensor::Device::cpu();
     let (n, c, h, w) = (1, 2, 4, 4);
     let src: Vec<f32> = (0..n * c * h * w).map(|i| i as f32 * 0.1).collect();
     let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev).unwrap();
@@ -72,7 +72,7 @@ fn interpolate2d_integer_uniform_matches_oracle() {
 
 #[test]
 fn interpolate2d_non_integer_uniform_matches_oracle() {
-    let dev = fuel_core::Device::cpu();
+    let dev = fuel_tensor::Device::cpu();
     let (n, c, h, w) = (1, 2, 4, 4);
     let src: Vec<f32> = (0..n * c * h * w)
         .map(|i| (i as f32 - 8.0) * 0.25)
@@ -94,7 +94,7 @@ fn interpolate2d_non_integer_uniform_matches_oracle() {
 
 #[test]
 fn interpolate2d_non_uniform_matches_oracle() {
-    let dev = fuel_core::Device::cpu();
+    let dev = fuel_tensor::Device::cpu();
     let (n, c, h, w) = (1, 1, 3, 5);
     let src: Vec<f32> = (0..n * c * h * w).map(|i| (i as f32) * 0.3 + 0.1).collect();
     let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev).unwrap();
@@ -114,7 +114,7 @@ fn interpolate2d_non_uniform_matches_oracle() {
 
 #[test]
 fn interpolate2d_downsample_matches_oracle() {
-    let dev = fuel_core::Device::cpu();
+    let dev = fuel_tensor::Device::cpu();
     let (n, c, h, w) = (1, 1, 8, 8);
     let src: Vec<f32> = (0..n * c * h * w).map(|i| (i as f32) * 0.1).collect();
     let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev).unwrap();
@@ -133,7 +133,7 @@ fn interpolate2d_downsample_matches_oracle() {
 
 #[test]
 fn interpolate2d_identity_returns_clone() {
-    let dev = fuel_core::Device::cpu();
+    let dev = fuel_tensor::Device::cpu();
     let (n, c, h, w) = (1, 1, 4, 4);
     let src: Vec<f32> = (0..n * c * h * w).map(|i| i as f32).collect();
     let lt = Tensor::from_f32(src.clone(), Shape::from_dims(&[n, c, h, w]), &dev).unwrap();

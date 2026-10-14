@@ -491,7 +491,7 @@ nowhere; now captured so they are not forgotten):
   **arithmetic IEEE-754-half reconstruction** (5-bit binary-decomposition power-of-two, bit-exact
   to `f16::to_f32` for every finite half — proven over all 63488 finite bit patterns), nibble
   unpack + per-block broadcast + GEMM. Real-backend CPU-realize parity vs exact `BlockQ4_0::
-  to_float` dequant at `rel<1e-5` (`fuel-core/tests/incc_qmatmul_q4_0_oracle.rs`, sabotage-
+  to_float` dequant at `rel<1e-5` (`fuel-tensor/tests/incc_qmatmul_q4_0_oracle.rs`, sabotage-
   calibrated); the fused dequant-in-kernel arm stays the cost-preferred cover (the lowering is
   the optimizer/basis-map alternative, never the executed path where the kernel exists).
 - [ ] **`qmatmul` per-format decompose build-out (backlog).** Q4_0 is the only format the live

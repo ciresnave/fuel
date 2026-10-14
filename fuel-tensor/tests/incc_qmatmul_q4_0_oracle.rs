@@ -21,14 +21,14 @@
 //! recipe realizes via `Slice` + `MatMul`) is the born-red half: before the
 //! recipe existed, `lowering_only` left the node fused and it tripped.
 
-use fuel_core::Device;
-use fuel_core::lazy::Tensor;
-use fuel_core::pipelined_bridge::realize_one_as;
 use fuel_graph::Op;
 use fuel_graph::QuantType;
 use fuel_graph::registry::FusedOps;
 use fuel_ir::Shape;
 use fuel_quantized::{BlockQ4_0, GgmlType};
+use fuel_tensor::Device;
+use fuel_tensor::lazy::Tensor;
+use fuel_tensor::pipelined_bridge::realize_one_as;
 
 /// Lower + realize one Q4_0 qmatmul config on the CPU backend and compare to the
 /// exact `to_float` dequant → reference matmul. `leading` are the activations'
