@@ -3,9 +3,9 @@
 //! as the unfused `MatMul + BroadcastTo + Add` sequence it replaces,
 //! both via reference and via the CPU executor.
 
-use fuel_core::lazy::Tensor;
 use fuel_graph::opt;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
     let n: usize = shape.iter().product();
@@ -29,7 +29,7 @@ fn fused_linear_realizes_same_as_matmul_plus_bias() {
     let a = Tensor::from_f32(
         a_data.clone(),
         Shape::from_dims(&[2, 5]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let b = a
@@ -45,8 +45,12 @@ fn fused_linear_realizes_same_as_matmul_plus_bias() {
     let unfused_result = unfused_out.realize_f32();
 
     // Identical second graph, then run fuse_linear and realize.
-    let a2 =
-        Tensor::from_f32(a_data, Shape::from_dims(&[2, 5]), &fuel_core::Device::cpu()).unwrap();
+    let a2 = Tensor::from_f32(
+        a_data,
+        Shape::from_dims(&[2, 5]),
+        &fuel_tensor::Device::cpu(),
+    )
+    .unwrap();
     let b2 = a2
         .const_f32_like(b_data, Shape::from_dims(&[5, 7]))
         .unwrap();

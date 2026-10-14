@@ -17,8 +17,8 @@
 //! `fuel-reference-backend::attention::attention_naive` before that crate
 //! was retired 2026-07-04).
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
     let n: usize = shape.iter().product();
@@ -127,7 +127,7 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
     let q = Tensor::from_f32(
         q_data.clone(),
         Shape::from_dims(&[b, h, sq, d]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let k = q
@@ -147,7 +147,7 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
     let q2 = Tensor::from_f32(
         q_data,
         Shape::from_dims(&[b, h, sq, d]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let k2 = q2
@@ -187,7 +187,7 @@ fn lazy_flash_attn_matches_naive_with_causal_mask() {
     let q = Tensor::from_f32(
         q_data.clone(),
         Shape::from_dims(&[b, h, sq, d]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let k = q

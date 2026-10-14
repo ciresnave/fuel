@@ -1838,7 +1838,6 @@ dependencies = [
  "float8",
  "fuel-aocl-cpu-backend",
  "fuel-backend-contract",
- "fuel-conv",
  "fuel-correctness-fixtures",
  "fuel-cpu-backend",
  "fuel-cpu-kernels",

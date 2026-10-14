@@ -22,13 +22,13 @@
 //! `Op::Fused(CONV_TRANSPOSE2D)` survives lowering; the recipe realizes via
 //! `IndexAdd` + `MatMul`) is the born-red half.
 
-use fuel_core::Device;
-use fuel_core::lazy::Tensor;
-use fuel_core::pipelined_bridge::realize_one_as;
 use fuel_graph::Op;
 use fuel_graph::opt::RuleRegistry;
 use fuel_graph::registry::FusedOps;
 use fuel_ir::Shape;
+use fuel_tensor::Device;
+use fuel_tensor::lazy::Tensor;
+use fuel_tensor::pipelined_bridge::realize_one_as;
 
 /// Lower + realize one conv_transpose config on the CPU backend and compare to
 /// the native-kernel oracle. `weight` is `[Cin, Cout/groups, Kh, Kw]`.

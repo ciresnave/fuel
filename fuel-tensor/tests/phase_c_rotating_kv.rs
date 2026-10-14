@@ -7,14 +7,14 @@
 //! WorkItemKind::WriteSliceRotating execute arm, and the byte
 //! kernel's two-chunk ring-boundary split.
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 
 /// Within-window write: position 1, slab 1 row, modulus 4. No
 /// boundary split — writes to row 1 only.
 #[test]
 fn rotating_within_window() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     // dest [4, 2] starts at zero; write [7, 8] at position 1.
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
@@ -39,7 +39,7 @@ fn rotating_within_window() {
 /// Position wraps modulo modulus: position 4 with modulus 4 → start 0.
 #[test]
 fn rotating_wraps_position_at_modulus() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -58,7 +58,7 @@ fn rotating_wraps_position_at_modulus() {
 /// wrapped row 0 both written.
 #[test]
 fn rotating_splits_across_boundary() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![10.0_f32, 11.0, 20.0, 21.0], Shape::from_dims(&[2, 2]))
@@ -79,7 +79,7 @@ fn rotating_splits_across_boundary() {
 /// most recent 3 rows in their post-rotation positions.
 #[test]
 fn rotating_mistral_style_decode_loop() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let window = 3_usize;
     let head_dim = 2_usize;
     let mut cache = Tensor::from_f32(
@@ -128,7 +128,7 @@ fn rotating_mistral_style_decode_loop() {
 /// Position must be U32 scalar (rank-0).
 #[test]
 fn rotating_rejects_nonscalar_position() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -144,7 +144,7 @@ fn rotating_rejects_nonscalar_position() {
 /// Slab on rotating axis must equal source dim on that axis.
 #[test]
 fn rotating_rejects_source_axis_mismatch() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     // source has 2 rows but ranges declares slab of 1 on axis 0.
     let src = dest
@@ -160,7 +160,7 @@ fn rotating_rejects_source_axis_mismatch() {
 /// Modulus > dest dim on rotating axis must error.
 #[test]
 fn rotating_rejects_modulus_exceeds_dest_dim() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
@@ -181,7 +181,7 @@ fn rotating_rejects_modulus_exceeds_dest_dim() {
 /// Axis out of bounds must error.
 #[test]
 fn rotating_rejects_axis_out_of_bounds() {
-    let device = fuel_core::Device::cpu();
+    let device = fuel_tensor::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest
         .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))

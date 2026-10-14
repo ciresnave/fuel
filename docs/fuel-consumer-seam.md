@@ -610,7 +610,7 @@ incrementally as Fuel offers them; **none block the port**.
       `cuMemAlloc` — the CapturedRun invariant**)." Allocation on first launch is fine; replay must
       allocate nothing.
    2. **Runtime offsets are device-resident *by design*, so they never force a rebuild.**
-      `fuel-core/tests/write_slice_doff_kv.rs` — `Op::WriteSliceDoff` takes its write start from a
+      `fuel-tensor/tests/write_slice_doff_kv.rs` — `Op::WriteSliceDoff` takes its write start from a
       rank-0 `I64` operand, "read host-side on CPU; **device-side under CUDA so a captured graph
       replays at the host-updated position**." This is the mechanism KV append already uses *inside*
       captured decode, which is why the 10.4× decode replay works at all.

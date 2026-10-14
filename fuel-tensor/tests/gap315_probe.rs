@@ -53,8 +53,8 @@
 //! dropping it varies the two arms on TWO axes and no difference can then be
 //! attributed to the guard. Use a separate `CARGO_TARGET_DIR` so the two
 //! configurations do not invalidate each other's cache on every switch.
-use fuel_core::Device;
-use fuel_core::lazy::Tensor;
+use fuel_tensor::Device;
+use fuel_tensor::lazy::Tensor;
 
 /// What actually happened, classified by OUTCOME rather than by value.
 #[allow(

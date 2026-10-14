@@ -71,10 +71,9 @@ clap = { workspace = true }
 criterion = { workspace = true }
 # Telemetry flush tests write JSONL to a scratch dir.
 tempfile = { workspace = true }
-# Direct-conv parity oracle for the CV1 im2col-recipe realize test.
-fuel-conv = { workspace = true }
-# Q4_0 dequantize-then-matmul oracle (incc_qmatmul_q4_0_oracle) — used
-# directly, not through the (now-deleted) `fuel_core::quantized` shim.
+# Q4_0 block layout for gap029_step0_q4_0_cuda_prefill_probe — used
+# directly, not through the (now-deleted) `fuel_core::quantized` shim. The
+# dequantize-then-matmul oracle that also used it moved to fuel-tensor/tests.
 fuel-quantized = { workspace = true }
 # GAP-157: `require`/`required` — a missing device is a FAILURE, not a silent
 # early return that reports `ok` having asserted nothing.
