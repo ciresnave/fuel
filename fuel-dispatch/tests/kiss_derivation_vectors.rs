@@ -139,8 +139,28 @@ fn layout_of(o: &serde_json::Value) -> Result<Layout, String> {
     ))
 }
 
-/// One operand of a vector, as Fuel's `CellOperand`.
-fn operand_of(o: &serde_json::Value) -> Result<CellOperand, String> {
+/// An operand's `use` as a `CellOperand` role.
+fn with_role(use_: &str, desc: FdxOperandDesc) -> Result<CellOperand, String> {
+    match use_ {
+        "in" => Ok(CellOperand::input(desc)),
+        "out" => Ok(CellOperand::output(desc)),
+        "inout" => Ok(CellOperand::in_place(desc)),
+        other => Err(format!("unknown operand use `{other}`")),
+    }
+}
+
+/// An operand's optional `dequant_form`.
+fn with_dequant(cell: CellOperand, form: Option<&str>) -> Result<CellOperand, String> {
+    match form {
+        None => Ok(cell),
+        Some("dl" | "linear") => Ok(cell.with_dequant_form(DequantForm::Linear)),
+        Some("dc" | "codebook") => Ok(cell.with_dequant_form(DequantForm::Codebook)),
+        Some(other) => Err(format!("unknown dequant_form `{other}`")),
+    }
+}
+
+/// The descriptor of one operand: layout, dtype, and the stated alignment.
+fn desc_of(o: &serde_json::Value) -> Result<FdxOperandDesc, String> {
     let dtok = o["dtype"].as_str().ok_or("operand dtype")?;
     let dtype = dtype_of(dtok)
         .ok_or_else(|| format!("no Fuel DType for `{dtok}` (GAP-097 absent surface)"))?;
@@ -148,18 +168,13 @@ fn operand_of(o: &serde_json::Value) -> Result<CellOperand, String> {
     // The vector states the base alignment outright; `from_layout` would model
     // 256 for offset 0, which is the only thing it cannot be told.
     desc.align_bytes = o["alignment"].as_u64().ok_or("alignment")? as u32;
-    let cell = match o["use"].as_str().ok_or("use")? {
-        "in" => CellOperand::input(desc),
-        "out" => CellOperand::output(desc),
-        "inout" => CellOperand::in_place(desc),
-        other => return Err(format!("unknown operand use `{other}`")),
-    };
-    match o["dequant_form"].as_str() {
-        None => Ok(cell),
-        Some("dl" | "linear") => Ok(cell.with_dequant_form(DequantForm::Linear)),
-        Some("dc" | "codebook") => Ok(cell.with_dequant_form(DequantForm::Codebook)),
-        Some(other) => Err(format!("unknown dequant_form `{other}`")),
-    }
+    Ok(desc)
+}
+
+/// One operand of a vector, as Fuel's `CellOperand`.
+fn operand_of(o: &serde_json::Value) -> Result<CellOperand, String> {
+    let cell = with_role(o["use"].as_str().ok_or("use")?, desc_of(o)?)?;
+    with_dequant(cell, o["dequant_form"].as_str())
 }
 
 /// The declared reduced axes as Fuel's `Keepdim` bitmask (bit `d` = frame axis `d`).
@@ -212,9 +227,8 @@ fn acc_mp_of(v: &serde_json::Value, compute: DType) -> Result<AccMp, String> {
     })
 }
 
-/// Build Fuel's cell from one vector. `canonicalize` applies the §6.6-0014
-/// stable partition and maps the call-order index slot through it.
-fn build(v: &serde_json::Value, canonicalize: bool) -> Result<Built, String> {
+/// A contraction is out of scope for a derivation vector (no M/N/K roles).
+fn check_in_scope(v: &serde_json::Value) -> Result<(), String> {
     if v["contraction_declared"].as_bool() == Some(true) {
         return Err(
             "contraction declared, but the vector carries no M/N/K/batch roles \
@@ -222,20 +236,35 @@ fn build(v: &serde_json::Value, canonicalize: bool) -> Result<Built, String> {
                 .to_string(),
         );
     }
+    Ok(())
+}
+
+/// The operands in CALL order, each with its call-order slot.
+fn cells_of(v: &serde_json::Value) -> Result<Vec<(usize, CellOperand)>, String> {
     let ops = v["operands"].as_array().ok_or("no operands")?;
-    let mut cells: Vec<(usize, CellOperand)> = Vec::new();
-    for (call_idx, o) in ops.iter().enumerate() {
-        cells.push((call_idx, operand_of(o)?));
-    }
+    ops.iter()
+        .enumerate()
+        .map(|(i, o)| operand_of(o).map(|c| (i, c)))
+        .collect()
+}
+
+/// The declared facts: index slot and reduced axes.
+fn facts_of(v: &serde_json::Value, index: Option<usize>) -> Result<DeclaredFacts, String> {
+    let mut facts = index.map_or_else(DeclaredFacts::none, DeclaredFacts::indexed);
+    facts.reduced_axes = reduce_axes_of(v)?;
+    Ok(facts)
+}
+
+/// Build Fuel's cell from one vector. `canonicalize` applies the §6.6-0014
+/// stable partition and maps the call-order index slot through it.
+fn build(v: &serde_json::Value, canonicalize: bool) -> Result<Built, String> {
+    check_in_scope(v)?;
+    let mut cells = cells_of(v)?;
     let mut index = v["index_operand"].as_u64().map(|x| x as usize);
     if canonicalize {
         (cells, index) = canonicalized(cells, index);
     }
-    let mut facts = DeclaredFacts::none();
-    if let Some(slot) = index {
-        facts = DeclaredFacts::indexed(slot);
-    }
-    facts.reduced_axes = reduce_axes_of(v)?;
+    let facts = facts_of(v, index)?;
     let operands: Vec<CellOperand> = cells.into_iter().map(|(_, c)| c).collect();
     let compute = operands
         .first()
