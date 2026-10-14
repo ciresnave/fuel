@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.18.11 - 2026-10-14
+
+### Changed
+
+- ops-transcendental-nan re-vendored at KISS ff9f52f5 (13 vectors, +tcId 13 f64 log of a signalling NaN); x86: 199 vectors, 163 pass, 0 fail, 36 not exercised. No library change.
+
 ## v0.18.10 - 2026-10-14
 
 ### Changed
