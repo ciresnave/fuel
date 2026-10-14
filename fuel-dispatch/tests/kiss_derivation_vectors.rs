@@ -37,8 +37,9 @@
 //! Outcomes: `PASS` (bytes equal), `FAIL` (different bytes), `NOT-EXPRESSIBLE`
 //! (Fuel has no way to state the cell, with the reason), `DECLINE-DIFFERS`
 //! (a decline was expected and a token came out, or the reverse). A decline's
-//! KISS reason code (`ReservedDtype`, ...) is NOT observable: Fuel's deriver
-//! returns `Option<String>`, so a decline only ever matches on `None`.
+//! KISS reason code (`ReservedDtype`, ...) IS compared, through
+//! `derive_structure_key_token_typed` (GAP-354); `REASON-DIFFERS` means both
+//! declined with different reasons.
 //!
 //! # Honest limits
 //!
@@ -57,7 +58,7 @@
 use fuel_dispatch::telemetry::structure_key::FdxOperandDesc;
 use fuel_dispatch::telemetry::structure_key_derive::{
     AccMp, CellOperand, DeclaredFacts, DequantForm, GemMathPrecision, ReduceAxes,
-    derive_structure_key_token,
+    derive_structure_key_token_typed,
 };
 use fuel_ir::{DType, Layout, Shape};
 use std::collections::BTreeMap;
@@ -96,6 +97,8 @@ enum Outcome {
     DeclineDiffers(String),
     /// A token was expected and the deriver declined.
     UnexpectedDecline(String),
+    /// Both declined, with different reasons: `(got, want)`.
+    ReasonDiffers(String, String),
     NotExpressible(String),
 }
 
@@ -106,6 +109,7 @@ impl Outcome {
             Outcome::Fail(..) => "FAIL",
             Outcome::DeclineDiffers(_) => "DECLINE-DIFFERS",
             Outcome::UnexpectedDecline(_) => "UNEXPECTED-DECLINE",
+            Outcome::ReasonDiffers(..) => "REASON-DIFFERS",
             Outcome::NotExpressible(_) => "NOT-EXPRESSIBLE",
         }
     }
@@ -300,22 +304,22 @@ fn evaluate(v: &serde_json::Value, canonicalize: bool) -> Outcome {
             }
         }
     }
-    let got =
-        derive_structure_key_token(&built.facts, &built.operands, &built.target, built.acc_mp);
+    let got = derive_structure_key_token_typed(
+        &built.facts,
+        &built.operands,
+        &built.target,
+        built.acc_mp,
+    );
+    let want = v["value"].as_str().unwrap().to_string();
     match (v["expect"].as_str(), got) {
-        (Some("token"), Some(t)) => {
-            let want = v["value"].as_str().unwrap().to_string();
-            if t == want {
-                Outcome::Pass
-            } else {
-                Outcome::Fail(t, want)
-            }
+        (Some("token"), Ok(t)) if t == want => Outcome::Pass,
+        (Some("token"), Ok(t)) => Outcome::Fail(t, want),
+        (Some("token"), Err(why)) => {
+            Outcome::UnexpectedDecline(format!("{}; want {want}", why.wire()))
         }
-        (Some("token"), None) => {
-            Outcome::UnexpectedDecline(v["value"].as_str().unwrap().to_string())
-        }
-        (Some("decline"), None) => Outcome::Pass,
-        (Some("decline"), Some(t)) => Outcome::DeclineDiffers(t),
+        (Some("decline"), Err(why)) if why.wire() == want => Outcome::Pass,
+        (Some("decline"), Err(why)) => Outcome::ReasonDiffers(why.wire().to_string(), want),
+        (Some("decline"), Ok(t)) => Outcome::DeclineDiffers(t),
         (other, _) => panic!("unknown `expect` {other:?}"),
     }
 }
@@ -340,16 +344,7 @@ fn load() -> Vec<serde_json::Value> {
 /// (An earlier revision also listed `decline_reserved_dtype`: it put a reserved
 /// dtype at operand 1, which KISS then ruled is NOT a key position, so Fuel's
 /// keying it was right and the vector was corrected, see the provenance note.)
-const EMITS_WHERE_KISS_DECLINES: &[&str] = &[
-    // §6.6-0009: a reduction's output must be the keepdim form; a rank-collapsed
-    // output declines. Fuel right-aligns the `[4]` output against the `[4,8]`
-    // frame and emits `co/01/v1/d4/f`.
-    "decline_collapsed_reduction_output",
-    // §6.6-0009: a reduced axis outside the iteration frame declines. Fuel's
-    // `Keepdim(u8)` mask is not checked against the frame rank; axis 2 of a
-    // rank-2 frame is emitted as `x04`.
-    "decline_reduced_axis_out_of_range",
-];
+const EMITS_WHERE_KISS_DECLINES: &[&str] = &[];
 
 /// Vectors Fuel cannot state at all (an absent surface, not a mismatch).
 const NOT_EXPRESSIBLE: &[&str] = &[
@@ -407,6 +402,9 @@ fn report_every_vector_under_both_feeding_disciplines() {
                 Outcome::UnexpectedDecline(want) => {
                     println!("[kiss-deriv]    {label}: declined, want {want}")
                 }
+                Outcome::ReasonDiffers(got, want) => {
+                    println!("[kiss-deriv]    {label}: declined {got}, want {want}")
+                }
                 Outcome::NotExpressible(why) => println!("[kiss-deriv]    {label}: {why}"),
                 Outcome::Pass => {}
             }
@@ -456,13 +454,23 @@ fn divergences_and_absent_surfaces_are_exactly_the_pinned_sets() {
         v
     };
 
-    // CONTROL: the harness can see a mismatch at all. These are the vectors on
-    // which Fuel and the corpus disagree, so a harness that compared nothing
-    // would report an empty set here and the next assertions would be vacuous.
-    assert!(
-        !EMITS_WHERE_KISS_DECLINES.is_empty(),
-        "no known divergence: either Fuel was fixed (edit the pin) or the harness is inert"
-    );
+    // CONTROL: the harness can see a mismatch at all. The corpus and Fuel agree
+    // on every decline now, so an empty set is a finding and not evidence of an
+    // inert harness only if a deliberately WRONG expectation is reported. Take a
+    // passing token vector and corrupt its expected token; and take a passing
+    // decline vector and corrupt its expected reason.
+    let vs = load();
+    let tok = vs.iter().find(|v| v["expect"] == "token").unwrap();
+    let mut wrong = tok.clone();
+    wrong["value"] = serde_json::Value::String("sk5|not-the-token".to_string());
+    assert!(matches!(evaluate(&wrong, true), Outcome::Fail(..)));
+    let dec = vs
+        .iter()
+        .find(|v| v["name"] == "decline_collapsed_reduction_output")
+        .unwrap();
+    let mut wrong = dec.clone();
+    wrong["value"] = serde_json::Value::String("ReservedDtype".to_string());
+    assert!(matches!(evaluate(&wrong, true), Outcome::ReasonDiffers(..)));
 
     assert_eq!(
         names(&|r| matches!(r.1, Outcome::DeclineDiffers(_))),
