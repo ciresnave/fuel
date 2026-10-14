@@ -10,7 +10,7 @@
 //! byte-pair encode/decode. The original Python reference lives at:
 //! <https://github.com/BlinkDL/ChatRWKV/blob/095e812aef15a1f74107f6c39d13578a2412dc46/RWKV_v5_demo.py#L14>
 
-use fuel_core::Result;
+use fuel_ir::error::Result;
 use std::collections::{HashMap, HashSet};
 
 type Bytes = Vec<u8>;
@@ -28,7 +28,7 @@ impl Tokenizer {
     pub fn new<P: AsRef<std::path::Path>>(p: P) -> Result<Self> {
         let file = std::fs::File::open(p)?;
         let token2idx: HashMap<String, u32> =
-            serde_json::from_reader(file).map_err(fuel_core::Error::wrap)?;
+            serde_json::from_reader(file).map_err(fuel_ir::error::Error::wrap)?;
         Self::from_token2idx(token2idx)
     }
 
@@ -83,7 +83,7 @@ impl Tokenizer {
     /// Decode a sequence of token IDs to a UTF-8 string.
     pub fn decode(&self, tokens: &[u32]) -> Result<String> {
         let bytes = self.decode_bytes(tokens);
-        String::from_utf8(bytes).map_err(fuel_core::Error::wrap)
+        String::from_utf8(bytes).map_err(fuel_ir::error::Error::wrap)
     }
 
     /// Encode raw bytes to a sequence of token IDs.
@@ -104,7 +104,7 @@ impl Tokenizer {
             i += s.len();
             let token = match self.token2idx.get(&s) {
                 None => {
-                    fuel_core::bail!("unexpected token '{}' {s:?}", String::from_utf8_lossy(&s))
+                    fuel_ir::bail!("unexpected token '{}' {s:?}", String::from_utf8_lossy(&s))
                 }
                 Some(token) => *token,
             };

@@ -33,13 +33,14 @@ use crate::models::lazy_gemma::{GemmaConfig, GemmaModel, GemmaWeights};
 use crate::models::lazy_siglip::{
     SiglipEncoderLayerWeights, SiglipVisionConfig, SiglipVisionModel, SiglipVisionWeights,
 };
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{
-    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{
+    lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -232,7 +233,7 @@ pub fn load_siglip_vision_weights(
     let position_embedding =
         load_tensor_as_f32(st, &format!("{prefix}embeddings.position_embedding.weight"))?;
     if position_embedding.len() != np * h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}embeddings.position_embedding.weight: {} elts, expected {}",
             position_embedding.len(),
             np * h,
@@ -326,7 +327,7 @@ pub fn load_gemma_weights_with_prefix(
     let kv = cfg.num_key_value_heads * cfg.head_dim;
     let token_embedding = load_tensor_as_f32(st, &format!("{prefix}model.embed_tokens.weight"))?;
     if token_embedding.len() != cfg.vocab_size * h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}model.embed_tokens.weight: {} elts, expected {}",
             token_embedding.len(),
             cfg.vocab_size * h,
@@ -462,7 +463,7 @@ impl PaligemmaWeights {
         )?;
         let mm_proj_bias = load_tensor_as_f32(st, "multi_modal_projector.linear.bias")?;
         if mm_proj_bias.len() != cfg.projection_dim {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "multi_modal_projector.linear.bias: {} elts, expected {}",
                 mm_proj_bias.len(),
                 cfg.projection_dim,
@@ -481,7 +482,7 @@ impl PaligemmaWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::lazy::LayerWeights;
+    use fuel_tensor::lazy::LayerWeights;
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())

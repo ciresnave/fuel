@@ -50,13 +50,14 @@
 //! projector / loader machinery — the NaViT extension is additive,
 //! not a rewrite.
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{
-    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{
+    lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -186,7 +187,7 @@ impl PaddleOcrVlVisionModel {
             dims[0], num_tiles,
         );
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "paddleocr_vl_vision (fixed-tile): input spatial dims ({}, {}) must equal \
                  image_size {}; this entry is fixed-resolution, and the patch reshape targets a \
                  config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
@@ -595,7 +596,7 @@ pub fn load_paddleocr_vl_vision_weights(
     )?;
     let expected_patch = h * cfg.num_channels * cfg.patch_size * cfg.patch_size;
     if patch_proj.len() != expected_patch {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{vision_prefix}embeddings.patch_embedding.weight: {} elts, expected {}",
             patch_proj.len(),
             expected_patch,
@@ -606,7 +607,7 @@ pub fn load_paddleocr_vl_vision_weights(
         &format!("{vision_prefix}embeddings.patch_embedding.bias"),
     )?;
     if patch_proj_bias.len() != h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{vision_prefix}embeddings.patch_embedding.bias: {} elts, expected {}",
             patch_proj_bias.len(),
             h,
@@ -617,7 +618,7 @@ pub fn load_paddleocr_vl_vision_weights(
         &format!("{vision_prefix}embeddings.position_embedding.weight"),
     )?;
     if position_embedding.len() != np * h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{vision_prefix}embeddings.position_embedding.weight: {} elts, expected {}",
             position_embedding.len(),
             np * h,
@@ -1000,7 +1001,7 @@ impl PaddleOcrVlNaVitModel {
         // non-multiple image is silently cropped and returned as `Ok`. That was
         // measured, not reasoned.
         if !h.is_multiple_of(cfg.patch_size) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlNaVitModel::forward: H ({h}) is not a multiple of patch_size ({}); \
                  pad host-side before calling forward (the patch conv2d would otherwise \
                  silently crop the extra rows)",
@@ -1008,7 +1009,7 @@ impl PaddleOcrVlNaVitModel {
             )));
         }
         if !w.is_multiple_of(cfg.patch_size) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PaddleOcrVlNaVitModel::forward: W ({w}) is not a multiple of patch_size ({}); \
                  pad host-side before calling forward (the patch conv2d would otherwise \
                  silently crop the extra columns)",
@@ -1338,7 +1339,7 @@ pub fn load_paddleocr_vl_navit_weights(
     )?;
     let expected_patch = h * cfg.num_channels * cfg.patch_size * cfg.patch_size;
     if patch_proj.len() != expected_patch {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{vision_prefix}embeddings.patch_embedding.weight: {} elts, expected {}",
             patch_proj.len(),
             expected_patch,
@@ -1349,7 +1350,7 @@ pub fn load_paddleocr_vl_navit_weights(
         &format!("{vision_prefix}embeddings.patch_embedding.bias"),
     )?;
     if patch_proj_bias.len() != h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{vision_prefix}embeddings.patch_embedding.bias: {} elts, expected {}",
             patch_proj_bias.len(),
             h,
@@ -1360,7 +1361,7 @@ pub fn load_paddleocr_vl_navit_weights(
         &format!("{vision_prefix}embeddings.position_embedding.weight"),
     )?;
     if position_embedding.len() != np * h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{vision_prefix}embeddings.position_embedding.weight: {} elts, expected {} \
              (base_grid_size={}, hidden={})",
             position_embedding.len(),

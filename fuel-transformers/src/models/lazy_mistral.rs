@@ -4,7 +4,7 @@
 //! Phase D LLM port. The Mistral architecture is "LLaMA with sliding-
 //! window attention" — every other piece (GQA, RmsNorm, SwiGLU FFN,
 //! RoPE, bias-free Q/K/V/O projections) is shared with LLaMA. We
-//! reuse [`fuel_core::lazy::LayerWeights`] directly since the per-layer
+//! reuse [`fuel_tensor::lazy::LayerWeights`] directly since the per-layer
 //! parameter shape is identical; only the attention mask differs.
 //!
 //! # Sliding-window mask
@@ -35,7 +35,7 @@
 //! - Forward-only. Autograd through Mistral is not exercised here.
 //! - Single sequence (`batch == 1`). Multi-batch is a future addition
 //!   when InferenceContext starts batching real workloads.
-//! - F32 activations; weights via [`fuel_core::lazy::WeightStorage`]
+//! - F32 activations; weights via [`fuel_tensor::lazy::WeightStorage`]
 //!   (F32 / BF16 / Q4_0 all work through `apply_linear`).
 //!
 //! # Weight names (HuggingFace safetensors)
@@ -52,11 +52,13 @@
 //!
 //! All Q/K/V/O biases are `None` (Mistral uses `linear_no_bias`).
 
-use fuel_core::lazy::{
-    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{
+    lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::sync::Arc;
 
 /// Mistral / Mixtral model configuration.
@@ -136,7 +138,7 @@ fn default_mistral_rope_theta() -> f64 {
 impl MistralConfigRaw {
     fn from_json_str(json: &str) -> Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Mistral config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Mistral config.json: {e}")))
     }
 
     fn resolve(self) -> Result<MistralConfig> {
@@ -175,7 +177,7 @@ impl MistralConfig {
 }
 
 /// Mistral weights. Per-layer K/V/Q/O/FFN tensors reuse
-/// [`fuel_core::lazy::LayerWeights`] (the LLaMA shape works unchanged
+/// [`fuel_tensor::lazy::LayerWeights`] (the LLaMA shape works unchanged
 /// because Mistral's per-layer parameter layout is identical to
 /// bias-free LLaMA).
 #[derive(Debug, Clone)]
@@ -240,7 +242,7 @@ impl MistralModel {
         // not an invariant to assert. Matches the conformant form used by the
         // other 21 models (see `lazy_qwen3.rs`).
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MistralConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -251,7 +253,7 @@ impl MistralModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MistralConfig: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
                 cfg.num_attention_heads, cfg.num_key_value_heads,
             ))
@@ -498,7 +500,7 @@ pub fn load_mistral_weights_with_prefix(
     let kv = cfg.num_key_value_heads * cfg.head_dim;
     let token_embedding = load_tensor_as_f32(st, &format!("{prefix}model.embed_tokens.weight"))?;
     if token_embedding.len() != cfg.vocab_size * h {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}model.embed_tokens.weight: {} elts, expected {}",
             token_embedding.len(),
             cfg.vocab_size * h,

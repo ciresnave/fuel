@@ -43,9 +43,10 @@
 //! — they each maintain a different shape of recurrent state
 //! and warrant their own session. batch=1, F32.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -231,20 +232,20 @@ impl BasedModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "BasedModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "BasedModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if weights.layers.len() != cfg.num_hidden_layers {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "BasedWeights: layers length ({}) must match num_hidden_layers ({})",
                 weights.layers.len(),
                 cfg.num_hidden_layers,
@@ -252,7 +253,7 @@ impl BasedModel {
             .bt());
         }
         if start_pos != 0 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "BasedModel v1: prefill only (start_pos must be 0, got {start_pos})",
             ))
             .bt());
@@ -312,7 +313,7 @@ impl BasedModel {
             (BasedMixerWeights::Sliding(w), BasedMixerKind::Sliding) => {
                 self.apply_sliding(x, w, rope_cos, rope_sin)
             }
-            _ => Err(fuel_core::Error::Msg(format!(
+            _ => Err(fuel_ir::error::Error::Msg(format!(
                 "Based layer {layer_idx}: mixer weight kind does not match \
                  config-derived kind {expected:?} — config + weights are inconsistent",
             ))
@@ -379,7 +380,7 @@ impl BasedModel {
         // why the field-name census for this relation could not see it. The
         // message named the fields; the operands did not.
         if !h.is_multiple_of(n_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "BasedConfig: hidden_size ({h}) must be divisible by la.num_heads ({n_heads})"
             )));
         }
@@ -575,7 +576,7 @@ impl BasedWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &BasedConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let dim2 = 2 * h;
         let kernel: usize = 3;

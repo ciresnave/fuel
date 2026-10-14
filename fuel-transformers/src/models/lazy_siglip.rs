@@ -35,9 +35,10 @@
 //! Forward-only, batch == 1, F32. Position embedding
 //! interpolation for variable image sizes deferred.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,7 +228,7 @@ impl SiglipTextModel {
         assert!(seq > 0);
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "SiglipTextModel::forward: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             )));
@@ -299,7 +300,7 @@ impl SiglipVisionModel {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "siglip vision: input spatial dims ({}, {}) must equal image_size {}; this model \
                  is fixed-resolution (position interpolation deferred), and the patch reshape \
                  targets a config-derived num_patches — it guards the patch COUNT, not the \
@@ -394,7 +395,7 @@ impl SiglipVisionModel {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "siglip vision: input spatial dims ({}, {}) must equal image_size {}; this model \
                  is fixed-resolution (position interpolation deferred), and the patch reshape \
                  targets a config-derived num_patches — it guards the patch COUNT, not the \
@@ -620,7 +621,7 @@ fn load_siglip_encoder_layer(
     hidden: usize,
     intermediate: usize,
 ) -> Result<SiglipEncoderLayerWeights> {
-    use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
     Ok(SiglipEncoderLayerWeights {
         ln1_gain: Arc::from(load_tensor_as_f32(
             st,
@@ -705,7 +706,7 @@ impl SiglipVisionWeights {
         prefix: &str,
         include_head: bool,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 
@@ -820,7 +821,7 @@ impl SiglipTextWeights {
         cfg: &SiglipTextConfig,
         prefix: &str,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 
@@ -868,7 +869,7 @@ impl SiglipModelWeights {
         text_cfg: &SiglipTextConfig,
         vision_cfg: &SiglipVisionConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_tensor_as_f32;
+        use fuel_tensor::lazy::load_tensor_as_f32;
         let text = SiglipTextWeights::load_from_mmapped(st, text_cfg, "text_model.")?;
         let vision =
             SiglipVisionWeights::load_from_mmapped(st, vision_cfg, "vision_model.", false)?;

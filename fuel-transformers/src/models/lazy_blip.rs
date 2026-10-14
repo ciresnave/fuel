@@ -25,8 +25,8 @@
 
 use crate::models::lazy_blip_text::{BlipTextConfig, BlipTextModel, BlipTextWeights};
 use crate::models::lazy_blip_vision::{BlipVisionConfig, BlipVisionModel, BlipVisionWeights};
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlipConfig {
@@ -144,9 +144,9 @@ mod tests {
     use crate::models::lazy_blip_vision::{
         BlipMlpWeights, BlipVisionActivation, BlipVisionAttentionWeights, BlipVisionLayerWeights,
     };
-    use fuel_core::Device;
-    use fuel_core::lazy::WeightStorage;
     use fuel_ir::Shape;
+    use fuel_tensor::Device;
+    use fuel_tensor::lazy::WeightStorage;
     use std::sync::Arc;
 
     fn rng(seed: u32) -> impl FnMut() -> f32 {

@@ -35,9 +35,9 @@
 //!
 //! v1 scope: F32, batch == 1, forward-only inference.
 
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -237,7 +237,7 @@ fn rvq_encode(xs: &Tensor, w: &ResidualVectorQuantizationWeights) -> Result<Tens
             Some(prev) => prev.concat(&c_unsq, 0_usize)?,
         });
     }
-    stacked.ok_or_else(|| fuel_core::Error::Msg("rvq_encode: empty layers".into()))
+    stacked.ok_or_else(|| fuel_ir::error::Error::Msg("rvq_encode: empty layers".into()))
 }
 
 /// `ResidualVectorQuantization::decode` — input codes `(n_q, B, T)`
@@ -336,10 +336,10 @@ fn load_euclidean_codebook(
     codebook_size: usize,
     codebook_dim: usize,
 ) -> Result<EuclideanCodebookWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let cluster_usage = load_tensor_as_f32(st, &format!("{prefix}.cluster_usage"))?;
     if cluster_usage.len() != codebook_size {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}.cluster_usage: {} elements, expected {codebook_size}",
             cluster_usage.len(),
         );
@@ -347,7 +347,7 @@ fn load_euclidean_codebook(
     let embed_sum = load_tensor_as_f32(st, &format!("{prefix}.embed_sum"))?;
     let expected = codebook_size * codebook_dim;
     if embed_sum.len() != expected {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}.embed_sum: {} elements, expected {expected} ({codebook_size}×{codebook_dim})",
             embed_sum.len(),
         );
@@ -407,12 +407,12 @@ fn load_residual_vector_quantizer(
     n_q: usize,
     codebook_size: usize,
 ) -> Result<ResidualVectorQuantizerWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     // 1×1 conv1d_no_bias on input: `(out=dim, in=input_dim, k=1)`.
     let in_w = load_tensor_as_f32(st, &format!("{prefix}.input_proj.weight"))?;
     let expected_in = dim * input_dim;
     if in_w.len() != expected_in {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}.input_proj.weight: {} elements, expected {expected_in} ({dim}×{input_dim}×1)",
             in_w.len(),
         );
@@ -420,7 +420,7 @@ fn load_residual_vector_quantizer(
     let out_w = load_tensor_as_f32(st, &format!("{prefix}.output_proj.weight"))?;
     let expected_out = output_dim * dim;
     if out_w.len() != expected_out {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{prefix}.output_proj.weight: {} elements, expected {expected_out} ({output_dim}×{dim}×1)",
             out_w.len(),
         );
@@ -498,7 +498,7 @@ impl SplitResidualVectorQuantizerWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

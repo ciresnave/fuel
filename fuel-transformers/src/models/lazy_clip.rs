@@ -40,9 +40,10 @@
 //! joint `ClipModel::similarity` returns a `[1, 1]` similarity
 //! when called with a single image + single text.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 // ---- Shared encoder configuration -------------------------------------------
@@ -198,7 +199,7 @@ impl ClipTextModel {
         assert!(seq > 0);
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "ClipTextModel: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             )));
@@ -297,7 +298,7 @@ impl ClipTextModel {
         assert!(seq > 0);
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "ClipTextModel: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             )));
@@ -372,7 +373,7 @@ impl ClipVisionModel {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "clip vision: input spatial dims ({}, {}) must equal image_size {}; this model is \
                  fixed-resolution (position interpolation deferred), and the patch reshape targets \
                  a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
@@ -475,7 +476,7 @@ impl ClipVisionModel {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "clip vision: input spatial dims ({}, {}) must equal image_size {}; this model is \
                  fixed-resolution (position interpolation deferred), and the patch reshape targets \
                  a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
@@ -660,7 +661,7 @@ fn load_clip_encoder_layer(
     embed_dim: usize,
     intermediate_size: usize,
 ) -> Result<ClipEncoderLayerWeights> {
-    use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
     Ok(ClipEncoderLayerWeights {
         ln1_gain: Arc::from(load_tensor_as_f32(
             st,
@@ -752,7 +753,7 @@ impl ClipTextWeights {
         cfg: &ClipTextConfig,
         prefix: &str,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_tensor_as_f32;
+        use fuel_tensor::lazy::load_tensor_as_f32;
         let token_embedding = Arc::from(load_tensor_as_f32(
             st,
             &format!("{prefix}embeddings.token_embedding.weight"),
@@ -802,7 +803,7 @@ impl ClipVisionWeights {
         cfg: &ClipVisionConfig,
         prefix: &str,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_tensor_as_f32;
+        use fuel_tensor::lazy::load_tensor_as_f32;
         let patch_proj = Arc::from(load_tensor_as_f32(
             st,
             &format!("{prefix}embeddings.patch_embedding.weight"),
@@ -861,7 +862,7 @@ impl ClipModelWeights {
         text_cfg: &ClipTextConfig,
         vision_cfg: &ClipVisionConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let text = ClipTextWeights::load_from_mmapped(st, text_cfg, "text_model.")?;
         let vision = ClipVisionWeights::load_from_mmapped(st, vision_cfg, "vision_model.")?;
         let text_projection = load_transposed_matrix_preserve_dtype(

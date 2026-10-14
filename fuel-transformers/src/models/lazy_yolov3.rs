@@ -46,10 +46,11 @@
 //! - NMS is data-dependent and runs in pure Rust on the realized
 //!   arrays — identical pattern to `lazy_yolov8::decode_and_nms`.
 
-use fuel_core::lazy::{
-    Tensor, load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
-};
 use fuel_ir::Shape;
+use fuel_tensor::{
+    lazy::Tensor, lazy::load_tensor_as_f32, lazy::load_transposed_matrix,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::sync::Arc;
 
 // Silence "unused import" warnings for the transposed-matrix helpers
@@ -64,14 +65,14 @@ fn _keep_helpers_alive() {
             &str,
             usize,
             usize,
-        ) -> fuel_core::Result<Vec<f32>>;
+        ) -> fuel_ir::error::Result<Vec<f32>>;
     let _ = load_transposed_matrix_preserve_dtype
         as fn(
             &fuel_loaders::safetensors::MmapedSafetensors,
             &str,
             usize,
             usize,
-        ) -> fuel_core::Result<fuel_core::lazy::WeightStorage>;
+        ) -> fuel_ir::error::Result<fuel_tensor::lazy::WeightStorage>;
 }
 
 // ---- Config ----------------------------------------------------------------
@@ -244,7 +245,7 @@ fn per_channel_affine(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let s = x
         .const_f32_like(scale.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
@@ -258,7 +259,7 @@ fn per_channel_affine(
 
 /// Leaky-ReLU(slope). Implemented as `max(x, slope * x)` — matches
 /// PyTorch's `F.leaky_relu` exactly when `slope > 0`.
-fn leaky_relu(x: &Tensor, slope: f64) -> fuel_core::Result<Tensor> {
+fn leaky_relu(x: &Tensor, slope: f64) -> fuel_ir::error::Result<Tensor> {
     let scaled = x.mul_scalar(slope);
     x.maximum(&scaled)
 }
@@ -276,7 +277,7 @@ fn cbn(
     h_out: usize,
     w_out: usize,
     cfg: &YoloV3Config,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let p = (k - 1) / 2;
     let w_t = x.const_f32_like(cw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, k, k]))?;
     let conv = x.conv2d(&w_t, None, (stride, stride), (p, p), 1)?;
@@ -294,7 +295,7 @@ fn residual(
     h: usize,
     w: usize,
     cfg: &YoloV3Config,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let c_mid = c / 2;
     let y = cbn(x, &rw.cv1, c, c_mid, 1, 1, h, w, cfg)?;
     let y = cbn(&y, &rw.cv2, c_mid, c, 3, 1, h, w, cfg)?;
@@ -311,7 +312,7 @@ fn backbone_stage(
     h_in: usize,
     w_in: usize,
     cfg: &YoloV3Config,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h_out = h_in / 2;
     let w_out = w_in / 2;
     let mut x = cbn(x, &sw.downsample, c_in, c_out, 3, 2, h_out, w_out, cfg)?;
@@ -333,7 +334,7 @@ fn head_stack(
     h: usize,
     w: usize,
     cfg: &YoloV3Config,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let x = cbn(x, &hw.cv1, c_in, c, 1, 1, h, w, cfg)?;
     let x = cbn(&x, &hw.cv2, c, 2 * c, 3, 1, h, w, cfg)?;
     let x = cbn(&x, &hw.cv3, 2 * c, c, 1, 1, h, w, cfg)?;
@@ -348,7 +349,7 @@ fn raw_conv_1x1_bias(
     dw: &DetectConvWeights,
     c_in: usize,
     c_out: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(dw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, 1, 1]))?;
     let b_t = x.const_f32_like(dw.conv_b.clone(), Shape::from_dims(&[c_out]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
@@ -368,7 +369,7 @@ fn decode_scale(
     num_classes: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let n_anchors = 3;
     let attrs = 5 + num_classes;
     // [1, 3*attrs, H, W] → [1, 3, attrs, H*W] → [1, 3, H*W, attrs] →
@@ -454,11 +455,11 @@ pub struct YoloV3Model {
 impl YoloV3Model {
     /// Run the forward pass on a `[1, 3, H, W]` RGB image in row-major
     /// `[channel, row, col]` order with pixel values in `[0, 1]`.
-    pub fn forward(&self, image: &[f32]) -> fuel_core::Result<YoloV3RawOutput> {
+    pub fn forward(&self, image: &[f32]) -> fuel_ir::error::Result<YoloV3RawOutput> {
         let cfg = &self.config;
         let isize = cfg.image_size;
         if image.len() != 3 * isize * isize {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "YoloV3Model::forward: image has {} elements, expected {} (3 * {isize} * {isize})",
                 image.len(),
                 3 * isize * isize,
@@ -468,7 +469,7 @@ impl YoloV3Model {
         let x = Tensor::from_f32(
             image.to_vec(),
             Shape::from_dims(&[1, 3, isize, isize]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
 
         // --- Backbone ---
@@ -621,11 +622,11 @@ fn load_cbn(
     c_in: usize,
     k: usize,
     eps: f64,
-) -> fuel_core::Result<CbnWeights> {
+) -> fuel_ir::error::Result<CbnWeights> {
     let conv_w = load_tensor_as_f32(st, &format!("{layer_idx}.conv_{layer_idx}.weight"))?;
     let expected = c_out * c_in * k * k;
     if conv_w.len() != expected {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "load_cbn[{layer_idx}]: conv has {} elements, expected {} ({c_out}*{c_in}*{k}*{k})",
             conv_w.len(),
             expected,
@@ -656,12 +657,12 @@ fn load_detect(
     layer_idx: usize,
     c_out: usize,
     c_in: usize,
-) -> fuel_core::Result<DetectConvWeights> {
+) -> fuel_ir::error::Result<DetectConvWeights> {
     let w = load_tensor_as_f32(st, &format!("{layer_idx}.conv_{layer_idx}.weight"))?;
     let b = load_tensor_as_f32(st, &format!("{layer_idx}.conv_{layer_idx}.bias"))?;
     let expected = c_out * c_in;
     if w.len() != expected {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "load_detect[{layer_idx}]: conv has {} elements, expected {} ({c_out}*{c_in}*1*1)",
             w.len(),
             expected,
@@ -680,7 +681,7 @@ impl YoloV3Weights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &YoloV3Config,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let eps = cfg.bn_eps;
         let nc = cfg.num_classes;
         let detect_out = 3 * (5 + nc);
@@ -1154,7 +1155,7 @@ mod tests {
         let raw = Tensor::from_f32(
             data,
             Shape::from_dims(&[1, c, h, w]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let anchors = [(20_usize, 30_usize), (40, 60), (80, 90)];
@@ -1224,7 +1225,7 @@ mod tests {
         let preds = Tensor::from_f32(
             data,
             Shape::from_dims(&[1, n, attrs]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let raw = YoloV3RawOutput { predictions: preds };

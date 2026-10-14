@@ -46,9 +46,10 @@
 //! F32, teacher-forced layout (decoder sees full target sequence
 //! in one call).
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,7 +246,7 @@ impl T5Model {
             Some(w) => w.clone(),
             None => {
                 if !cfg.tie_word_embeddings {
-                    return Err(fuel_core::Error::Msg(
+                    return Err(fuel_ir::error::Error::Msg(
                         "T5Model::forward_decoder_embeds: lm_head absent but tie_word_embeddings=false".into(),
                     ).bt());
                 }
@@ -336,14 +337,14 @@ impl T5Model {
         let dims = src_embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.d_model {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "T5Model::forward_encoder_embeds: expected shape (1, src_len, d_model={}), got {:?}",
                 cfg.d_model, dims,
             )).bt());
         }
         let src_len = dims[1];
         if src_len == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "T5Model::forward_encoder_embeds: src_len must be > 0".into(),
             )
             .bt());
@@ -386,14 +387,14 @@ impl T5Model {
         let dims = tgt_embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.d_model {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "T5Model::forward_decoder_embeds: expected tgt_embeds shape (1, tgt_len, d_model={}), got {:?}",
                 cfg.d_model, dims,
             )).bt());
         }
         let tgt_len = dims[1];
         if tgt_len == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "T5Model::forward_decoder_embeds: tgt_len must be > 0".into(),
             )
             .bt());
@@ -643,7 +644,7 @@ impl T5AttentionWeights {
         d_model: usize,
         inner_dim: usize,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_transposed_matrix_preserve_dtype as ltm;
+        use fuel_tensor::lazy::load_transposed_matrix_preserve_dtype as ltm;
         let q = ltm(st, &format!("{prefix}.q.weight"), inner_dim, d_model)?;
         let k = ltm(st, &format!("{prefix}.k.weight"), inner_dim, d_model)?;
         let v = ltm(st, &format!("{prefix}.v.weight"), inner_dim, d_model)?;
@@ -660,7 +661,7 @@ impl T5FfnWeights {
         d_ff: usize,
         gated: bool,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_transposed_matrix_preserve_dtype as ltm;
+        use fuel_tensor::lazy::load_transposed_matrix_preserve_dtype as ltm;
         if gated {
             let wi_0 = ltm(st, &format!("{prefix}.wi_0.weight"), d_ff, d_model)?;
             let wi_1 = ltm(st, &format!("{prefix}.wi_1.weight"), d_ff, d_model)?;
@@ -681,7 +682,7 @@ impl T5Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &T5Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let d = cfg.d_model;
         let inner = cfg.inner_dim();
         let d_ff = cfg.d_ff;

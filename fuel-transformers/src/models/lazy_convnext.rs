@@ -49,11 +49,11 @@
 //! let logits = model.forward(&image)?;
 //! let flat = logits.realize_f32();
 //! assert_eq!(flat.len(), model.config.num_classes);
-//! # Ok::<(), fuel_core::Error>(())
+//! # Ok::<(), fuel_ir::error::Error>(())
 //! ```
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -182,9 +182,9 @@ impl ConvNextConfig {
         }
     }
 
-    pub fn from_hf_json_str(s: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(s: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str::<Self>(s)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing convnext config: {e}")).bt())
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing convnext config: {e}")).bt())
     }
 }
 
@@ -271,7 +271,7 @@ impl ConvNextModel {
     /// Forward pass on a single ImageNet-normalized `[1, 3, 224, 224]`
     /// image (flattened row-major). Returns logits shape `[1,
     /// num_classes]`.
-    pub fn forward(&self, image: &[f32]) -> fuel_core::Result<Tensor> {
+    pub fn forward(&self, image: &[f32]) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let (x, c, h) = self.run_backbone(image)?;
 
@@ -303,12 +303,12 @@ impl ConvNextModel {
     /// 2^(n_stages - 1))`. Useful for segmentation/detection
     /// heads, embedding adapters, and Depth-Anything-style
     /// dense prediction.
-    pub fn forward_features(&self, image: &[f32]) -> fuel_core::Result<Tensor> {
+    pub fn forward_features(&self, image: &[f32]) -> fuel_ir::error::Result<Tensor> {
         let (x, _, _) = self.run_backbone(image)?;
         Ok(x)
     }
 
-    fn run_backbone(&self, image: &[f32]) -> fuel_core::Result<(Tensor, usize, usize)> {
+    fn run_backbone(&self, image: &[f32]) -> fuel_ir::error::Result<(Tensor, usize, usize)> {
         let cfg = &self.config;
         let cin = cfg.in_channels;
         let s = cfg.image_size;
@@ -321,7 +321,7 @@ impl ConvNextModel {
         let x = Tensor::from_f32(
             image.to_vec(),
             Shape::from_dims(&[1, cin, s, s]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
 
         let p = cfg.stem_patch;
@@ -382,7 +382,7 @@ fn convnext_block(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     // DWConv: [1, C, H, W] → [1, C, H, W], still channels-first.
     let dw = conv2d_depthwise_k7_s1_p3(x, &bw.dw_w, &bw.dw_b, c, h, w)?;
     // Move channels to the last dim so LayerNorm + MLP work on [1, H, W, C].
@@ -427,7 +427,7 @@ fn apply_grn(
     beta_arr: &Arc<[f32]>,
     c4: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let residual = x.clone();
     let sqr = x.mul(x)?;
     // sum over seq → [1, 1, c4]
@@ -464,7 +464,7 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
@@ -488,7 +488,7 @@ fn layer_norm_channel_dim(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let x_nhwc = x.permute([0, 2, 3, 1_usize])?;
     let flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let normed = layer_norm_affine(&flat, gamma, beta, eps, c, h * w)?;
@@ -505,7 +505,7 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
@@ -521,7 +521,12 @@ fn linear(
 }
 
 /// Global average pool 2D. Input `[1, C, H, W]` → output `[1, C]`.
-fn global_avg_pool_2d(x: &Tensor, _c: usize, _h: usize, _w: usize) -> fuel_core::Result<Tensor> {
+fn global_avg_pool_2d(
+    x: &Tensor,
+    _c: usize,
+    _h: usize,
+    _w: usize,
+) -> fuel_ir::error::Result<Tensor> {
     x.global_avg_pool_2d()
 }
 
@@ -544,7 +549,7 @@ fn conv2d_stride_eq_kernel(
     k: usize,
     h: usize,
     w_sz: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     assert!(
         h.is_multiple_of(k),
         "conv2d_stride_eq_kernel: H={h} % k={k} != 0"
@@ -595,7 +600,7 @@ fn conv2d_depthwise_k7_s1_p3(
     c: usize,
     _h: usize,
     _w_sz: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c, 1, 7, 7]))?;
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (3, 3), c)
@@ -607,7 +612,7 @@ impl ConvNextWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ConvNextConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         assert_eq!(
             cfg.dims.len(),
             cfg.depths.len(),
@@ -636,13 +641,13 @@ impl ConvNextWeights {
                 let conv_w = load_f32(st, &format!("stages.{si}.downsample.1.weight"))?;
                 let conv_b = load_f32(st, &format!("stages.{si}.downsample.1.bias"))?;
                 if ln_g.len() != cin {
-                    fuel_core::bail!(
+                    fuel_ir::bail!(
                         "downsample LN gamma has {} elements, expected {cin}",
                         ln_g.len()
                     );
                 }
                 if conv_w.len() != c * cin * 4 {
-                    fuel_core::bail!(
+                    fuel_ir::bail!(
                         "downsample conv has {} elements, expected {}",
                         conv_w.len(),
                         c * cin * 4
@@ -724,11 +729,11 @@ impl ConvNextWeights {
 fn load_f32(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
-        .map_err(|e| fuel_core::Error::Msg(format!("convnext load_f32 {name:?}: {e}")).bt())?;
+        .map_err(|e| fuel_ir::error::Error::Msg(format!("convnext load_f32 {name:?}: {e}")).bt())?;
     let bytes = view.data();
     match view.dtype() {
         Dtype::F32 => {
@@ -754,7 +759,7 @@ fn load_f32(
             }
             Ok(out)
         }
-        other => fuel_core::bail!("convnext load_f32: unsupported dtype {other:?} for {name:?}"),
+        other => fuel_ir::bail!("convnext load_f32: unsupported dtype {other:?} for {name:?}"),
     }
 }
 
@@ -763,10 +768,10 @@ fn load_transposed(
     name: &str,
     out_features: usize,
     in_features: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let flat = load_f32(st, name)?;
     if flat.len() != out_features * in_features {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "convnext load_transposed: {name:?} has {} elements, expected {}",
             flat.len(),
             out_features * in_features,
@@ -788,17 +793,20 @@ impl ConvNextModel {
     /// Defaults the config to the Tiny shape; override via
     /// `from_hub_with_config` if you're loading a Small/Base/Large
     /// variant.
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         Self::from_hub_with_config(repo_id, ConvNextConfig::tiny())
     }
 
-    pub fn from_hub_with_config(repo_id: &str, config: ConvNextConfig) -> fuel_core::Result<Self> {
+    pub fn from_hub_with_config(
+        repo_id: &str,
+        config: ConvNextConfig,
+    ) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         let weights_path = repo
             .get("model.safetensors")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub convnext safetensors: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub convnext safetensors: {e}")))?;
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&weights_path) }?;
         let weights = ConvNextWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })
@@ -939,7 +947,7 @@ mod tests {
 
         // Phase 6a oracle gate.
         let flat_ref = logits.realize_f32();
-        fuel_core::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
+        fuel_tensor::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
     }
 
     #[test]
@@ -986,7 +994,7 @@ mod tests {
     /// `y = x · nx · 1 + 0 + x` per-element.
     #[test]
     fn grn_matches_reference_computation() {
-        let dev = fuel_core::Device::cpu();
+        let dev = fuel_tensor::Device::cpu();
         let x_data = vec![1.0_f32, 1.0, 2.0, 2.0, 3.0];
         let c4 = 5;
         let seq = 1;
@@ -1014,7 +1022,7 @@ mod tests {
     /// is wired and gamma actually scales the contribution.
     #[test]
     fn grn_gamma_zero_is_identity() {
-        let dev = fuel_core::Device::cpu();
+        let dev = fuel_tensor::Device::cpu();
         let x_data = vec![0.5_f32, -0.25, 0.75, 1.0];
         let c4 = 4;
         let seq = 1;

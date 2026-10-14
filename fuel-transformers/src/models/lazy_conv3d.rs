@@ -29,9 +29,9 @@
 //!   second consumer needs it (sum of N parallel 2D convs over chunks
 //!   of N consecutive frames, stride N).
 
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 /// 3D convolution config restricted to the temporal-patch-2 case.
@@ -96,14 +96,14 @@ impl Conv3dTemporal2Weights {
     ) -> Result<Self> {
         let expected = out_channels * in_channels_per_group * 2 * kernel_h * kernel_w;
         if raw_weight.len() != expected {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv3dTemporal2Weights::from_raw_weight: expected {expected} floats \
                  ({out_channels} * {in_channels_per_group} * 2 * {kernel_h} * {kernel_w}), got {}",
                 raw_weight.len(),
             )));
         }
         if cfg.dilation != 1 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv3dTemporal2Weights: dilation must be 1 (lazy Conv2D primitive does not support \
                  dilation), got {}",
                 cfg.dilation,
@@ -140,7 +140,7 @@ impl Conv3dTemporal2Weights {
         let dims = input.shape();
         let dims = dims.dims();
         if dims.len() != 5 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv3dTemporal2Weights::apply: input must be rank 5 (B, Cin, T, H, W), \
                  got rank {}",
                 dims.len(),
@@ -148,14 +148,14 @@ impl Conv3dTemporal2Weights {
         }
         let in_channels = self.in_channels_per_group * self.cfg.groups;
         if dims[1] != in_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv3dTemporal2Weights::apply: input has Cin={}, expected {in_channels} \
                  ({} per group * {} groups)",
                 dims[1], self.in_channels_per_group, self.cfg.groups,
             )));
         }
         if dims[2] != 2 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Conv3dTemporal2Weights::apply: temporal-patch-2 requires T=2, got T={}",
                 dims[2],
             )));
@@ -187,7 +187,7 @@ impl Conv3dTemporal2Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn raw_weight(out_c: usize, in_c_per_g: usize, kh: usize, kw: usize) -> Vec<f32> {
         // Deterministic small values keep all arithmetic in

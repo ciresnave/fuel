@@ -40,13 +40,19 @@
 //! sliding window — the config's `sliding_window` is read but
 //! ignored in v1, mirroring the eager GLM-4 default).
 
-use fuel_core::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::persistent_decode::{
-    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
-};
-use fuel_core::{Device, Result};
+use fuel_ir::error::Result;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::Device;
+use fuel_tensor::{
+    inference_context::DecodeSession, inference_context::DecodeTokenData,
+    inference_context::InferenceContext, inference_context::KvCache,
+};
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
+use fuel_tensor::{
+    persistent_decode::DecodeBackbone, persistent_decode::DecodeDims,
+    persistent_decode::DecodeLayerInputs, persistent_decode::MaskPlan,
+    persistent_decode::PersistentDecodeModel,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,12 +93,12 @@ impl Glm4Config {
 /// Map a HuggingFace `hidden_act` string to [`Glm4Activation`]. Unknown values
 /// ERROR rather than silently defaulting — an activation this port does not
 /// implement is a fact worth surfacing, not swallowing.
-fn glm4_activation_from_str(s: &str) -> fuel_core::Result<Glm4Activation> {
+fn glm4_activation_from_str(s: &str) -> fuel_ir::error::Result<Glm4Activation> {
     match s {
         "silu" | "swish" => Ok(Glm4Activation::Silu),
         "gelu" => Ok(Glm4Activation::Gelu),
         "gelu_pytorch_tanh" => Ok(Glm4Activation::GeluPytorchTanh),
-        other => Err(fuel_core::Error::Msg(format!(
+        other => Err(fuel_ir::error::Error::Msg(format!(
             "unsupported GLM-4 hidden_act {other:?} (expected silu/gelu/gelu_pytorch_tanh)"
         ))),
     }
@@ -142,12 +148,12 @@ fn default_glm4_rms_norm_eps() -> f64 {
 }
 
 impl Glm4ConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing GLM-4 config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing GLM-4 config.json: {e}")))
     }
 
-    fn resolve(self) -> fuel_core::Result<Glm4Config> {
+    fn resolve(self) -> fuel_ir::error::Result<Glm4Config> {
         let hidden_activation = match self.hidden_act.as_deref() {
             None => Glm4Activation::Silu,
             Some(s) => glm4_activation_from_str(s)?,
@@ -188,7 +194,7 @@ impl Glm4Config {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `glm4_config_from_hf_json_resolves_partial_rotary_to_half`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         Glm4ConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -220,7 +226,7 @@ pub struct Glm4Weights {
     /// so a held decode plan (which bakes these weights as graph Consts) is
     /// never reused for a different Glm4 model that happens to share a config.
     /// Under-keying here is a silent wrong answer, not a slowdown.
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<Glm4LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -301,29 +307,30 @@ impl Glm4Model {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Glm4Model::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(
-                fuel_core::Error::Msg("Glm4Model::forward_embeds: seq must be > 0".into()).bt(),
-            );
+            return Err(fuel_ir::error::Error::Msg(
+                "Glm4Model::forward_embeds: seq must be > 0".into(),
+            )
+            .bt());
         }
         if !cfg
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Glm4Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
             .bt());
         }
         let rope_dim = cfg.rope_dim();
         if rope_dim == 0 || rope_dim > cfg.head_dim || !rope_dim.is_multiple_of(2) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Glm4Config: rope_dim ({rope_dim}) must be even and in (0, head_dim ({})]",
                 cfg.head_dim,
             ))
@@ -452,7 +459,9 @@ impl Glm4Model {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+        fuel_tensor::persistent_decode::forward_with_kv_context(
+            self, tokens, cache, ctx, false, None,
+        )
     }
 
     /// Plan-once persistent decode: the first `seq == 1` token builds and
@@ -465,7 +474,7 @@ impl Glm4Model {
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context_persistent(
+        fuel_tensor::persistent_decode::forward_with_kv_context_persistent(
             self, tokens, cache, ctx, session, None,
         )
     }
@@ -496,7 +505,7 @@ impl Glm4Model {
     /// under-keying it is a silent wrong answer, not a slowdown.
     pub fn decode_shape_key(&self) -> u64 {
         let cfg = &self.config;
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("glm4")
             .mix_instance(self.weights.instance)
             .mix_u64(cfg.num_hidden_layers as u64)
@@ -683,14 +692,14 @@ impl PersistentDecodeModel for Glm4Model {
         cache: &KvCache,
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
-        let host = fuel_core::persistent_decode::compute_decode_token_host(
+        let host = fuel_tensor::persistent_decode::compute_decode_token_host(
             self,
             cached_len,
             tokens,
             session.max_seq_len(),
             rope_inv_freq,
         );
-        fuel_core::persistent_decode::upload_decode_token_data(
+        fuel_tensor::persistent_decode::upload_decode_token_data(
             device,
             &host,
             cache.dtype.unwrap_or(DType::F32),
@@ -732,8 +741,8 @@ impl DecodeBackbone for Glm4Model {
         Glm4Model::decode_mask_plan(self)
     }
 
-    fn decode_rope_plan(&self) -> fuel_core::persistent_decode::RopePlan {
-        fuel_core::persistent_decode::RopePlan::single(
+    fn decode_rope_plan(&self) -> fuel_tensor::persistent_decode::RopePlan {
+        fuel_tensor::persistent_decode::RopePlan::single(
             self.config.rope_theta,
             self.decode_dims().n_layers,
         )
@@ -837,7 +846,9 @@ impl Glm4Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Glm4Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
@@ -914,7 +925,7 @@ impl Glm4Weights {
         };
 
         Ok(Self {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -1094,7 +1105,7 @@ mod tests {
             Some(WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)))
         };
         Glm4Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,

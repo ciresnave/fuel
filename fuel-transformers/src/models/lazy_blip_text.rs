@@ -25,9 +25,9 @@
 //!
 //! v1 scope: F32, batch == 1, prefill only.
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,7 +395,7 @@ fn load_ln(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
 ) -> Result<LayerNormWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     Ok(LayerNormWeights {
         gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.weight"))?),
         bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?),
@@ -408,7 +408,7 @@ fn load_blip_text_attn(
     hidden_size: usize,
     kv_in_dim: usize,
 ) -> Result<BlipTextAttentionWeights> {
-    use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
     Ok(BlipTextAttentionWeights {
         query: load_transposed_matrix_preserve_dtype(
             st,
@@ -467,7 +467,7 @@ impl BlipTextWeights {
         encoder_hidden_size: usize,
         prefix: &str,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 
@@ -556,7 +556,7 @@ impl BlipTextWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

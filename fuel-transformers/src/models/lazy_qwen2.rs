@@ -4,7 +4,7 @@
 //! Phase D LLM port. Qwen2 = Mistral + Q/K/V biases + per-layer
 //! sliding-window gating (`use_sliding_window` + `max_window_layers`).
 //! Everything else (GQA, RmsNorm, SwiGLU FFN, RoPE) matches LLaMA /
-//! Mistral so we reuse [`fuel_core::lazy::LayerWeights`] directly — the
+//! Mistral so we reuse [`fuel_tensor::lazy::LayerWeights`] directly — the
 //! optional `attn_{q,k,v}_bias` fields on `LayerWeights` already
 //! handle Qwen2's bias layout.
 //!
@@ -45,13 +45,19 @@
 //!   - `lm_head.weight` → `output` (or tied to `token_embedding` when
 //!     `tie_word_embeddings == true`; safetensors loader resolves it)
 
-use fuel_core::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
-use fuel_core::persistent_decode::{
-    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
-};
-use fuel_core::{Device, Result};
+use fuel_ir::error::Result;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::Device;
+use fuel_tensor::{
+    inference_context::DecodeSession, inference_context::DecodeTokenData,
+    inference_context::InferenceContext, inference_context::KvCache,
+};
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
+use fuel_tensor::{
+    persistent_decode::DecodeBackbone, persistent_decode::DecodeDims,
+    persistent_decode::DecodeLayerInputs, persistent_decode::MaskPlan,
+    persistent_decode::PersistentDecodeModel,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,9 +143,9 @@ fn default_qwen2_rms_norm_eps() -> f64 {
 }
 
 impl Qwen2ConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen2 config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Qwen2 config.json: {e}")))
     }
 
     fn resolve(self) -> Result<Qwen2Config> {
@@ -171,7 +177,7 @@ impl Qwen2Config {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `qwen2_config_from_hf_json_parses_the_artifact_not_a_preset`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         Qwen2ConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -185,8 +191,8 @@ pub struct Qwen2Weights {
     /// gives: the weights are what a held graph bakes as `Const`s, so two models
     /// over one weight set may legitimately share a plan while two with distinct
     /// weights must not. Mint with
-    /// [`fuel_core::decode_shape::ModelInstanceId::next`].
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    /// [`fuel_tensor::decode_shape::ModelInstanceId::next`].
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -247,7 +253,7 @@ impl Qwen2Model {
         // count violates this -- a CONFIG property to reject, not an invariant
         // to assert. Matches the conformant form in `lazy_qwen3.rs`.
         if cfg.num_attention_heads * head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen2Config: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -258,7 +264,7 @@ impl Qwen2Model {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen2Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
             .bt());
@@ -323,7 +329,7 @@ impl Qwen2Model {
         // count violates this -- a CONFIG property to reject, not an invariant
         // to assert. Matches the conformant form in `lazy_qwen3.rs`.
         if cfg.num_attention_heads * head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Qwen2Config: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -334,7 +340,7 @@ impl Qwen2Model {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Qwen2Config: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
                 cfg.num_attention_heads, cfg.num_key_value_heads,
             ))
@@ -481,7 +487,7 @@ impl Qwen2Model {
 //
 // Qwen2 is family 1 of the eleven. It does NOT get its own build path: the
 // embed → RoPE → mask → per-layer → norm → logits body lives in
-// `fuel_core::persistent_decode` and serves D1 and D2 from one parameterised
+// `fuel_tensor::persistent_decode` and serves D1 and D2 from one parameterised
 // source. What lives here is the part that is genuinely Qwen2: the attention
 // block, and the per-layer mask variation the rest of the tree has no analogue
 // for.
@@ -519,7 +525,7 @@ impl Qwen2Model {
     /// mask variants exist and which layer reads which.
     pub fn decode_shape_key(&self) -> u64 {
         let cfg = &self.config;
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("qwen2")
             .mix_instance(self.weights.instance)
             .mix_u64(cfg.num_hidden_layers as u64)
@@ -542,7 +548,9 @@ impl Qwen2Model {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+        fuel_tensor::persistent_decode::forward_with_kv_context(
+            self, tokens, cache, ctx, false, None,
+        )
     }
 
     /// Plan-once persistent decode: the first `seq == 1` token builds and
@@ -555,7 +563,7 @@ impl Qwen2Model {
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context_persistent(
+        fuel_tensor::persistent_decode::forward_with_kv_context_persistent(
             self, tokens, cache, ctx, session, None,
         )
     }
@@ -695,7 +703,7 @@ impl Qwen2Model {
         // arm-0 runnability requires the merge to read arm 0. The same split
         // `LlamaModel` makes, for the same reason.
         let attn_v_permuted = attn_v.permute([0, 2, 1, 3_usize])?;
-        fuel_core::lazy::offer_flash_decode_arm_for_region(
+        fuel_tensor::lazy::offer_flash_decode_arm_for_region(
             q_r.graph(),
             q_r.node_id(),
             full_k.node_id(),
@@ -752,14 +760,14 @@ impl PersistentDecodeModel for Qwen2Model {
         cache: &KvCache,
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
-        let host = fuel_core::persistent_decode::compute_decode_token_host(
+        let host = fuel_tensor::persistent_decode::compute_decode_token_host(
             self,
             cached_len,
             tokens,
             session.max_seq_len(),
             rope_inv_freq,
         );
-        fuel_core::persistent_decode::upload_decode_token_data(
+        fuel_tensor::persistent_decode::upload_decode_token_data(
             device,
             &host,
             cache.dtype.unwrap_or(DType::F32),
@@ -797,8 +805,8 @@ impl DecodeBackbone for Qwen2Model {
         Qwen2Model::decode_mask_plan(self)
     }
 
-    fn decode_rope_plan(&self) -> fuel_core::persistent_decode::RopePlan {
-        fuel_core::persistent_decode::RopePlan::single(
+    fn decode_rope_plan(&self) -> fuel_tensor::persistent_decode::RopePlan {
+        fuel_tensor::persistent_decode::RopePlan::single(
             self.config.rope_theta,
             self.decode_dims().n_layers,
         )
@@ -847,7 +855,7 @@ impl Qwen2Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Qwen2Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let head_dim = cfg.head_dim();
         let q_dim = cfg.num_attention_heads * head_dim;
@@ -946,7 +954,7 @@ impl Qwen2Weights {
             load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?
         };
         Ok(Self {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -1098,7 +1106,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *next_box));
         Qwen2Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -1851,7 +1859,7 @@ mod tests {
     /// returned the DENSE mask for every variant — byte-identically what a
     /// single-mask decode port computes — giving `[0.0, 7.04e-3, 7.95e-3]`
     /// against this oracle, i.e. failing on both steps where the window bites.
-    /// Making [`fuel_core::lazy::build_decode_causal_mask_windowed`] the windowed
+    /// Making [`fuel_tensor::lazy::build_decode_causal_mask_windowed`] the windowed
     /// variant's source took it to `[0.0, 0.0, 0.0]`.
     ///
     /// **The zeros are not vacuous, and the shape of the result is the proof.**

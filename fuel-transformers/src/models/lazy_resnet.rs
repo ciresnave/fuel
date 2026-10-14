@@ -45,11 +45,11 @@
 //! variant is just `nclasses = None` at config time.
 
 use crate::models::lazy_convmixer::BatchNormParams;
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,7 +341,7 @@ impl ResNetWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ResNetConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         const EPS: f64 = 1e-5;
 
         // Stem.
@@ -394,7 +394,7 @@ fn resnet_load_stage(
     stride: usize,
     n_blocks: usize,
     eps: f64,
-) -> fuel_core::Result<ResNetStageWeights> {
+) -> fuel_ir::error::Result<ResNetStageWeights> {
     let block_out = match kind {
         ResNetKind::Basic => c_out,
         ResNetKind::Bottleneck => 4 * c_out,
@@ -419,7 +419,7 @@ fn resnet_load_block(
     c_out: usize,
     stride: usize,
     eps: f64,
-) -> fuel_core::Result<ResNetBlockWeights> {
+) -> fuel_ir::error::Result<ResNetBlockWeights> {
     let p = format!("layer{stage_idx}.{block_idx}");
     let conv1 = WeightStorage::F32(Arc::from(resnet_load_f32(
         st,
@@ -475,7 +475,7 @@ fn resnet_load_bn(
     prefix: &str,
     channels: usize,
     eps: f64,
-) -> fuel_core::Result<BatchNormParams> {
+) -> fuel_ir::error::Result<BatchNormParams> {
     let gain = resnet_load_f32(st, &format!("{prefix}.weight"))?;
     let bias = resnet_load_f32(st, &format!("{prefix}.bias"))?;
     let running_mean = resnet_load_f32(st, &format!("{prefix}.running_mean"))?;
@@ -485,7 +485,7 @@ fn resnet_load_bn(
         || running_mean.len() != channels
         || running_var.len() != channels
     {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "ResNet load_bn {prefix}: expected {channels} elements per stat, \
              got gain={} bias={} mean={} var={}",
             gain.len(),
@@ -507,11 +507,11 @@ fn resnet_load_bn(
 fn resnet_load_f32(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
-        .map_err(|e| fuel_core::Error::Msg(format!("resnet load_f32 {name:?}: {e}")).bt())?;
+        .map_err(|e| fuel_ir::error::Error::Msg(format!("resnet load_f32 {name:?}: {e}")).bt())?;
     let bytes = view.data();
     match view.dtype() {
         Dtype::F32 => {
@@ -537,7 +537,7 @@ fn resnet_load_f32(
             }
             Ok(out)
         }
-        other => Err(fuel_core::Error::Msg(format!(
+        other => Err(fuel_ir::error::Error::Msg(format!(
             "resnet load_f32: unsupported dtype {other:?} for {name:?}",
         ))
         .bt()),
@@ -549,10 +549,10 @@ fn resnet_load_transposed(
     name: &str,
     out_features: usize,
     in_features: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let flat = resnet_load_f32(st, name)?;
     if flat.len() != out_features * in_features {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "resnet load_transposed {name:?}: has {} elements, expected {}",
             flat.len(),
             out_features * in_features,
@@ -575,7 +575,7 @@ impl ResNetModel {
     /// model. Defaults to ResNet-18 with 1000-class classifier; override
     /// via [`Self::from_hub_with_config`] for ResNet-{34,50,101,152} or
     /// classifier-free pooling-only feature extraction.
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         Self::from_hub_with_config(repo_id, ResNetConfig::resnet18(Some(1000)))
     }
 
@@ -584,7 +584,10 @@ impl ResNetModel {
     /// classic torchvision `lmz/fuel-resnet` repo stores per-variant
     /// files — pass `&filename` to `from_hub_with_filename` if you need
     /// to point at a specific one).
-    pub fn from_hub_with_config(repo_id: &str, config: ResNetConfig) -> fuel_core::Result<Self> {
+    pub fn from_hub_with_config(
+        repo_id: &str,
+        config: ResNetConfig,
+    ) -> fuel_ir::error::Result<Self> {
         Self::from_hub_with_filename(repo_id, "model.safetensors", config)
     }
 
@@ -594,13 +597,13 @@ impl ResNetModel {
         repo_id: &str,
         filename: &str,
         config: ResNetConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         let weights_path = repo
             .get(filename)
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub resnet safetensors: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub resnet safetensors: {e}")))?;
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&weights_path) }?;
         let weights = ResNetWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })

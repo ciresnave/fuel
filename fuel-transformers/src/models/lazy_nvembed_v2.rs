@@ -58,9 +58,10 @@
 //! NOT Matryoshka — NV-Embed v2 ships a fixed 4096-d embedding.
 
 use crate::models::lazy_mistral::{MistralConfig, MistralModel, MistralWeights};
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -330,8 +331,9 @@ impl NvEmbedV2Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &NvEmbedV2Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{
-            LayerWeights, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+        use fuel_tensor::{
+            lazy::LayerWeights, lazy::load_tensor_as_f32,
+            lazy::load_transposed_matrix_preserve_dtype,
         };
 
         let bcfg = &cfg.backbone;
@@ -343,7 +345,7 @@ impl NvEmbedV2Weights {
         // ---- Mistral backbone (NV-Embed naming: no `model.` middle segment) --
         let token_embedding_vec = load_tensor_as_f32(st, "embedding_model.embed_tokens.weight")?;
         if token_embedding_vec.len() != bcfg.vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "embedding_model.embed_tokens.weight: {} elts, expected {}",
                 token_embedding_vec.len(),
                 bcfg.vocab_size * h,
@@ -441,7 +443,7 @@ impl NvEmbedV2Weights {
         // `[num_latents, hidden_size]` — kept as f32 (small).
         let latents_vec = load_tensor_as_f32(st, "latent_attention_model.latents")?;
         if latents_vec.len() != cfg.num_latents * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "latent_attention_model.latents: {} elts, expected {}",
                 latents_vec.len(),
                 cfg.num_latents * h,
@@ -535,7 +537,7 @@ impl NvEmbedV2Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::lazy::LayerWeights;
+    use fuel_tensor::lazy::LayerWeights;
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())

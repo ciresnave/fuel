@@ -12,7 +12,7 @@ readme = "README.md"
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
-fuel-core = { path = "../fuel-core", version = "0.18.0" }
+fuel-tensor = { workspace = true }
 fuel-cpu-backend = { workspace = true }
 # Stage 2: the moved model zoo uses these Foundation + external crates directly
 # (they were fuel-core's deps). Added as workspace deps — already declared in the
@@ -51,11 +51,11 @@ tracing = { workspace = true }
 
 [features]
 default = []
-accelerate = ["dep:accelerate-src", "fuel-core/accelerate"]
-cuda = ["fuel-core/cuda"]
-cudnn = ["fuel-core/cudnn"]
-mkl = ["dep:intel-mkl-src", "fuel-core/mkl"]
-metal = ["fuel-core/metal"]
+accelerate = ["dep:accelerate-src", "fuel-tensor/accelerate"]
+cuda = ["fuel-tensor/cuda"]
+cudnn = ["fuel-tensor/cudnn"]
+mkl = ["dep:intel-mkl-src", "fuel-tensor/mkl"]
+metal = ["fuel-tensor/metal"]
 
 # Doctest-only. The crate-level "Quick start" example names
 # `fuel_nn::varbuilder::VarBuilder`, which this crate does NOT depend on at
@@ -67,6 +67,7 @@ metal = ["fuel-core/metal"]
 # It broke because the fuel-nn EXTRACTION (2026-08-19) moved VarBuilder out of
 # fuel-core, and `--all-targets` does NOT build doctests, so no gate here saw it.
 [dev-dependencies]
+fuel-hardware = { workspace = true }
 fuel-nn = { workspace = true }
 # M0 of the joint GPU milestone plan (unpopped#39): the Qwen3 CPU yardstick
 # test (tests/qwen3_cpu_yardstick.rs) needs `anyhow::{anyhow, bail}` for its

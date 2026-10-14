@@ -35,8 +35,8 @@
 //!   policy.
 
 use crate::models::lazy_gemma3::{Gemma3Config, Gemma3LayerWeights, Gemma3Model, Gemma3Weights};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// GGUF-quantized Gemma 3 causal language model. Wraps a plain
@@ -94,8 +94,8 @@ impl QuantizedGemma3Model {
     pub fn forward_with_kv_context(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::KvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
+        cache: &mut fuel_tensor::inference_context::KvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
     ) -> Result<Vec<f32>> {
         self.inner.forward_with_kv_context(tokens, cache, ctx)
     }
@@ -104,9 +104,9 @@ impl QuantizedGemma3Model {
     pub fn forward_with_kv_context_persistent(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::KvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
-        session: &mut Option<fuel_core::inference_context::DecodeSession>,
+        cache: &mut fuel_tensor::inference_context::KvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
+        session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
     ) -> Result<Vec<f32>> {
         self.inner
             .forward_with_kv_context_persistent(tokens, cache, ctx, session)
@@ -116,8 +116,8 @@ impl QuantizedGemma3Model {
     pub fn forward_decode_step(
         &self,
         tokens: &[u32],
-        cache: &mut fuel_core::inference_context::KvCache,
-        ctx: &mut fuel_core::inference_context::InferenceContext,
+        cache: &mut fuel_tensor::inference_context::KvCache,
+        ctx: &mut fuel_tensor::inference_context::InferenceContext,
     ) -> Result<Vec<f32>> {
         self.inner.forward_decode_step(tokens, cache, ctx)
     }
@@ -174,12 +174,12 @@ impl QuantizedGemma3Model {
          -> Result<WeightStorage> {
             let f32_in_out = match w {
                 WeightStorage::F32(a) => a.to_vec(),
-                _ => return Err(fuel_core::Error::Msg(
+                _ => return Err(fuel_ir::error::Error::Msg(
                     "QuantizedGemma3Model::from_f32_bake: source weights must be WeightStorage::F32".into(),
                 ).bt()),
             };
             if f32_in_out.len() != in_features * out_features {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "QuantizedGemma3Model::from_f32_bake: weight has {} elems, expected {}×{}",
                     f32_in_out.len(),
                     in_features,
@@ -230,7 +230,7 @@ impl QuantizedGemma3Model {
         let inner = Gemma3Model {
             config: cfg,
             weights: Gemma3Weights {
-                instance: fuel_core::decode_shape::ModelInstanceId::next(),
+                instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
                 token_embedding: src.token_embedding,
                 layers,
                 final_norm_gain: src.final_norm_gain,
@@ -273,7 +273,7 @@ impl QuantizedGemma3Model {
         let get_tensor_bytes =
             |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
                 let info = content.tensor_infos.get(name).ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("gguf: missing tensor {name:?}"))
+                    fuel_ir::error::Error::Msg(format!("gguf: missing tensor {name:?}"))
                 })?;
                 let elems = info.shape.elem_count();
                 let block_size = info.ggml_dtype.block_size();
@@ -299,7 +299,7 @@ impl QuantizedGemma3Model {
             let expected = out_features * in_features;
             let actual: usize = dims.iter().product();
             if actual != expected {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "gguf: tensor {name:?} has {actual} elements, expected {expected} for [{out_features}, {in_features}]",
                 )).bt());
             }
@@ -331,7 +331,7 @@ impl QuantizedGemma3Model {
 
         let token_embedding = load_f32("token_embd.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "gguf token_embd.weight: {} elems, expected {}×{}",
                 token_embedding.len(),
                 cfg.vocab_size,
@@ -410,7 +410,7 @@ impl QuantizedGemma3Model {
         let inner = Gemma3Model {
             config: cfg.clone(),
             weights: Gemma3Weights {
-                instance: fuel_core::decode_shape::ModelInstanceId::next(),
+                instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
                 token_embedding: Arc::from(token_embedding),
                 layers,
                 final_norm_gain,
@@ -420,14 +420,14 @@ impl QuantizedGemma3Model {
     }
 }
 
-fn layer_err(idx: usize, name: &str, e: fuel_core::Error) -> fuel_core::Error {
-    fuel_core::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
+fn layer_err(idx: usize, name: &str, e: fuel_ir::error::Error) -> fuel_ir::error::Error {
+    fuel_ir::error::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
 }
 
 fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {
     const QK4_0: usize = 32;
     if !n.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "QuantizedGemma3Model::from_f32_bake: {name} ({n}) must be divisible by Q4_0 block size ({QK4_0})"
         )).bt());
     }
@@ -446,7 +446,7 @@ fn quantize_in_out_to_q4_0(
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "Q4_0 quantize: in_features ({in_features}) must be divisible by {QK4_0}"
         ))
         .bt());
@@ -514,8 +514,8 @@ fn dequant_bytes_to_f32(
 mod tests {
     use super::*;
     use crate::models::lazy_gemma3::GemmaActivation;
-    use fuel_core::Device;
     use fuel_ir::Shape;
+    use fuel_tensor::Device;
 
     fn test_cfg() -> Gemma3Config {
         // Pick num_heads * head_dim != hidden_size to exercise
@@ -579,7 +579,7 @@ mod tests {
             .collect();
         let final_norm_gain = Arc::from(vec![0.05_f32; h]);
         Gemma3Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -597,9 +597,12 @@ mod tests {
     /// fixture-shaped one.
     #[test]
     fn quantized_gemma3_per_layer_decode_matches_quantized_forward() {
-        use fuel_core::Device;
-        use fuel_core::inference_context::{DecodeSession, InferenceContext, KvCache};
         use fuel_ir::DType;
+        use fuel_tensor::Device;
+        use fuel_tensor::{
+            inference_context::DecodeSession, inference_context::InferenceContext,
+            inference_context::KvCache,
+        };
 
         let cfg = Gemma3Config {
             rope_local_base_freq: 1_000.0,

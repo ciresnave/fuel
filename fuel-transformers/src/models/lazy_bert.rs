@@ -38,11 +38,11 @@
 //! let hidden = model.forward(&ids)?;
 //! let out = hidden.realize_f32();
 //! assert_eq!(out.len(), ids.len() * model.config.hidden_size);
-//! # Ok::<(), fuel_core::Error>(())
+//! # Ok::<(), fuel_ir::error::Error>(())
 //! ```
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -78,20 +78,20 @@ impl BertConfig {
     /// every BERT checkpoint). Strict on the fields Fuel requires;
     /// tolerant to extras (dropout probs, initializer range, model_type,
     /// auxiliary flags Fuel doesn't consume).
-    pub fn from_hf_json_str(s: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(s: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str::<Self>(s)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing bert config.json: {e}")).bt())
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing bert config.json: {e}")).bt())
     }
 
     /// Per-head attention feature dimension. BERT derives it as
     /// `hidden_size / num_attention_heads`; the two are required to divide
     /// evenly.
-    pub fn head_dim(&self) -> fuel_core::Result<usize> {
+    pub fn head_dim(&self) -> fuel_ir::error::Result<usize> {
         // GAP-281 (dim/head relation): a typed decline, not a panic. The
         // quotient below is integer division, so a non-dividing head count
         // truncates silently -- a CONFIG property to reject, not an invariant.
         if !self.hidden_size.is_multiple_of(self.num_attention_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "BertConfig: hidden_size ({}) must be divisible by num_attention_heads ({})",
                 self.hidden_size, self.num_attention_heads,
             )));
@@ -170,7 +170,7 @@ impl BertModel {
     /// is conventionally `[CLS]` and the final positional encoding is
     /// applied left-to-right from position 0; callers wanting `[CLS] …
     /// [SEP]` structure produce those IDs via the tokenizer.
-    pub fn forward(&self, token_ids: &[u32]) -> fuel_core::Result<Tensor> {
+    pub fn forward(&self, token_ids: &[u32]) -> fuel_ir::error::Result<Tensor> {
         assert!(!token_ids.is_empty(), "BertModel::forward: empty input");
         let seq = token_ids.len();
         let cfg = &self.config;
@@ -178,7 +178,7 @@ impl BertModel {
         // GAP-308 (CONFIG_FIELD): an input length exceeding a config limit is
         // caller-supplied input to reject, not an invariant to assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "BertModel::forward: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             )));
@@ -192,7 +192,7 @@ impl BertModel {
         let word_emb = Tensor::from_f32(
             self.weights.word_embeddings.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         let input_ids = word_emb.const_u32_like(token_ids.to_vec(), Shape::from_dims(&[seq]))?;
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
@@ -260,7 +260,7 @@ impl BertModel {
         &self,
         token_ids: &[u32],
         layer_ids: &[usize],
-    ) -> fuel_core::Result<Vec<Tensor>> {
+    ) -> fuel_ir::error::Result<Vec<Tensor>> {
         assert!(
             !token_ids.is_empty(),
             "BertModel::forward_intermediate_layers: empty input"
@@ -279,7 +279,7 @@ impl BertModel {
         let h = cfg.hidden_size;
         // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
         if seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "BertModel::forward_intermediate_layers: seq {seq} > max_position_embeddings {}",
                 cfg.max_position_embeddings,
             )));
@@ -289,7 +289,7 @@ impl BertModel {
         let word_emb = Tensor::from_f32(
             self.weights.word_embeddings.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         let input_ids = word_emb.const_u32_like(token_ids.to_vec(), Shape::from_dims(&[seq]))?;
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
@@ -352,7 +352,7 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
@@ -375,7 +375,7 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))?
@@ -391,7 +391,7 @@ fn encoder_layer(
     lw: &BertLayerWeights,
     cfg: &BertConfig,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim()?;
@@ -475,7 +475,7 @@ impl BertWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &BertConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let h = cfg.hidden_size;
         let h_ff = cfg.intermediate_size;
 
@@ -486,7 +486,7 @@ impl BertWeights {
 
         let word_embeddings = load_f32(st, &format!("{prefix}embeddings.word_embeddings.weight"))?;
         if word_embeddings.len() != cfg.vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "word_embeddings: {} elements, expected {} ({}×{})",
                 word_embeddings.len(),
                 cfg.vocab_size * h,
@@ -584,7 +584,7 @@ fn load_layer_norm_param(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     stem: &str,
     is_weight: bool,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let (modern, legacy) = if is_weight {
         (".weight", ".gamma")
     } else {
@@ -598,17 +598,17 @@ fn load_layer_norm_param(
     if st.get(&l).is_ok() {
         return load_f32(st, &l);
     }
-    fuel_core::bail!("LayerNorm param not found under {stem:?}: tried {m:?} and {l:?}")
+    fuel_ir::bail!("LayerNorm param not found under {stem:?}: tried {m:?} and {l:?}")
 }
 
 fn load_f32(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
-        .map_err(|e| fuel_core::Error::Msg(format!("load_f32 {name:?}: {e}")).bt())?;
+        .map_err(|e| fuel_ir::error::Error::Msg(format!("load_f32 {name:?}: {e}")).bt())?;
     let bytes = view.data();
     match view.dtype() {
         Dtype::F32 => {
@@ -642,7 +642,7 @@ fn load_f32(
             }
             Ok(out)
         }
-        other => fuel_core::bail!("load_f32: unsupported dtype {other:?} for tensor {name:?}"),
+        other => fuel_ir::bail!("load_f32: unsupported dtype {other:?} for tensor {name:?}"),
     }
 }
 
@@ -654,10 +654,10 @@ fn load_transposed(
     name: &str,
     out_features: usize,
     in_features: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let flat = load_f32(st, name)?;
     if flat.len() != out_features * in_features {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "load_transposed: tensor {name:?} has {} elements, expected {} ({}×{})",
             flat.len(),
             out_features * in_features,
@@ -681,14 +681,14 @@ impl BertModel {
     /// from a HuggingFace repo and load into a `BertModel`. Does NOT
     /// download the tokenizer — wire that separately via
     /// [`BertTokenizer::from_hub`].
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
 
         let config_path = repo
             .get("config.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub config.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub config.json: {e}")))?;
         let config_str = std::fs::read_to_string(&config_path)?;
         let config = BertConfig::from_hf_json_str(&config_str)?;
 
@@ -698,12 +698,12 @@ impl BertModel {
             Ok(index_path) => {
                 let index_str = std::fs::read_to_string(&index_path)?;
                 let index: serde_json::Value = serde_json::from_str(&index_str)
-                    .map_err(|e| fuel_core::Error::Msg(format!("parsing bert index: {e}")))?;
+                    .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing bert index: {e}")))?;
                 let weight_map = index
                     .get("weight_map")
                     .and_then(|x| x.as_object())
                     .ok_or_else(|| {
-                        fuel_core::Error::Msg("bert index.json: missing weight_map".into())
+                        fuel_ir::error::Error::Msg("bert index.json: missing weight_map".into())
                     })?;
                 let mut unique = std::collections::HashSet::new();
                 for v in weight_map.values() {
@@ -713,16 +713,16 @@ impl BertModel {
                 }
                 let mut paths = Vec::new();
                 for shard_name in unique {
-                    let p = repo
-                        .get(&shard_name)
-                        .map_err(|e| fuel_core::Error::Msg(format!("hf-hub {shard_name}: {e}")))?;
+                    let p = repo.get(&shard_name).map_err(|e| {
+                        fuel_ir::error::Error::Msg(format!("hf-hub {shard_name}: {e}"))
+                    })?;
                     paths.push(p);
                 }
                 paths
             }
             Err(_) => {
                 let p = repo.get("model.safetensors").map_err(|e| {
-                    fuel_core::Error::Msg(format!("hf-hub bert model.safetensors: {e}"))
+                    fuel_ir::error::Error::Msg(format!("hf-hub bert model.safetensors: {e}"))
                 })?;
                 vec![p]
             }
@@ -751,9 +751,9 @@ pub struct BertTokenizer {
 
 impl BertTokenizer {
     /// Load a tokenizer from a `tokenizer.json` on disk.
-    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> fuel_core::Result<Self> {
+    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> fuel_ir::error::Result<Self> {
         let inner = tokenizers::Tokenizer::from_file(path)
-            .map_err(|e| fuel_core::Error::Msg(format!("bert tokenizer: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("bert tokenizer: {e}")))?;
         let cls_id = inner.token_to_id("[CLS]");
         let sep_id = inner.token_to_id("[SEP]");
         let pad_id = inner.token_to_id("[PAD]");
@@ -766,33 +766,33 @@ impl BertTokenizer {
     }
 
     /// Download `tokenizer.json` from a HuggingFace repo and load it.
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         let path = repo
             .get("tokenizer.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub bert tokenizer.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub bert tokenizer.json: {e}")))?;
         Self::from_file(path)
     }
 
     /// Encode a prompt into token IDs. With `add_special_tokens=true`,
     /// the tokenizer wraps the sequence with `[CLS]` and `[SEP]` per the
     /// HF BERT convention.
-    pub fn encode(&self, text: &str, add_special_tokens: bool) -> fuel_core::Result<Vec<u32>> {
+    pub fn encode(&self, text: &str, add_special_tokens: bool) -> fuel_ir::error::Result<Vec<u32>> {
         let encoding = self
             .inner
             .encode(text, add_special_tokens)
-            .map_err(|e| fuel_core::Error::Msg(format!("bert tokenize: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("bert tokenize: {e}")))?;
         Ok(encoding.get_ids().to_vec())
     }
 
     /// Decode IDs back to a string (rarely needed for an encoder but
     /// useful for round-trip debugging).
-    pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> fuel_core::Result<String> {
+    pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> fuel_ir::error::Result<String> {
         self.inner
             .decode(ids, skip_special_tokens)
-            .map_err(|e| fuel_core::Error::Msg(format!("bert decode: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("bert decode: {e}")))
     }
 
     pub fn cls_id(&self) -> Option<u32> {
@@ -915,7 +915,7 @@ mod tests {
 
         // Phase 6a oracle gate.
         let out_ref = hidden.realize_f32();
-        fuel_core::test_utils::assert_allclose_f32(&out, &out_ref, 1e-4, 1e-3);
+        fuel_tensor::test_utils::assert_allclose_f32(&out, &out_ref, 1e-4, 1e-3);
     }
 
     /// Minimal `BertModel` (zeros/ones weights) with the given

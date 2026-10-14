@@ -20,9 +20,9 @@
 //!
 //! v1 scope: F32, batch == 1, prefill only.
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,7 +152,7 @@ impl BlipVisionModel {
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
         assert_eq!(dims[1], 3, "image must have 3 input channels");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "blip_vision: input spatial dims ({}, {}) must equal image_size {}; this model is \
                  fixed-resolution (position interpolation deferred), and the patch reshape targets \
                  a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
@@ -308,7 +308,7 @@ fn load_ln(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,
 ) -> Result<LayerNormWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     Ok(LayerNormWeights {
         gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.weight"))?),
         bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?),
@@ -330,7 +330,7 @@ impl BlipVisionWeights {
         cfg: &BlipVisionConfig,
         prefix: &str,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 
@@ -421,7 +421,7 @@ impl BlipVisionWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

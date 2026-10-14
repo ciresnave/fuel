@@ -19,9 +19,10 @@
 //! These are the settings for `microsoft/deberta-v3-base`,
 //! `deberta-v3-large`, `deberta-v3-small`, and `mdeberta-v3-base`.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{DType, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::DType;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -99,12 +100,13 @@ pub(crate) struct DebertaV2ConfigRaw {
 }
 
 impl DebertaV2ConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing deberta-v2 config.json: {e}")).bt())
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
+        serde_json::from_str(json).map_err(|e| {
+            fuel_ir::error::Error::Msg(format!("parsing deberta-v2 config.json: {e}")).bt()
+        })
     }
 
-    fn resolve(self) -> fuel_core::Result<DebertaV2Config> {
+    fn resolve(self) -> fuel_ir::error::Result<DebertaV2Config> {
         Ok(DebertaV2Config {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
@@ -188,7 +190,7 @@ impl DebertaV2Config {
     ///
     /// `DebertaV2ConfigRaw` is the wire shape; `DebertaV2ConfigRaw::resolve`
     /// applies the `-1` sentinel and the tolerant `id2label` parse.
-    pub fn from_hf_json_str(s: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(s: &str) -> fuel_ir::error::Result<Self> {
         DebertaV2ConfigRaw::from_json_str(s)?.resolve()
     }
 }
@@ -361,7 +363,7 @@ impl DebertaV2Model {
         let ids = Tensor::from_u32(
             anchor_ids,
             Shape::from_dims(&[t]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
 
         // Word embedding lookup + LN.
@@ -570,7 +572,9 @@ impl DebertaV2Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &DebertaV2Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 
@@ -731,7 +735,7 @@ impl DebertaV2NERModel {
         let anchor = Tensor::from_u32(
             input_ids.to_vec(),
             Shape::from_dims(&[input_ids.len()]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         // Apply classifier to every token. apply_linear_with_bias
         // works on the trailing dim — exactly what we want here.
@@ -754,7 +758,9 @@ impl DebertaV2NERWeights {
         cfg: &DebertaV2Config,
         num_labels: usize,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let encoder = DebertaV2Weights::load_from_mmapped(st, cfg)?;
         let w = ltm(st, "classifier.weight", num_labels, cfg.hidden_size)?;
         let b = match load_tensor_as_f32(st, "classifier.bias") {
@@ -824,7 +830,7 @@ impl DebertaV2SeqClassificationModel {
         let anchor = Tensor::from_u32(
             input_ids.to_vec(),
             Shape::from_dims(&[input_ids.len()]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         // pooler.dense → tanh → classifier.
         let pooled = apply_linear(&cls, &self.weights.pooler_dense, &anchor)?;
@@ -848,7 +854,9 @@ impl DebertaV2SeqClassificationWeights {
         cfg: &DebertaV2Config,
         num_labels: usize,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let encoder = DebertaV2Weights::load_from_mmapped(st, cfg)?;
         let pooler_w = ltm(st, "pooler.dense.weight", h, h)?;
@@ -878,17 +886,17 @@ impl DebertaV2SeqClassificationWeights {
 impl DebertaV2Config {
     /// The hand-rolled parser this type used before the `serde` split, kept
     /// verbatim and test-only as the differential's oracle.
-    pub(crate) fn from_hf_json_str_legacy(s: &str) -> fuel_core::Result<Self> {
+    pub(crate) fn from_hf_json_str_legacy(s: &str) -> fuel_ir::error::Result<Self> {
         let v: serde_json::Value = serde_json::from_str(s).map_err(|e| {
-            fuel_core::Error::Msg(format!("parsing deberta-v2 config.json: {e}")).bt()
+            fuel_ir::error::Error::Msg(format!("parsing deberta-v2 config.json: {e}")).bt()
         })?;
 
-        let get_usize = |key: &str| -> fuel_core::Result<usize> {
+        let get_usize = |key: &str| -> fuel_ir::error::Result<usize> {
             v.get(key)
                 .and_then(|x| x.as_u64())
                 .map(|x| x as usize)
                 .ok_or_else(|| {
-                    fuel_core::Error::Msg(format!(
+                    fuel_ir::error::Error::Msg(format!(
                         "deberta-v2 config.json: missing/invalid field {key:?}",
                     ))
                     .bt()

@@ -26,9 +26,9 @@
 
 use crate::models::lazy_gemma::GemmaModel;
 use crate::models::lazy_paligemma::{PaligemmaConfig, PaligemmaModel, PaligemmaWeights};
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Output embedding dim for ColPali's late-interaction
@@ -108,7 +108,7 @@ impl ColPaliWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &PaligemmaConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let paligemma = PaligemmaWeights::load_from_mmapped(st, cfg)?;
         let text_hidden = cfg.text_config.hidden_size;
         let custom_text_projection = load_transposed_matrix_preserve_dtype(
@@ -135,7 +135,7 @@ mod tests {
     use crate::models::lazy_gemma::{GemmaConfig, GemmaWeights};
     use crate::models::lazy_paligemma::PaligemmaWeights;
     use crate::models::lazy_siglip::{SiglipActivation, SiglipVisionConfig, SiglipVisionWeights};
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
@@ -187,7 +187,7 @@ mod tests {
     /// Tiny synthetic weights — small enough to exercise the
     /// graph in milliseconds. Mirrors the PaliGemma test scaffolding.
     fn tiny_colpali_weights(v_cfg: &SiglipVisionConfig, t_cfg: &GemmaConfig) -> ColPaliWeights {
-        use fuel_core::lazy::LayerWeights;
+        use fuel_tensor::lazy::LayerWeights;
         let mut nb = rng_seed(2026);
         let v_h = v_cfg.hidden_size;
         let i_size = v_cfg.intermediate_size;

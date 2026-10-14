@@ -67,8 +67,8 @@
 //!   encoder for tractability) runs `transformer -> scheduler ->
 //!   VAE.decode` to produce a finite image of the expected shape.
 
-use fuel_core::lazy::{ConvWeightBias, Tensor};
 use fuel_ir::Shape;
+use fuel_tensor::{lazy::ConvWeightBias, lazy::Tensor};
 use std::sync::Arc;
 
 // ============================================================================
@@ -207,7 +207,7 @@ pub struct ZImageTransformerWeights {
 ///
 /// For `F=1, f_patch=1` (the image-generation case Z-Image always
 /// hits) this collapses to the standard 4D patchify.
-fn patchify(x: &Tensor, patch_size: usize, f_patch_size: usize) -> fuel_core::Result<Tensor> {
+fn patchify(x: &Tensor, patch_size: usize, f_patch_size: usize) -> fuel_ir::error::Result<Tensor> {
     let dims = x.shape().dims().to_vec();
     let (b, c, f, h, w) = (dims[0], dims[1], dims[2], dims[3], dims[4]);
     let ph = patch_size;
@@ -246,7 +246,7 @@ fn unpatchify(
     patch_size: usize,
     f_patch_size: usize,
     out_channels: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let (f, h, w) = size;
     let ph = patch_size;
     let pw = patch_size;
@@ -300,7 +300,7 @@ fn linear(
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     Ok(match b {
@@ -310,7 +310,7 @@ fn linear(
 }
 
 /// Sinusoidal timestep embedding `(B,) -> (B, frequency_embedding_size)`.
-fn timestep_embedding(t: &Tensor, anchor: &Tensor) -> fuel_core::Result<Tensor> {
+fn timestep_embedding(t: &Tensor, anchor: &Tensor) -> fuel_ir::error::Result<Tensor> {
     let half = FREQUENCY_EMBEDDING_SIZE / 2;
     // freqs[i] = exp( -ln(MAX_PERIOD) * i / half )  for i in 0..half
     let freqs_data: Vec<f32> = (0..half)
@@ -333,7 +333,7 @@ fn apply_rotary_emb_interleaved(
     x: &Tensor,
     cos: &Tensor,
     sin: &Tensor,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let dims = x.shape().dims().to_vec();
     let (b, l, n, hd) = (dims[0], dims[1], dims[2], dims[3]);
     let half = hd / 2;
@@ -411,7 +411,7 @@ fn build_3d_rope_tables(
 
 /// `LayerNorm` without learnable params (eager `LayerNormNoParams`).
 /// Subtracts mean, divides by std (with eps), all along the last dim.
-fn layer_norm_no_params(x: &Tensor, eps: f64) -> fuel_core::Result<Tensor> {
+fn layer_norm_no_params(x: &Tensor, eps: f64) -> fuel_ir::error::Result<Tensor> {
     // Build a no-affine layer norm via primitives. `layer_norm_last_dim`
     // already does the math we need with the same eps semantics.
     x.layer_norm_last_dim(eps)
@@ -428,7 +428,7 @@ fn z_image_attention(
     sin: &Tensor,
     aw: &ZImageAttnWeights,
     cfg: &ZImageConfig,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let dims = x.shape().dims().to_vec();
     let (b, l, dim) = (dims[0], dims[1], dims[2]);
     let n_heads = cfg.n_heads;
@@ -497,7 +497,7 @@ fn z_image_block(
     adaln_input: Option<&Tensor>,
     bw: &ZImageBlockWeights,
     cfg: &ZImageConfig,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let dim = cfg.dim;
     let hidden_dim = cfg.hidden_dim();
     let adaln_dim = dim.min(ADALN_EMBED_DIM);
@@ -545,7 +545,7 @@ fn ffn_swiglu(
     fw: &ZImageFFNWeights,
     dim: usize,
     hidden_dim: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let x1 = linear(x, &fw.w1, None, dim, hidden_dim)?.silu();
     let x3 = linear(x, &fw.w3, None, dim, hidden_dim)?;
     let mid = x1.mul(&x3)?;
@@ -576,7 +576,7 @@ impl ZImageTransformer2DModel {
         t: &Tensor,
         cap_feats: &Tensor,
         cap_mask: &Tensor,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let dims = x.shape().dims().to_vec();
@@ -824,12 +824,13 @@ impl ZImageTextEncoder {
     /// Encode token IDs into `(1, seq, hidden_size)`. Returns the output
     /// of `layers[num_hidden_layers - 2]` BEFORE the final RMSNorm, as
     /// in the upstream Z-Image text encoder.
-    pub fn forward(&self, tokens: &[u32]) -> fuel_core::Result<Tensor> {
+    pub fn forward(&self, tokens: &[u32]) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         if tokens.is_empty() {
-            return Err(
-                fuel_core::Error::Msg("text encoder: tokens must be non-empty".into()).bt(),
-            );
+            return Err(fuel_ir::error::Error::Msg(
+                "text encoder: tokens must be non-empty".into(),
+            )
+            .bt());
         }
         let seq = tokens.len();
         let mut h = Tensor::embed_tokens(
@@ -837,7 +838,7 @@ impl ZImageTextEncoder {
             cfg.vocab_size,
             cfg.hidden_size,
             tokens,
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         // Pre-build RoPE tables (LLaMA half-split style; Qwen3 uses that).
         let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, 0, seq, cfg.head_dim);
@@ -850,7 +851,7 @@ impl ZImageTextEncoder {
                 return Ok(h);
             }
         }
-        Err(fuel_core::Error::Msg(format!(
+        Err(fuel_ir::error::Error::Msg(format!(
             "text encoder: target layer index {target} out of {}",
             self.weights.layers.len(),
         ))
@@ -873,7 +874,7 @@ fn apply_text_encoder_layer(
     rope_sin: &Tensor,
     causal: &Tensor,
     cfg: &TextEncoderConfig,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let hidden = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let n_kv = cfg.num_key_value_heads;
@@ -1048,7 +1049,7 @@ fn vae_group_norm(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let cpg = c / groups;
     let m = cpg * h * w;
     let x_flat = x.reshape(Shape::from_dims(&[1, groups, m]))?;
@@ -1082,7 +1083,7 @@ fn conv2d_k3_s1_p1(
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]))?;
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
@@ -1096,7 +1097,7 @@ fn conv2d_k3_s2_p0_with_pad(
     cout: usize,
     h: usize,
     w_sz: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     // Match Python: pad_with_zeros (right=1, bottom=1) then stride-2 conv.
     // Implemented by manual reshape+concat zero padding on axes 2 and 3.
     let zeros_right_v: Vec<f32> = vec![0.0; cin * h * 1];
@@ -1116,7 +1117,7 @@ fn conv2d_k3_s2_p0_with_pad(
     x_padded.conv2d(&w_t, Some(&b_t), (2, 2), (0, 0), 1)
 }
 
-fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> fuel_core::Result<Tensor> {
+fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> fuel_ir::error::Result<Tensor> {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]))?;
     let x6 = x6.concat(&x6, 3_usize)?;
     let x6 = x6.concat(&x6, 5_usize)?;
@@ -1131,7 +1132,7 @@ fn vae_resnet(
     c_out: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h1 = vae_group_norm(x, &rw.n1_g, &rw.n1_b, cfg.norm_num_groups, 1e-6, c_in, h, w)?;
     let h1 = h1.silu();
     let h1 = conv2d_k3_s1_p1(&h1, &rw.c1_w, &rw.c1_b, c_in, c_out)?;
@@ -1165,7 +1166,7 @@ fn vae_spatial_attention(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let n = h * w;
     let x_norm = vae_group_norm(x, &aw.gn_g, &aw.gn_b, cfg.norm_num_groups, 1e-6, c, h, w)?;
     let xf = x_norm
@@ -1189,7 +1190,7 @@ impl AutoEncoderKL {
     /// Encode RGB image `(1, 3, H, W)` -> latent `(1, latent_ch, H/8, W/8)`.
     /// Returns the mean of the diagonal-Gaussian (sample = false), then
     /// applies the scale/shift convention `(z - shift) * scale`.
-    pub fn encode(&self, x: &Tensor) -> fuel_core::Result<Tensor> {
+    pub fn encode(&self, x: &Tensor) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let dims = x.shape().dims().to_vec();
@@ -1247,7 +1248,7 @@ impl AutoEncoderKL {
     }
 
     /// Decode latent `(1, latent_ch, H/8, W/8)` -> RGB image `(1, 3, H, W)`.
-    pub fn decode(&self, z: &Tensor) -> fuel_core::Result<Tensor> {
+    pub fn decode(&self, z: &Tensor) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let dims = z.shape().dims().to_vec();
@@ -1416,7 +1417,11 @@ impl FlowMatchEulerDiscreteScheduler {
     }
 
     /// Euler step: `x_{t-1} = x_t + (σ_{i+1} - σ_i) * v_t`.
-    pub fn step(&mut self, model_output: &Tensor, sample: &Tensor) -> fuel_core::Result<Tensor> {
+    pub fn step(
+        &mut self,
+        model_output: &Tensor,
+        sample: &Tensor,
+    ) -> fuel_ir::error::Result<Tensor> {
         let sigma = self.sigmas[self.step_index];
         let sigma_next = self.sigmas[self.step_index + 1];
         let dt = sigma_next - sigma;
@@ -1476,9 +1481,9 @@ impl ZImageModel {
         latent_w: usize,
         num_steps: usize,
         seed: u64,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         if num_steps == 0 {
-            return Err(fuel_core::Error::Msg("generate: num_steps must be > 0".into()).bt());
+            return Err(fuel_ir::error::Error::Msg("generate: num_steps must be > 0".into()).bt());
         }
         // 1. Text encode.
         let cap_feats = self.text_encoder.forward(tokens)?;
@@ -1586,18 +1591,18 @@ impl ZImageTransformerWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ZImageConfig,
-    ) -> fuel_core::Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
+    ) -> fuel_ir::error::Result<Self> {
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix};
         let dim = cfg.dim;
         let head_dim = cfg.head_dim();
         let hidden_dim = cfg.hidden_dim();
         let adaln_dim = 256;
         let patch_dim = cfg.in_channels * cfg.patch_size * cfg.patch_size * cfg.f_patch_size;
 
-        let arc_load = |name: &str, n: usize| -> fuel_core::Result<Arc<[f32]>> {
+        let arc_load = |name: &str, n: usize| -> fuel_ir::error::Result<Arc<[f32]>> {
             let v = load_tensor_as_f32(st, name)?;
             if v.len() != n {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "lazy_z_image load: {name:?} has {} elements, expected {n}",
                     v.len(),
                 ))
@@ -1606,7 +1611,7 @@ impl ZImageTransformerWeights {
             Ok(Arc::from(v))
         };
         let linear_load =
-            |name: &str, out_f: usize, in_f: usize| -> fuel_core::Result<Arc<[f32]>> {
+            |name: &str, out_f: usize, in_f: usize| -> fuel_ir::error::Result<Arc<[f32]>> {
                 Ok(Arc::from(load_transposed_matrix(st, name, out_f, in_f)?))
             };
 
@@ -1643,76 +1648,77 @@ impl ZImageTransformerWeights {
             out_channels * cfg.patch_size * cfg.patch_size * cfg.f_patch_size,
         )?;
 
-        let load_block = |prefix: &str, has_adaln: bool| -> fuel_core::Result<ZImageBlockWeights> {
-            let attn = ZImageAttnWeights {
-                to_q_w: linear_load(
-                    &format!("{prefix}.attention.to_q.weight"),
-                    cfg.n_heads * head_dim,
-                    dim,
-                )?,
-                to_k_w: linear_load(
-                    &format!("{prefix}.attention.to_k.weight"),
-                    cfg.n_kv_heads * head_dim,
-                    dim,
-                )?,
-                to_v_w: linear_load(
-                    &format!("{prefix}.attention.to_v.weight"),
-                    cfg.n_kv_heads * head_dim,
-                    dim,
-                )?,
-                to_out_w: linear_load(
-                    &format!("{prefix}.attention.to_out.0.weight"),
-                    dim,
-                    cfg.n_heads * head_dim,
-                )?,
-                q_norm_gain: if cfg.qk_norm {
-                    Some(arc_load(
-                        &format!("{prefix}.attention.norm_q.weight"),
-                        head_dim,
-                    )?)
+        let load_block =
+            |prefix: &str, has_adaln: bool| -> fuel_ir::error::Result<ZImageBlockWeights> {
+                let attn = ZImageAttnWeights {
+                    to_q_w: linear_load(
+                        &format!("{prefix}.attention.to_q.weight"),
+                        cfg.n_heads * head_dim,
+                        dim,
+                    )?,
+                    to_k_w: linear_load(
+                        &format!("{prefix}.attention.to_k.weight"),
+                        cfg.n_kv_heads * head_dim,
+                        dim,
+                    )?,
+                    to_v_w: linear_load(
+                        &format!("{prefix}.attention.to_v.weight"),
+                        cfg.n_kv_heads * head_dim,
+                        dim,
+                    )?,
+                    to_out_w: linear_load(
+                        &format!("{prefix}.attention.to_out.0.weight"),
+                        dim,
+                        cfg.n_heads * head_dim,
+                    )?,
+                    q_norm_gain: if cfg.qk_norm {
+                        Some(arc_load(
+                            &format!("{prefix}.attention.norm_q.weight"),
+                            head_dim,
+                        )?)
+                    } else {
+                        None
+                    },
+                    k_norm_gain: if cfg.qk_norm {
+                        Some(arc_load(
+                            &format!("{prefix}.attention.norm_k.weight"),
+                            head_dim,
+                        )?)
+                    } else {
+                        None
+                    },
+                };
+                let ffn = ZImageFFNWeights {
+                    w1: linear_load(&format!("{prefix}.feed_forward.w1.weight"), hidden_dim, dim)?,
+                    w2: linear_load(&format!("{prefix}.feed_forward.w2.weight"), dim, hidden_dim)?,
+                    w3: linear_load(&format!("{prefix}.feed_forward.w3.weight"), hidden_dim, dim)?,
+                };
+                let attn_norm1_gain = arc_load(&format!("{prefix}.attention_norm1.weight"), dim)?;
+                let attn_norm2_gain = arc_load(&format!("{prefix}.attention_norm2.weight"), dim)?;
+                let ffn_norm1_gain = arc_load(&format!("{prefix}.ffn_norm1.weight"), dim)?;
+                let ffn_norm2_gain = arc_load(&format!("{prefix}.ffn_norm2.weight"), dim)?;
+                let (adaln_w, adaln_b) = if has_adaln {
+                    let w = linear_load(
+                        &format!("{prefix}.adaLN_modulation.0.weight"),
+                        4 * dim,
+                        adaln_dim,
+                    )?;
+                    let b = arc_load(&format!("{prefix}.adaLN_modulation.0.bias"), 4 * dim)?;
+                    (Some(w), Some(b))
                 } else {
-                    None
-                },
-                k_norm_gain: if cfg.qk_norm {
-                    Some(arc_load(
-                        &format!("{prefix}.attention.norm_k.weight"),
-                        head_dim,
-                    )?)
-                } else {
-                    None
-                },
+                    (None, None)
+                };
+                Ok(ZImageBlockWeights {
+                    attn,
+                    ffn,
+                    attn_norm1_gain,
+                    attn_norm2_gain,
+                    ffn_norm1_gain,
+                    ffn_norm2_gain,
+                    adaln_w,
+                    adaln_b,
+                })
             };
-            let ffn = ZImageFFNWeights {
-                w1: linear_load(&format!("{prefix}.feed_forward.w1.weight"), hidden_dim, dim)?,
-                w2: linear_load(&format!("{prefix}.feed_forward.w2.weight"), dim, hidden_dim)?,
-                w3: linear_load(&format!("{prefix}.feed_forward.w3.weight"), hidden_dim, dim)?,
-            };
-            let attn_norm1_gain = arc_load(&format!("{prefix}.attention_norm1.weight"), dim)?;
-            let attn_norm2_gain = arc_load(&format!("{prefix}.attention_norm2.weight"), dim)?;
-            let ffn_norm1_gain = arc_load(&format!("{prefix}.ffn_norm1.weight"), dim)?;
-            let ffn_norm2_gain = arc_load(&format!("{prefix}.ffn_norm2.weight"), dim)?;
-            let (adaln_w, adaln_b) = if has_adaln {
-                let w = linear_load(
-                    &format!("{prefix}.adaLN_modulation.0.weight"),
-                    4 * dim,
-                    adaln_dim,
-                )?;
-                let b = arc_load(&format!("{prefix}.adaLN_modulation.0.bias"), 4 * dim)?;
-                (Some(w), Some(b))
-            } else {
-                (None, None)
-            };
-            Ok(ZImageBlockWeights {
-                attn,
-                ffn,
-                attn_norm1_gain,
-                attn_norm2_gain,
-                ffn_norm1_gain,
-                ffn_norm2_gain,
-                adaln_w,
-                adaln_b,
-            })
-        };
 
         let mut noise_refiner = Vec::with_capacity(cfg.n_refiner_layers);
         for i in 0..cfg.n_refiner_layers {
@@ -1755,14 +1761,14 @@ impl TextEncoderWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &TextEncoderConfig,
-    ) -> fuel_core::Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
+    ) -> fuel_ir::error::Result<Self> {
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix};
         let h = cfg.hidden_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let qh = cfg.num_attention_heads * cfg.head_dim;
         let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "z_image text encoder: embed_tokens has {} elements, expected {}",
                 token_embedding.len(),
                 cfg.vocab_size * h,
@@ -1857,19 +1863,19 @@ impl VaeWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &VaeConfig,
-    ) -> fuel_core::Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
-        let load_f32 = |name: &str| -> fuel_core::Result<Arc<[f32]>> {
+    ) -> fuel_ir::error::Result<Self> {
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix};
+        let load_f32 = |name: &str| -> fuel_ir::error::Result<Arc<[f32]>> {
             Ok(Arc::from(load_tensor_as_f32(st, name)?))
         };
         let load_linear =
-            |name: &str, out_f: usize, in_f: usize| -> fuel_core::Result<Arc<[f32]>> {
+            |name: &str, out_f: usize, in_f: usize| -> fuel_ir::error::Result<Arc<[f32]>> {
                 Ok(Arc::from(load_transposed_matrix(st, name, out_f, in_f)?))
             };
 
         // ---- Helpers for resnet, attention -----------------------------
         let load_resnet =
-            |prefix: &str, c_in: usize, c_out: usize| -> fuel_core::Result<VaeResnetWeights> {
+            |prefix: &str, c_in: usize, c_out: usize| -> fuel_ir::error::Result<VaeResnetWeights> {
                 let n1_g = load_f32(&format!("{prefix}.norm1.weight"))?;
                 let n1_b = load_f32(&format!("{prefix}.norm1.bias"))?;
                 let c1_w = load_f32(&format!("{prefix}.conv1.weight"))?;
@@ -1899,7 +1905,7 @@ impl VaeWeights {
                     shortcut_b,
                 })
             };
-        let load_attn = |prefix: &str, c: usize| -> fuel_core::Result<VaeAttnWeights> {
+        let load_attn = |prefix: &str, c: usize| -> fuel_ir::error::Result<VaeAttnWeights> {
             Ok(VaeAttnWeights {
                 gn_g: load_f32(&format!("{prefix}.group_norm.weight"))?,
                 gn_b: load_f32(&format!("{prefix}.group_norm.bias"))?,
@@ -2149,7 +2155,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![0.1_f32; c * h * w],
             Shape::from_dims(&[1, c, 1, h, w]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let t = x
@@ -2382,7 +2388,7 @@ mod tests {
         let x = Tensor::from_f32(
             vec![0.1_f32; cfg.in_channels * h * w],
             Shape::from_dims(&[1, cfg.in_channels, h, w]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let z = vae.encode(&x).unwrap();
@@ -2405,7 +2411,7 @@ mod tests {
         let sample = Tensor::from_f32(
             vec![0.5_f32; 4],
             Shape::from_dims(&[1, 4]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         let v = sample
@@ -2452,7 +2458,7 @@ mod tests {
         let noise = Tensor::from_f32(
             vec![0.1_f32; c * h_lat * w_lat],
             Shape::from_dims(&[1, c, 1, h_lat, w_lat]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
         .unwrap();
         // We can't share the cfg between transformer (in_channels=2) and

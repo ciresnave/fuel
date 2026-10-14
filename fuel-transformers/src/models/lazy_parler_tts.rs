@@ -31,9 +31,9 @@
 //!   - Configurable activation (Gelu / GeluPytorchTanh / Relu /
 //!     Silu — matches the eager `Activation` enum subset).
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,7 +171,7 @@ impl ParlerDecoderModel {
         );
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
         if dims[1] != cfg.num_codebooks {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "parler_tts: expected {} codebooks (the model's codebook count), got {} on the \
                  input_ids codebook axis (dims[1]); the per-codebook embed loop iterates the \
                  model's codebooks, so a mismatch does not surface on its own — an over-long axis \
@@ -384,7 +384,7 @@ fn apply_attention(
         // names the values. Relation is on LOCALS here (the `sam` shape), so the
         // message supplies the names the site does not have.
         if !num_heads.is_multiple_of(num_kv_heads) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "ParlerDecoderConfig: num_attention_heads ({num_heads}) must be a \n                 multiple of num_kv_heads ({num_kv_heads})"
             ))
             .bt());
@@ -473,10 +473,10 @@ impl ParlerDecoderWeights {
     ///   load; the bias is a flat `[hidden_size]` vector.
     ///
     /// All projections + LM heads go through
-    /// [`fuel_core::lazy::load_transposed_matrix_preserve_dtype`] so bf16
+    /// [`fuel_tensor::lazy::load_transposed_matrix_preserve_dtype`] so bf16
     /// source weights stay bf16 on-device. LayerNorm gain/bias and
     /// embedding tables stay 1:1 with HF via
-    /// [`fuel_core::lazy::load_tensor_as_f32`].
+    /// [`fuel_tensor::lazy::load_tensor_as_f32`].
     ///
     /// `text_d_model` is only consulted when `cfg.has_enc_proj` is
     /// true. Pass any value (e.g. `0`) when the projection is absent.
@@ -484,8 +484,8 @@ impl ParlerDecoderWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ParlerDecoderConfig,
         text_d_model: usize,
-    ) -> fuel_core::Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    ) -> fuel_ir::error::Result<Self> {
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.hidden_size;
         let n_kv = cfg.num_kv_heads_resolved();
@@ -503,7 +503,7 @@ impl ParlerDecoderWeights {
             )?;
             let expected = (cfg.vocab_size + 1) * h;
             if v.len() != expected {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "embed_tokens.{cb}.weight: {} elements, expected {expected} ({}×{h})",
                     v.len(),
                     cfg.vocab_size + 1,
@@ -517,7 +517,7 @@ impl ParlerDecoderWeights {
             load_tensor_as_f32(st, "decoder.model.decoder.embed_positions.weights")?;
         let expected_pos = cfg.max_position_embeddings * h;
         if embed_positions.len() != expected_pos {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "embed_positions.weights: {} elements, expected {expected_pos} ({}×{h})",
                 embed_positions.len(),
                 cfg.max_position_embeddings,
@@ -663,7 +663,7 @@ impl ParlerDecoderWeights {
             )?;
             let b = load_tensor_as_f32(st, "enc_to_dec_proj.bias")?;
             if b.len() != h {
-                fuel_core::bail!("enc_to_dec_proj.bias: {} elements, expected {h}", b.len(),);
+                fuel_ir::bail!("enc_to_dec_proj.bias: {} elements, expected {h}", b.len(),);
             }
             Some(LinearWeights {
                 w,
@@ -691,7 +691,7 @@ impl ParlerDecoderWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

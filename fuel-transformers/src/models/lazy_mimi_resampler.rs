@@ -22,9 +22,9 @@
 //! — see [`crate::models::lazy_mimi_seanet`] for the same design choice.
 
 use crate::models::lazy_encodec::{PadMode, pad1d};
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -111,12 +111,12 @@ impl ConvDownsample1dWeights {
         dim: usize,
         stride: usize,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_tensor_as_f32;
+        use fuel_tensor::lazy::load_tensor_as_f32;
         let kernel = 2 * stride;
         let expected = dim * dim * kernel;
         let w = load_tensor_as_f32(st, &format!("{prefix}.conv.weight"))?;
         if w.len() != expected {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{prefix}.conv.weight: {} elements, expected {expected} ({dim}×{dim}×{kernel})",
                 w.len(),
             );
@@ -149,12 +149,12 @@ impl ConvTrUpsample1dWeights {
         dim: usize,
         stride: usize,
     ) -> Result<Self> {
-        use fuel_core::lazy::load_tensor_as_f32;
+        use fuel_tensor::lazy::load_tensor_as_f32;
         let kernel = 2 * stride;
         let expected = dim * 1 * kernel;
         let w = load_tensor_as_f32(st, &format!("{prefix}.convtr.weight"))?;
         if w.len() != expected {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{prefix}.convtr.weight: {} elements, expected {expected} ({dim}×1×{kernel})",
                 w.len(),
             );
@@ -173,7 +173,7 @@ impl ConvTrUpsample1dWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

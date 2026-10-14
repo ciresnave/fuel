@@ -41,9 +41,9 @@
 
 use crate::models::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
 use crate::models::lazy_encodec::{PadMode, pad1d};
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,7 +389,7 @@ fn load_mimi_norm_conv_weight(
     leading: usize,
     inner_per_leading: usize,
 ) -> Result<Vec<f32>> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let direct = format!("{conv_prefix}.weight");
     if st.get(&direct).is_ok() {
         return load_tensor_as_f32(st, &direct);
@@ -414,11 +414,11 @@ fn load_mimi_conv1d(
     groups: usize,
     bias: bool,
 ) -> Result<LazyConv1dWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let inner = (in_channels / groups) * kernel_size;
     let w = load_mimi_norm_conv_weight(st, conv_prefix, out_channels, inner)?;
     if w.len() != out_channels * inner {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{conv_prefix}.weight: {} elements, expected {} ({} × {} × {})",
             w.len(),
             out_channels * inner,
@@ -430,7 +430,7 @@ fn load_mimi_conv1d(
     let b = if bias {
         let v = load_tensor_as_f32(st, &format!("{conv_prefix}.bias"))?;
         if v.len() != out_channels {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{conv_prefix}.bias: {} elements, expected {out_channels}",
                 v.len(),
             );
@@ -464,11 +464,11 @@ fn load_mimi_conv_transpose1d(
     groups: usize,
     bias: bool,
 ) -> Result<LazyConvTranspose1dWeights> {
-    use fuel_core::lazy::load_tensor_as_f32;
+    use fuel_tensor::lazy::load_tensor_as_f32;
     let inner = (out_channels / groups) * kernel_size;
     let w = load_mimi_norm_conv_weight(st, conv_prefix, in_channels, inner)?;
     if w.len() != in_channels * inner {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "{conv_prefix}.weight: {} elements, expected {} ({} × {} × {})",
             w.len(),
             in_channels * inner,
@@ -480,7 +480,7 @@ fn load_mimi_conv_transpose1d(
     let b = if bias {
         let v = load_tensor_as_f32(st, &format!("{conv_prefix}.bias"))?;
         if v.len() != out_channels {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "{conv_prefix}.bias: {} elements, expected {out_channels}",
                 v.len(),
             );
@@ -736,7 +736,7 @@ impl SeaNetDecoderWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

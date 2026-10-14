@@ -22,9 +22,9 @@
 // the dimension decomposition and are intentional, not simplifiable.
 #![allow(clippy::identity_op)]
 
-use fuel_core::lazy::{LayerWeights, Tensor};
 use fuel_ir::Shape;
 use fuel_model_llama::LlamaWeights;
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor};
 use fuel_transformers::models::lazy_convnext::ConvNextModel;
 use fuel_transformers::models::lazy_llama2c::{Llama2cConfig, Llama2cModel};
 use std::sync::Arc;
@@ -45,7 +45,7 @@ fn assert_cpu_oracle(t: &Tensor, atol: f32, rtol: f32) {
     let reference = t.realize_f32_reference();
     let cpu = t.realize_f32();
     assert_eq!(reference.len(), cpu.len(), "length mismatch");
-    fuel_core::test_utils::assert_allclose_f32(&cpu, &reference, atol, rtol);
+    fuel_tensor::test_utils::assert_allclose_f32(&cpu, &reference, atol, rtol);
 }
 
 #[test]
@@ -53,7 +53,12 @@ fn single_matmul_cpu_matches_reference() {
     let (m, k, n) = (32usize, 48, 24);
     let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu()).unwrap();
+    let a = Tensor::from_f32(
+        a_data,
+        Shape::from_dims(&[m, k]),
+        &fuel_tensor::Device::cpu(),
+    )
+    .unwrap();
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n])).unwrap();
     let c = a.matmul(&b).unwrap();
     assert_cpu_oracle(&c, 1e-4, 1e-4);
@@ -73,7 +78,7 @@ fn dense_conv2d_cpu_matches_reference() {
     let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[n, cin, h, w_sz]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let weight = x
@@ -97,7 +102,7 @@ fn depthwise_conv2d_cpu_matches_reference() {
     let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[n, c, h, w_sz]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let weight = x
@@ -122,7 +127,7 @@ fn conv_transpose2d_cpu_matches_reference() {
     let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[n, cin, h, w_sz]),
-        &fuel_core::Device::cpu(),
+        &fuel_tensor::Device::cpu(),
     )
     .unwrap();
     let weight = x
@@ -146,7 +151,7 @@ fn tiny_llama_weights(cfg: &Llama2cConfig) -> LlamaWeights {
         |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
     let kv_dim = cfg.n_kv_heads * cfg.head_dim;
     LlamaWeights {
-        instance: fuel_core::decode_shape::ModelInstanceId::next(),
+        instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
         token_embedding: vec_of(cfg.vocab_size * cfg.dim),
         layers: (0..cfg.n_layers)
             .map(|_| LayerWeights {

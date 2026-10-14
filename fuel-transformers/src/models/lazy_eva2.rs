@@ -9,9 +9,9 @@
 //! v1 scope: F32, batch == 1, 448×448 input only (canonical
 //! `img_size`), forward-only inference.
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,7 +135,7 @@ impl EvaModel {
         assert_eq!(dims.len(), 4);
         assert_eq!(dims[1], 3);
         if dims[2] != cfg.img_size || dims[3] != cfg.img_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "eva2: input spatial dims ({}, {}) must equal img_size {}; this model is \
                  fixed-resolution (position interpolation deferred), and the patch reshape targets \
                  a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
@@ -380,7 +380,9 @@ impl EvaWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &EvaConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.embed_dim;
         let mlp = cfg.hidden_mlp_dim();
         let num_classes = cfg.num_classes.unwrap_or(0);
@@ -485,7 +487,7 @@ impl EvaWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

@@ -43,8 +43,8 @@
 //!   implementation, so generation remains slow but the composition
 //!   overhead is gone; tiled/GPU kernels are later work.
 
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
 // ---- Config ----------------------------------------------------------------
@@ -224,7 +224,7 @@ impl SdUnet {
         text_emb: &[f32],
         h_lat: usize,
         w_lat: usize,
-    ) -> fuel_core::Result<Tensor> {
+    ) -> fuel_ir::error::Result<Tensor> {
         let cfg = &self.config;
         let c_in = cfg.in_channels;
         assert_eq!(latent.len(), c_in * h_lat * w_lat);
@@ -236,7 +236,7 @@ impl SdUnet {
         let x = Tensor::from_f32(
             latent.to_vec(),
             Shape::from_dims(&[1, c_in, h_lat, w_lat]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         let t_flat = x
             .const_f32_like(time_sin, Shape::from_dims(&[1, c_first]))?
@@ -390,7 +390,7 @@ fn u_resnet(
     c_out: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let h1 = group_norm(
         x,
         &rw.n1_g,
@@ -443,7 +443,7 @@ fn spatial_transformer(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let n = h * w;
     let residual = x.clone();
     let x = group_norm(
@@ -480,7 +480,7 @@ fn transformer_block(
     cfg: &SdUnetConfig,
     c: usize,
     n: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let head_dim = cfg.attention_head_dim;
     assert_eq!(c % head_dim, 0);
     let n_heads = c / head_dim;
@@ -525,7 +525,7 @@ fn multi_head_attn(
     kv_n: usize,
     n_heads: usize,
     d_head: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let _ = (q_n, kv_n, c);
     let q = q.split_heads(n_heads, d_head)?; // [1, H, Q, D]
     let k = k.split_heads(n_heads, d_head)?;
@@ -567,7 +567,7 @@ fn layer_norm_affine(
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
@@ -589,7 +589,7 @@ fn group_norm(
     c: usize,
     h: usize,
     w: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let cpg = c / groups;
     let m = cpg * h * w;
     let x_flat = x.reshape(Shape::from_dims(&[1, groups, m]))?;
@@ -626,7 +626,7 @@ fn conv2d_k3_s1_p1(
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]))?;
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
@@ -641,7 +641,7 @@ fn conv2d_k3_s2_p1(
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]))?;
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (2, 2), (1, 1), 1)
@@ -656,13 +656,13 @@ fn conv2d_k1_s1_p0(
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 1, 1]))?;
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
-fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> fuel_core::Result<Tensor> {
+fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> fuel_ir::error::Result<Tensor> {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]))?;
     let x6 = x6.concat(&x6, 3)?;
     let x6 = x6.concat(&x6, 5)?;
@@ -676,7 +676,7 @@ fn linear(
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> fuel_core::Result<Tensor> {
+) -> fuel_ir::error::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
@@ -697,7 +697,7 @@ impl SdUnetWeights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &SdUnetConfig,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let c_first = cfg.block_out_channels[0];
 
         // time embedding MLP
@@ -878,7 +878,7 @@ fn load_u_resnet(
     c_in: usize,
     c_out: usize,
     time_dim: usize,
-) -> fuel_core::Result<UResnetWeights> {
+) -> fuel_ir::error::Result<UResnetWeights> {
     let n1_g = load_f32(st, &format!("{prefix}.norm1.weight"))?;
     let n1_b = load_f32(st, &format!("{prefix}.norm1.bias"))?;
     let c1_w = load_f32(st, &format!("{prefix}.conv1.weight"))?;
@@ -922,7 +922,7 @@ fn load_spatial_transformer(
     prefix: &str,
     c: usize,
     cross_dim: usize,
-) -> fuel_core::Result<SpatialTransformerWeights> {
+) -> fuel_ir::error::Result<SpatialTransformerWeights> {
     let norm_g = load_f32(st, &format!("{prefix}.norm.weight"))?;
     let norm_b = load_f32(st, &format!("{prefix}.norm.bias"))?;
     let proj_in_w = load_f32(st, &format!("{prefix}.proj_in.weight"))?;
@@ -1017,11 +1017,11 @@ fn load_spatial_transformer(
 fn load_f32(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     name: &str,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
-        .map_err(|e| fuel_core::Error::Msg(format!("unet load_f32 {name:?}: {e}")).bt())?;
+        .map_err(|e| fuel_ir::error::Error::Msg(format!("unet load_f32 {name:?}: {e}")).bt())?;
     let bytes = view.data();
     match view.dtype() {
         Dtype::F32 => {
@@ -1039,7 +1039,7 @@ fn load_f32(
             }
             Ok(out)
         }
-        other => fuel_core::bail!("unet load_f32: unsupported dtype {other:?} for {name:?}"),
+        other => fuel_ir::bail!("unet load_f32: unsupported dtype {other:?} for {name:?}"),
     }
 }
 
@@ -1048,10 +1048,10 @@ fn load_transposed(
     name: &str,
     out_features: usize,
     in_features: usize,
-) -> fuel_core::Result<Vec<f32>> {
+) -> fuel_ir::error::Result<Vec<f32>> {
     let flat = load_f32(st, name)?;
     if flat.len() != out_features * in_features {
-        fuel_core::bail!(
+        fuel_ir::bail!(
             "unet load_transposed: {name:?} has {} elements, expected {}",
             flat.len(),
             out_features * in_features,
@@ -1067,16 +1067,19 @@ fn load_transposed(
 }
 
 impl SdUnet {
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         Self::from_hub_with_config(repo_id, SdUnetConfig::sd_v1())
     }
-    pub fn from_hub_with_config(repo_id: &str, config: SdUnetConfig) -> fuel_core::Result<Self> {
+    pub fn from_hub_with_config(
+        repo_id: &str,
+        config: SdUnetConfig,
+    ) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         let path = repo
             .get("unet/diffusion_pytorch_model.safetensors")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub unet safetensors: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub unet safetensors: {e}")))?;
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&path) }?;
         let weights = SdUnetWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })

@@ -38,9 +38,9 @@
 //! `depth` followed by one SingleStreamBlock layer per `depth`, with
 //! AdaLN conditioning derived from `timestep` + `y`.
 
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 // ---- Config -----------------------------------------------------------------
@@ -217,7 +217,7 @@ fn build_conditioning(
 ) -> Result<Tensor> {
     let dims_t = timestep.shape().dims().to_vec();
     if dims_t.len() != 1 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "build_conditioning: timestep must be rank-1, got rank {}",
             dims_t.len()
         ))
@@ -243,7 +243,7 @@ fn build_conditioning(
     let c = t_emb.add(&y_emb)?;
     let c_dims = c.shape().dims().to_vec();
     if c_dims != vec![batch, dim] {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "build_conditioning: c shape {:?} != expected ({}, {})",
             c_dims, batch, dim
         ))
@@ -257,7 +257,7 @@ fn build_conditioning(
 /// `dim/2` sines, matching `SD`'s `flip_sin_to_cos = true` ordering.
 fn timestep_sinusoidal_embed(t: &Tensor, dim: usize) -> Result<Tensor> {
     if !dim.is_multiple_of(2) {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "timestep_sinusoidal_embed: dim {dim} must be even"
         ))
         .bt());
@@ -307,7 +307,7 @@ pub struct ModulationChunks {
 pub fn apply_modulation(x: &Tensor, scale: &Tensor, shift: &Tensor) -> Result<Tensor> {
     let x_dims = x.shape().dims().to_vec();
     if x_dims.len() != 3 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "apply_modulation: x must be rank-3 (B, S, dim), got rank {}",
             x_dims.len()
         ))
@@ -338,7 +338,7 @@ fn compute_modulation(
     let m = m.add_trailing_bias(Arc::clone(adaln_bias))?;
     let chunks = m.chunk(6, 1_usize)?;
     if chunks.len() != 6 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "compute_modulation: expected 6 chunks, got {}",
             chunks.len()
         ))
@@ -359,7 +359,7 @@ fn compute_modulation(
 fn split_qkv(qkv: &Tensor, num_heads: usize, head_dim: usize) -> Result<(Tensor, Tensor, Tensor)> {
     let dims = qkv.shape().dims().to_vec();
     if dims.len() != 3 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "split_qkv: input must be rank-3 (B, S, 3*dim), got rank {}",
             dims.len()
         ))
@@ -368,7 +368,7 @@ fn split_qkv(qkv: &Tensor, num_heads: usize, head_dim: usize) -> Result<(Tensor,
     let (b, s, three_dim) = (dims[0], dims[1], dims[2]);
     let dim = num_heads * head_dim;
     if three_dim != 3 * dim {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "split_qkv: last dim {three_dim} != 3 * num_heads ({num_heads}) * head_dim ({head_dim})"
         ))
         .bt());
@@ -475,7 +475,7 @@ pub fn apply_double_stream(
 fn gated_residual(x: &Tensor, delta: &Tensor, gate: &Tensor) -> Result<Tensor> {
     let x_dims = x.shape().dims().to_vec();
     if x_dims.len() != 3 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "gated_residual: x must be rank-3, got rank {}",
             x_dims.len()
         ))
@@ -584,7 +584,7 @@ fn load_stream_weights(
     dim: usize,
     mlp_hidden: usize,
 ) -> Result<StreamWeights> {
-    use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
     Ok(StreamWeights {
         adaln_proj: load_transposed_matrix_preserve_dtype(
             st,
@@ -633,7 +633,7 @@ fn load_single_stream_weights(
     dim: usize,
     mlp_hidden: usize,
 ) -> Result<SingleStreamBlockWeights> {
-    use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
     Ok(SingleStreamBlockWeights {
         adaln_proj: load_transposed_matrix_preserve_dtype(
             st,
@@ -700,7 +700,7 @@ impl MmDitWeights {
         adm_in_channels: usize,
         frequency_embedding_size: usize,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let dim = cfg.dim;
         let mlp_hidden = dim * cfg.mlp_ratio;
         let conditioning = ConditioningWeights {
@@ -1004,7 +1004,7 @@ impl MmDitFullModel {
 
         let x_dims = x.shape().dims().to_vec();
         if x_dims.len() != 4 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MmDitFullModel::forward: x must be rank-4 (N, C, H, W), got rank {}",
                 x_dims.len()
             ))
@@ -1012,7 +1012,7 @@ impl MmDitFullModel {
         }
         let (_n_lat, c_in_lat, h_lat, w_lat) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
         if c_in_lat != cfg.in_channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MmDitFullModel::forward: x has {c_in_lat} in-channels, config expects {}",
                 cfg.in_channels,
             ))
@@ -1044,14 +1044,14 @@ impl MmDitFullModel {
         // ---- Context embed: linear from context_embed_size to hidden.
         let ctx_dims = context.shape().dims().to_vec();
         if ctx_dims.len() != 3 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MmDitFullModel::forward: context must be rank-3 (N, S, C), got rank {}",
                 ctx_dims.len()
             ))
             .bt());
         }
         if ctx_dims[2] != cfg.context_embed_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MmDitFullModel::forward: context last-dim {} != config.context_embed_size {}",
                 ctx_dims[2], cfg.context_embed_size,
             ))
@@ -1128,7 +1128,7 @@ fn patch_embed(
     //                                -> (N, S, hidden).
     let dims = x_conv.shape().dims().to_vec();
     if dims.len() != 4 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "patch_embed: conv2d output should be rank-4, got rank {}",
             dims.len()
         ))
@@ -1161,7 +1161,7 @@ fn cropped_pos_embed(
     let h = (h_lat + 1) / patch_size;
     let w = (w_lat + 1) / patch_size;
     if h > pos_embed_max_size || w > pos_embed_max_size {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "cropped_pos_embed: patch resolution ({h}x{w}) exceeds \
              pos_embed_max_size ({pos_embed_max_size}). Re-train or \
              enlarge the pos-embed grid.",
@@ -1170,7 +1170,7 @@ fn cropped_pos_embed(
     }
     let expected = pos_embed_max_size * pos_embed_max_size * hidden;
     if pos_embed.len() != expected {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "cropped_pos_embed: pos_embed has {} elements, expected {} \
              (= pos_embed_max_size² * hidden = {pos_embed_max_size}² * {hidden})",
             pos_embed.len(),
@@ -1230,7 +1230,7 @@ fn apply_context_qkv_only_joint(
     let m = m.add_trailing_bias(Arc::clone(&weights.context.adaln_bias))?;
     let chunks = m.chunk(2, 1_usize)?;
     if chunks.len() != 2 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "apply_context_qkv_only_joint: expected 2 context-adaln chunks, got {}",
             chunks.len()
         ))
@@ -1282,7 +1282,7 @@ fn apply_final_layer(
     let m = m.add_trailing_bias(Arc::clone(&weights.adaln_bias))?;
     let chunks = m.chunk(2, 1_usize)?;
     if chunks.len() != 2 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "apply_final_layer: expected 2 adaln chunks, got {}",
             chunks.len()
         ))
@@ -1317,7 +1317,7 @@ fn unpatchify(
     let w_patch = (w_lat + 1) / patch_size;
     let dims = x.shape().dims().to_vec();
     if dims.len() != 3 {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "unpatchify: x must be rank-3 (N, S, P²·Cout), got rank {}",
             dims.len()
         ))
@@ -1327,7 +1327,7 @@ fn unpatchify(
     let expected_s = h_patch * w_patch;
     let expected_c = patch_size * patch_size * out_channels;
     if s != expected_s || c_per_token != expected_c {
-        return Err(fuel_core::Error::Msg(format!(
+        return Err(fuel_ir::error::Error::Msg(format!(
             "unpatchify: token tensor {dims:?} != expected (B, {expected_s}, {expected_c})",
         ))
         .bt());
@@ -1358,7 +1358,7 @@ fn load_context_qkv_only_block_weights(
     dim: usize,
     mlp_hidden: usize,
 ) -> Result<ContextQkvOnlyBlockWeights> {
-    use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
     let image = load_stream_weights(st, &format!("{prefix}.x_block"), dim, mlp_hidden)?;
     let context = ContextQkvOnlyContextWeights {
         adaln_proj: load_transposed_matrix_preserve_dtype(
@@ -1405,9 +1405,9 @@ impl MmDitFullWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MmDitFullConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         if cfg.depth == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MmDitFullWeights::load_from_mmapped: cfg.depth must be >= 1".into(),
             )
             .bt());
@@ -1421,7 +1421,7 @@ impl MmDitFullWeights {
         let pe_weight_data = load_tensor_as_f32(st, "x_embedder.proj.weight")?;
         let expected_pe = hidden * cfg.in_channels * cfg.patch_size * cfg.patch_size;
         if pe_weight_data.len() != expected_pe {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "load_from_mmapped: x_embedder.proj.weight has {} elements, \
                  expected {} (hidden * in_channels * patch² = {hidden} * {} * {}²)",
                 pe_weight_data.len(),
@@ -1440,7 +1440,7 @@ impl MmDitFullWeights {
         let pe_data = load_tensor_as_f32(st, "pos_embed")?;
         let expected_pos = cfg.pos_embed_max_size * cfg.pos_embed_max_size * hidden;
         if pe_data.len() != expected_pos {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "load_from_mmapped: pos_embed has {} elements, expected {} \
                  (pos_embed_max_size² * hidden = {}² * {hidden})",
                 pe_data.len(),
@@ -1566,7 +1566,7 @@ impl MmDitFullWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn tiny_config() -> MmDitConfig {
         MmDitConfig {

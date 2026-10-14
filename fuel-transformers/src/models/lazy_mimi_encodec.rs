@@ -34,9 +34,9 @@
 //! scope for the composition port.
 
 use crate::models::lazy_mimi::{MimiConfig, MimiModel, MimiWeights};
-use fuel_core::Result;
-use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::lazy::Tensor;
 
 /// How the codec resamples between the SeaNet encoder frame rate
 /// and the quantizer frame rate. Mimi v0.1 uses [`ResampleMethod::Conv`].
@@ -128,7 +128,7 @@ impl MimiEncodecModel {
     pub fn new(config: MimiEncodecConfig, weights: MimiWeights) -> Result<Self> {
         let expected_stride = config.resampler_stride();
         if weights.resampler_stride != expected_stride {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MimiEncodecModel: weights.resampler_stride {} does not match \
                  config-derived stride {} (encoder_frame_rate {} / frame_rate {})",
                 weights.resampler_stride,
@@ -150,7 +150,7 @@ impl MimiEncodecModel {
         let dims = pcm.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.config.channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MimiEncodecModel::encode: expected (1, {}, T), got {:?}",
                 self.config.channels, dims,
             )));
@@ -164,7 +164,7 @@ impl MimiEncodecModel {
         let dims = codes.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.config.inner.n_q {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MimiEncodecModel::decode: expected (1, {}, T), got {:?}",
                 self.config.inner.n_q, dims,
             )));
@@ -192,7 +192,7 @@ impl MimiEncodecModel {
         let dims = pcm_chunk.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[1] != self.config.channels {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MimiEncodecModel::encode_step: expected (1, {}, L), got {:?}",
                 self.config.channels, dims,
             )));
@@ -200,7 +200,7 @@ impl MimiEncodecModel {
         let chunk_len = dims[2];
         let chunk_host = pcm_chunk.realize_f32();
         if chunk_host.len() != self.config.channels * chunk_len {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MimiEncodecModel::encode_step: realized PCM length {} != channels·L = {}",
                 chunk_host.len(),
                 self.config.channels * chunk_len,
@@ -233,7 +233,7 @@ impl MimiEncodecModel {
         let pcm_full = Tensor::from_f32(
             pcm_for_run,
             Shape::from_dims(&[1, self.config.channels, usable_len]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         let codes = self.inner.encode(&pcm_full)?;
         let new_frames = total_frames - state.emitted_frames;
@@ -257,7 +257,7 @@ impl MimiEncodecModel {
         let dims = codes_chunk.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[1] != self.config.inner.n_q {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MimiEncodecModel::decode_step: expected (1, {}, L), got {:?}",
                 self.config.inner.n_q, dims,
             )));
@@ -267,14 +267,14 @@ impl MimiEncodecModel {
             return Ok((state, None));
         }
         let n_q = self.config.inner.n_q;
-        let chunk_host = fuel_core::pipelined_bridge::realize_one_as::<u32>(
+        let chunk_host = fuel_tensor::pipelined_bridge::realize_one_as::<u32>(
             codes_chunk.graph_tensor().graph(),
             codes_chunk.graph_tensor().id(),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )
-        .map_err(|e| fuel_core::Error::Msg(format!("decode_step: realize codes: {e:?}")))?;
+        .map_err(|e| fuel_ir::error::Error::Msg(format!("decode_step: realize codes: {e:?}")))?;
         if chunk_host.len() != n_q * chunk_frames {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MimiEncodecModel::decode_step: realized code length {} != n_q·L = {}",
                 chunk_host.len(),
                 n_q * chunk_frames,
@@ -301,7 +301,7 @@ impl MimiEncodecModel {
         let codes_full = Tensor::from_u32(
             flat,
             Shape::from_dims(&[1, n_q, total_frames]),
-            &fuel_core::Device::cpu(),
+            &fuel_tensor::Device::cpu(),
         )?;
         let pcm = self.inner.decode(&codes_full)?;
         let stride = self.config.total_audio_stride();
@@ -367,8 +367,8 @@ mod tests {
         LayerNormWeights, MimiAttentionWeights, MimiMlpWeights, MimiTransformerConfig,
         MimiTransformerLayerWeights, MimiTransformerWeights, ProjectedTransformerWeights,
     };
-    use fuel_core::Device;
-    use fuel_core::lazy::WeightStorage;
+    use fuel_tensor::Device;
+    use fuel_tensor::lazy::WeightStorage;
     use std::sync::Arc;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {

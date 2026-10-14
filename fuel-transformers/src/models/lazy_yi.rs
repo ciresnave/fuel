@@ -5,13 +5,14 @@
 //! standard LLaMA: GQA + RmsNorm + SwiGLU FFN + RoPE with
 //! `rope_theta = 5e6` (longer-context tuning). No special twists.
 //!
-//! Reuses [`fuel_core::lazy::LayerWeights`] (LLaMA's per-layer struct).
+//! Reuses [`fuel_tensor::lazy::LayerWeights`] (LLaMA's per-layer struct).
 //! Forward mirrors `crate::models::lazy_mistral::MistralModel` minus the
 //! sliding-window mask. No KV cache (v1).
 
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,9 +77,9 @@ fn default_yi_rope_theta() -> f64 {
 }
 
 impl YiConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Yi config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Yi config.json: {e}")))
     }
 
     fn resolve(self) -> Result<YiConfig> {
@@ -109,7 +110,7 @@ impl YiConfig {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `yi_config_from_hf_json_parses_the_artifact_not_a_preset`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         YiConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -193,7 +194,7 @@ impl YiModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "YiModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             ))
@@ -201,12 +202,13 @@ impl YiModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(
-                fuel_core::Error::Msg("YiModel::forward_embeds: seq must be > 0".into()).bt(),
-            );
+            return Err(fuel_ir::error::Error::Msg(
+                "YiModel::forward_embeds: seq must be > 0".into(),
+            )
+            .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "YiConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -215,7 +217,7 @@ impl YiModel {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "YiConfig: num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
             .bt());
@@ -323,7 +325,7 @@ impl YiWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &YiConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;

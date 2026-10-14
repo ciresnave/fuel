@@ -13,10 +13,10 @@ use crate::models::lazy_fastvit::{FastVitConfig, FastVitModel, FastVitWeights};
 use crate::models::lazy_openclip_text::{
     OpenClipTextConfig, OpenClipTextModel, OpenClipTextWeights,
 };
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 #[cfg(test)]
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -161,7 +161,7 @@ impl MobileClipWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MobileClipConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let vision = FastVitWeights::load_from_mmapped(st, &cfg.vision)?;
         let text = OpenClipTextWeights::load_from_mmapped(st, &cfg.text)?;
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn image_features_shape_and_finite() {
-        use fuel_core::Device;
+        use fuel_tensor::Device;
         let model = tiny_mobileclip();
         let image = Tensor::from_f32(
             (0..(3 * 32 * 32))
@@ -492,7 +492,7 @@ mod tests {
         let model = tiny_mobileclip();
         let ids = vec![1_u32, 2, 3, 4];
         // Anchor unused in text path; pass a stub.
-        use fuel_core::Device;
+        use fuel_tensor::Device;
         let stub = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let txt_feats = model.get_text_features(&ids, 3, &stub).unwrap();
         assert_eq!(txt_feats.shape().dims(), &[1, 16]);
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn l2_normalize_unit_norm() {
-        use fuel_core::Device;
+        use fuel_tensor::Device;
         let x = Tensor::from_f32(
             vec![3.0_f32, 4.0, 0.0, 0.0, 1.0, 2.0],
             Shape::from_dims(&[2, 3]),

@@ -33,11 +33,11 @@
 //! interpolation deferred (eager uses bicubic which is a
 //! larger op we don't have on the lazy surface yet).
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,7 +150,7 @@ impl Dinov2Model {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "dinov2: input spatial dims ({}, {}) must equal image_size {}; this model is \
                  fixed-resolution (position interpolation deferred), and the patch reshape targets \
                  a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
@@ -264,7 +264,7 @@ impl Dinov2Model {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "dinov2: input spatial dims ({}, {}) must equal image_size {}; this model is \
                  fixed-resolution (position interpolation deferred), and the patch reshape targets \
                  a config-derived num_patches — it guards the patch COUNT, not the per-axis size, \
@@ -279,7 +279,7 @@ impl Dinov2Model {
         // GAP-308 (CONFIG_FIELD): a caller-supplied layer index outside the
         // configured depth is input to reject, not an invariant to assert.
         if *layer_ids.last().unwrap() >= cfg.depth {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "layer_ids must all be in [0, depth = {})",
                 cfg.depth,
             )));
@@ -415,7 +415,9 @@ impl Dinov2Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Dinov2Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.embed_dim;
         let mlp = cfg.mlp_hidden();
 

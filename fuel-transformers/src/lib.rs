@@ -79,17 +79,15 @@ pub mod pipelines;
 pub mod utils;
 
 // GAP-347 PR 4 (bail! consolidation): before/after test for this consumer
-// crate family. `fuel_core::bail!` is now `fuel_ir::bail!` re-exported
+// crate family. `fuel_ir::bail!` is now `fuel_ir::bail!` re-exported
 // (the fuel-core-local `macro_rules!` duplicate was deleted), which can
 // change `$crate::Error` resolution silently across a macro-path swap.
 // This proves the error text/variant this crate actually relies on
-// (the 46 `fuel_core::bail!` sites across models/lazy_*.rs) is unchanged.
+// (the 46 `fuel_ir::bail!` sites across models/lazy_*.rs) is unchanged.
 #[cfg(test)]
 mod bail_consolidation_tests {
-    fn always_bails() -> fuel_core::Result<()> {
-        fuel_core::bail!(
-            "deliberate failure for the fuel-core dissolution bail! consolidation test"
-        );
+    fn always_bails() -> fuel_ir::error::Result<()> {
+        fuel_ir::bail!("deliberate failure for the fuel-core dissolution bail! consolidation test");
         #[allow(unreachable_code)]
         Ok(())
     }

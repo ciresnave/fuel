@@ -15,9 +15,10 @@
 //! Custom `PersimmonLayerWeights` because the LN+bias surface and
 //! QK-LN structure don't fit `LayerWeights`.
 
-use fuel_core::lazy::{LayerNormPair, Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::LayerNormPair, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,9 +85,9 @@ fn default_persimmon_qk_layernorm() -> bool {
 }
 
 impl PersimmonConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Persimmon config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Persimmon config.json: {e}")))
     }
 
     fn resolve(self) -> Result<PersimmonConfig> {
@@ -119,7 +120,7 @@ impl PersimmonConfig {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `persimmon_config_from_hf_json_parses_the_artifact`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         PersimmonConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -229,20 +230,20 @@ impl PersimmonModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "PersimmonModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "PersimmonModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "PersimmonConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -383,7 +384,9 @@ impl PersimmonWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &PersimmonConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;

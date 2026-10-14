@@ -29,9 +29,10 @@
 //! Forward-only, single sequence (`batch == 1`), no KV cache
 //! (recomputes each call), F32 activations.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 pub use crate::models::lazy_phi::PhiActivation as MixFormerActivation;
@@ -151,7 +152,7 @@ impl MixFormerModel {
         // so a head count that does not divide hidden_size violates this -- a CONFIG
         // property to reject, not an invariant to assert.
         if cfg.num_attention_heads * head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MixFormerConfig: hidden_size must be divisible by num_attention_heads".into(),
             )
             .bt());
@@ -327,7 +328,9 @@ impl MixFormerWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MixFormerConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let inter = cfg.inner_dim();
 

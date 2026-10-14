@@ -44,9 +44,10 @@
 //! (recomputes per call), F32. Returns vocab logits
 //! `(1, seq, vocab_size)` with final softcapping applied.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -108,12 +109,12 @@ pub(crate) struct Gemma2ConfigRaw {
 }
 
 impl Gemma2ConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Gemma2 config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Gemma2 config.json: {e}")))
     }
 
-    fn resolve(self) -> fuel_core::Result<Gemma2Config> {
+    fn resolve(self) -> fuel_ir::error::Result<Gemma2Config> {
         Ok(Gemma2Config {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
@@ -283,7 +284,7 @@ impl Gemma2Model {
         let dims = scaled_embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Gemma2Model::forward_embeds: expected scaled_embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
@@ -292,14 +293,14 @@ impl Gemma2Model {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Gemma2Model::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         let head_dim = cfg.head_dim;
         if cfg.num_attention_heads * head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Gemma2Config: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -308,7 +309,7 @@ impl Gemma2Model {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Gemma2Config: num_attention_heads must be a multiple of num_key_value_heads"
                     .into(),
             )
@@ -471,7 +472,7 @@ impl Gemma2Config {
     /// `Gemma2ConfigRaw` is the wire shape and is pure `serde`;
     /// `Gemma2ConfigRaw::resolve` applies the two defaults that read a
     /// sibling field, which `#[serde(default)]` cannot express.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         Gemma2ConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -488,28 +489,30 @@ impl Gemma2Weights {
     pub fn load_from_mmapped(
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Gemma2Config,
-    ) -> fuel_core::Result<Self> {
+    ) -> fuel_ir::error::Result<Self> {
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let token_embedding = Arc::from(fuel_core::lazy::load_tensor_as_f32(
+        let token_embedding = Arc::from(fuel_tensor::lazy::load_tensor_as_f32(
             st,
             "model.embed_tokens.weight",
         )?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for li in 0..cfg.num_hidden_layers {
-            let load_lin =
-                |suffix: &str, out_f: usize, in_f: usize| -> fuel_core::Result<WeightStorage> {
-                    let name = format!("model.layers.{li}.{suffix}");
-                    let v = fuel_core::lazy::load_transposed_matrix(st, &name, out_f, in_f)?;
-                    Ok(WeightStorage::F32(Arc::from(v)))
-                };
-            let load_norm = |suffix: &str| -> fuel_core::Result<Arc<[f32]>> {
+            let load_lin = |suffix: &str,
+                            out_f: usize,
+                            in_f: usize|
+             -> fuel_ir::error::Result<WeightStorage> {
                 let name = format!("model.layers.{li}.{suffix}");
-                Ok(Arc::from(fuel_core::lazy::load_tensor_as_f32(st, &name)?))
+                let v = fuel_tensor::lazy::load_transposed_matrix(st, &name, out_f, in_f)?;
+                Ok(WeightStorage::F32(Arc::from(v)))
+            };
+            let load_norm = |suffix: &str| -> fuel_ir::error::Result<Arc<[f32]>> {
+                let name = format!("model.layers.{li}.{suffix}");
+                Ok(Arc::from(fuel_tensor::lazy::load_tensor_as_f32(st, &name)?))
             };
 
             layers.push(Gemma2LayerWeights {
@@ -531,7 +534,7 @@ impl Gemma2Weights {
             });
         }
 
-        let final_norm_gain = Arc::from(fuel_core::lazy::load_tensor_as_f32(
+        let final_norm_gain = Arc::from(fuel_tensor::lazy::load_tensor_as_f32(
             st,
             "model.norm.weight",
         )?);
@@ -548,46 +551,47 @@ impl Gemma2Model {
     /// Download a Gemma-2 checkpoint from the HuggingFace Hub and
     /// build a ready-to-forward `Gemma2Model`. Requires
     /// `HF_TOKEN` for gated repos like `google/gemma-2-2b-it`.
-    pub fn from_hub(repo_id: &str) -> fuel_core::Result<Self> {
+    pub fn from_hub(repo_id: &str) -> fuel_ir::error::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub api init: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
 
         let config_path = repo
             .get("config.json")
-            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub config.json: {e}")))?;
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("hf-hub config.json: {e}")))?;
         let config_str = std::fs::read_to_string(&config_path)?;
         let config = Gemma2Config::from_hf_json_str(&config_str)?;
 
-        let weight_paths: Vec<std::path::PathBuf> = match repo.get("model.safetensors.index.json") {
-            Ok(index_path) => {
-                let index_str = std::fs::read_to_string(&index_path)?;
-                let index: serde_json::Value = serde_json::from_str(&index_str)
-                    .map_err(|e| fuel_core::Error::Msg(format!("parsing index: {e}")))?;
-                let weight_map = index
-                    .get("weight_map")
-                    .and_then(|x| x.as_object())
-                    .ok_or_else(|| fuel_core::Error::Msg("index: missing weight_map".into()))?;
-                let mut unique = std::collections::HashSet::new();
-                for v in weight_map.values() {
-                    if let Some(s) = v.as_str() {
-                        unique.insert(s.to_string());
+        let weight_paths: Vec<std::path::PathBuf> =
+            match repo.get("model.safetensors.index.json") {
+                Ok(index_path) => {
+                    let index_str = std::fs::read_to_string(&index_path)?;
+                    let index: serde_json::Value = serde_json::from_str(&index_str)
+                        .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing index: {e}")))?;
+                    let weight_map = index
+                        .get("weight_map")
+                        .and_then(|x| x.as_object())
+                        .ok_or_else(|| {
+                            fuel_ir::error::Error::Msg("index: missing weight_map".into())
+                        })?;
+                    let mut unique = std::collections::HashSet::new();
+                    for v in weight_map.values() {
+                        if let Some(s) = v.as_str() {
+                            unique.insert(s.to_string());
+                        }
                     }
+                    let mut paths = Vec::new();
+                    for name in &unique {
+                        paths.push(repo.get(name).map_err(|e| {
+                            fuel_ir::error::Error::Msg(format!("hf-hub {name}: {e}"))
+                        })?);
+                    }
+                    paths
                 }
-                let mut paths = Vec::new();
-                for name in &unique {
-                    paths.push(
-                        repo.get(name)
-                            .map_err(|e| fuel_core::Error::Msg(format!("hf-hub {name}: {e}")))?,
-                    );
-                }
-                paths
-            }
-            Err(_) => vec![
-                repo.get("model.safetensors")
-                    .map_err(|e| fuel_core::Error::Msg(format!("hf-hub model.safetensors: {e}")))?,
-            ],
-        };
+                Err(_) => vec![repo.get("model.safetensors").map_err(|e| {
+                    fuel_ir::error::Error::Msg(format!("hf-hub model.safetensors: {e}"))
+                })?],
+            };
 
         let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
         let weights = Gemma2Weights::load_from_mmapped(&st, &config)?;
@@ -602,15 +606,17 @@ impl Gemma2Config {
     /// verbatim and test-only as the differential's oracle. A differential
     /// that ran once proves the paths agreed at ONE commit; one that keeps
     /// running proves they still do.
-    pub(crate) fn from_hf_json_str_legacy(json: &str) -> fuel_core::Result<Self> {
+    pub(crate) fn from_hf_json_str_legacy(json: &str) -> fuel_ir::error::Result<Self> {
         let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Gemma2 config.json: {e}")))?;
-        let get_usize = |key: &str| -> fuel_core::Result<usize> {
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Gemma2 config.json: {e}")))?;
+        let get_usize = |key: &str| -> fuel_ir::error::Result<usize> {
             v.get(key)
                 .and_then(|x| x.as_u64())
                 .map(|x| x as usize)
                 .ok_or_else(|| {
-                    fuel_core::Error::Msg(format!("Gemma2 config.json: missing/invalid {key:?}"))
+                    fuel_ir::error::Error::Msg(format!(
+                        "Gemma2 config.json: missing/invalid {key:?}"
+                    ))
                 })
         };
         let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };

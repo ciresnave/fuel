@@ -17,8 +17,8 @@
 //! tile counts (GAP-328), and config-vs-config agreement (GAP-314). If any of
 //! them is ruled in, it gets its own helper, not an option on this one.
 
-use fuel_core::lazy::Tensor;
-use fuel_core::{Error, Result, Shape};
+use fuel_ir::{error::Error, error::Result, shape::Shape};
+use fuel_tensor::lazy::Tensor;
 
 /// The `(n, c, h, w)` of an `[N, C, H, W]` image whose channel count is
 /// `channels`.
@@ -47,7 +47,7 @@ pub(crate) fn image_nchw(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core::Device;
+    use fuel_tensor::Device;
 
     fn tensor(dims: &[usize]) -> Tensor {
         let count = dims.iter().product();

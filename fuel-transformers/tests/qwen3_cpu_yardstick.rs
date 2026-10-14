@@ -746,11 +746,14 @@ fn run_kv_context_decode_and_compare(
     tokenizer: &tokenizers::Tokenizer,
     cfg: &Qwen3Config,
     fixture: &ReferenceFixture,
-    dev: fuel_core::Device,
+    dev: fuel_tensor::Device,
     device_label: &str,
 ) -> KvContextRunResult {
-    use fuel_core::inference_context::{DecodeSession, InferenceContext, KvCache};
     use fuel_ir::DType;
+    use fuel_tensor::{
+        inference_context::DecodeSession, inference_context::InferenceContext,
+        inference_context::KvCache,
+    };
 
     let mut max_abs_logit_diff = 0f32;
     let mut total_steps = 0usize;
@@ -921,7 +924,7 @@ fn kv_context_cpu_matches_forward_cpu_reference() {
         &tokenizer,
         &cfg,
         &fixture,
-        fuel_core::Device::cpu(),
+        fuel_tensor::Device::cpu(),
         "cpu (via forward_with_kv_context_persistent)",
     );
     result.assert_passes();
@@ -941,7 +944,7 @@ fn m1_cuda_matches_cpu_reference() {
     let fixture = load_fixture();
     let (model, tokenizer, cfg) = load_model().expect("load_model");
     let dev =
-        fuel_core::cuda_backend::new_device(0).expect("fuel_core::cuda_backend::new_device(0)");
+        fuel_tensor::cuda_backend::new_device(0).expect("fuel_tensor::cuda_backend::new_device(0)");
     let result =
         run_kv_context_decode_and_compare(&model, &tokenizer, &cfg, &fixture, dev, "cuda:0");
     result.assert_passes();
@@ -958,12 +961,15 @@ fn m1_cuda_matches_cpu_reference() {
 #[test]
 #[ignore = "needs network, a real CUDA device, and --features cuda; run via scripts/gpu-run.ps1"]
 fn m1_cuda_speed_harness() {
-    use fuel_core::inference_context::{DecodeSession, InferenceContext, KvCache};
     use fuel_ir::DType;
+    use fuel_tensor::{
+        inference_context::DecodeSession, inference_context::InferenceContext,
+        inference_context::KvCache,
+    };
 
     let (model, tokenizer, cfg) = load_model().expect("load_model");
     let dev =
-        fuel_core::cuda_backend::new_device(0).expect("fuel_core::cuda_backend::new_device(0)");
+        fuel_tensor::cuda_backend::new_device(0).expect("fuel_tensor::cuda_backend::new_device(0)");
     let prompt = PROMPTS[0];
     let formatted = format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n");
     let encoding = tokenizer.encode(formatted, true).expect("encode");

@@ -15,11 +15,13 @@
 //! `index_select(wpe, [start_pos..start_pos+seq])` + `broadcast_add`
 //! to the token embedding.
 
-use fuel_core::lazy::{
-    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{
+    lazy::Tensor, lazy::WeightStorage, lazy::load_tensor_as_f32,
+    lazy::load_transposed_matrix_preserve_dtype,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,7 +181,7 @@ impl BigCodeModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "BigCodeModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
@@ -187,19 +189,19 @@ impl BigCodeModel {
         let seq = dims[1];
         let batch = dims[0];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "BigCodeModel::forward_embeds: seq must be > 0".into(),
             )
             .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim() != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "BigCodeConfig: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
         }
         if start_pos + seq > cfg.max_position_embeddings {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "BigCodeModel: start_pos + seq ({}) exceeds max_position_embeddings ({})",
                 start_pos + seq,
                 cfg.max_position_embeddings,
@@ -365,7 +367,7 @@ impl BigCodeWeights {
 
         let token_embedding = load_tensor_as_f32(st, "transformer.wte.weight")?;
         if token_embedding.len() != cfg.vocab_size * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "transformer.wte.weight: {} elts, expected {} ({}×{})",
                 token_embedding.len(),
                 cfg.vocab_size * h,
@@ -376,7 +378,7 @@ impl BigCodeWeights {
 
         let position_embedding = load_tensor_as_f32(st, "transformer.wpe.weight")?;
         if position_embedding.len() != cfg.max_position_embeddings * h {
-            fuel_core::bail!(
+            fuel_ir::bail!(
                 "transformer.wpe.weight: {} elts, expected {} ({}×{})",
                 position_embedding.len(),
                 cfg.max_position_embeddings * h,
@@ -401,7 +403,7 @@ impl BigCodeWeights {
             // fuel's `[in, out]` layout before storing.
             let fused = load_tensor_as_f32(st, &format!("{p}.attn.c_attn.weight"))?;
             if fused.len() != qkv_out * h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p}.attn.c_attn.weight: {} elts, expected {} ({}×{})",
                     fused.len(),
                     qkv_out * h,
@@ -417,7 +419,7 @@ impl BigCodeWeights {
             // Fused QKV bias: `[hidden + 2*kv_dim]`. Split into Q / K / V.
             let fused_bias = load_tensor_as_f32(st, &format!("{p}.attn.c_attn.bias"))?;
             if fused_bias.len() != qkv_out {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p}.attn.c_attn.bias: {} elts, expected {}",
                     fused_bias.len(),
                     qkv_out,
@@ -437,7 +439,7 @@ impl BigCodeWeights {
             )?;
             let attn_o_bias_v = load_tensor_as_f32(st, &format!("{p}.attn.c_proj.bias"))?;
             if attn_o_bias_v.len() != h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p}.attn.c_proj.bias: {} elts, expected {}",
                     attn_o_bias_v.len(),
                     h,
@@ -454,7 +456,7 @@ impl BigCodeWeights {
             )?;
             let mlp_fc_bias_v = load_tensor_as_f32(st, &format!("{p}.mlp.c_fc.bias"))?;
             if mlp_fc_bias_v.len() != i_dim {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p}.mlp.c_fc.bias: {} elts, expected {}",
                     mlp_fc_bias_v.len(),
                     i_dim,
@@ -470,7 +472,7 @@ impl BigCodeWeights {
             )?;
             let mlp_proj_bias_v = load_tensor_as_f32(st, &format!("{p}.mlp.c_proj.bias"))?;
             if mlp_proj_bias_v.len() != h {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p}.mlp.c_proj.bias: {} elts, expected {}",
                     mlp_proj_bias_v.len(),
                     h,

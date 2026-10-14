@@ -60,11 +60,11 @@
 //! separately if a caller wants feature maps for downstream
 //! heads.
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -273,7 +273,9 @@ impl ConvMixerWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &ConvMixerConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
 
         let load_bn = |prefix: &str| -> Result<BatchNormParams> {
             let gain = load_tensor_as_f32(st, &format!("{prefix}.weight"))?;

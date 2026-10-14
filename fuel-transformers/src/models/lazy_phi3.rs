@@ -6,7 +6,7 @@
 //! quirk: a single `qkv_proj` packs Q + K + V along the last dim,
 //! and a single `gate_up_proj` packs gate + up. On disk the
 //! safetensors stores them fused; in lazy we store them split
-//! (matching [`fuel_core::lazy::LayerWeights`]), with the safetensors
+//! (matching [`fuel_tensor::lazy::LayerWeights`]), with the safetensors
 //! loader doing the narrow at load time.
 //!
 //! **Deferred to a follow-up** (don't block other ports on it):
@@ -25,13 +25,19 @@
 //! Forward-only, single sequence (`batch == 1`), no KV cache, F32
 //! activations. Strict lower-triangular causal mask.
 
-use fuel_core::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use fuel_core::lazy::{LayerWeights, Tensor, WeightStorage};
-use fuel_core::persistent_decode::{
-    DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
-};
-use fuel_core::{Device, Result};
+use fuel_ir::error::Result;
 use fuel_ir::{DType, Shape};
+use fuel_tensor::Device;
+use fuel_tensor::{
+    inference_context::DecodeSession, inference_context::DecodeTokenData,
+    inference_context::InferenceContext, inference_context::KvCache,
+};
+use fuel_tensor::{lazy::LayerWeights, lazy::Tensor, lazy::WeightStorage};
+use fuel_tensor::{
+    persistent_decode::DecodeBackbone, persistent_decode::DecodeDims,
+    persistent_decode::DecodeLayerInputs, persistent_decode::MaskPlan,
+    persistent_decode::PersistentDecodeModel,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -103,9 +109,9 @@ fn default_phi3_rms_norm_eps() -> f64 {
 }
 
 impl Phi3ConfigRaw {
-    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+    fn from_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         serde_json::from_str(json)
-            .map_err(|e| fuel_core::Error::Msg(format!("parsing Phi-3 config.json: {e}")))
+            .map_err(|e| fuel_ir::error::Error::Msg(format!("parsing Phi-3 config.json: {e}")))
     }
 
     fn resolve(self) -> Result<Phi3Config> {
@@ -132,7 +138,7 @@ impl Phi3Config {
     ///
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `phi3_config_from_hf_json_parses_the_artifact_not_a_preset`.
-    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+    pub fn from_hf_json_str(json: &str) -> fuel_ir::error::Result<Self> {
         Phi3ConfigRaw::from_json_str(json)?.resolve()
     }
 }
@@ -141,8 +147,8 @@ impl Phi3Config {
 pub struct Phi3Weights {
     /// Process-unique identity for THIS weight set — what lets a held decode
     /// plan tell two same-architecture models apart (GAP-029). Mint with
-    /// [`fuel_core::decode_shape::ModelInstanceId::next`].
-    pub instance: fuel_core::decode_shape::ModelInstanceId,
+    /// [`fuel_tensor::decode_shape::ModelInstanceId::next`].
+    pub instance: fuel_tensor::decode_shape::ModelInstanceId,
     pub token_embedding: Arc<[f32]>,
     pub layers: Vec<LayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
@@ -226,7 +232,7 @@ impl Phi3Model {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Phi3Model::forward_embeds: expected embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
@@ -235,13 +241,14 @@ impl Phi3Model {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(
-                fuel_core::Error::Msg("Phi3Model::forward_embeds: seq must be > 0".into()).bt(),
-            );
+            return Err(fuel_ir::error::Error::Msg(
+                "Phi3Model::forward_embeds: seq must be > 0".into(),
+            )
+            .bt());
         }
         let head_dim = cfg.head_dim();
         if cfg.num_attention_heads * head_dim != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Phi3Config: num_attention_heads * head_dim must equal hidden_size".into(),
             )
             .bt());
@@ -250,7 +257,7 @@ impl Phi3Model {
             .num_attention_heads
             .is_multiple_of(cfg.num_key_value_heads)
         {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Phi3Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
             .bt());
@@ -389,7 +396,7 @@ fn split_phi3_qkv(
 // carries no mask slice node at all.
 //
 // ⚠️ NAME COLLISION WORTH READING ONCE: `Phi3Model` (here) is NOT `PhiModel`
-// (`fuel_core::lazy`). They are different architectures — Phi has a parallel
+// (`fuel_tensor::lazy`). They are different architectures — Phi has a parallel
 // attention block, LayerNorm + bias, and its OWN hand-written decode body that
 // GAP-029 deliberately does not touch. Phi3 measured LLaMA-shaped despite the
 // lineage in its name, which is why it is on the shared seam and Phi is not.
@@ -403,7 +410,7 @@ impl Phi3Model {
     ///
     /// The uniform plan emits no slice node and its host bytes are byte-identical
     /// to `build_decode_causal_mask` (asserted in
-    /// `fuel_core::persistent_decode`), so a family with no windowing pays literally
+    /// `fuel_tensor::persistent_decode`), so a family with no windowing pays literally
     /// nothing for the N-variant machinery.
     pub fn decode_mask_plan(&self) -> MaskPlan {
         MaskPlan::dense(self.config.num_hidden_layers)
@@ -414,7 +421,7 @@ impl Phi3Model {
     /// forfeit plan reuse across a change already handled correctly.
     pub fn decode_shape_key(&self) -> u64 {
         let cfg = &self.config;
-        let mut h = fuel_core::decode_shape::ShapeKeyHasher::new();
+        let mut h = fuel_tensor::decode_shape::ShapeKeyHasher::new();
         h.mix_str("phi3")
             .mix_instance(self.weights.instance)
             .mix_u64(cfg.num_hidden_layers as u64)
@@ -437,7 +444,9 @@ impl Phi3Model {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context(self, tokens, cache, ctx, false, None)
+        fuel_tensor::persistent_decode::forward_with_kv_context(
+            self, tokens, cache, ctx, false, None,
+        )
     }
 
     /// Plan-once persistent decode.
@@ -448,7 +457,7 @@ impl Phi3Model {
         ctx: &mut InferenceContext,
         session: &mut Option<DecodeSession>,
     ) -> Result<Vec<f32>> {
-        fuel_core::persistent_decode::forward_with_kv_context_persistent(
+        fuel_tensor::persistent_decode::forward_with_kv_context_persistent(
             self, tokens, cache, ctx, session, None,
         )
     }
@@ -560,7 +569,7 @@ impl Phi3Model {
         // consumer (the permute) can be named as the flash arm's reconverge —
         // arm-0 runnability requires the merge to read arm 0.
         let attn_v_permuted = attn_v.permute([0, 2, 1, 3_usize])?;
-        fuel_core::lazy::offer_flash_decode_arm_for_region(
+        fuel_tensor::lazy::offer_flash_decode_arm_for_region(
             q_r.graph(),
             q_r.node_id(),
             full_k.node_id(),
@@ -643,14 +652,14 @@ impl PersistentDecodeModel for Phi3Model {
         cache: &KvCache,
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
-        let host = fuel_core::persistent_decode::compute_decode_token_host(
+        let host = fuel_tensor::persistent_decode::compute_decode_token_host(
             self,
             cached_len,
             tokens,
             session.max_seq_len(),
             rope_inv_freq,
         );
-        fuel_core::persistent_decode::upload_decode_token_data(
+        fuel_tensor::persistent_decode::upload_decode_token_data(
             device,
             &host,
             cache.dtype.unwrap_or(DType::F32),
@@ -689,8 +698,8 @@ impl DecodeBackbone for Phi3Model {
         Phi3Model::decode_mask_plan(self)
     }
 
-    fn decode_rope_plan(&self) -> fuel_core::persistent_decode::RopePlan {
-        fuel_core::persistent_decode::RopePlan::single(
+    fn decode_rope_plan(&self) -> fuel_tensor::persistent_decode::RopePlan {
+        fuel_tensor::persistent_decode::RopePlan::single(
             self.config.rope_theta,
             self.decode_dims().n_layers,
         )
@@ -742,7 +751,7 @@ impl Phi3Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Phi3Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix};
         let h = cfg.hidden_size;
         let head_dim = cfg.head_dim();
         let q_dim = cfg.num_attention_heads * head_dim;
@@ -761,7 +770,7 @@ impl Phi3Weights {
                 h,
             )?;
             let (q, k, v) = split_phi3_qkv(&qkv, h, q_dim, kv_dim);
-            let attn_o = fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+            let attn_o = fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("{p}.self_attn.o_proj.weight"),
                 h,
@@ -771,7 +780,7 @@ impl Phi3Weights {
             let gate_up =
                 load_transposed_matrix(st, &format!("{p}.mlp.gate_up_proj.weight"), 2 * inter, h)?;
             let (gate, up) = split_phi3_gate_up(&gate_up, h, inter);
-            let ffn_down = fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+            let ffn_down = fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("{p}.mlp.down_proj.weight"),
                 h,
@@ -811,7 +820,7 @@ impl Phi3Weights {
                 h,
             )
         } else {
-            fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+            fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
                 st,
                 "lm_head.weight",
                 cfg.vocab_size,
@@ -820,7 +829,7 @@ impl Phi3Weights {
         };
 
         Ok(Self {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,
@@ -965,7 +974,7 @@ mod tests {
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *next_box));
         Phi3Weights {
-            instance: fuel_core::decode_shape::ModelInstanceId::next(),
+            instance: fuel_tensor::decode_shape::ModelInstanceId::next(),
             token_embedding,
             layers,
             final_norm_gain,

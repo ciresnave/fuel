@@ -58,9 +58,10 @@
 //! v1 dtype — `Self::layers_are_rescaled` is always false for
 //! F32 weights.
 
-use fuel_core::lazy::{LayerNormPair, Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::LayerNormPair, lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -213,7 +214,7 @@ impl Rwkv5Model {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Rwkv5Model::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
             )).bt());
@@ -221,7 +222,7 @@ impl Rwkv5Model {
         let seq = dims[1];
         let batch = dims[0];
         if seq == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Rwkv5Model::forward_embeds: seq must be > 0".into(),
             )
             .bt());
@@ -229,7 +230,7 @@ impl Rwkv5Model {
         let n_heads = cfg.n_heads();
         let head_size = cfg.head_size;
         if n_heads * head_size != cfg.hidden_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Rwkv5Config: n_heads({n_heads}) * head_size({head_size}) must equal hidden_size",
             ))
             .bt());
@@ -539,7 +540,9 @@ impl Rwkv5Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Rwkv5Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let att_h = cfg.attention_hidden_size;
         let ffn_inter = cfg.ffn_intermediate();

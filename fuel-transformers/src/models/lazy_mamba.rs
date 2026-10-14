@@ -30,7 +30,7 @@
 //!   Mamba decode-loop blocker. `selective_scan_bundled` already
 //!   produces `last_state` as a slot; consumer migration just needs
 //!   the init-state input on the next forward.
-//! - **F32 activations**; weights via [`fuel_core::lazy::WeightStorage`].
+//! - **F32 activations**; weights via [`fuel_tensor::lazy::WeightStorage`].
 //!
 //! # Op surface used (already in lazy stack)
 //!
@@ -39,9 +39,10 @@
 //! - [`Tensor::selective_scan`] — the SSM scan; returns the `y`
 //!   slot of the bundled producer.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Mamba's conv kernel size. Fixed at 4 in every released Mamba
@@ -274,7 +275,9 @@ impl MambaWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MambaConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let d = cfg.d_model;
         let d_inner = cfg.d_inner();
         let dt = cfg.dt_rank();

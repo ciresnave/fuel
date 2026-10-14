@@ -24,9 +24,10 @@
 //! ALiBi's negative biases on the valid (lower-triangular)
 //! positions instead of zeros.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,7 +216,7 @@ impl MptModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.d_model {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "MptModel::forward_embeds: expected embeds shape (1, seq, d_model={}), got {:?}",
                 cfg.d_model, dims,
             ))
@@ -223,18 +224,19 @@ impl MptModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(
-                fuel_core::Error::Msg("MptModel::forward_embeds: seq must be > 0".into()).bt(),
-            );
+            return Err(fuel_ir::error::Error::Msg(
+                "MptModel::forward_embeds: seq must be > 0".into(),
+            )
+            .bt());
         }
         if cfg.n_heads * cfg.head_dim() != cfg.d_model {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MptConfig: n_heads * head_dim must equal d_model".into(),
             )
             .bt());
         }
         if !cfg.n_heads.is_multiple_of(cfg.kv_n_heads) {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "MptConfig: n_heads must be a multiple of kv_n_heads".into(),
             )
             .bt());
@@ -330,7 +332,7 @@ impl MptWeights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &MptConfig,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix};
         let d = cfg.d_model;
         let head_dim = cfg.head_dim();
         let q_dim = cfg.n_heads * head_dim; // == d_model
@@ -371,19 +373,19 @@ impl MptWeights {
                 v[row * kv_dim..(row + 1) * kv_dim].copy_from_slice(&src[q_dim + kv_dim..]);
             }
 
-            let attn_o = fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+            let attn_o = fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("{p}.attn.out_proj.weight"),
                 d,
                 d,
             )?;
-            let mlp_up = fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+            let mlp_up = fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("{p}.ffn.up_proj.weight"),
                 ffn,
                 d,
             )?;
-            let mlp_down = fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+            let mlp_down = fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
                 st,
                 &format!("{p}.ffn.down_proj.weight"),
                 d,
@@ -410,7 +412,7 @@ impl MptWeights {
             .map(Arc::from)
             .unwrap_or_else(|| Arc::from(vec![0.0; d]));
         // MPT typically ties lm_head to wte; load if separate present.
-        let output = match fuel_core::lazy::load_transposed_matrix_preserve_dtype(
+        let output = match fuel_tensor::lazy::load_transposed_matrix_preserve_dtype(
             st,
             "lm_head.weight",
             cfg.vocab_size,

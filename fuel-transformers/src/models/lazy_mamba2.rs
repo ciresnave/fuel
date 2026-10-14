@@ -36,9 +36,10 @@
 //!   variants need B/C reshape + per-group broadcast that's a
 //!   mechanical extension when a checkpoint demands it.
 
-use fuel_core::lazy::{Tensor, WeightStorage};
-use fuel_core::{Device, Result};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 /// Mamba-2's conv kernel size. Fixed at 4 across released checkpoints.
@@ -162,7 +163,7 @@ impl Mamba2Model {
         // GAP-308 (CONFIG_FIELD): a caller-supplied sequence length not aligned to
         // chunk_size is input to reject, not an invariant to assert.
         if !seq.is_multiple_of(cfg.chunk_size) {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Mamba2Model::forward: seq ({seq}) must be a multiple of chunk_size ({}). \
                  Right-pad to the next multiple before calling.",
                 cfg.chunk_size,
@@ -248,7 +249,7 @@ impl Mamba2Model {
             // cfg.ngroups` below is integer division, so a non-dividing group
             // count truncates silently -- a CONFIG property to reject.
             if !n_heads.is_multiple_of(cfg.ngroups) {
-                return Err(fuel_core::Error::Msg(format!(
+                return Err(fuel_ir::error::Error::Msg(format!(
                     "Mamba2Config: n_heads ({n_heads}) must be a multiple of ngroups ({})",
                     cfg.ngroups,
                 )));
@@ -319,7 +320,9 @@ impl Mamba2Weights {
         st: &fuel_loaders::safetensors::MmapedSafetensors,
         cfg: &Mamba2Config,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        use fuel_tensor::{
+            lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype as ltm,
+        };
         let d = cfg.d_model;
         let d_inner = cfg.d_inner();
         let d_xbc = cfg.d_xbc();

@@ -46,11 +46,11 @@
 //! and that all frames are valid. Mask-aware audio batching is a
 //! follow-up.
 
-#[cfg(test)]
-use fuel_core::Device;
-use fuel_core::Result;
-use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
+use fuel_ir::error::Result;
+#[cfg(test)]
+use fuel_tensor::Device;
+use fuel_tensor::{lazy::Tensor, lazy::WeightStorage};
 use std::sync::Arc;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -170,21 +170,21 @@ impl Gemma4AudioModel {
         let dims = mel.shape();
         let dims = dims.dims();
         if dims.len() != 3 {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Gemma4AudioModel::forward: mel must be rank 3 (B, T, n_mels), got {dims:?}",
             ))
             .bt());
         }
         let (b, t_in, n_mels) = (dims[0], dims[1], dims[2]);
         if n_mels != cfg.input_feat_size {
-            return Err(fuel_core::Error::Msg(format!(
+            return Err(fuel_ir::error::Error::Msg(format!(
                 "Gemma4AudioModel::forward: mel n_mels={n_mels} != input_feat_size={}",
                 cfg.input_feat_size,
             ))
             .bt());
         }
         if t_in == 0 {
-            return Err(fuel_core::Error::Msg(
+            return Err(fuel_ir::error::Error::Msg(
                 "Gemma4AudioModel::forward: T_in must be > 0".into(),
             )
             .bt());
@@ -585,7 +585,7 @@ impl Gemma4AudioWeights {
         cfg: &Gemma4AudioConfig,
         prefix: &str,
     ) -> Result<Self> {
-        use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
 
         let h = cfg.hidden_size;
         let n_heads = cfg.conf_num_attention_heads;
@@ -612,7 +612,7 @@ impl Gemma4AudioWeights {
             )?;
             let expected = cout * cin * kt * kf;
             if conv_flat.len() != expected {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{prefix}subsample_conv_projection.layer{i}.conv.weight: \
                      {} elts, expected {} ({}×{}×{}×{})",
                     conv_flat.len(),
@@ -733,7 +733,7 @@ impl Gemma4AudioWeights {
                 load_tensor_as_f32(st, &format!("{p}.lconv1d.depthwise_conv1d.weight"))?;
             let expected_dw = h * k_lc;
             if lconv_depthwise_flat.len() != expected_dw {
-                fuel_core::bail!(
+                fuel_ir::bail!(
                     "{p}.lconv1d.depthwise_conv1d.weight: {} elts, expected {} ({}×1×{})",
                     lconv_depthwise_flat.len(),
                     expected_dw,
@@ -805,7 +805,7 @@ impl Gemma4AudioWeights {
         };
 
         let sscp: [SscpBlockWeights; 2] = sscp_blocks.try_into().map_err(|_| {
-            fuel_core::Error::Msg(
+            fuel_ir::error::Error::Msg(
                 "Gemma4AudioWeights::load_from_mmapped: SSCP block count mismatch".into(),
             )
             .bt()
