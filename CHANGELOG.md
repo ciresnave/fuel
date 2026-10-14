@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.3 - 2026-10-14
+
+### Changed
+
+- CI: `cargo metadata --locked` step fails a stale tracked `Cargo.lock`.
+
 ## v0.19.2 - 2026-10-14
 
 ### Changed
