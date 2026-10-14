@@ -18,6 +18,7 @@ use num_traits::Float as _;
 use std::any::Any;
 use std::sync::Arc;
 
+use crate::chassis::unary::{quiet_f32, quiet_f64};
 use crate::utils::{Map1, Map1Any, Map2, Map2InPlace, Map2U8, binary_map, unary_map};
 
 // ---------------------------------------------------------------------------
@@ -138,11 +139,36 @@ fn cpu_unary_op(s: &HostBuffer, layout: &Layout, op: UnaryOp) -> Result<HostBuff
     // float-path ops generically, then special-case per variant when needed.
 
     match op {
-        Exp => float_unary(s, layout, |v: f32| v.exp(), |v: f64| v.exp()),
-        Log => float_unary(s, layout, |v: f32| v.ln(), |v: f64| v.ln()),
-        Sin => float_unary(s, layout, |v: f32| v.sin(), |v: f64| v.sin()),
-        Cos => float_unary(s, layout, |v: f32| v.cos(), |v: f64| v.cos()),
-        Tanh => float_unary(s, layout, |v: f32| v.tanh(), |v: f64| v.tanh()),
+        Exp => float_unary(
+            s,
+            layout,
+            |v: f32| quiet_f32(v.exp()),
+            |v: f64| quiet_f64(v.exp()),
+        ),
+        Log => float_unary(
+            s,
+            layout,
+            |v: f32| quiet_f32(v.ln()),
+            |v: f64| quiet_f64(v.ln()),
+        ),
+        Sin => float_unary(
+            s,
+            layout,
+            |v: f32| quiet_f32(v.sin()),
+            |v: f64| quiet_f64(v.sin()),
+        ),
+        Cos => float_unary(
+            s,
+            layout,
+            |v: f32| quiet_f32(v.cos()),
+            |v: f64| quiet_f64(v.cos()),
+        ),
+        Tanh => float_unary(
+            s,
+            layout,
+            |v: f32| quiet_f32(v.tanh()),
+            |v: f64| quiet_f64(v.tanh()),
+        ),
         Neg => all_unary_neg(s, layout),
         Recip => float_unary(s, layout, |v: f32| v.recip(), |v: f64| v.recip()),
         Sqr => all_unary_sqr(s, layout),

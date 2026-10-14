@@ -8426,8 +8426,11 @@ impl NodeHandle {
     /// which resolve through KISS's OWN §6.13 decompositions, `trunc` is a §6.3
     /// *floor* op: KISS-OPS-6.3-0003 forbids the standard from carrying a
     /// reference decomposition for a floor op, so THIS expansion is FUEL's, blessed
-    /// by no spec clause and caught by NO KISS conformance vector. Its correctness
-    /// at `-0.0`/NaN/±inf is Fuel's liability — see GAP-300, whose born-reds assert
+    /// by no spec clause. It IS now checked by KISS vectors: `ops-rounding.json`
+    /// (vendored at KISS `0af5d3b6`) carries 18 `f32` `trunc` cells (signed zero, halves
+    /// and ties, 2^23, max finite, ±inf, subnormals), all of which pass through the lazy
+    /// `Tensor` (`fuel-tensor/tests/kiss_nan_conformance.rs`); `f64` and NaN inputs are
+    /// not in that file. Beyond it, correctness is Fuel's liability — see GAP-300, whose born-reds assert
     /// on `to_bits()` (a value compare `0.0 == -0.0` passes vacuously).
     ///
     /// `trunc(q) = if q >= 0 { floor(q) } else { ceil(q) }`. Float dtypes only;
