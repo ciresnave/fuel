@@ -3,9 +3,16 @@ This documents the main changes to the `fuel` workspace.
 
 ## v0.18.5 - 2026-10-14
 
+### Fixed
+
+- CPU `exp`/`log`/`sin`/`cos`/`tanh` (`fuel-cpu-backend` chassis and the `dyn_impl` path) now return a QUIET NaN for a
+  signalling-NaN operand. They called `libm` directly, and Apple's `logf` returns `log(sNaN)` as the signalling
+  `7F800001` unchanged (found by the new KISS NaN evaluator on the macOS CI leg; x86 libm already quieted). A
+  NaN result has its quiet bit set; payload and every non-NaN value are untouched.
+
 ### Changed
 
-- Tests, fixtures and docs only: the KISS NaN-operand / minmax-NaN / rounding vectors (`ops-narrow-move-nan`, `ops-narrow-select-nan`,
+- Tests, fixtures and docs: the KISS NaN-operand / minmax-NaN / rounding vectors (`ops-narrow-move-nan`, `ops-narrow-select-nan`,
   `ops-transcendental-nan`, `ops-minmax-nan`, `ops-rounding`, KISS `0af5d3b6`) are run through the lazy `Tensor` on CPU by
   `fuel-tensor/tests/kiss_nan_conformance.rs` (198 vectors: 162 pass, 0 fail, 36 not exercised: 8-bit floats, `copysign`).
   The f32/f64 prop-vs-ieee tripwire is replaced by a positive assertion; a `kiss_clause_ledger` row is added for
