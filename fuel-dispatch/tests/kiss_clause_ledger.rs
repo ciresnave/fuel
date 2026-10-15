@@ -139,6 +139,15 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-CLASSIFY-6.3-0011",
+        disposition: Obligation,
+        test: Some(
+            "fuel-dispatch/tests/kiss_derivation_vectors.rs::divergences_and_absent_surfaces_are_exactly_the_pinned_sets",
+        ),
+        reason: "Axes are ordered outermost first, so the innermost active axis is the                  last one (`axis rank-1`), including when its extent is 1 or 0. The three                  `innermost_axis_*` derivation vectors (`[4,1]`, `[1,8]`, `[8,0]`) are                  vendored and Fuel's sk5 deriver PASSES all three under both feeding                  disciplines; the named test pins that no vector is a divergence.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-CLASSIFY-6.6-0019",
         disposition: Declined,
         test: Some(

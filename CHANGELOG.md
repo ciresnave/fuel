@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.7 - 2026-10-15
+
+### Changed
+
+- Re-vendored KISS `structure_key_derivation_vectors.json` (36 vectors, blob 697aa543); Fuel's sk5 deriver passes all, incl. `[8,0]`.
+
 ## v0.19.6 - 2026-10-15
 
 ### Changed
