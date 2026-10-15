@@ -75,8 +75,8 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 criterion = { workspace = true }
 tempfile = { workspace = true }
-fuel-conv = { workspace = true }
-fuel-test-support = { workspace = true }
+fuel-conv = { path = "../fuel-conv" }
+fuel-test-support = { path = "../fuel-test-support" }
 
 [features]
 default = []

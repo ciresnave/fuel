@@ -20,4 +20,4 @@
 [dev-dependencies]
     # GAP-243: the hardware skip policy. `fuel-test-support` has ZERO
     # dependencies of its own, so this cannot introduce a cycle.
-    fuel-test-support = { workspace = true }
+    fuel-test-support = { path = "../fuel-test-support" }

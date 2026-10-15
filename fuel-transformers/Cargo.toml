@@ -67,8 +67,8 @@ metal = ["fuel-tensor/metal"]
 # It broke because the fuel-nn EXTRACTION (2026-08-19) moved VarBuilder out of
 # fuel-core, and `--all-targets` does NOT build doctests, so no gate here saw it.
 [dev-dependencies]
-fuel-hardware = { workspace = true }
-fuel-nn = { workspace = true }
+fuel-hardware = { path = "../fuel-hardware" }
+fuel-nn = { path = "../fuel-nn" }
 # M0 of the joint GPU milestone plan (unpopped#39): the Qwen3 CPU yardstick
 # test (tests/qwen3_cpu_yardstick.rs) needs `anyhow::{anyhow, bail}` for its
 # GGUF-metadata loading path, mirroring fuel-examples/examples/quantized-qwen3.

@@ -63,9 +63,9 @@
 [dev-dependencies]
 # GAP-157: `require`/`required_ok` — a missing device is a FAILURE, not a
 # silent early return that reports `ok` having asserted nothing.
-fuel-test-support = { workspace = true }
-    fuel-conv      = { workspace = true }
-    fuel-tensor    = { workspace = true, features = ["vulkan"] }
+fuel-test-support = { path = "../fuel-test-support" }
+    fuel-conv      = { path = "../fuel-conv" }
+    fuel-tensor    = { path = "../fuel-tensor", features = ["vulkan"] }
     # Phase 7.5 G2: tests need a CpuBackendDevice handle for
     # slot-populating constructors (cpu_dev() helper).
-    fuel-cpu-backend = { workspace = true }
+    fuel-cpu-backend = { path = "../fuel-cpu-backend" }
