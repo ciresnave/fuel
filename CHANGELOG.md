@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.4 - 2026-10-14
+
+### Changed
+
+- Workspace dev-dependencies are path-only; CI check for versioned ones (publish ordering).
+
 ## v0.19.3 - 2026-10-14
 
 ### Changed

@@ -23,4 +23,4 @@ rand = { workspace = true }
 rand_distr = { workspace = true }
 
 [dev-dependencies]
-fuel-quantized = { workspace = true }
+fuel-quantized = { path = "../fuel-quantized" }

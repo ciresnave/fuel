@@ -29,7 +29,7 @@
 [dev-dependencies]
     # Phase 7.5 G2: tests need a CpuBackendDevice handle for
     # slot-populating constructors (cpu_dev() helper).
-    fuel-cpu-backend = { workspace = true }
+    fuel-cpu-backend = { path = "../fuel-cpu-backend" }
     # multi_session tests build BF16 tiny-model weights.
     half             = { workspace = true }
 
