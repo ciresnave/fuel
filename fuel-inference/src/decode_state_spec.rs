@@ -13,7 +13,7 @@
 //! state, and that the state is per-head K/V at all.
 //!
 //! Both are false on `main` today. `DeepSeek2Model` decodes through a
-//! `fuel_tensor::lazy_latent_cache::LatentCache` whose per-layer state is a
+//! [`fuel_core::lazy_latent_cache::LatentCache`] whose per-layer state is a
 //! compressed latent trailing `[kv_lora_rank]` plus a post-RoPE `k_pe` trailing
 //! `[qk_rope_head_dim]` — no per-head K/V anywhere. The hazard is not that such
 //! a model *cannot* implement the scalar vocabulary; it is that it **can, and
@@ -25,8 +25,8 @@
 //! # The vocabulary is not invented here
 //!
 //! Fuel already generalized this, twice, and the decode seam simply did not
-//! adopt it: `fuel_tensor::lazy_latent_cache::LatentCache::new` and
-//! `fuel_tensor::inference_context::LatentKvCache::with_capacity` both take
+//! adopt it: [`fuel_core::lazy_latent_cache::LatentCache::new`] and
+//! [`fuel_core::inference_context::LatentKvCache::with_capacity`] both take
 //! `slot_trailing: Vec<Vec<usize>>` — a per-slot trailing shape. In that
 //! vocabulary a standard KV layer is simply the 2-slot case:
 //!
@@ -71,7 +71,7 @@ use fuel_ir::{Error, Result};
 /// The trailing shape is the per-token extent: a standard K buffer is
 /// `[n_kv_heads, head_dim]`, an MLA compressed latent is `[kv_lora_rank]`, and
 /// an empty trailing is a legal per-token scalar slot (matching
-/// `fuel_tensor::lazy_latent_cache::LatentCache::new`'s documented contract).
+/// [`fuel_core::lazy_latent_cache::LatentCache::new`]'s documented contract).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateSlot {
     /// Per-token trailing shape, excluding the sequence axis.
