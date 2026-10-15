@@ -860,7 +860,10 @@ fn build_optimized_graph(
         .with_pinned_device(pinned_device)
         .with_fallback_placements_for(&fallback_for)
         .with_transfer_estimator(&*topology)
-        .with_input_residency(&input_residency);
+        .with_input_residency(&input_residency)
+        // Strict reproducibility mode: a hard bit-stable floor when the caller
+        // asked for it, unconstrained otherwise (`crate::reproducibility`).
+        .with_precision_requirement(crate::reproducibility::precision_requirement());
     // Reference / single-device realize: suppress cost-based cross-device
     // placement so every un-pinned node stays on the pinned device (the CPU
     // oracle must run on CPU, not be relocated to the backend it validates).

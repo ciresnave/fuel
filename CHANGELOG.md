@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.9 - 2026-10-15
+
+### Changed
+
+- fuel-tensor: strict reproducibility mode (`fuel_tensor::reproducibility`); the realize path now threads a bit-stable floor into the planner when enabled (ROADMAP 13(b)).
+
 ## v0.19.8 - 2026-10-15
 
 ### Changed
