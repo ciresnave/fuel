@@ -147,7 +147,10 @@ impl MetaVoiceModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims().to_vec();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("MetaVoiceModel::forward_embeds: embeds"))?;
         let batch = dims[0];
         let seq = dims[1];
         // GAP-281: a typed decline, not a panic. The relation is a CONFIG

@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.6 - 2026-10-15
+
+### Changed
+
+- GAP-326 closed (PR 3/3): decoder rank-3 guards routed through `dims3()`, `--gap326-gate` runs in CI, registry row deleted.
+
 ## v0.19.5 - 2026-10-15
 
 ### Changed

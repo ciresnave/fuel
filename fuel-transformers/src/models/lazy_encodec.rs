@@ -333,7 +333,10 @@ impl EncodecModel {
     pub fn decode_codes(&self, codes: &Tensor) -> Result<Tensor> {
         let dims = codes.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "codes must be rank 3 [1, num_codebooks, T]");
+        codes
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("EncodecModel::decode_codes: codes"))?;
         assert_eq!(dims[0], 1, "v1 supports batch == 1");
         assert_eq!(
             dims[1],

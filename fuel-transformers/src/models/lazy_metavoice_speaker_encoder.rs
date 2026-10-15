@@ -75,11 +75,9 @@ impl SpeakerEncoderModel {
         let cfg = &self.config;
         let dims = mels.shape();
         let dims = dims.dims();
-        assert_eq!(
-            dims.len(),
-            3,
-            "speaker-encoder input must be rank 3 [1, T, D]"
-        );
+        mels.shape()
+            .dims3()
+            .map_err(|e| e.context("SpeakerEncoderModel::forward: mels"))?;
         let b = dims[0];
         let t = dims[1];
         let d = dims[2];

@@ -145,7 +145,10 @@ impl MixFormerModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("MixFormerModel::forward_embeds: embeds"))?;
         let seq = dims[1];
         let head_dim = cfg.head_dim();
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
@@ -224,7 +227,10 @@ impl MixFormerModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("MixFormerModel::forward_hidden_embeds: embeds"))?;
         let seq = dims[1];
         let head_dim = cfg.head_dim();
         let rotary_dim = cfg.effective_rotary_dim();

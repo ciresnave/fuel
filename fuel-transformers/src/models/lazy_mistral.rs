@@ -235,7 +235,10 @@ impl MistralModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("MistralModel::forward_embeds: embeds"))?;
         let seq = dims[1];
         // GAP-281: a typed decline, not a panic. The relation is a CONFIG
         // property a real checkpoint can violate, so it is an error to return,
@@ -313,7 +316,10 @@ impl MistralModel {
         let _weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("MistralModel::forward_hidden_embeds: embeds"))?;
         let seq = dims[1];
         let mask = self.build_sliding_window_mask(embeds, seq);
         self.forward_hidden_embeds_with_mask_impl(embeds, &mask, start_pos)
@@ -347,7 +353,10 @@ impl MistralModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("MistralModel::forward_hidden_embeds_with_mask_impl: embeds"))?;
         let seq = dims[1];
         let mut h = embeds.clone();
         let (rope_cos, rope_sin) =
@@ -656,6 +665,79 @@ mod tests {
             layers,
             final_norm_gain,
             output,
+        }
+    }
+
+    /// GAP-326: the three embeds entry points check rank with `dims3()`, so a
+    /// rank-2 input is a typed rank error naming the function that declined
+    /// it. All three used to be `assert_eq!` panics.
+    /// A one-layer Mistral small enough to build in a test.
+    fn rank_test_model() -> MistralModel {
+        let cfg = MistralConfig {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 32,
+            sliding_window: None,
+        };
+        MistralModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        }
+    }
+
+    /// An all-zero f32 CPU tensor of the given dims.
+    fn zeros(dims: &[usize]) -> Tensor {
+        let count = dims.iter().product();
+        Tensor::from_f32(
+            Arc::from(vec![0.0_f32; count]),
+            Shape::from_dims(dims),
+            &Device::cpu(),
+        )
+        .unwrap()
+    }
+
+    /// GAP-326: the three embeds entry points check rank with `dims3()`, so a
+    /// rank-2 input is a typed rank error naming the function that declined
+    /// it. All three used to be `assert_eq!` panics.
+    #[test]
+    fn embeds_of_the_wrong_rank_are_a_typed_error_not_a_panic() {
+        let model = rank_test_model();
+        let cfg = model.config.clone();
+        let tensor = zeros;
+        // Positive control: rank-3 embeds still build.
+        model
+            .forward_hidden_embeds(&tensor(&[1, 3, cfg.hidden_size]), 0)
+            .expect("rank-3 embeds must build");
+        let rank2 = tensor(&[3, cfg.hidden_size]);
+        let mask = tensor(&[1, 1, 3, 3]);
+        let results = [
+            (
+                "MistralModel::forward_embeds: embeds",
+                model.forward_embeds(&rank2, 0),
+            ),
+            (
+                "MistralModel::forward_hidden_embeds: embeds",
+                model.forward_hidden_embeds(&rank2, 0),
+            ),
+            (
+                "MistralModel::forward_hidden_embeds_with_mask_impl: embeds",
+                model.forward_hidden_embeds_with_mask(&rank2, &mask, 0),
+            ),
+        ];
+        for (entry, result) in results {
+            let text = result.expect_err(entry).to_string();
+            assert!(text.contains(entry), "{entry}: {text}");
+            assert!(
+                text.contains("unexpected rank, expected: 3, got: 2"),
+                "{entry}: {text}"
+            );
         }
     }
 
