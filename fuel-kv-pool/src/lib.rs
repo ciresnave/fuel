@@ -1036,7 +1036,7 @@ impl KvBlockPool {
     /// target, NOT a refcount share (a shifted prefix's keys must be re-rotated,
     /// so it cannot alias the owner's) — append them to `dst`, and return
     /// `(m_offset, [(owner_src_phys, fresh_dst_phys); prefix_blocks])`. The device
-    /// layer (`DeviceKvPool::splice_prefix_shifted` (fuel_core::kv_block_pool_device))
+    /// layer (`DeviceKvPool::splice_prefix_shifted` (fuel_tensor::kv_block_pool_device))
     /// then rotates K src→fresh and copies V src→fresh. Validate-before-mutate: a
     /// refusal allocates nothing and leaves `dst` untouched.
     pub fn alloc_shifted_prefix_slots(

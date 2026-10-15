@@ -17,7 +17,7 @@
 //!   binding-table dispatch path), so it now lives under the Judge
 //!   module that owns its lifecycle. The cache surface is re-exported
 //!   at this module's top level so callers can write
-//!   `fuel_core::judge::cached()` directly.
+//!   `fuel_tensor::judge::cached()` directly.
 //!
 //! # Scope of this revision
 //!
@@ -142,7 +142,7 @@ pub use cache::*;
 // dissolution, plan item 8) — it had zero coupling to this module's
 // `Tensor`/`Device`-constructing profiling code, only to `fuel-dispatch`'s
 // own `ranker::judge` types. Re-exported here so `crate::judge::
-// ProfileJudgeOracle` / `fuel_core::judge::ProfileJudgeOracle` callers
+// ProfileJudgeOracle` / `fuel_tensor::judge::ProfileJudgeOracle` callers
 // (this module's own tests, `cache.rs`) are unchanged.
 pub use fuel_dispatch::ranker::profile_oracle::ProfileJudgeOracle;
 
@@ -161,7 +161,7 @@ use std::time::Instant;
 
 // Re-export the dispatch types (moved to fuel-core-types so
 // `fuel-graph-router`'s Router can consume them without depending
-// on `fuel-core`). All existing callers `use fuel_core::judge::*`
+// on `fuel-core`). All existing callers `use fuel_tensor::judge::*`
 // keep working — `ProfileReport::save` / `ProfileReport::load` are
 // inherent methods on the moved type.
 pub use fuel_ir::dispatch::{

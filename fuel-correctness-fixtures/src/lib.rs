@@ -95,7 +95,7 @@ pub struct ToleranceBand {
 impl ToleranceBand {
     /// The default tolerance for f32 op output: 1e-3 relative,
     /// 1e-6 absolute. Matches the `CONSENSUS_EPSILON` floor used
-    /// by `fuel-core::judge::compute_pairwise_consensus`.
+    /// by `fuel-tensor::judge::compute_pairwise_consensus`.
     pub const F32_DEFAULT: Self = Self {
         max_relative: 1e-3,
         max_absolute: 1e-6,

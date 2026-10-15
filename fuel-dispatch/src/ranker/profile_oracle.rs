@@ -6,7 +6,7 @@
 //! 8): it had zero coupling to `fuel-core`'s `Tensor`/`Device` or to the
 //! rest of `judge/mod.rs`, only to this crate's own `ranker::judge` types
 //! plus `fuel_ir`. The `Judge` struct that PRODUCES a `ProfileReport` stays
-//! in `fuel-core::judge` (it builds synthetic `Tensor`s to time kernels);
+//! in `fuel-tensor::judge` (it builds synthetic `Tensor`s to time kernels);
 //! this adapter only CONSUMES one, so the dependency-cycle concern the old
 //! doc comment described no longer applies to this file.
 //!
@@ -46,7 +46,7 @@ use fuel_ir::dispatch::{OpKind, PROFILE_REPORT_VERSION, ProfileReport, SizeClass
 use fuel_ir::probe::BackendId;
 
 /// [`JudgeOracle`] adapter over a [`ProfileReport`]. Build once per
-/// report (cache lifecycle in `fuel_core::judge::cache`, which stays
+/// report (cache lifecycle in `fuel_tensor::judge::cache`, which stays
 /// alongside the `Judge` that produces the report), query per candidate
 /// from the optimizer ranker's cost composer.
 #[derive(Debug, Default, Clone)]
@@ -150,7 +150,7 @@ mod tests {
     /// Minimal equivalence key for a fixture entry — fixtures never load
     /// through the hardware gate, so the vendor/device ids are
     /// irrelevant, only the backend. Mirrors
-    /// `fuel_core::judge::test_equiv_key`, which stays `pub(crate)` there
+    /// `fuel_tensor::judge::test_equiv_key`, which stays `pub(crate)` there
     /// and so can't be reused across the crate boundary.
     fn test_equiv_key(backend: BackendId) -> fuel_ir::probe::EquivalenceKey {
         fuel_ir::probe::EquivalenceKey {

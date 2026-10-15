@@ -52,7 +52,7 @@ fn pub_mod_names(src: &str) -> BTreeSet<String> {
 /// board #109: `lazy`/`lazy_latent_cache` moved from direct `pub mod`
 /// declarations to `pub use fuel_tensor::{...}` re-exports, so the test's
 /// previous `pub_mod_names`-only check stopped seeing them even though
-/// `fuel_core::lazy`/`fuel::lazy` still resolve identically at runtime --
+/// `fuel_tensor::lazy`/`fuel::lazy` still resolve identically at runtime --
 /// the LAYOUT changed, the invariant this test protects did not.
 ///
 /// Line/brace-based, not a real Rust parser (same stated-scope tradeoff as

@@ -227,7 +227,7 @@ pub fn backend_for_device(loc: DeviceLocation) -> BackendId {
 /// pre-plan monolithic per-node `set_target_backend` loop: the
 /// graph no longer needs `target_backend` stamped before planning;
 /// the plan's per-node winner is stamped back onto the graph AFTER
-/// planning (`fuel-core::pipelined_bridge::stamp_plan_backends`).
+/// planning (`fuel-tensor::pipelined_bridge::stamp_plan_backends`).
 ///
 /// Resolution priority per node: explicit `Graph::placement` (the
 /// scheduler's per-node assignment) → `pinned_device` →
