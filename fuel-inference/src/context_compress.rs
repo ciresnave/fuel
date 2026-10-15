@@ -323,13 +323,16 @@ mod tests {
 
     #[test]
     fn already_compressed_excluded() {
-        let mut cc = ContextCompressor::new(500);
+        let mut cc = ContextCompressor::new(320);
         cc.push(Turn::new(Role::User, 300));
         cc.push(Turn::new(Role::Assistant, 300));
 
         assert!(cc.mark_compressed(0, 50));
-        // Now total = 50 + 300 = 350, which is under budget
-        assert!(cc.plan_compression().is_empty());
+        // Total = 50 + 300 = 350, still OVER the 320 budget, so a plan is
+        // produced and must skip the already-compressed turn 0.
+        let plan = cc.plan_compression();
+        assert!(!plan.is_empty(), "over budget: a plan is required");
+        assert!(plan.iter().all(|e| e.turn_index != 0));
     }
 
     #[test]
