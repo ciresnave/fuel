@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.11 - 2026-10-15
+
+### Changed
+
+- ci: actions/checkout v7.0.1 and actions/setup-python v7.0.0 (pinned SHAs); repoint 45 stale `fuel-core::<module>` comment paths to `fuel-tensor` (comment-only).
+
 ## v0.19.10 - 2026-10-15
 
 ### Changed
