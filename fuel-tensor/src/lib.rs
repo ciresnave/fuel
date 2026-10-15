@@ -57,6 +57,7 @@ pub mod nf4;
 pub mod persistent_decode;
 pub mod pipelined_bridge;
 pub mod planner;
+pub mod reproducibility;
 pub mod scheduling;
 pub mod test_utils;
 #[cfg(feature = "vulkan")]
