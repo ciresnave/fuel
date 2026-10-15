@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.8 - 2026-10-15
+
+### Changed
+
+- coderipper triage: `fuel-inference` tests assert discarded found-flags; deliberate `StepReport` discard named.
+
 ## v0.19.7 - 2026-10-15
 
 ### Changed
