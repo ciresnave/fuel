@@ -164,7 +164,10 @@ impl VitModel {
         let weights = &self.weights;
         let dims = pixel_values.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
+        pixel_values
+            .shape()
+            .dims4()
+            .map_err(|e| e.context("VitModel::forward: pixel_values"))?;
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
@@ -272,7 +275,10 @@ impl VitModel {
         let weights = &self.weights;
         let dims = pixel_values.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4);
+        pixel_values
+            .shape()
+            .dims4()
+            .map_err(|e| e.context("VitModel::forward_intermediate_layers: pixel_values"))?;
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         if dims[2] != cfg.image_size || dims[3] != cfg.image_size {
@@ -697,6 +703,46 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap()
+    }
+
+    /// GAP-326: both entry points check rank with `dims4()`, so a rank-3
+    /// input is a typed rank error naming the entry point. Both used to be
+    /// `assert_eq!` panics.
+    #[test]
+    fn a_wrong_rank_input_is_a_typed_error_not_a_panic() {
+        let cfg = tiny_config();
+        let model = VitModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, None),
+        };
+        let n = cfg.num_channels * cfg.image_size * cfg.image_size;
+        let rank3 = Tensor::from_f32(
+            Arc::from(vec![0.0_f32; n]),
+            Shape::from_dims(&[cfg.num_channels, cfg.image_size, cfg.image_size]),
+            &Device::cpu(),
+        )
+        .unwrap();
+        let results = [
+            (
+                "VitModel::forward: pixel_values",
+                model.forward(&rank3).map(|_| ()),
+            ),
+            (
+                "VitModel::forward_intermediate_layers: pixel_values",
+                model.forward_intermediate_layers(&rank3, &[0]).map(|_| ()),
+            ),
+        ];
+        for (entry, result) in results {
+            let e = result
+                .err()
+                .unwrap_or_else(|| panic!("{entry}: rank-3 accepted"));
+            let text = e.to_string();
+            assert!(text.contains(entry), "{entry}: {text}");
+            assert!(
+                text.contains("unexpected rank, expected: 4, got: 3"),
+                "{entry}: {text}"
+            );
+        }
     }
 
     /// GAP-314 retained guard for the spatial-size CONVERT. The

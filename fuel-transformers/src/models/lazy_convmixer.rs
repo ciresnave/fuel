@@ -203,14 +203,7 @@ impl ConvMixerModel {
 
     fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        let dims = image.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(
-            dims[1], 3,
-            "image must have 3 input channels, got {}",
-            dims[1]
-        );
+        crate::models::input_guard::image_nchw(image, 3, "ConvMixerModel::run_backbone: image")?;
         assert!(
             cfg.kernel_size % 2 == 1,
             "ConvMixer depthwise kernel must be odd for symmetric same-padding (got {})",
