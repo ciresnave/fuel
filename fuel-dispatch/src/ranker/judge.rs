@@ -7,7 +7,7 @@
 //! # Why a trait
 //!
 //! The Phase 6b Judge + its `DispatchTable` + `ProfileReport` all
-//! live in `fuel-core` (specifically `fuel_core::judge::*` after the
+//! live in `fuel-core` (specifically `fuel_tensor::judge::*` after the
 //! 2026-05-31 rename of `fuel_core::dispatch` → `fuel_core::judge`).
 //! `fuel-dispatch` can't depend on `fuel-core` (that would cycle —
 //! `fuel-core` already depends on `fuel-dispatch`), so the integration
@@ -88,7 +88,7 @@ impl HashMapJudge {
 
     /// Insert one measured latency. Replaces any prior entry with
     /// the same key (last-write-wins, mirroring the conventions in
-    /// `fuel_core::judge::DispatchTable::rebuild_from`).
+    /// `fuel_tensor::judge::DispatchTable::rebuild_from`).
     ///
     /// `kernel_source` distinguishes sibling kernels at the same
     /// `(backend, device)` slot — see [`JudgeOracle::measured_latency_ns`].

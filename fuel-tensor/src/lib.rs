@@ -5,7 +5,7 @@
 //! later."). This is a MECHANICAL move -- every item below kept its own
 //! content; only the crate boundary changed. `fuel-core`'s own
 //! `lib.rs` re-exports these same paths so existing
-//! `fuel_core::lazy::Tensor` / `fuel::Tensor` call sites keep compiling.
+//! `fuel_tensor::lazy::Tensor` / `fuel::Tensor` call sites keep compiling.
 //!
 //! The moved cluster (`lazy`, `device`, the 3 GPU backend bridges,
 //! `dtype`'s `WithDType`/`IntDType`/`FloatDType` trio, `pipelined_bridge`,

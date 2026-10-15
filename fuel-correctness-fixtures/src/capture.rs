@@ -24,7 +24,7 @@
 //! consensus selection, fixture-file writing, and seed-determinism
 //! using mock outputs — no hardware required.
 //!
-//! ## Pairwise consensus (mirrored from `fuel-core::judge`)
+//! ## Pairwise consensus (mirrored from `fuel-tensor::judge`)
 //!
 //! We re-implement [`compute_pairwise_consensus`] inline rather
 //! than depend on `fuel-core` because the latter pulls in the
@@ -56,7 +56,7 @@ use fuel_ir::dispatch::{OpKind, SizeClass};
 use crate::{CorrectnessFixture, FIXTURE_FILE_VERSION, FixtureFile, ToleranceBand};
 
 /// Default epsilon for pairwise consensus clustering — matches
-/// `fuel-core::judge::CONSENSUS_EPSILON`. Two outputs are in
+/// `fuel-tensor::judge::CONSENSUS_EPSILON`. Two outputs are in
 /// consensus iff their max element-wise relative error is below
 /// this threshold.
 pub const CAPTURE_CONSENSUS_EPSILON: f32 = 1e-3;
@@ -104,7 +104,7 @@ pub struct CaptureCell {
 /// without the heavy `fuel-core` dep). Covers four ops × three
 /// size classes × f32 — enough to validate the pipeline end-to-end.
 ///
-/// **Per-op size ladders** mirror `fuel-core::judge::Judge::size_plan`
+/// **Per-op size ladders** mirror `fuel-tensor::judge::Judge::size_plan`
 /// exactly. MatMul uses `(m, n, k) ∈ {64³, 256³, 1024³}` → output
 /// element counts {4096, 65536, 1048576} → `SizeClass(12, 16, 20)`;
 /// Elementwise (Add/Mul) uses `n ∈ {1<<10, 1<<16, 1<<20}` →
@@ -180,7 +180,7 @@ pub fn derive_seed(op: OpKind, dtype: DType, sc: SizeClass) -> u64 {
 }
 
 /// Generate deterministic f32 input data for an `(op, element_count)`
-/// pair, mirroring the formulas in `fuel-core::judge::build_input_graph`
+/// pair, mirroring the formulas in `fuel-tensor::judge::build_input_graph`
 /// so a fixture's `expected_output` reproduces what Judge measured
 /// against the same backend.
 ///
@@ -233,7 +233,7 @@ pub fn deterministic_f32_input(op: OpKind, element_count: usize) -> Vec<f32> {
     }
 }
 
-/// Mirrors `fuel-core::judge::is_binary_elementwise`.
+/// Mirrors `fuel-tensor::judge::is_binary_elementwise`.
 fn is_binary_op(op: OpKind) -> bool {
     matches!(
         op,
@@ -252,7 +252,7 @@ fn is_matmul_op(op: OpKind) -> bool {
     matches!(op, OpKind::MatMul)
 }
 
-/// Mirrors `fuel-core::judge::binary_inputs` but returns a single
+/// Mirrors `fuel-tensor::judge::binary_inputs` but returns a single
 /// concatenated `[a, b]` buffer (the capture pipeline ships one
 /// buffer per fixture; the validator splits it on the way back).
 fn binary_inputs_concatenated(op: OpKind, total_elem_count: usize) -> Vec<f32> {
@@ -286,7 +286,7 @@ fn binary_inputs_concatenated(op: OpKind, total_elem_count: usize) -> Vec<f32> {
     out
 }
 
-/// Mirrors `fuel-core::judge::unary_input` with the same `+1.5` shift
+/// Mirrors `fuel-tensor::judge::unary_input` with the same `+1.5` shift
 /// for sqrt/log/recip/rsqrt that Judge applies.
 fn unary_input_with_shift(op: OpKind, n: usize) -> Vec<f32> {
     let raw: Vec<f32> = (0..n).map(|i| ((i as f32) * 2.1e-3).sin()).collect();
@@ -332,7 +332,7 @@ pub fn hash_f32_input(values: &[f32]) -> u64 {
 /// Returns indices into `outputs` (sorted ascending) of the
 /// consensus members.
 ///
-/// Mirrors `fuel-core::judge::compute_pairwise_consensus`. Two
+/// Mirrors `fuel-tensor::judge::compute_pairwise_consensus`. Two
 /// outputs are in consensus iff their max element-wise relative
 /// error is below `epsilon`. Greedy expansion finds the largest
 /// such cluster; ties broken by lowest starting index.
@@ -383,7 +383,7 @@ pub fn compute_pairwise_consensus(outputs: &[MeasuredOutput], epsilon: f32) -> V
 
 /// Max element-wise relative error between two same-length f32
 /// vectors. NaN/Inf in either vector → INFINITY (never "in
-/// consensus"). Mirrors `fuel-core::judge::max_rel_err`.
+/// consensus"). Mirrors `fuel-tensor::judge::max_rel_err`.
 fn max_rel_err(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return f32::INFINITY;

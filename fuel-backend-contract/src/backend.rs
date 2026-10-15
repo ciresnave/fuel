@@ -176,7 +176,7 @@ pub trait BackendRuntime {
     /// `BackendStreams` and says so, exactly as `available_bytes`
     /// returns `None` for "I can't measure this." Returning `Some` is
     /// a per-handle opt-in (see `DeviceRuntimeHandle` in
-    /// `fuel-core::pipelined_bridge`), never forced on the base trait.
+    /// `fuel-tensor::pipelined_bridge`), never forced on the base trait.
     ///
     /// (Step E Phase C / B1: the seam the load-aware selector — C2 —
     /// reads through. B1 wires the signal; nothing consults it yet.)
@@ -210,7 +210,7 @@ pub trait BackendRuntime {
 /// (`fuel-dispatch::dispatch::inflight_count`) incremented when the
 /// executor submits an async op and decremented when the completion
 /// handle retires. A `BackendStreams` impl reads that counter for its
-/// own device — see `DeviceRuntimeHandle` in `fuel-core::pipelined_bridge`.
+/// own device — see `DeviceRuntimeHandle` in `fuel-tensor::pipelined_bridge`.
 pub trait BackendStreams: BackendRuntime {
     /// Number of slots (streams / queues / command buffers) currently
     /// busy with submitted-but-not-yet-finished work, for this handle's

@@ -29,7 +29,7 @@
 //!   stays wired across refactors.
 //!
 //! Live-hardware capture (the actual `--live` mode) is the next
-//! gate: it requires wiring against `fuel-core::judge::Judge`'s
+//! gate: it requires wiring against `fuel-tensor::judge::Judge`'s
 //! `run()` API, which pulls in the entire backend stack. That's a
 //! separate engineering session — the data model + helpers + this
 //! binary are the substrate.

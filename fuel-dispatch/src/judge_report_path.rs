@@ -6,7 +6,7 @@
 //! `fuel-core`'s `Tensor`/`Device` or to the Judge struct itself, so it moves
 //! independently of the rest of `judge/mod.rs` (which stays in fuel-core).
 //! Kept UNGATED (not under the `telemetry` feature) because
-//! `fuel-core::judge::cache` and `fuel-core::scheduling` call it
+//! `fuel-tensor::judge::cache` and `fuel-tensor::scheduling` call it
 //! unconditionally, regardless of whether `telemetry` is enabled.
 
 /// Filename of the persisted profile report, alongside the probe report in

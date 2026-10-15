@@ -39,14 +39,14 @@ impl Planner {
     /// **No-op as of PR-A3b-2**: the per-graph plan store this used to
     /// populate was deleted with the legacy `compile_plan`/`PlanStore`
     /// path. The "plan IS the graph" form is built once per realize by
-    /// `optimize_graph` (in `fuel-core::pipelined_bridge`), so there is
+    /// `optimize_graph` (in `fuel-tensor::pipelined_bridge`), so there is
     /// nothing to memoize ahead of the first realize until the
     /// load-time-build model (Phase D) lands. This hook is preserved as
     /// the seam Phase D will reimplement to optimize the graph in place
     /// at load.
     ///
     /// Always `Ok(())`. Callers (e.g. the decode loop in
-    /// `fuel-core::lazy`) already treat `warm` as advisory and discard
+    /// `fuel-tensor::lazy`) already treat `warm` as advisory and discard
     /// its result; the realize path runs the authoritative optimization.
     pub fn warm(_graph: &Arc<RwLock<Graph>>, _targets: &[NodeId], _device: &Device) -> Result<()> {
         Ok(())
