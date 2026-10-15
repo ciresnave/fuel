@@ -7207,7 +7207,7 @@ impl Tensor {
         dtype: DType,
         device: &Device,
     ) -> std::result::Result<Self, fuel_ir::Error> {
-        use rand::Rng;
+        use rand::RngExt;
         let shape = shape.into();
         let n = shape.elem_count();
         let mut rng = rand::rng();

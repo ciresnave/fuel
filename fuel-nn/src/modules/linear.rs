@@ -132,7 +132,7 @@ impl Module for Linear {
 /// so successive `linear()` calls in the same process produce stable
 /// values across runs without forcing the caller to thread an RNG.
 fn fan_in_kaiming_uniform(in_features: usize, n: usize, seed_salt: u64) -> Vec<f32> {
-    use rand::Rng;
+    use rand::RngExt;
     let bound = 1.0_f32 / (in_features as f32).sqrt();
     let seed = (in_features as u64)
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)

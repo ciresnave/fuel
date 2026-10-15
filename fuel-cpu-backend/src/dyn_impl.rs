@@ -1654,26 +1654,26 @@ fn cpu_rand_uniform(shape: &Shape, dtype: DType, min: f64, max: f64) -> Result<H
     let mut rng = rand::rng();
     match dtype {
         DType::BF16 => {
-            let uniform = rand::distr::Uniform::new(bf16::from_f64(min), bf16::from_f64(max))
-                .map_err(fuel_ir::Error::wrap)?;
+            let uniform =
+                rand::distr::Uniform::new(min as f32, max as f32).map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count)
-                .map(|_| rng.sample::<bf16, _>(uniform))
+                .map(|_| bf16::from_f32(rng.sample::<f32, _>(uniform)))
                 .collect();
             Ok(HostBuffer::BF16(data))
         }
         DType::F16 => {
-            let uniform = rand::distr::Uniform::new(f16::from_f64(min), f16::from_f64(max))
-                .map_err(fuel_ir::Error::wrap)?;
+            let uniform =
+                rand::distr::Uniform::new(min as f32, max as f32).map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count)
-                .map(|_| rng.sample::<f16, _>(uniform))
+                .map(|_| f16::from_f32(rng.sample::<f32, _>(uniform)))
                 .collect();
             Ok(HostBuffer::F16(data))
         }
         DType::F8E4M3 => {
-            let uniform = rand::distr::Uniform::new(F8E4M3::from_f64(min), F8E4M3::from_f64(max))
-                .map_err(fuel_ir::Error::wrap)?;
+            let uniform =
+                rand::distr::Uniform::new(min as f32, max as f32).map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count)
-                .map(|_| rng.sample::<F8E4M3, _>(uniform))
+                .map(|_| F8E4M3::from_f32(rng.sample::<f32, _>(uniform)))
                 .collect();
             Ok(HostBuffer::F8E4M3(data))
         }
@@ -1702,21 +1702,27 @@ fn cpu_rand_normal(shape: &Shape, dtype: DType, mean: f64, std: f64) -> Result<H
     let mut rng = rand::rng();
     match dtype {
         DType::BF16 => {
-            let normal = rand_distr::Normal::new(bf16::from_f64(mean), bf16::from_f64(std))
-                .map_err(fuel_ir::Error::wrap)?;
-            let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
+            let normal =
+                rand_distr::Normal::new(mean as f32, std as f32).map_err(fuel_ir::Error::wrap)?;
+            let data: Vec<_> = (0..elem_count)
+                .map(|_| bf16::from_f32(normal.sample(&mut rng)))
+                .collect();
             Ok(HostBuffer::BF16(data))
         }
         DType::F16 => {
-            let normal = rand_distr::Normal::new(f16::from_f64(mean), f16::from_f64(std))
-                .map_err(fuel_ir::Error::wrap)?;
-            let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
+            let normal =
+                rand_distr::Normal::new(mean as f32, std as f32).map_err(fuel_ir::Error::wrap)?;
+            let data: Vec<_> = (0..elem_count)
+                .map(|_| f16::from_f32(normal.sample(&mut rng)))
+                .collect();
             Ok(HostBuffer::F16(data))
         }
         DType::F8E4M3 => {
-            let normal = rand_distr::Normal::new(F8E4M3::from_f64(mean), F8E4M3::from_f64(std))
-                .map_err(fuel_ir::Error::wrap)?;
-            let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
+            let normal =
+                rand_distr::Normal::new(mean as f32, std as f32).map_err(fuel_ir::Error::wrap)?;
+            let data: Vec<_> = (0..elem_count)
+                .map(|_| F8E4M3::from_f32(normal.sample(&mut rng)))
+                .collect();
             Ok(HostBuffer::F8E4M3(data))
         }
         DType::F32 => {
