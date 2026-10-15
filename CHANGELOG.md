@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.12 - 2026-10-15
+
+### Changed
+
+- deps: rand 0.10 and rand_distr 0.6; bf16/f16/F8E4M3 random fills sample f32 then convert (half/float8 implement SampleUniform for rand 0.9 only).
+
 ## v0.19.11 - 2026-10-15
 
 ### Changed
