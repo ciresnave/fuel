@@ -467,10 +467,10 @@ mod tests {
         store.register(SegmentMeta::new("warm", 200..300, 30_000), Tier::Gpu);
 
         // Touch "hot" 3 times, "warm" 1 time
-        store.touch("hot");
-        store.touch("hot");
-        store.touch("hot");
-        store.touch("warm");
+        assert!(store.touch("hot"));
+        assert!(store.touch("hot"));
+        assert!(store.touch("hot"));
+        assert!(store.touch("warm"));
 
         let candidates = store.candidates_for_demotion(Tier::Gpu, 50_000);
         // "cold" (0 accesses) first, then "warm" (1 access)
