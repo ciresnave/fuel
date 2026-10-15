@@ -671,8 +671,8 @@ mod tests {
     /// GAP-326: the three embeds entry points check rank with `dims3()`, so a
     /// rank-2 input is a typed rank error naming the function that declined
     /// it. All three used to be `assert_eq!` panics.
-    #[test]
-    fn embeds_of_the_wrong_rank_are_a_typed_error_not_a_panic() {
+    /// A one-layer Mistral small enough to build in a test.
+    fn rank_test_model() -> MistralModel {
         let cfg = MistralConfig {
             vocab_size: 32,
             hidden_size: 16,
@@ -686,19 +686,31 @@ mod tests {
             max_position_embeddings: 32,
             sliding_window: None,
         };
-        let model = MistralModel {
+        MistralModel {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
-        };
-        let tensor = |dims: &[usize]| {
-            let count = dims.iter().product();
-            Tensor::from_f32(
-                Arc::from(vec![0.0_f32; count]),
-                Shape::from_dims(dims),
-                &Device::cpu(),
-            )
-            .unwrap()
-        };
+        }
+    }
+
+    /// An all-zero f32 CPU tensor of the given dims.
+    fn zeros(dims: &[usize]) -> Tensor {
+        let count = dims.iter().product();
+        Tensor::from_f32(
+            Arc::from(vec![0.0_f32; count]),
+            Shape::from_dims(dims),
+            &Device::cpu(),
+        )
+        .unwrap()
+    }
+
+    /// GAP-326: the three embeds entry points check rank with `dims3()`, so a
+    /// rank-2 input is a typed rank error naming the function that declined
+    /// it. All three used to be `assert_eq!` panics.
+    #[test]
+    fn embeds_of_the_wrong_rank_are_a_typed_error_not_a_panic() {
+        let model = rank_test_model();
+        let cfg = model.config.clone();
+        let tensor = zeros;
         // Positive control: rank-3 embeds still build.
         model
             .forward_hidden_embeds(&tensor(&[1, 3, cfg.hidden_size]), 0)
