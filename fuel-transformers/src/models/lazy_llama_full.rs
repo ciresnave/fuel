@@ -506,7 +506,10 @@ impl Llama3Model {
         let cfg = &self.inner.config;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("Llama3Model::run_backbone_embeds: embeds"))?;
         let seq = dims[1];
         let (cos_data, sin_data) = build_llama3_rope_tables(
             cfg.rope_base,

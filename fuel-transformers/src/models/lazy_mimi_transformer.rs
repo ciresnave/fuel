@@ -131,9 +131,9 @@ impl ProjectedTransformerModel {
     /// works on `(B, T, C)`.
     pub fn forward(&self, xs: &Tensor) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
-        let dims = xs.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "ProjectedTransformer expects rank 3 input");
+        xs.shape()
+            .dims3()
+            .map_err(|e| e.context("ProjectedTransformerModel::forward: xs"))?;
         // Optional (B, C, T) → (B, T, C) transpose.
         let xs = if cfg.conv_layout {
             xs.permute([0, 2, 1_usize])?

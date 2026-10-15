@@ -720,11 +720,10 @@ fn decoder_layer(
     // encoder_out has shape [1, T_enc, d]. Use it as the K and V source.
     let enc_shape = encoder_out.shape();
     let enc_dims = enc_shape.dims();
-    assert_eq!(
-        enc_dims.len(),
-        3,
-        "encoder_out must be [1, T, d]; got {enc_dims:?}"
-    );
+    encoder_out
+        .shape()
+        .dims3()
+        .map_err(|e| e.context("whisper::decoder_layer: encoder_out"))?;
     let kv_seq_cross = enc_dims[1];
     let cross = multi_head_attn(
         &x_ln,

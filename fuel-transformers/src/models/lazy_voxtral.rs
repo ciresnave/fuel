@@ -562,7 +562,10 @@ impl VoxtralTextModel {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "VoxtralTextModel: embeds must be rank-3");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("VoxtralTextModel::forward_embeds: embeds"))?;
         let seq = dims[1];
 
         let (rope_cos, rope_sin) =

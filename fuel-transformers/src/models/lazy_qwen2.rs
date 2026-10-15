@@ -245,7 +245,10 @@ impl Qwen2Model {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("Qwen2Model::forward_hidden_embeds_with_mask: embeds"))?;
         let seq = dims[1];
         let head_dim = cfg.head_dim();
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer
@@ -321,7 +324,10 @@ impl Qwen2Model {
         let weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
+        embeds
+            .shape()
+            .dims3()
+            .map_err(|e| e.context("Qwen2Model::run_backbone_embeds: embeds"))?;
         let seq = dims[1];
         let head_dim = cfg.head_dim();
         // GAP-281: a typed decline, not a panic. `head_dim()` is integer
