@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.10 - 2026-10-15
+
+### Changed
+
+- docs: ROADMAP 13(c) extensible cost dimensions recorded as deferred (PM ruling).
+
 ## v0.19.9 - 2026-10-15
 
 ### Changed
