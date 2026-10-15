@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuel × KISS `structure_key` **derivation** vectors: Fuel's sk5 deriver
-//! against the 33 cell-carrying vectors in
+//! against the 36 cell-carrying vectors in
 //! `fixtures/kiss-corpus/structure_key_derivation_vectors.json`.
 //!
-//! **Provenance (a recorded stamp, not an enforced check):** KISS `ae16d2a7`
-//! (conformance 0.2.11), `conformance/corpus/structure_key_derivation_vectors.json`,
-//! blob `299811b1836b9344b4a6379c01c815237baed9cb`, 23709 bytes, vendored
-//! 2026-10-14 with `git show ae16d2a7:<path>` (a commit object, never a working
-//! tree) and matched against `git rev-parse ae16d2a7:<path>`. It REPLACES the
-//! `0af5d3b6` copy (blob `86c1f3be`, 32 vectors), which KISS corrected after this
-//! deriver's table: `decline_reserved_dtype` moved the reserved dtype to operand 0
-//! and `reserved_dtype_at_non_primary_operand_derives` was added (KISS ruled a
-//! non-primary operand's dtype is not a key position). The schema
-//! version and the vector count are asserted below; the bytes are not hashed.
+//! **Provenance (a recorded stamp, not an enforced check):** KISS `60c375c`
+//! (conformance 0.2.30, KISS#566), `conformance/corpus/structure_key_derivation_vectors.json`,
+//! blob `697aa543` (36 vectors; `git rev-parse origin/main:<path>` at KISS `0ffd6af`),
+//! vendored 2026-10-15 with `git show origin/main:<path>` (a commit object, never a
+//! working tree). It REPLACES the `ae16d2a7` copy (blob `299811b1`, 33 vectors):
+//! the only change is three vectors for the innermost active axis
+//! (`innermost_axis_extent_one_is_axis_rank_minus_1`,
+//! `innermost_axis_extent_eight_after_unit_axis`,
+//! `innermost_axis_extent_zero_is_axis_rank_minus_1`; KISS-CLASSIFY-6.3-0011 and
+//! 6.5-0012), all of which Fuel's deriver passes under both feeding disciplines
+//! (including `[8,0]`). The schema version and the vector count are asserted
+//! below; the bytes are not hashed.
 //!
 //! Unlike `kiss_structure_key_byte_match.rs` (whose cells are hand-built Rust
 //! literals keyed by vector name), every vector here CARRIES its cell
@@ -379,7 +381,7 @@ fn rows() -> BTreeMap<String, (Outcome, Outcome, bool)> {
 #[test]
 fn report_every_vector_under_both_feeding_disciplines() {
     let rows = rows();
-    assert_eq!(rows.len(), 33, "vector count changed: re-pin the tables");
+    assert_eq!(rows.len(), 36, "vector count changed: re-pin the tables");
     for (name, (given, canon, golden)) in &rows {
         println!(
             "[kiss-deriv] {:<44} golden={:<5} as-given={:<18} canonicalized={}",
@@ -494,5 +496,5 @@ fn divergences_and_absent_surfaces_are_exactly_the_pinned_sets() {
         .values()
         .filter(|r| r.0 == Outcome::Pass && r.1 == Outcome::Pass)
         .count();
-    assert_eq!(both_pass + accounted, 33, "an unpinned outcome exists");
+    assert_eq!(both_pass + accounted, 36, "an unpinned outcome exists");
 }
