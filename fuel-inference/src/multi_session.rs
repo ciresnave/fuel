@@ -1948,7 +1948,9 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             .iter()
             .any(|s| s.phase != SessionPhase::Finished && s.suspended.is_none())
         {
-            self.step();
+            // The report is per-quantum telemetry; this loop only drives the
+            // scheduler (per-session errors are isolated into the session).
+            let _report = self.step();
         }
         self.sessions
             .iter()

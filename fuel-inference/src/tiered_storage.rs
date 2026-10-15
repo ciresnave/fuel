@@ -467,10 +467,15 @@ mod tests {
         store.register(SegmentMeta::new("warm", 200..300, 30_000), Tier::Gpu);
 
         // Touch "hot" 3 times, "warm" 1 time
-        store.touch("hot");
-        store.touch("hot");
-        store.touch("hot");
-        store.touch("warm");
+        assert!(store.touch("hot"));
+        assert!(store.touch("hot"));
+        assert!(store.touch("hot"));
+        assert!(store.touch("warm"));
+        // Pin the precondition: distinct counts, so the order below cannot
+        // come from HashMap iteration order on a tie.
+        assert_eq!(store.get("hot").unwrap().access_count, 3);
+        assert_eq!(store.get("warm").unwrap().access_count, 1);
+        assert_eq!(store.get("cold").unwrap().access_count, 0);
 
         let candidates = store.candidates_for_demotion(Tier::Gpu, 50_000);
         // "cold" (0 accesses) first, then "warm" (1 access)

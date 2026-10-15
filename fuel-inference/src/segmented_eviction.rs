@@ -473,14 +473,14 @@ mod tests {
         assert!(!reg.get(id).unwrap().pinned);
 
         // Pin it — should be excluded from eviction
-        reg.pin(id);
+        assert!(reg.pin(id));
         assert!(reg.get(id).unwrap().pinned);
 
         let plan = reg.plan_eviction(100);
         assert!(plan.is_empty());
 
         // Unpin — should be evictable again
-        reg.unpin(id);
+        assert!(reg.unpin(id));
         let plan = reg.plan_eviction(100);
         assert_eq!(plan.num_spans(), 1);
     }
@@ -492,7 +492,7 @@ mod tests {
         let t2 = reg.register("turn-2", SpanKind::Turn, 200..400); // priority 100
 
         // Boost turn-1 priority so turn-2 is evicted first
-        reg.set_priority(t1, 200);
+        assert!(reg.set_priority(t1, 200));
 
         let plan = reg.plan_eviction(250);
         assert_eq!(plan.evicted_span_ids()[0], t2);
