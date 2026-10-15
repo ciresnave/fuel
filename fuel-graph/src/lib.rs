@@ -1011,7 +1011,7 @@ pub enum Op {
     /// than seeded from the host.
     ///
     /// Bridge-retirement Phase 3a (post-9c). Replaces the per-device-
-    /// location match in `fuel-core::inference_context::alloc_zeroed_on`
+    /// location match in `fuel-tensor::inference_context::alloc_zeroed_on`
     /// with a graph-level node the optimizer can see + the executor's
     /// `WorkItemKind::Alloc` arm dispatches per-backend.
     ///
@@ -1020,7 +1020,7 @@ pub enum Op {
     /// by searching the input cache for any Storage already on
     /// `target`'s backend. Callers must seed the cache with at least
     /// one such storage before realizing an Op::Alloc on a non-CPU
-    /// target. `fuel-core::pipelined_bridge::device_seed_storage` is
+    /// target. `fuel-tensor::pipelined_bridge::device_seed_storage` is
     /// the canonical seeder.
     Alloc { target: DeviceLocation },
 

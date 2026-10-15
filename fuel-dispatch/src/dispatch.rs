@@ -5599,7 +5599,7 @@ pub(crate) fn matmul_f64_cpu_wrapper(
 /// Replaces:
 /// * The per-variant `match self` in `BackendStorage::read_to_cpu_bytes`
 ///   (Phase 2 deletion).
-/// * `fuel-core::pipelined_bridge::upload_host_buffer`'s per-
+/// * `fuel-tensor::pipelined_bridge::upload_host_buffer`'s per-
 ///   `DeviceLocation` match (Phase 3b deletion).
 fn copy_from_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
@@ -7623,7 +7623,7 @@ pub fn bump_topology_generation() {
 /// path is synchronous and never builds an async completion handle, so
 /// `inflight_count(DeviceLocation::Cpu)` is always 0 — no special-case
 /// needed. A `BackendStreams` impl reports CPU as `None` (no queue
-/// concept) regardless (see `fuel-core::pipelined_bridge`).
+/// concept) regardless (see `fuel-tensor::pipelined_bridge`).
 static DEVICE_INFLIGHT: OnceLock<RwLock<HashMap<DeviceLocation, AtomicU32>>> = OnceLock::new();
 
 fn device_inflight_table() -> &'static RwLock<HashMap<DeviceLocation, AtomicU32>> {

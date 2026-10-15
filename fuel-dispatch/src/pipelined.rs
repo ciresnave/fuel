@@ -676,10 +676,10 @@ enum WorkItemKind {
     /// non-CPU targets it derives the device handle by searching the
     /// input cache for any storage on `target_location`'s backend
     /// (callers seed this via
-    /// `fuel-core::pipelined_bridge::device_seed_storage`).
+    /// `fuel-tensor::pipelined_bridge::device_seed_storage`).
     ///
     /// Phase 3a of the bridge-retirement trajectory (post-9c).
-    /// Replaces `fuel-core::inference_context::alloc_zeroed_on`'s
+    /// Replaces `fuel-tensor::inference_context::alloc_zeroed_on`'s
     /// per-`DeviceLocation` match with a graph node the optimizer
     /// can see; the per-backend match moves from fuel-core's bridge
     /// layer into fuel-storage's executor (the architectural dispatch
@@ -6900,7 +6900,7 @@ fn sync_active_cuda_devices(_cache: &StorageCache) -> Result<()> {
 /// if no matching storage exists.
 ///
 /// Phase 3a of bridge-retirement: callers seed the cache with a 0-byte
-/// CUDA storage (`fuel-core::pipelined_bridge::device_seed_storage`)
+/// CUDA storage (`fuel-tensor::pipelined_bridge::device_seed_storage`)
 /// so this lookup succeeds for the first Op::Alloc; subsequent
 /// Op::Allocs see prior Op::Alloc outputs in the cache.
 #[cfg(feature = "cuda")]

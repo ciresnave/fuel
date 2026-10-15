@@ -2817,7 +2817,7 @@ pub fn insert_evict_reload(
 // `insert_cross_device_copies` is the pre-execute pass that handles
 // internal cross-device edges. Architecture v1.0 §04 names the
 // optimizer as the owner of transfer-op insertion — this is that
-// owner. Wired into `fuel-core::pipelined_bridge::prepare()` (picker
+// owner. Wired into `fuel-tensor::pipelined_bridge::prepare()` (picker
 // arc step 2): the bridge derives `placement_for` from the monolithic
 // `target_backend` pinning + the StorageCache's resident locations,
 // and `shares_storage` from `SystemTopology`.
@@ -2881,7 +2881,7 @@ pub fn insert_evict_reload(
 ///
 /// The `NodeId`s of the inserted `Op::Copy` nodes, in insertion
 /// order. Callers typically need these to stamp executor metadata
-/// on the new nodes — e.g. `fuel-core::pipelined_bridge` sets
+/// on the new nodes — e.g. `fuel-tensor::pipelined_bridge` sets
 /// `target_backend` = the SOURCE backend (the pipelined executor's
 /// Op::Copy kernel-lookup convention: the transfer kernel runs on
 /// the backend the bytes come FROM). `.len()` is the transfer-count

@@ -9,7 +9,7 @@
 //! `fuel-core`'s concrete oracle/cache dir) no longer applies: the oracle
 //! moved to [`crate::ranker::profile_oracle`] and the cache-dir path moved to
 //! [`crate::judge_report_path`], both ahead of this file, in the same plan
-//! item. The realize path (`fuel_core::pipelined_bridge::
+//! item. The realize path (`fuel_tensor::pipelined_bridge::
 //! build_optimized_graph`) reads this module's opt-in state and installs the
 //! plan-time [`TelemetryHooks`] when enabled.
 //!

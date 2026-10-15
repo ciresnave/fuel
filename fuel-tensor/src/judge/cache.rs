@@ -20,7 +20,7 @@
 //! HANDS the finished report down via
 //! [`fuel_dispatch::judge_cache::store`] — a downward call, no cycle.
 //! Every other symbol below is a straight re-export so
-//! `crate::judge::cached()` / `fuel_core::judge::cache::cached()` /
+//! `crate::judge::cached()` / `fuel_tensor::judge::cache::cached()` /
 //! `fuel::judge::cached()` etc. are unchanged for callers.
 
 pub use fuel_dispatch::judge_cache::{
