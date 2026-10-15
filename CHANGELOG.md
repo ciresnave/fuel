@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.19.5 - 2026-10-15
+
+### Changed
+
+- GAP-326 PR 2/3: vision rank-4 and channel input guards routed through `input_guard::image_nchw`.
+
 ## v0.19.4 - 2026-10-14
 
 ### Changed
