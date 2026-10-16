@@ -68,6 +68,7 @@ metal = ["fuel-tensor/metal"]
 # fuel-core, and `--all-targets` does NOT build doctests, so no gate here saw it.
 [dev-dependencies]
 fuel-hardware = { path = "../fuel-hardware" }
+fuel-test-support = { path = "../fuel-test-support", version = "0.20.0" }
 fuel-nn = { path = "../fuel-nn" }
 # M0 of the joint GPU milestone plan (unpopped#39): the Qwen3 CPU yardstick
 # test (tests/qwen3_cpu_yardstick.rs) needs `anyhow::{anyhow, bail}` for its

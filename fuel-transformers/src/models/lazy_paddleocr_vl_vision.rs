@@ -1919,13 +1919,11 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        #[test]
-        #[ignore]
-        fn from_hub_smoke_paddleocr_vl_vision() {
-            // Canonical: PaddlePaddle/PaddleOCR-VL — vision encoder
-            // lives under `visual.vision_model.*`, projector under
-            // `mlp_AR.*` at the top level of the checkpoint.
-        }
+        // (A from-hub smoke test used to sit here as an empty #[ignore]d body: it
+        // asserted nothing, so it was removed rather than kept as a vacuous green.)
+        // Canonical: PaddlePaddle/PaddleOCR-VL — vision encoder
+        // lives under `visual.vision_model.*`, projector under
+        // `mlp_AR.*` at the top level of the checkpoint.
     }
 
     // -----------------------------------------------------------------------

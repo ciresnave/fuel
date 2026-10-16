@@ -1231,10 +1231,8 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        #[test]
-        #[ignore]
-        fn from_hub_smoke_paddleocr_vl() {
-            // Canonical: PaddlePaddle/PaddleOCR-VL.
-        }
+        // (A from-hub smoke test used to sit here as an empty #[ignore]d body: it
+        // asserted nothing, so it was removed rather than kept as a vacuous green.)
+        // Canonical: PaddlePaddle/PaddleOCR-VL.
     }
 }

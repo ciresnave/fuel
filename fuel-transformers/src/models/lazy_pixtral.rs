@@ -1017,17 +1017,14 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        /// Documents the canonical from-hub usage. Ignored in CI.
-        #[test]
-        #[ignore]
-        fn from_hub_smoke_pixtral_12b() {
-            // Canonical HF repo: mistralai/Pixtral-12B-2409 (or
-            // mistral-community/pixtral-12b for the easier-to-load
-            // HF-format mirror). The loader expects the standard HF
-            // Pixtral naming:
-            //   vision_tower.*  (patch_conv + ln_pre + transformer.layers.{i}.*)
-            //   multi_modal_projector.linear_{1,2}.*
-            //   language_model.*  (Mistral decoder under model.*)
-        }
+        // (A from-hub smoke test used to sit here as an empty #[ignore]d body: it
+        // asserted nothing, so it was removed rather than kept as a vacuous green.)
+        // Canonical HF repo: mistralai/Pixtral-12B-2409 (or
+        // mistral-community/pixtral-12b for the easier-to-load
+        // HF-format mirror). The loader expects the standard HF
+        // Pixtral naming:
+        // vision_tower.*  (patch_conv + ln_pre + transformer.layers.{i}.*)
+        // multi_modal_projector.linear_{1,2}.*
+        // language_model.*  (Mistral decoder under model.*)
     }
 }

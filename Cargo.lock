@@ -1913,6 +1913,7 @@ version = "0.20.3"
 dependencies = [
  "byteorder",
  "fuel-ir",
+ "fuel-test-support",
  "hf-hub",
  "image",
  "intel-mkl-src",
@@ -2469,6 +2470,7 @@ dependencies = [
  "fuel-nn",
  "fuel-quantized",
  "fuel-tensor",
+ "fuel-test-support",
  "half",
  "hf-hub",
  "image",

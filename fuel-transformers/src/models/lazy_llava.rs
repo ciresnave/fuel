@@ -1301,16 +1301,13 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        /// Documents the canonical from-hub usage. Ignored in CI.
-        #[test]
-        #[ignore]
-        fn from_hub_smoke_llava_1_5_7b() {
-            // Canonical HF repo: llava-hf/llava-1.5-7b-hf
-            // The loader expects the standard HF LLaVA naming:
-            //   vision_tower.vision_model.*
-            //   multi_modal_projector.linear_1.*
-            //   language_model.model.* + language_model.lm_head.weight
-        }
+        // (A from-hub smoke test used to sit here as an empty #[ignore]d body: it
+        // asserted nothing, so it was removed rather than kept as a vacuous green.)
+        // Canonical HF repo: llava-hf/llava-1.5-7b-hf
+        // The loader expects the standard HF LLaVA naming:
+        // vision_tower.vision_model.*
+        // multi_modal_projector.linear_1.*
+        // language_model.model.* + language_model.lm_head.weight
     }
 
     mod hf_config {

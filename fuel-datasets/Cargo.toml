@@ -20,3 +20,6 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 parquet = { workspace = true}
 image = { workspace = true }
+
+[dev-dependencies]
+fuel-test-support = { path = "../fuel-test-support", version = "0.20.0" }
