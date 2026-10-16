@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.1 - 2026-10-16
+
+### Changed
+
+- fuel-dispatch: candidate admission verifies on every admission probe (seeded fill + NaN/inf special values), GAP-236 increment 2; identical NaN/inf now agree under MaxAbsolute/MaxRelative in verify_precision_bound.
+
 ## v0.20.0 - 2026-10-16
 
 ### Changed

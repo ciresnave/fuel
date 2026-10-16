@@ -1650,10 +1650,101 @@ fn claimed_op_structural_gate(
     Ok(())
 }
 
+/// Verify one candidate against EVERY admission probe and combine the verdicts.
+///
+/// GAP-236: the probe set is [`crate::jit_ingest_probe::admission_probes`] (the
+/// seeded `[-0.5, 0.5)` fill AND the special-value probe), so a candidate that
+/// agrees with Fuel's reference on the fill but not on NaN/inf/signed zero
+/// (`fmaxf` lifted as `Max`) is rejected. Each probe runs the full per-probe
+/// body, [`verify_candidate_on_probe`]; [`combine_probe_verdicts`] is the
+/// policy. A single probe's verdict is returned unchanged so the claim name a
+/// caller sees does not depend on how many probes ran.
 #[cfg(feature = "cuda")]
 fn verify_candidate_impl(
     cand: &CandidateKernel,
     device: &CudaDevice,
+) -> (VerifyVerdict, Vec<LedgerRecord>) {
+    // Seed derived from the revision hash so a re-run is byte-identical.
+    let seed = 0x5EED_C0DE_1234_5678_u64 ^ cand.kernel_revision_hash;
+    // A candidate carrying an operand we can't faithfully encode (e.g. a
+    // non-float dtype `to_bytes` rejects) yields NO probe: a "probe" fail,
+    // never a fabricated input.
+    match crate::jit_ingest_probe::probe_from_operands(&cand.operands, seed) {
+        Some(p) if !p.is_empty() => {}
+        Some(_) => {
+            return (
+                VerifyVerdict::Fail {
+                    claim: "probe",
+                    detail: "candidate declares no operands to probe".to_string(),
+                },
+                Vec::new(),
+            );
+        }
+        None => {
+            return (
+                VerifyVerdict::Fail {
+                    claim: "probe",
+                    detail: "candidate carries an operand whose dtype cannot be encoded as a                          probe input"
+                        .to_string(),
+                },
+                Vec::new(),
+            );
+        }
+    }
+
+    let probes = crate::jit_ingest_probe::admission_probes(&cand.operands, seed);
+    let mut verdicts = Vec::with_capacity(probes.len());
+    let mut merged = VerificationLedger::default();
+    // Rank of a ledger result: higher is worse. Unknown results rank as the
+    // worst so an unforeseen value is never overwritten by a pass.
+    fn severity(result: &str) -> u8 {
+        match result {
+            "pass" => 0,
+            "inconclusive" => 1,
+            "flag" => 2,
+            _ => 3,
+        }
+    }
+    for probe in probes {
+        let (verdict, records) = verify_candidate_on_probe(cand, device, seed, probe);
+        for r in records {
+            // A later probe must not overwrite a worse result for the same
+            // claim: the merged ledger keeps the worst one.
+            let keep_existing = merged
+                .records()
+                .iter()
+                .any(|e| e.claim == r.claim && severity(&e.result) > severity(&r.result));
+            if !keep_existing {
+                merged.upsert(r);
+            }
+        }
+        verdicts.push(verdict);
+    }
+    // A failure that does not depend on the probe (the claimed-op guard, the
+    // non-f32 guard, recipe identity) fails identically on every probe; report
+    // it once under its own claim rather than as "N of N probes failed".
+    let uniform_failure = match verdicts.first() {
+        Some(VerifyVerdict::Fail { claim, detail }) => verdicts.iter().all(|v| {
+            matches!(v, VerifyVerdict::Fail { claim: c, detail: d } if c == claim && d == detail)
+        }),
+        _ => false,
+    };
+    let verdict = if verdicts.len() == 1 || uniform_failure {
+        verdicts.remove(0)
+    } else {
+        crate::jit_ingest_probe::combine_probe_verdicts(verdicts)
+    };
+    (verdict, merged.records().to_vec())
+}
+
+/// The per-probe body of [`verify_candidate_impl`]: verify `cand` on the one
+/// `probe` it is given.
+#[cfg(feature = "cuda")]
+fn verify_candidate_on_probe(
+    cand: &CandidateKernel,
+    device: &CudaDevice,
+    seed: u64,
+    probe: Vec<HostTensor>,
 ) -> (VerifyVerdict, Vec<LedgerRecord>) {
     // A fresh, candidate-local ledger — NEVER the git-checked-in embedded one.
     // `upsert` (not `push`): each claim is checked at most once here, but the
@@ -1702,32 +1793,16 @@ fn verify_candidate_impl(
         );
     }
 
-    // (1) Probe synthesis. A candidate carrying an operand we can't faithfully
-    // encode (e.g. a non-float dtype `to_bytes` rejects) yields NO probe — a
-    // "probe" fail, never a fabricated input. Seed derived from the revision
-    // hash so a re-run is byte-identical.
-    let seed = 0x5EED_C0DE_1234_5678_u64 ^ cand.kernel_revision_hash;
-    let probe = match crate::jit_ingest_probe::probe_from_operands(&cand.operands, seed) {
-        Some(p) if !p.is_empty() => p,
-        Some(_) => {
-            return (
-                VerifyVerdict::Fail {
-                    claim: "probe",
-                    detail: "candidate declares no operands to probe".to_string(),
-                },
-                Vec::new(),
-            );
-        }
-        None => return (
+    // (1) The probe is supplied by `verify_candidate_impl` (see there).
+    if probe.is_empty() {
+        return (
             VerifyVerdict::Fail {
                 claim: "probe",
-                detail:
-                    "candidate carries an operand whose dtype cannot be encoded as a probe input"
-                        .to_string(),
+                detail: "candidate declares no operands to probe".to_string(),
             },
             Vec::new(),
-        ),
-    };
+        );
+    }
 
     // Output dtype/shape: derived from the first probe operand. This matches
     // the elementwise candidates that are Task 6's only live consumer (Add's
@@ -2977,9 +3052,12 @@ mod tests {
         match ingest_one(&cand, &dev) {
             IngestOutcome::Rejected(r) => {
                 assert!(
-                    r.failed_claim.contains("max") || r.failed_claim == "vs_decompose",
-                    "expected a precision claim naming the mismatch, got: {:?}",
-                    r.failed_claim
+                    r.failed_claim.contains("max")
+                        || r.failed_claim == "vs_decompose"
+                        || (r.failed_claim == "probe_set" && r.detail.contains("max_")),
+                    "expected a precision claim naming the mismatch, got: {} / {}",
+                    r.failed_claim,
+                    r.detail
                 );
             }
             IngestOutcome::Adopted(_) => {
@@ -3212,7 +3290,10 @@ mod tests {
         match ingest_one(&cand, &dev) {
             IngestOutcome::Rejected(r) => {
                 assert!(
-                    r.failed_claim.contains("max") || r.failed_claim == "recipe_identity",
+                    r.failed_claim.contains("max")
+                        || r.failed_claim == "recipe_identity"
+                        || (r.failed_claim == "probe_set"
+                            && (r.detail.contains("max_") || r.detail.contains("recipe_identity"))),
                     "expected a precision/identity rejection (interleaved != rotate-half), \
                      got: {} / {}",
                     r.failed_claim,
@@ -4145,7 +4226,8 @@ mod tests {
             "exactly one on_rejected callback: {rejected:?}"
         );
         assert!(
-            rejected[0].failed_claim.contains("max"),
+            rejected[0].failed_claim.contains("max")
+                || (rejected[0].failed_claim == "probe_set" && rejected[0].detail.contains("max_")),
             "expected a precision claim naming the mismatch, got: {} / {}",
             rejected[0].failed_claim,
             rejected[0].detail
