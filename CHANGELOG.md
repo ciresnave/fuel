@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.3 - 2026-10-16
+
+### Changed
+
+- fuel-dispatch: the ledger seeders (cpu/cuda/vulkan) and the two GAP-228 contract tools move from #[ignore]d tests to a fuel-dev-tools binary behind the non-default, #[doc(hidden)], semver-exempt dev-tools feature (CI now builds it). Removed the ignored gap_hedges regenerate_allowlist: it erased the 16 hand-written reason columns of the committed allowlist, and the gap-hedge gate already fails on both new and stale keys. #[ignore] retirement, step 3.
+
 ## v0.20.2 - 2026-10-16
 
 ### Changed
