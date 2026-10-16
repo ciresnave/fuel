@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.2 - 2026-10-16
+
+### Changed
+
+- The six gap315 measurement probes move from ignored tests to examples (cargo run -p <crate> --example gap315_*), and their outcome enums drop six allow(dead_code). #[ignore] retirement, step 4.
+
 ## v0.20.1 - 2026-10-16
 
 ### Changed

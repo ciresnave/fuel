@@ -36,12 +36,6 @@ use fuel_ir::{DType, Shape};
 use fuel_memory::{BackendStorage, Storage};
 use std::sync::Arc;
 
-#[allow(
-    dead_code,
-    reason = "every field is read by the `{:?}` in the printed report; derive(Debug) \
-does not count as a read for dead_code, and the report IS this instrument's output"
-)]
-#[derive(Debug)]
 enum Outcome {
     /// Rejected with a typed error — a guard that survives release.
     Err(String),
@@ -51,6 +45,18 @@ enum Outcome {
     Ok {
         slots: usize,
     },
+}
+
+// A hand-written `Debug` (not `derive`) so the report below really READS every
+// field; a derived `Debug` does not count as a read for `dead_code`.
+impl std::fmt::Debug for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outcome::Err(s) => write!(f, "Err({s:?})"),
+            Outcome::Panic(s) => write!(f, "Panic({s:?})"),
+            Outcome::Ok { slots } => write!(f, "Ok {{ slots: {slots:?} }}"),
+        }
+    }
 }
 
 fn specs_of(n: usize) -> Vec<OutputViewSpec> {
@@ -97,9 +103,7 @@ fn probe<F: FnOnce() -> fuel_ir::Result<Storage> + std::panic::UnwindSafe>(f: F)
     }
 }
 
-#[test]
-#[ignore = "instrument, not a gate: asserts nothing; see the module doc"]
-fn gap315_with_bundle_dside_probe() {
+fn main() {
     println!(
         "\n=== GAP-315 (d)-SIDE FORWARD TEST: Storage::with_bundle ===\n\
          debug_assertions = {}  ({})",

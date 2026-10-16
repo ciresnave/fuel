@@ -20,16 +20,22 @@
 //!
 //! Instrument, not a gate: asserts nothing. See the GAP-315 probe files.
 
-#[allow(
-    dead_code,
-    reason = "every field is read by the `{:?}` in the printed report; derive(Debug) \
-does not count as a read for dead_code, and the report IS this instrument's output"
-)]
-#[derive(Debug)]
 enum Outcome {
     Ok2(usize, usize),
     Err(String),
     Panic(String),
+}
+
+// A hand-written `Debug` (not `derive`) so the report below really READS every
+// field; a derived `Debug` does not count as a read for `dead_code`.
+impl std::fmt::Debug for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outcome::Ok2(a, b) => write!(f, "Ok2({a}, {b})"),
+            Outcome::Err(s) => write!(f, "Err({s:?})"),
+            Outcome::Panic(s) => write!(f, "Panic({s:?})"),
+        }
+    }
 }
 
 fn probe(stride: &[isize]) -> Outcome {
@@ -52,9 +58,7 @@ fn probe(stride: &[isize]) -> Outcome {
     }
 }
 
-#[test]
-#[ignore = "instrument, not a gate: asserts nothing; see the module doc"]
-fn gap315_stride_dims_predicate_probe() {
+fn main() {
     println!(
         "\n=== GAP-315 predicate experiment (C): fuel_ir::shape::stride_dims2 ===\n\
          debug_assertions = {}  ({})",
