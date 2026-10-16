@@ -1111,10 +1111,18 @@ mod tests {
     }
 
     /// Smoke test that documents the canonical `from_hub_with_config`
-    /// usage. Ignored by default because it hits the HF Hub.
+    /// usage. Runs when the checkpoint is already in the HF cache (it never
+    /// downloads); otherwise it declares a `Hub` skip, fatal under
+    /// `FUEL_REQUIRE_HUB` (the self-hosted runner sets it).
     #[test]
-    #[ignore]
     fn from_hub_smoke_repvgg_a0() {
+        if !fuel_test_support::hub::require_cached(
+            fuel_test_support::hub::RepoKind::Model,
+            "timm/repvgg_a0.rvgg_in1k",
+            &["model.safetensors"],
+        ) {
+            return;
+        }
         let cfg = RepVggConfig::a0(Some(1000));
         let model = RepVggModel::from_hub_with_config("timm/repvgg_a0.rvgg_in1k", cfg)
             .expect("from_hub_with_config");

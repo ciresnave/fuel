@@ -994,11 +994,9 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        #[test]
-        #[ignore]
-        fn from_hub_smoke_paligemma_3b_mix_224() {
-            // Canonical: google/paligemma-3b-mix-224 — uses the HF layout
-            // documented above.
-        }
+        // (A from-hub smoke test used to sit here as an empty #[ignore]d body: it
+        // asserted nothing, so it was removed rather than kept as a vacuous green.)
+        // Canonical: google/paligemma-3b-mix-224 — uses the HF layout
+        // documented above.
     }
 }

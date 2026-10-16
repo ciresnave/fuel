@@ -114,17 +114,23 @@ pub enum Hardware {
     Vulkan,
     Aocl,
     Mkl,
+    /// The Hugging Face Hub: a checkpoint in the local HF cache, or network
+    /// reachability (see `crate::hub`). A fault here says nothing about the code
+    /// under test, so a test names it as a `Missing::Device` cause and the
+    /// self-hosted runner arms `FUEL_REQUIRE_HUB`.
+    Hub,
 }
 
 impl Hardware {
     /// Every family. Exists so tests can range over the set rather than
     /// re-listing it -- a hand-written list in a test is the thing that silently
     /// stops covering a variant added later.
-    pub const ALL: [Hardware; 4] = [
+    pub const ALL: [Hardware; 5] = [
         Hardware::Cuda,
         Hardware::Vulkan,
         Hardware::Aocl,
         Hardware::Mkl,
+        Hardware::Hub,
     ];
 
     /// Short lower-case tag used in the printed `SKIP` line.
@@ -134,6 +140,7 @@ impl Hardware {
             Hardware::Vulkan => "vulkan",
             Hardware::Aocl => "aocl",
             Hardware::Mkl => "mkl",
+            Hardware::Hub => "hub",
         }
     }
 
@@ -148,6 +155,7 @@ impl Hardware {
             Hardware::Vulkan => "FUEL_REQUIRE_VULKAN",
             Hardware::Aocl => "FUEL_REQUIRE_AOCL",
             Hardware::Mkl => "FUEL_REQUIRE_MKL",
+            Hardware::Hub => "FUEL_REQUIRE_HUB",
         }
     }
 
@@ -223,7 +231,7 @@ impl Hardware {
     pub const fn default_policy(self) -> Policy {
         match self {
             Hardware::Cuda | Hardware::Vulkan => Policy::Fatal,
-            Hardware::Aocl | Hardware::Mkl => Policy::Permissive,
+            Hardware::Aocl | Hardware::Mkl | Hardware::Hub => Policy::Permissive,
         }
     }
 }
