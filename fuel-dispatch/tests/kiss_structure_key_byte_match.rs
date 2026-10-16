@@ -1053,6 +1053,27 @@ fn dequant_form_vectors_match_modulo_the_i4_coordinate() {
 /// are excluded (GAP-097); this measures them against KISS's own bytes **modulo
 /// the i4 coordinate**, the same way the `dequant_form` vectors are, and asserts
 /// each substitution applied exactly once.
+/// The f32-weight analog of the published quantized cells, with `scale` as the
+/// designated scale-operand dtype.
+fn scale_cell_token(weight: DType, out: DType, scale: Option<DType>) -> Option<String> {
+    derive_structure_key_token(
+        &DeclaredFacts::contraction(GemCell {
+            weight_dtype: weight,
+            acc_dtype: DType::F32,
+            out_dtype: out,
+            scale_dtype: scale,
+            ..gem_f32(8, 4096, 4096)
+        }),
+        &io(vec![
+            f32c(&[8, 4096]),
+            f32c(&[4096, 4096]),
+            f32c(&[8, 4096]),
+        ]),
+        "cuda:sm90",
+        None,
+    )
+}
+
 #[test]
 fn quantized_scale_vectors_match_modulo_the_i4_coordinate() {
     let c = corpus();
@@ -1066,45 +1087,20 @@ fn quantized_scale_vectors_match_modulo_the_i4_coordinate() {
         let analog_expected = vector
             .replacen("|i4|", "|f32|", 1)
             .replacen("/i4/", "/f32/", 1);
-        let ops = io(vec![
-            f32c(&[8, 4096]),
-            f32c(&[4096, 4096]),
-            f32c(&[8, 4096]),
-        ]);
-        let got = derive_structure_key_token(
-            &DeclaredFacts::contraction(GemCell {
-                weight_dtype: DType::F32,
-                acc_dtype: DType::F32,
-                out_dtype: DType::BF16,
-                scale_dtype: Some(scale),
-                ..gem_f32(8, 4096, 4096)
-            }),
-            &ops,
-            "cuda:sm90",
-            None,
-        )
-        .expect("the f32 analog must derive");
+        let got = scale_cell_token(DType::F32, DType::BF16, Some(scale))
+            .expect("the f32 analog must derive");
         assert_eq!(got, analog_expected, "{name}");
     }
-    // Control: the two scale dtypes key DIFFERENT tokens (the point of sk6: an
-    // `f8e8m0` and an `f16` scale decode the same stored values to different
-    // numbers), and a cell with no designated scale operand omits the
-    // coordinate entirely.
-    let derive = |scale: Option<DType>| {
-        derive_structure_key_token(
-            &DeclaredFacts::contraction(GemCell {
-                scale_dtype: scale,
-                ..gem_f32(8, 4096, 4096)
-            }),
-            &io(vec![
-                f32c(&[8, 4096]),
-                f32c(&[4096, 4096]),
-                f32c(&[8, 4096]),
-            ]),
-            "cuda:sm90",
-            None,
-        )
-    };
+}
+
+/// Control for the test above: the two scale dtypes key DIFFERENT tokens (the
+/// point of sk6: an `f8e8m0` and an `f16` scale decode the same stored values to
+/// different numbers), a cell with no designated scale omits the coordinate, and
+/// the reserved `f8e6m2` scale is the published `scale_dtype_reserved` decline.
+#[test]
+fn scale_dtype_is_keyed_omitted_or_declined() {
+    let c = corpus();
+    let derive = |scale| scale_cell_token(DType::F32, DType::F32, scale);
     let none = derive(None).unwrap();
     let e8 = derive(Some(DType::F8E8M0)).unwrap();
     let f16 = derive(Some(DType::F16)).unwrap();
@@ -1112,8 +1108,6 @@ fn quantized_scale_vectors_match_modulo_the_i4_coordinate() {
     assert_eq!(e8, format!("{none}/qf8e8m0"));
     assert_eq!(f16, format!("{none}/qf16"));
     assert_ne!(e8, f16);
-    // The reserved `f8e6m2` scale is the published `scale_dtype_reserved`
-    // decline: Fuel declines the whole derivation rather than emit it.
     assert_eq!(
         field(decline(&c, "scale_dtype_reserved"), "decline"),
         "ReservedDtype"
