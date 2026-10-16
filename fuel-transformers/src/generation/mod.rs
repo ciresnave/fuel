@@ -109,7 +109,7 @@ impl LogitsProcessor {
                 "empty logits slice passed to sample_gumbel_softmax".into(),
             ));
         }
-        use rand::Rng;
+        use rand::RngExt;
         let t = temperature.max(1e-7) as f32;
         let mut best_idx: usize = 0;
         let mut best_val: f32 = f32::NEG_INFINITY;

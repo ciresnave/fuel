@@ -7186,7 +7186,7 @@ impl Tensor {
     }
 
     /// Uniform random tensor in `[lo, up)` with shape/dtype/device matching `self`.
-    /// Backed by [`rand::thread_rng`]. Returns Err for unsupported dtypes.
+    /// Backed by [`rand::rng`]. Returns Err for unsupported dtypes.
     pub fn rand_like(&self, lo: f64, up: f64) -> std::result::Result<Self, fuel_ir::Error> {
         Self::rand(self.shape(), lo, up, self.dtype(), &Device::cpu())
     }
@@ -7207,7 +7207,7 @@ impl Tensor {
         dtype: DType,
         device: &Device,
     ) -> std::result::Result<Self, fuel_ir::Error> {
-        use rand::Rng;
+        use rand::RngExt;
         let shape = shape.into();
         let n = shape.elem_count();
         let mut rng = rand::rng();

@@ -27,7 +27,7 @@ extern crate intel_mkl_src;
 
 use anyhow::{Error as E, Result};
 use clap::Parser;
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 
 use fuel::lazy_sd_samplers::{DdimScheduler, DdimSchedulerConfig, SdScheduler};
 use fuel::lazy_sd_text_encoder::{ClipTextConfig, ClipTextWeights, SdTextEncoder, SdTextTokenizer};

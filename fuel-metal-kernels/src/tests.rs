@@ -4,7 +4,7 @@ use crate::metal::{create_command_buffer, CommandSemaphore, Commands};
 use core::ffi::c_void;
 use half::{bf16, f16};
 use rand::prelude::SliceRandom;
-use rand::{rng, Rng};
+use rand::{rng, RngExt};
 use std::sync::Arc;
 use std::thread;
 
