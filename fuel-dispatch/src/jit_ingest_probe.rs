@@ -71,20 +71,12 @@ use std::sync::{Arc, RwLock};
 /// born-red is measured against the FINAL subject rather than against a
 /// stand-in that gets swapped later.
 ///
-/// ⚠️⚠️ **THE HOLE IS NOT CLOSED YET AND THIS FUNCTION IS NOT YET CONSUMED.** GAP(GAP-236)
-/// `verify_candidate_impl` (`jit_ingest.rs`, the `// (1) Probe synthesis`
-/// block) still calls [`probe_from_operands`] directly, so production
-/// admission still runs on the seeded fill alone. That call site is
-/// `#[cfg(feature = "cuda")]`, and changing it cannot be compile-verified
-/// without a full baracuda forge (~56 min through `scripts/cuda-build.ps1`),
-/// which is why it is a separate increment rather than two lines appended
-/// here.
-///
-/// **Stated loudly because a `pub fn` that nothing calls emits no warning and
-/// a landed generator reads exactly like a landed fix.** What is proven today
-/// is that the probe SET can reach the divergence; what is NOT proven is that
-/// the gate looks at it. `gap_236_the_probe_set_is_actually_consumed` below
-/// is the guard that will fail until the wiring lands.
+/// `verify_candidate_impl` (`jit_ingest.rs`, `cuda`-gated) consumes it: every
+/// candidate is verified on every probe here and the verdicts go through
+/// [`combine_probe_verdicts`]. **That call site is invisible to a build without
+/// `--features cuda`, and a `pub fn` that nothing calls emits no warning**, so
+/// `gap_236_the_probe_set_is_actually_consumed` below scans the source for the
+/// call and fails if it is ever removed.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub fn admission_probes(operands: &[OperandDesc], seed: u64) -> Vec<Vec<HostTensor>> {
     probe_from_operands(operands, seed)
@@ -636,7 +628,6 @@ mod tests {
     /// source-scanning check inside the file it scans matches its own anchors
     /// — a trap this crate hit three times in one session.
     #[test]
-    #[ignore = "GAP-236 increment 2: fails until the cuda-gated admission call site is wired; run explicitly to see the pending state"]
     fn gap_236_the_probe_set_is_actually_consumed() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/jit_ingest.rs");
         let src =
@@ -646,7 +637,7 @@ mod tests {
         // block must be findable at all, or "no call found" would be a wrong
         // path rather than a missing wire.
         assert!(
-            src.contains("(1) Probe synthesis"),
+            src.contains("fn verify_candidate_on_probe("),
             "cannot find the admission block in {path:?} — this scan is looking in the \
              wrong place and its verdict below would be meaningless"
         );
