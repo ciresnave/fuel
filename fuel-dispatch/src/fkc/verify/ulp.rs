@@ -422,12 +422,22 @@ pub fn verify_precision_bound(
             // Each bound is answered in ITS OWN space: ULP counts
             // representable steps, absolute and relative are distances
             // between values. A NaN on exactly one side fails every bound.
+            //
+            // Both-NaN and same-signed-infinity pairs AGREE under every bound,
+            // not only `MaxUlp`: `inf - inf` and `NaN - NaN` are NaN, and
+            // `NaN <= m` is false, so without this a bit-identical special
+            // value failed the absolute and relative bounds that the ULP bound
+            // (and kiss-ref) score as agreement. Needed once admission probes
+            // carry NaN/inf (GAP-236).
+            let agree = (x.is_nan && y.is_nan) || (!x.is_nan && !y.is_nan && x.value == y.value);
             let ok = match bound {
                 Bound::MaxUlp(m) => dist <= u64::from(m),
-                Bound::MaxAbsolute(m) => !(x.is_nan || y.is_nan) && (x.value - y.value).abs() <= m,
+                Bound::MaxAbsolute(m) => {
+                    agree || (!(x.is_nan || y.is_nan) && (x.value - y.value).abs() <= m)
+                }
                 Bound::MaxRelative(m) => {
                     let denom = y.value.abs().max(f64::from(f32::EPSILON));
-                    !(x.is_nan || y.is_nan) && ((x.value - y.value).abs() / denom) <= m
+                    agree || (!(x.is_nan || y.is_nan) && ((x.value - y.value).abs() / denom) <= m)
                 }
             };
             if !ok {
@@ -900,6 +910,68 @@ mod tests {
         let pos_min = f32::from_bits(1); // +2^-149
         let neg_min = f32::from_bits(0x8000_0001); // -2^-149
         assert_eq!(ulp_distance(pos_min, neg_min), 3);
+    }
+
+    /// Identical special values agree under the absolute and relative bounds
+    /// too, and a NaN against a finite value still fails them. The second half
+    /// is the sabotage sibling: an `agree` that ignored the NaN/finite case
+    /// would pass the first half and fail here.
+    #[test]
+    fn identical_special_values_agree_under_every_bound_and_nan_vs_finite_fails() {
+        use super::{Bound, verify_precision_bound};
+        use crate::fkc::verify::bit_stability::{
+            HostTensor, KernelInvoker, VerifyError, VerifyOutcome,
+        };
+        use crate::kernel::BindingEntry;
+
+        struct Const(f32);
+        impl KernelInvoker for Const {
+            fn invoke(
+                &self,
+                _entry: &BindingEntry,
+                _inputs: &[HostTensor],
+            ) -> Result<HostTensor, VerifyError> {
+                Ok(HostTensor {
+                    dtype: fuel_ir::DType::F32,
+                    shape: vec![1],
+                    bytes: self.0.to_le_bytes().to_vec(),
+                })
+            }
+        }
+        let entry = BindingEntry {
+            kernel: crate::dispatch::add_elementwise_f32_cpu_wrapper,
+            caps: crate::kernel::KernelCaps::empty(),
+            precision: crate::fused::PrecisionGuarantee::UNAUDITED,
+            cost: crate::kernel::unknown_cost,
+            kernel_source: "test",
+            is_generic: false,
+            kernel_revision_hash: 0,
+            cost_expr: None,
+        };
+        let probes = vec![vec![]];
+        let run = |a: f32, b: f32, bound: Bound| {
+            verify_precision_bound(&Const(a), &Const(b), &entry, &probes, bound)
+                .expect("no infrastructure error")
+        };
+        for bound in [Bound::MaxAbsolute(0.0), Bound::MaxRelative(0.0)] {
+            for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, 1.0] {
+                assert!(
+                    matches!(run(v, v, bound), VerifyOutcome::Pass),
+                    "{v} vs {v} must agree under {bound:?}"
+                );
+            }
+            assert!(
+                matches!(run(f32::NAN, 1.0, bound), VerifyOutcome::Fail { .. }),
+                "NaN vs 1.0 must fail {bound:?}"
+            );
+            assert!(
+                matches!(
+                    run(f32::INFINITY, f32::NEG_INFINITY, bound),
+                    VerifyOutcome::Fail { .. }
+                ),
+                "+inf vs -inf must fail {bound:?}"
+            );
+        }
     }
 
     #[test]
