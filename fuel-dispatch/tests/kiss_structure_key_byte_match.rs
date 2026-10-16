@@ -81,7 +81,7 @@
 //!
 //! 1. **Vocabulary** — the dtype manifest: **24** tokens a reader must recognize.
 //! 2. **Token-grammar** — what Fuel can *spell* at sk5: **14**
-//!    (`sk5_dtype_token`, asserted in
+//!    (`sk6_dtype_token`, asserted in
 //!    [`fuel_emits_only_recognized_sk5_dtype_spellings`]); 15 at sk4 before
 //!    `f8e6m2` became reserved.
 //! 3. **Capability** — what Fuel can actually *derive a key for* on the
@@ -112,7 +112,7 @@
 use fuel_dispatch::telemetry::structure_key::FdxOperandDesc;
 use fuel_dispatch::telemetry::structure_key_derive::{
     AccMp, CellClass, CellOperand, DeclaredFacts, DequantForm, GemCell, GemMathPrecision,
-    ReduceAxes, derive_structure_key_token, sk5_dtype_token,
+    ReduceAxes, derive_structure_key_token, sk6_dtype_token,
 };
 use fuel_ir::{DType, Layout, Shape, StrideVec};
 use std::collections::{BTreeMap, BTreeSet};
@@ -161,6 +161,14 @@ const ABSENT_SURFACE_EXCLUSIONS: &[(&str, &str)] = &[
         "dequant_form_codebook_weight",
         "int4 weight operand carrying a codebook dequant (`/dc`). Same absent surface as `dequant_form_linear_weight`: no `DType::I4` (GAP-097).",
     ),
+    (
+        "quantized_ctr_scale_f8e8m0",
+        "int4 weight with an `f8e8m0` scale operand keyed as the trailing `/qf8e8m0` (sk6, §6.6-0022). Fuel CAN express the scale-role hint (`GemCell::scale_dtype`); it cannot express the `i4` weight/primary dtype (no `DType::I4`, GAP-097). Measured modulo the i4 coordinate by [`quantized_scale_vectors_match_modulo_the_i4_coordinate`].",
+    ),
+    (
+        "quantized_ctr_scale_f16",
+        "Same cell as `quantized_ctr_scale_f8e8m0` with an `f16` scale (`/qf16`); same absent surface (no `DType::I4`, GAP-097).",
+    ),
 ];
 
 // ---- cell construction ---------------------------------------------------
@@ -206,6 +214,7 @@ fn gem_f32(m: i64, n: i64, k: i64) -> GemCell {
         acc_dtype: DType::F32,
         out_dtype: DType::F32,
         math_precision: GemMathPrecision::BitStable,
+        scale_dtype: None,
     }
 }
 
@@ -620,8 +629,8 @@ fn corpus_is_the_artifact_this_leg_was_bound_to() {
     let c = corpus();
     assert_eq!(field(&c, "schema"), "kiss-structure-key-vectors-v1");
     assert_eq!(field(&c, "source_commit"), KISS_SOURCE_COMMIT);
-    assert_eq!(field(&c, "token_prefix"), "sk5");
-    assert_eq!(c["structure_key_schema_version"].as_u64(), Some(5));
+    assert_eq!(field(&c, "token_prefix"), "sk6");
+    assert_eq!(c["structure_key_schema_version"].as_u64(), Some(6));
     assert_eq!(c["recognition_count"].as_u64(), Some(24));
     assert_eq!(c["usable_count"].as_u64(), Some(21));
     assert_eq!(strs(&c, "dtype_recognition_set").len(), 24);
@@ -644,8 +653,8 @@ fn corpus_is_the_artifact_this_leg_was_bound_to() {
         c["namespace_vocabulary_versions"]["vulkan"].as_u64(),
         Some(5)
     );
-    assert_eq!(vectors(&c, "positive_vectors").len(), 26);
-    assert_eq!(vectors(&c, "decline_vectors").len(), 21);
+    assert_eq!(vectors(&c, "positive_vectors").len(), 28);
+    assert_eq!(vectors(&c, "decline_vectors").len(), 25);
 }
 
 /// Every positive vector is either **constructed** or **explicitly excluded** —
@@ -690,11 +699,11 @@ fn constructed_and_excluded_partition_the_positive_vectors() {
         covered.difference(&published).collect::<Vec<_>>()
     );
     // SHRINK-ONLY in spirit. Was 0, then 1 (`gem_weight_role_discriminator`,
-    // GAP-097), now 3 because sk5 published two more `i4` cells. Raising this
+    // GAP-097), 3 at sk5, now 5 because sk6 published two quantized `i4` scale cells. Raising this
     // number is a deliberate act; lowering it is what closing GAP-097 should do.
     assert_eq!(
         excluded.len(),
-        3,
+        5,
         "the exclusion count moved. Adding one is deliberate and needs a reason \
          naming the ABSENT SURFACE, not merely the unbuilt cell; removing one \
          means a Fuel gap closed and the cell is now constructible."
@@ -703,12 +712,12 @@ fn constructed_and_excluded_partition_the_positive_vectors() {
 
 /// **The exclusions' own precondition, so none can outlive its cause.**
 ///
-/// All three exclusions are `i4` cells, excluded because Fuel has no `DType`
+/// All five exclusions are `i4` cells, excluded because Fuel has no `DType`
 /// for `i4` — a fact about `fuel_ir`, tracked as GAP-097. **If someone
 /// implements `DType::I4`, `i4` leaves `RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS`
 /// and this fires** — at which point the cells are CONSTRUCTIBLE and the
 /// exclusions must go. Without this, closing GAP-097 would leave stale
-/// exclusions quietly costing three vectors of coverage while the byte-match
+/// exclusions quietly costing five vectors of coverage while the byte-match
 /// stayed green.
 ///
 /// It also asserts every exclusion really IS an `i4` cell, by reading the
@@ -830,11 +839,11 @@ fn every_class_is_exercised_by_a_byte_matched_cell() {
 /// strictly stronger than declining it on parse.
 ///
 /// Each is excluded by a **field**, never by a count:
-/// - field 1 `<version>` — `sk9`/`sk3`/`sk04`: the prefix is a `sk5|` literal.
+/// - field 1 `<version>` — `sk9`/`sk3`/`sk04`: the prefix is a `sk6|` literal.
 /// - field 2 `<cell class>` — `zzz` and the retired `gem`: `CellClass` is a
 ///   closed seven-variant enum and `code()` is wildcard-free.
 /// - field 3 `<dtype>` — `f99`, `f8e4m3fnuz`, `f8e6m2`: sourced from
-///   `sk5_dtype_token`, which has no `fnuz` variant to spell and declines the
+///   `sk6_dtype_token`, which has no `fnuz` variant to spell and declines the
 ///   reserved `f8e6m2`.
 /// - field 7 operand sub-keys — an unknown `dequant_form` spelling and a
 ///   seven-part sub-key: `DequantForm` has exactly two variants and the
@@ -858,7 +867,7 @@ fn fuel_never_emits_a_published_decline_token() {
     // one. Assert BOTH, so the pair is a real injectivity check on the
     // published decline set rather than an accident of two numbers matching.
     let published = vectors(&c, "decline_vectors").len();
-    assert_eq!(published, 21, "published decline vectors");
+    assert_eq!(published, 25, "published decline vectors");
     assert_eq!(
         declines.len(),
         published,
@@ -874,8 +883,8 @@ fn fuel_never_emits_a_published_decline_token() {
             declines[token.as_str()]
         );
         assert!(
-            token.starts_with("sk5|"),
-            "cell `{name}` emitted a non-sk5 prefix: {token}"
+            token.starts_with("sk6|"),
+            "cell `{name}` emitted a non-sk6 prefix: {token}"
         );
     }
 }
@@ -1039,6 +1048,79 @@ fn dequant_form_vectors_match_modulo_the_i4_coordinate() {
     );
 }
 
+/// sk6 (§6.6-0022): the optional trailing `/q<sdt>` scale-dtype coordinate of a
+/// quantized `ctr` cell. The two published positive vectors are `i4` cells and so
+/// are excluded (GAP-097); this measures them against KISS's own bytes **modulo
+/// the i4 coordinate**, the same way the `dequant_form` vectors are, and asserts
+/// each substitution applied exactly once.
+#[test]
+fn quantized_scale_vectors_match_modulo_the_i4_coordinate() {
+    let c = corpus();
+    for (name, scale) in [
+        ("quantized_ctr_scale_f8e8m0", DType::F8E8M0),
+        ("quantized_ctr_scale_f16", DType::F16),
+    ] {
+        let vector = field(positive(&c, name), "token");
+        assert_eq!(vector.matches("|i4|").count(), 1, "{name}: {vector}");
+        assert_eq!(vector.matches("/i4/").count(), 1, "{name}: {vector}");
+        let analog_expected = vector
+            .replacen("|i4|", "|f32|", 1)
+            .replacen("/i4/", "/f32/", 1);
+        let ops = io(vec![
+            f32c(&[8, 4096]),
+            f32c(&[4096, 4096]),
+            f32c(&[8, 4096]),
+        ]);
+        let got = derive_structure_key_token(
+            &DeclaredFacts::contraction(GemCell {
+                weight_dtype: DType::F32,
+                acc_dtype: DType::F32,
+                out_dtype: DType::BF16,
+                scale_dtype: Some(scale),
+                ..gem_f32(8, 4096, 4096)
+            }),
+            &ops,
+            "cuda:sm90",
+            None,
+        )
+        .expect("the f32 analog must derive");
+        assert_eq!(got, analog_expected, "{name}");
+    }
+    // Control: the two scale dtypes key DIFFERENT tokens (the point of sk6: an
+    // `f8e8m0` and an `f16` scale decode the same stored values to different
+    // numbers), and a cell with no designated scale operand omits the
+    // coordinate entirely.
+    let derive = |scale: Option<DType>| {
+        derive_structure_key_token(
+            &DeclaredFacts::contraction(GemCell {
+                scale_dtype: scale,
+                ..gem_f32(8, 4096, 4096)
+            }),
+            &io(vec![
+                f32c(&[8, 4096]),
+                f32c(&[4096, 4096]),
+                f32c(&[8, 4096]),
+            ]),
+            "cuda:sm90",
+            None,
+        )
+    };
+    let none = derive(None).unwrap();
+    let e8 = derive(Some(DType::F8E8M0)).unwrap();
+    let f16 = derive(Some(DType::F16)).unwrap();
+    assert!(!none.contains("/q"), "{none}");
+    assert_eq!(e8, format!("{none}/qf8e8m0"));
+    assert_eq!(f16, format!("{none}/qf16"));
+    assert_ne!(e8, f16);
+    // The reserved `f8e6m2` scale is the published `scale_dtype_reserved`
+    // decline: Fuel declines the whole derivation rather than emit it.
+    assert_eq!(
+        field(decline(&c, "scale_dtype_reserved"), "decline"),
+        "ReservedDtype"
+    );
+    assert!(derive(Some(DType::F8E6M2)).is_none());
+}
+
 /// §6.7-0013(d) — the all-default `(acc + mp)` spelling is a **forbidden
 /// redundant emission**, and Fuel makes it unreachable rather than checking for
 /// it.
@@ -1100,7 +1182,7 @@ fn fuel_emits_only_recognized_sk5_dtype_spellings() {
 
     let emitted: BTreeSet<String> = DType::ALL
         .iter()
-        .filter_map(|&dt| sk5_dtype_token(dt))
+        .filter_map(|&dt| sk6_dtype_token(dt))
         .map(String::from)
         .collect();
 
@@ -1129,7 +1211,7 @@ fn fuel_emits_only_recognized_sk5_dtype_spellings() {
 /// not spell it — even where `fuel_ir`'s own table does.
 ///
 /// This is the cross-check that ties the vendored DATA to the deriver's
-/// wrapper: the hard-coded `F8E6M2` arm in `sk5_dtype_token` is a local fact,
+/// wrapper: the hard-coded `F8E6M2` arm in `sk6_dtype_token` is a local fact,
 /// and without this test a future reserved token added upstream would be
 /// silently emitted through `fuel_ir::sk4_token`'s `Some`. The `fuel_ir`
 /// disagreement is asserted too, so the day `fuel_ir` itself reserves the
@@ -1147,7 +1229,7 @@ fn every_reserved_token_with_a_fuel_dtype_is_declined_by_the_deriver() {
             Some(dt) => {
                 applied += 1;
                 assert_eq!(
-                    sk5_dtype_token(dt),
+                    sk6_dtype_token(dt),
                     None,
                     "reserved token `{tok}` ({dt:?}) is still spelled by the deriver"
                 );
@@ -1157,7 +1239,7 @@ fn every_reserved_token_with_a_fuel_dtype_is_declined_by_the_deriver() {
                 assert!(
                     DType::ALL
                         .iter()
-                        .all(|&dt| sk5_dtype_token(dt) != Some(tok.as_str())),
+                        .all(|&dt| sk6_dtype_token(dt) != Some(tok.as_str())),
                     "reserved token `{tok}` is spelled by some Fuel dtype"
                 );
             }
