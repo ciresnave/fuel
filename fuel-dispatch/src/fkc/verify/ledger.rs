@@ -75,7 +75,7 @@ pub struct VerificationLedger {
 /// `fuel-dispatch` compiles at all.
 ///
 /// NOTE: `include_str!` makes this a compile-time snapshot. When the ledger is
-/// re-seeded (e.g. `seed_vulkan_verified_ledger`), THIS crate must be recompiled
+/// re-seeded (e.g. `fuel-dev-tools seed-vulkan`), THIS crate must be recompiled
 /// for the new records to take effect — a downstream test binary relinking
 /// against a cached `fuel-dispatch` lib will still see the old ledger.
 const LEDGER_JSON: &str =
@@ -181,7 +181,7 @@ impl VerificationLedger {
 /// it has to retype the relative path itself, which is a conspicuous act
 /// rather than an innocent-looking call. Callers that want to report where
 /// the ledger went read [`LedgerWriteSummary::path`].
-#[cfg(test)]
+#[cfg(any(feature = "dev-tools", all(test, feature = "cuda")))]
 fn checked_in_ledger_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../docs/kernel-contracts/.fkc-verified-ledger.json")
@@ -197,7 +197,7 @@ fn checked_in_ledger_path() -> std::path::PathBuf {
 /// Split out from [`write_merged_ledger`] purely so the merge can be tested:
 /// the writer targets the real repo file, so a guard test cannot call it
 /// without destroying the thing it is guarding.
-#[cfg(test)]
+#[cfg(any(test, feature = "dev-tools"))]
 fn merge_into_checked_in(fresh: &[LedgerRecord]) -> VerificationLedger {
     let mut ledger =
         VerificationLedger::from_records(VerificationLedger::embedded().records().to_vec());
@@ -208,7 +208,7 @@ fn merge_into_checked_in(fresh: &[LedgerRecord]) -> VerificationLedger {
 }
 
 /// Summary of a ledger write, for the seeder's `--nocapture` report.
-#[cfg(test)]
+#[cfg(any(feature = "dev-tools", all(test, feature = "cuda")))]
 pub(crate) struct LedgerWriteSummary {
     /// Records in the checked-in ledger BEFORE this run.
     pub(crate) before: usize,
@@ -243,14 +243,15 @@ pub(crate) struct LedgerWriteSummary {
 /// is what keeps that sentence true, since nothing in the language stops a
 /// future seeder from reaching for `File::create` itself.
 ///
-/// `#[cfg(test)]` is the right scope, not an accident: every one of those
-/// four call sites is an `#[ignore]`d manual tool, so this file is only ever
-/// written from a test binary.
+/// `#[cfg(any(test, feature = "dev-tools"))]` is the right scope, not an
+/// accident: every one of those four call sites is a manual maintenance tool
+/// (the `dev-tools` binary, or the rope-apply acceptance test), so this file is
+/// never written from a default build.
 ///
 /// The count is FOUR and not three on purpose: `harness.rs` was a writer
 /// nobody had counted, and it is the reason the backstop scan checks a
 /// family of spellings rather than `File::create` alone.
-#[cfg(test)]
+#[cfg(any(feature = "dev-tools", all(test, feature = "cuda")))]
 pub(crate) fn write_merged_ledger(fresh: &[LedgerRecord]) -> LedgerWriteSummary {
     use std::io::Write as _;
 

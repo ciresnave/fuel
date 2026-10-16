@@ -82,9 +82,9 @@ mod ledger;
 mod probe_recipes;
 pub(crate) mod seed_cpu_ledger;
 #[cfg(feature = "cuda")]
-mod seed_cuda_ledger;
+pub(crate) mod seed_cuda_ledger;
 #[cfg(feature = "vulkan")]
-mod seed_vulkan_ledger;
+pub(crate) mod seed_vulkan_ledger;
 mod ulp;
 
 // ---------------------------------------------------------------------------

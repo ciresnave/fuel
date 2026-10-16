@@ -17,8 +17,11 @@
 //! verification seam; a contract rewriter is maintenance tooling that
 //! CONSUMES the ledger rather than part of it.
 
+#[cfg(feature = "dev-tools")]
 use crate::fkc::verify::VerificationLedger;
+#[cfg(feature = "dev-tools")]
 use crate::fkc::verify::seed_cpu_ledger::ITERS;
+#[cfg(feature = "dev-tools")]
 use crate::fused::PrecisionGuarantee;
 
 /// The evidence clause appended to a `notes:` field when `audited: true` is
@@ -57,9 +60,10 @@ use crate::fused::PrecisionGuarantee;
 /// The generic wording is deliberate: EVERY probe fixes one parameterisation,
 /// so this is true of every op and needs no per-op text. Re-emitting it across
 /// the already-flipped sections is precisely what the `has_clause`-keyed
-/// eligibility in `gap_228_flip_fully_backed_sections` was built for, back
+/// eligibility in `run_gap_228_flip` was built for, back
 /// when the generator could emit but not RE-emit -- against exactly this
 /// case: the evidence wording changing under a correction.
+#[cfg(feature = "dev-tools")]
 pub(crate) fn evidence_clause() -> String {
     format!(
         "[evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype \
@@ -88,6 +92,7 @@ pub(crate) fn evidence_clause() -> String {
 /// seeding run used it — that proof is the pin file being present and
 /// `rustup` honouring it, which is a property of the repo rather than of
 /// this string.
+#[cfg(feature = "dev-tools")]
 fn pinned_toolchain() -> String {
     let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rust-toolchain.toml");
     let text = std::fs::read_to_string(&f)
@@ -112,6 +117,7 @@ fn pinned_toolchain() -> String {
 /// panic is not paranoia: it is the case where a clause would otherwise name
 /// a toolchain that is not the one in use. Refusing beats emitting a
 /// confident wrong disclosure.
+#[cfg(any(test, feature = "dev-tools"))]
 fn parse_pinned_channel(text: &str) -> Option<String> {
     for line in text.lines() {
         if let Some(rest) = line.split_once("channel")
@@ -121,6 +127,352 @@ fn parse_pinned_channel(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(feature = "dev-tools")]
+/// **GAP-228: flip the fully-backed `audited: false` sections and emit
+/// their evidence clause.** A `dev-tools` binary tool (`gap-228-flip`) — it rewrites checked-in
+/// contracts; run manually, review the diff.
+///
+/// **This is 60 individually-evidenced edits that land in one commit, not
+/// one bulk assertion about 60 things.** Each section is flipped only if
+/// EVERY entry it fans to has a passing `bit_stable_on_same_hardware`
+/// record at that entry's own `kernel_revision_hash`. A section with any
+/// unbacked dtype is skipped: flipping it would hand the unbacked dtypes a
+/// populated claim the gate then downgrades, converting a silent UNAUDITED
+/// into a loud downgrade — worse than leaving it, and invisible to a
+/// section-level count.
+///
+/// **The pre-flight measured 0 such sections**, so the hazard does not
+/// arise today; the check stays because the population changes and the
+/// cost of it is one comparison.
+///
+/// ⚠️ **The existing `notes:` text is PRESERVED, never replaced.** Those
+/// notes carry real per-kernel reasoning ("max(0, x); exact for f32/f64.
+/// bf16/f16 widen to f32 then narrow. NaN-propagating (torch parity)").
+/// Overwriting them with a rendered clause would destroy information to
+/// make a generator's life easier. The clause is APPENDED.
+pub(crate) fn run_gap_228_flip() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+    let ledger = VerificationLedger::embedded();
+    let unaudited_notes = PrecisionGuarantee::UNAUDITED.notes;
+    let clause = evidence_clause();
+
+    // Pass 1: per file, which op_kinds are FULLY backed.
+    let mut flippable: Vec<(String, Vec<String>)> = Vec::new();
+    let mut files: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
+        let path = e.expect("dir entry").path();
+        if path.extension().and_then(|x| x.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        files.push((path.clone(), text.clone()));
+        let Ok(provider) = crate::fkc::import_bundle_str(&text, &crate::fkc::CpuLinkRegistry)
+        else {
+            continue;
+        };
+        let mut table = crate::kernel::KernelBindingTable::new();
+        let mut fused = crate::fused::FusedKernelRegistry::new();
+        if provider.register_into(&mut table, &mut fused).is_err() {
+            continue;
+        }
+        let mut per_op: Vec<(String, (usize, usize))> = Vec::new();
+        for (op, dtypes, backend, entry) in table.iter_entries() {
+            if entry.precision.notes != unaudited_notes {
+                continue;
+            }
+            let backed = ledger.has_pass(
+                backend,
+                dtypes,
+                entry.kernel_revision_hash,
+                "bit_stable_on_same_hardware",
+            );
+            let k = format!("{op:?}");
+            match per_op.iter_mut().find(|(n, _)| *n == k) {
+                Some((_, (b, u))) => {
+                    if backed {
+                        *b += 1
+                    } else {
+                        *u += 1
+                    }
+                }
+                None => per_op.push((k, if backed { (1, 0) } else { (0, 1) })),
+            }
+        }
+        let ops: Vec<String> = per_op
+            .into_iter()
+            .filter(|(_, (_, u))| *u == 0)
+            .map(|(k, _)| k)
+            .collect();
+        if !ops.is_empty() {
+            flippable.push((name, ops));
+        }
+    }
+
+    // Pass 2: rewrite. A section runs from its `## ` heading to the next
+    // one; `op_kind:` inside identifies it.
+    let mut flipped = 0usize;
+    for (path, text) in &files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        // ⚠️ The per-FILE skip had the same pre-flip-state dependency as
+        // the per-SECTION one, and it short-circuits first — so fixing the
+        // section check alone changed nothing and the re-emission run
+        // still reported success having refreshed zero clauses.
+        //
+        // A file is in scope if it has something to FLIP (`flippable`) or
+        // something to REFRESH (a clause already in its text). The second
+        // is read from the file, so it does not evaporate when the flip
+        // succeeds.
+        let empty_ops: Vec<String> = Vec::new();
+        let ops = match flippable.iter().find(|(n, _)| *n == name) {
+            Some((_, o)) => o,
+            None if text.contains("[evidence: bit_stable_on_same_hardware") => &empty_ops,
+            None => continue,
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let mut out: Vec<String> = Vec::with_capacity(lines.len());
+        // section bounds
+        let mut starts: Vec<usize> = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if l.starts_with("## ") {
+                starts.push(i);
+            }
+        }
+        let mut section_of = vec![usize::MAX; lines.len()];
+        for (si, &st) in starts.iter().enumerate() {
+            let en = starts.get(si + 1).copied().unwrap_or(lines.len());
+            for x in section_of.iter_mut().take(en).skip(st) {
+                *x = si;
+            }
+        }
+        // which sections carry a flippable op_kind
+        let mut section_flip = vec![false; starts.len()];
+        for (i, l) in lines.iter().enumerate() {
+            let t = l.trim();
+            if let Some(rest) = t.strip_prefix("op_kind:") {
+                let op = rest.split('#').next().unwrap_or("").trim();
+                if ops.iter().any(|o| o == op) && section_of[i] != usize::MAX {
+                    section_flip[section_of[i]] = true;
+                }
+            }
+        }
+        // ⚠️ PER-SECTION, not per-file. The first version tracked a
+        // file-scoped `changed` flag, so once ANY section in a file
+        // flipped, every later `notes:` in a flippable section received
+        // the clause — INCLUDING sections that were ALREADY
+        // `audited: true` by other means.
+        //
+        // It attached an empirical-evidence claim to two `matmul.fkc.md`
+        // sections whose attestation came from somewhere else: 4 flips,
+        // 6 clauses. **That is same-name-different-strength — the defect
+        // this whole increment exists to avoid — committed by the
+        // generator built to avoid it.** Caught by comparing flips to
+        // clauses PER FILE, which is a check worth keeping precisely
+        // because the entry-level delta was exactly right anyway: the
+        // count that mattered for the ruling could not see this.
+        // A SECTION IS ELIGIBLE FOR THE CLAUSE IF THIS RUN FLIPPED IT
+        // *OR* IT ALREADY CARRIES ONE, and the second half is what makes
+        // re-emission possible at all.
+        //
+        // The first version keyed eligibility solely on "this run flipped
+        // it". Re-running after everything was already `audited: true`
+        // therefore flipped 0 and refreshed 0 clauses: the generator could
+        // EMIT but not RE-EMIT, which is useless in exactly the case it
+        // will be needed for -- the evidence changing under a toolchain
+        // pin or a re-seed.
+        //
+        // Keying on the existing clause is also the precise
+        // discriminator: it marks the sections whose attestation rests on
+        // the LEDGER. A section audited by SOURCE reasoning carries no
+        // clause and must never acquire one, which is exactly the
+        // misattachment this generator committed on its first run.
+        let mut has_clause = vec![false; starts.len().max(1)];
+        for (i, l) in lines.iter().enumerate() {
+            if l.contains("[evidence: bit_stable_on_same_hardware") && section_of[i] != usize::MAX {
+                has_clause[section_of[i]] = true;
+            }
+        }
+        let mut flipped_sections = vec![false; starts.len().max(1)];
+        let mut changed = false;
+        for (i, l) in lines.iter().enumerate() {
+            let sec = section_of[i];
+            // ⚠️ ELIGIBILITY MUST NOT BE DERIVED SOLELY FROM THE
+            // PRE-FLIP STATE, and this is the third time that shape has
+            // bitten in one increment.
+            //
+            // `section_flip` comes from `flippable`, which lists ops whose
+            // entries are currently UNAUDITED. After the flip those
+            // entries are BACKED, so they vanish from that list and every
+            // already-flipped section becomes ineligible — the re-emission
+            // run then matched nothing and silently refreshed 0 clauses
+            // while reporting success.
+            //
+            // `has_clause` is read from the FILE TEXT, so it survives the
+            // state change that erases `flippable`.
+            let in_flip = sec != usize::MAX && (section_flip[sec] || has_clause[sec]);
+            let t = l.trim_start();
+            if in_flip && t.starts_with("audited: false") {
+                let indent = &l[..l.len() - t.len()];
+                out.push(format!("{indent}audited: true"));
+                if sec != usize::MAX {
+                    flipped_sections[sec] = true;
+                }
+                changed = true;
+                flipped += 1;
+            } else if in_flip
+                && t.starts_with("notes:")
+                && sec != usize::MAX
+                && (flipped_sections[sec] || has_clause[sec])
+            {
+                // Append the clause inside the existing quoted string —
+                // after STRIPPING any clause already there.
+                //
+                // Idempotence is not tidiness here. This generator will be
+                // re-run whenever the evidence changes (a toolchain pin, a
+                // re-seed), and an append-only version would stack a second
+                // clause beside a now-false first one — leaving two
+                // coverage statements where the stale one reads exactly as
+                // authoritative as the current one.
+                let mut base = l.to_string();
+                if let Some(start) = base.find("[evidence: bit_stable_on_same_hardware")
+                    && let Some(rel_end) = base[start..].find(']')
+                {
+                    let end = start + rel_end + 1;
+                    // also swallow one leading space, if present
+                    let cut_from = if start > 0 && base.as_bytes()[start - 1] == b' ' {
+                        start - 1
+                    } else {
+                        start
+                    };
+                    base.replace_range(cut_from..end, "");
+                }
+                if let Some(last) = base.rfind('"') {
+                    base.insert_str(last, &format!(" {clause}"));
+                }
+                out.push(base);
+            } else {
+                out.push(l.to_string());
+            }
+        }
+        let refreshed = out.join(
+            "
+",
+        ) != lines.join(
+            "
+",
+        );
+        if changed || refreshed {
+            let mut joined = out.join("\n");
+            if text.ends_with('\n') {
+                joined.push('\n');
+            }
+            std::fs::write(path, joined).unwrap_or_else(|e| panic!("write {path:?}: {e}"));
+            println!("[gap-228] rewrote {name}");
+        }
+    }
+    println!(
+        "[gap-228] flipped {flipped} `audited:` line(s) across {} file(s)",
+        files.len()
+    );
+    println!("[gap-228] clause in use: {}", evidence_clause());
+    // NOT `flipped > 0`: a re-emission run legitimately flips nothing
+    // and refreshes every clause. Asserting on flips would make the
+    // generator fail precisely when doing the job it was extended to do.
+    println!("[gap-228] (0 flips is expected on a re-emission run)");
+}
+
+#[cfg(feature = "dev-tools")]
+pub(crate) fn run_gap_228_sections_report() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+    let ledger = VerificationLedger::embedded();
+    let unaudited_notes = PrecisionGuarantee::UNAUDITED.notes;
+
+    // (file, op) -> (backed, unbacked)
+    let mut per_section: Vec<((String, String), (usize, usize))> = Vec::new();
+
+    for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
+        let path = e.expect("dir entry").path();
+        if path.extension().and_then(|x| x.to_str()) != Some("md") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(provider) = crate::fkc::import_bundle_str(&text, &crate::fkc::CpuLinkRegistry)
+        else {
+            continue;
+        };
+        let mut table = crate::kernel::KernelBindingTable::new();
+        let mut fused = crate::fused::FusedKernelRegistry::new();
+        if provider.register_into(&mut table, &mut fused).is_err() {
+            continue;
+        }
+        for (op, dtypes, backend, entry) in table.iter_entries() {
+            if entry.precision.notes != unaudited_notes {
+                continue;
+            }
+            let backed = ledger.has_pass(
+                backend,
+                dtypes,
+                entry.kernel_revision_hash,
+                "bit_stable_on_same_hardware",
+            );
+            let key = (name.clone(), format!("{op:?}"));
+            match per_section.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, (b, u))) => {
+                    if backed {
+                        *b += 1
+                    } else {
+                        *u += 1
+                    }
+                }
+                None => per_section.push((key, if backed { (1, 0) } else { (0, 1) })),
+            }
+        }
+    }
+    per_section.sort();
+
+    let (mut full, mut partial, mut none_) = (0usize, 0usize, 0usize);
+    let (mut full_e, mut partial_e, mut none_e) = (0usize, 0usize, 0usize);
+    println!("[gap-228] sections with UNAUDITED entries, by backing:");
+    for ((file, op), (b, u)) in &per_section {
+        let tag = if *u == 0 {
+            full += 1;
+            full_e += b;
+            "FULLY BACKED  (flippable)"
+        } else if *b == 0 {
+            none_ += 1;
+            none_e += u;
+            "UNBACKED      (leave)"
+        } else {
+            partial += 1;
+            partial_e += b + u;
+            "PARTLY BACKED (DO NOT flip wholesale)"
+        };
+        println!("[gap-228]   {tag}  {file}  {op}  backed={b} unbacked={u}");
+    }
+    println!("[gap-228] SECTIONS: {full} fully backed / {partial} partly / {none_} unbacked");
+    println!(
+        "[gap-228] ENTRIES : {full_e} in fully-backed sections / {partial_e} in partly / {none_e} in unbacked"
+    );
+    println!("[gap-228] PRE-DECLARED DELTA for the flip: UNAUDITED must drop by exactly {full_e}");
 }
 
 #[cfg(test)]
@@ -159,276 +511,8 @@ components = [\"rustfmt\"]
         );
     }
 
-    /// **GAP-228: flip the fully-backed `audited: false` sections and emit
-    /// their evidence clause.** `#[ignore]`d — it rewrites checked-in
-    /// contracts; run manually, review the diff.
-    ///
-    /// **This is 60 individually-evidenced edits that land in one commit, not
-    /// one bulk assertion about 60 things.** Each section is flipped only if
-    /// EVERY entry it fans to has a passing `bit_stable_on_same_hardware`
-    /// record at that entry's own `kernel_revision_hash`. A section with any
-    /// unbacked dtype is skipped: flipping it would hand the unbacked dtypes a
-    /// populated claim the gate then downgrades, converting a silent UNAUDITED
-    /// into a loud downgrade — worse than leaving it, and invisible to a
-    /// section-level count.
-    ///
-    /// **The pre-flight measured 0 such sections**, so the hazard does not
-    /// arise today; the check stays because the population changes and the
-    /// cost of it is one comparison.
-    ///
-    /// ⚠️ **The existing `notes:` text is PRESERVED, never replaced.** Those
-    /// notes carry real per-kernel reasoning ("max(0, x); exact for f32/f64.
-    /// bf16/f16 widen to f32 then narrow. NaN-propagating (torch parity)").
-    /// Overwriting them with a rendered clause would destroy information to
-    /// make a generator's life easier. The clause is APPENDED.
-    #[test]
-    #[ignore = "rewrites docs/kernel-contracts/cpu/*.fkc.md; run manually via `cargo test -p fuel-dispatch gap_228_flip -- --ignored --nocapture`"]
-    fn gap_228_flip_fully_backed_sections() {
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
-        let ledger = VerificationLedger::embedded();
-        let unaudited_notes = PrecisionGuarantee::UNAUDITED.notes;
-        let clause = evidence_clause();
-
-        // Pass 1: per file, which op_kinds are FULLY backed.
-        let mut flippable: Vec<(String, Vec<String>)> = Vec::new();
-        let mut files: Vec<(std::path::PathBuf, String)> = Vec::new();
-        for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
-            let path = e.expect("dir entry").path();
-            if path.extension().and_then(|x| x.to_str()) != Some("md") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            files.push((path.clone(), text.clone()));
-            let Ok(provider) = crate::fkc::import_bundle_str(&text, &crate::fkc::CpuLinkRegistry)
-            else {
-                continue;
-            };
-            let mut table = crate::kernel::KernelBindingTable::new();
-            let mut fused = crate::fused::FusedKernelRegistry::new();
-            if provider.register_into(&mut table, &mut fused).is_err() {
-                continue;
-            }
-            let mut per_op: Vec<(String, (usize, usize))> = Vec::new();
-            for (op, dtypes, backend, entry) in table.iter_entries() {
-                if entry.precision.notes != unaudited_notes {
-                    continue;
-                }
-                let backed = ledger.has_pass(
-                    backend,
-                    dtypes,
-                    entry.kernel_revision_hash,
-                    "bit_stable_on_same_hardware",
-                );
-                let k = format!("{op:?}");
-                match per_op.iter_mut().find(|(n, _)| *n == k) {
-                    Some((_, (b, u))) => {
-                        if backed {
-                            *b += 1
-                        } else {
-                            *u += 1
-                        }
-                    }
-                    None => per_op.push((k, if backed { (1, 0) } else { (0, 1) })),
-                }
-            }
-            let ops: Vec<String> = per_op
-                .into_iter()
-                .filter(|(_, (_, u))| *u == 0)
-                .map(|(k, _)| k)
-                .collect();
-            if !ops.is_empty() {
-                flippable.push((name, ops));
-            }
-        }
-
-        // Pass 2: rewrite. A section runs from its `## ` heading to the next
-        // one; `op_kind:` inside identifies it.
-        let mut flipped = 0usize;
-        for (path, text) in &files {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            // ⚠️ The per-FILE skip had the same pre-flip-state dependency as
-            // the per-SECTION one, and it short-circuits first — so fixing the
-            // section check alone changed nothing and the re-emission run
-            // still reported success having refreshed zero clauses.
-            //
-            // A file is in scope if it has something to FLIP (`flippable`) or
-            // something to REFRESH (a clause already in its text). The second
-            // is read from the file, so it does not evaporate when the flip
-            // succeeds.
-            let empty_ops: Vec<String> = Vec::new();
-            let ops = match flippable.iter().find(|(n, _)| *n == name) {
-                Some((_, o)) => o,
-                None if text.contains("[evidence: bit_stable_on_same_hardware") => &empty_ops,
-                None => continue,
-            };
-            let lines: Vec<&str> = text.lines().collect();
-            let mut out: Vec<String> = Vec::with_capacity(lines.len());
-            // section bounds
-            let mut starts: Vec<usize> = Vec::new();
-            for (i, l) in lines.iter().enumerate() {
-                if l.starts_with("## ") {
-                    starts.push(i);
-                }
-            }
-            let mut section_of = vec![usize::MAX; lines.len()];
-            for (si, &st) in starts.iter().enumerate() {
-                let en = starts.get(si + 1).copied().unwrap_or(lines.len());
-                for x in section_of.iter_mut().take(en).skip(st) {
-                    *x = si;
-                }
-            }
-            // which sections carry a flippable op_kind
-            let mut section_flip = vec![false; starts.len()];
-            for (i, l) in lines.iter().enumerate() {
-                let t = l.trim();
-                if let Some(rest) = t.strip_prefix("op_kind:") {
-                    let op = rest.split('#').next().unwrap_or("").trim();
-                    if ops.iter().any(|o| o == op) && section_of[i] != usize::MAX {
-                        section_flip[section_of[i]] = true;
-                    }
-                }
-            }
-            // ⚠️ PER-SECTION, not per-file. The first version tracked a
-            // file-scoped `changed` flag, so once ANY section in a file
-            // flipped, every later `notes:` in a flippable section received
-            // the clause — INCLUDING sections that were ALREADY
-            // `audited: true` by other means.
-            //
-            // It attached an empirical-evidence claim to two `matmul.fkc.md`
-            // sections whose attestation came from somewhere else: 4 flips,
-            // 6 clauses. **That is same-name-different-strength — the defect
-            // this whole increment exists to avoid — committed by the
-            // generator built to avoid it.** Caught by comparing flips to
-            // clauses PER FILE, which is a check worth keeping precisely
-            // because the entry-level delta was exactly right anyway: the
-            // count that mattered for the ruling could not see this.
-            // A SECTION IS ELIGIBLE FOR THE CLAUSE IF THIS RUN FLIPPED IT
-            // *OR* IT ALREADY CARRIES ONE, and the second half is what makes
-            // re-emission possible at all.
-            //
-            // The first version keyed eligibility solely on "this run flipped
-            // it". Re-running after everything was already `audited: true`
-            // therefore flipped 0 and refreshed 0 clauses: the generator could
-            // EMIT but not RE-EMIT, which is useless in exactly the case it
-            // will be needed for -- the evidence changing under a toolchain
-            // pin or a re-seed.
-            //
-            // Keying on the existing clause is also the precise
-            // discriminator: it marks the sections whose attestation rests on
-            // the LEDGER. A section audited by SOURCE reasoning carries no
-            // clause and must never acquire one, which is exactly the
-            // misattachment this generator committed on its first run.
-            let mut has_clause = vec![false; starts.len().max(1)];
-            for (i, l) in lines.iter().enumerate() {
-                if l.contains("[evidence: bit_stable_on_same_hardware")
-                    && section_of[i] != usize::MAX
-                {
-                    has_clause[section_of[i]] = true;
-                }
-            }
-            let mut flipped_sections = vec![false; starts.len().max(1)];
-            let mut changed = false;
-            for (i, l) in lines.iter().enumerate() {
-                let sec = section_of[i];
-                // ⚠️ ELIGIBILITY MUST NOT BE DERIVED SOLELY FROM THE
-                // PRE-FLIP STATE, and this is the third time that shape has
-                // bitten in one increment.
-                //
-                // `section_flip` comes from `flippable`, which lists ops whose
-                // entries are currently UNAUDITED. After the flip those
-                // entries are BACKED, so they vanish from that list and every
-                // already-flipped section becomes ineligible — the re-emission
-                // run then matched nothing and silently refreshed 0 clauses
-                // while reporting success.
-                //
-                // `has_clause` is read from the FILE TEXT, so it survives the
-                // state change that erases `flippable`.
-                let in_flip = sec != usize::MAX && (section_flip[sec] || has_clause[sec]);
-                let t = l.trim_start();
-                if in_flip && t.starts_with("audited: false") {
-                    let indent = &l[..l.len() - t.len()];
-                    out.push(format!("{indent}audited: true"));
-                    if sec != usize::MAX {
-                        flipped_sections[sec] = true;
-                    }
-                    changed = true;
-                    flipped += 1;
-                } else if in_flip
-                    && t.starts_with("notes:")
-                    && sec != usize::MAX
-                    && (flipped_sections[sec] || has_clause[sec])
-                {
-                    // Append the clause inside the existing quoted string —
-                    // after STRIPPING any clause already there.
-                    //
-                    // Idempotence is not tidiness here. This generator will be
-                    // re-run whenever the evidence changes (a toolchain pin, a
-                    // re-seed), and an append-only version would stack a second
-                    // clause beside a now-false first one — leaving two
-                    // coverage statements where the stale one reads exactly as
-                    // authoritative as the current one.
-                    let mut base = l.to_string();
-                    if let Some(start) = base.find("[evidence: bit_stable_on_same_hardware")
-                        && let Some(rel_end) = base[start..].find(']')
-                    {
-                        let end = start + rel_end + 1;
-                        // also swallow one leading space, if present
-                        let cut_from = if start > 0 && base.as_bytes()[start - 1] == b' ' {
-                            start - 1
-                        } else {
-                            start
-                        };
-                        base.replace_range(cut_from..end, "");
-                    }
-                    if let Some(last) = base.rfind('"') {
-                        base.insert_str(last, &format!(" {clause}"));
-                    }
-                    out.push(base);
-                } else {
-                    out.push(l.to_string());
-                }
-            }
-            let refreshed = out.join(
-                "
-",
-            ) != lines.join(
-                "
-",
-            );
-            if changed || refreshed {
-                let mut joined = out.join("\n");
-                if text.ends_with('\n') {
-                    joined.push('\n');
-                }
-                std::fs::write(path, joined).unwrap_or_else(|e| panic!("write {path:?}: {e}"));
-                println!("[gap-228] rewrote {name}");
-            }
-        }
-        println!(
-            "[gap-228] flipped {flipped} `audited:` line(s) across {} file(s)",
-            files.len()
-        );
-        println!("[gap-228] clause in use: {}", evidence_clause());
-        // NOT `flipped > 0`: a re-emission run legitimately flips nothing
-        // and refreshes every clause. Asserting on flips would make the
-        // generator fail precisely when doing the job it was extended to do.
-        println!("[gap-228] (0 flips is expected on a re-emission run)");
-    }
-
     /// **GAP-228 pre-flight: which `audited: false` SECTIONS are wholesale
-    /// flippable, and which are not.** `#[ignore]`d — a planning measurement,
+    /// flippable, and which are not.** A `dev-tools` binary tool (`gap-228-report`), read-only — a planning measurement,
     /// run manually.
     ///
     /// The unit of EDIT is a section; the unit of EVIDENCE is an entry, and a
@@ -735,92 +819,6 @@ components = [\"rustfmt\"]
              at all. Restore the line, or remove its entry from REQUIRED_PINS in the \
              same change and say why it is no longer load-bearing.",
             missing.join("\n  ")
-        );
-    }
-
-    #[test]
-    #[ignore = "planning measurement for GAP-228; run manually with --ignored --nocapture"]
-    fn gap_228_which_sections_are_wholesale_flippable() {
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
-        let ledger = VerificationLedger::embedded();
-        let unaudited_notes = PrecisionGuarantee::UNAUDITED.notes;
-
-        // (file, op) -> (backed, unbacked)
-        let mut per_section: Vec<((String, String), (usize, usize))> = Vec::new();
-
-        for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
-            let path = e.expect("dir entry").path();
-            if path.extension().and_then(|x| x.to_str()) != Some("md") {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Ok(provider) = crate::fkc::import_bundle_str(&text, &crate::fkc::CpuLinkRegistry)
-            else {
-                continue;
-            };
-            let mut table = crate::kernel::KernelBindingTable::new();
-            let mut fused = crate::fused::FusedKernelRegistry::new();
-            if provider.register_into(&mut table, &mut fused).is_err() {
-                continue;
-            }
-            for (op, dtypes, backend, entry) in table.iter_entries() {
-                if entry.precision.notes != unaudited_notes {
-                    continue;
-                }
-                let backed = ledger.has_pass(
-                    backend,
-                    dtypes,
-                    entry.kernel_revision_hash,
-                    "bit_stable_on_same_hardware",
-                );
-                let key = (name.clone(), format!("{op:?}"));
-                match per_section.iter_mut().find(|(k, _)| *k == key) {
-                    Some((_, (b, u))) => {
-                        if backed {
-                            *b += 1
-                        } else {
-                            *u += 1
-                        }
-                    }
-                    None => per_section.push((key, if backed { (1, 0) } else { (0, 1) })),
-                }
-            }
-        }
-        per_section.sort();
-
-        let (mut full, mut partial, mut none_) = (0usize, 0usize, 0usize);
-        let (mut full_e, mut partial_e, mut none_e) = (0usize, 0usize, 0usize);
-        println!("[gap-228] sections with UNAUDITED entries, by backing:");
-        for ((file, op), (b, u)) in &per_section {
-            let tag = if *u == 0 {
-                full += 1;
-                full_e += b;
-                "FULLY BACKED  (flippable)"
-            } else if *b == 0 {
-                none_ += 1;
-                none_e += u;
-                "UNBACKED      (leave)"
-            } else {
-                partial += 1;
-                partial_e += b + u;
-                "PARTLY BACKED (DO NOT flip wholesale)"
-            };
-            println!("[gap-228]   {tag}  {file}  {op}  backed={b} unbacked={u}");
-        }
-        println!("[gap-228] SECTIONS: {full} fully backed / {partial} partly / {none_} unbacked");
-        println!(
-            "[gap-228] ENTRIES : {full_e} in fully-backed sections / {partial_e} in partly / {none_e} in unbacked"
-        );
-        println!(
-            "[gap-228] PRE-DECLARED DELTA for the flip: UNAUDITED must drop by exactly {full_e}"
         );
     }
 }

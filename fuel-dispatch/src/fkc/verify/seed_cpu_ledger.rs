@@ -1090,6 +1090,84 @@ fn verified_at_string() -> String {
     format!("epoch:{secs}")
 }
 
+#[cfg(feature = "dev-tools")]
+/// Task 4.5b: empirically verify the CPU fused-op family and WRITE
+/// the resulting `"pass"` records to the git-checked-in verification
+/// ledger (`docs/kernel-contracts/.fkc-verified-ledger.json`).
+///
+/// Run with `--nocapture` to see the full per-op attempt log
+/// (pass/fail/unverified + reason) — every op in [`TARGETS`] is
+/// accounted for, not just the ones that pass.
+pub(crate) fn run_seed_cpu_ledger() {
+    // BOTH halves of the CPU surface. The fused registry and the primitive
+    // binding table are disjoint populations registered by different
+    // production paths; seeding only one leaves the other's claims resting
+    // on `fill_unset_cpu_precision`, which is the thing GAP-207 exists to
+    // retire. Reported as a SPLIT, never as one total — the two passes
+    // have different coverage and different reasons for their misses.
+    let (fused_records, fused_log) = run_cpu_verification();
+    let (prim_records, prim_log) = run_cpu_primitive_verification();
+    // The THIRD claim: `max_ulp: 0` against an exact in-process
+    // reference. Separate from bit-stability because it is a different
+    // claim about the same kernels, and `gate_precision` needs BOTH
+    // before a dual-claim entry's guarantee changes at all.
+    let (ulp_records, ulp_log) = run_cpu_max_ulp_verification();
+
+    for (tag, log) in [
+        ("fused", &fused_log),
+        ("primitive", &prim_log),
+        ("max_ulp", &ulp_log),
+    ] {
+        for attempt in log.iter() {
+            println!(
+                "[gap-207/{tag}] {} {:?} (rev={}): {}",
+                attempt.op_name, attempt.dtypes, attempt.kernel_revision_hash, attempt.outcome,
+            );
+        }
+    }
+    for (tag, recs, log) in [
+        ("fused", &fused_records, &fused_log),
+        ("primitive", &prim_records, &prim_log),
+        ("max_ulp", &ulp_records, &ulp_log),
+    ] {
+        println!(
+            "[gap-207/{tag}] {} passed, {} unverified/failed, {} total attempts",
+            recs.len(),
+            log.iter().filter(|a| a.outcome != "pass").count(),
+            log.len(),
+        );
+    }
+
+    assert!(
+        !fused_records.is_empty(),
+        "expected at least one CPU FUSED op to empirically verify bit-stable; got 0 — see log above",
+    );
+    assert!(
+        !prim_records.is_empty(),
+        "expected at least one CPU PRIMITIVE op to empirically verify bit-stable; got 0 — see log above",
+    );
+
+    // One flat set for the writer; the split above is the report, this is
+    // the payload. `upsert` keys on (backend, dtypes, revision, claim), so
+    // an op present in BOTH populations updates one row rather than
+    // producing two — which is why concatenating is safe here.
+    let mut records = fused_records;
+    records.extend(prim_records);
+    records.extend(ulp_records);
+
+    // MERGE, never replace: this file also holds Vulkan and CUDA records
+    // that need live devices to re-earn and that CI cannot regenerate.
+    // The merge lives inside the writer, not here (GAP-210).
+    let summary = super::ledger::write_merged_ledger(&records);
+    println!(
+        "[task-4.5b] merged {} fresh CPU record(s) into {} existing -> {} total, written to {}",
+        summary.fresh,
+        summary.before,
+        summary.after,
+        summary.path.display(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2521,85 +2599,6 @@ mod tests {
             buckets.values().sum::<usize>(),
             log.len(),
             "the outcome buckets do not partition the log"
-        );
-    }
-
-    /// Task 4.5b: empirically verify the CPU fused-op family and WRITE
-    /// the resulting `"pass"` records to the git-checked-in verification
-    /// ledger (`docs/kernel-contracts/.fkc-verified-ledger.json`).
-    ///
-    /// Run with `--nocapture` to see the full per-op attempt log
-    /// (pass/fail/unverified + reason) — every op in [`TARGETS`] is
-    /// accounted for, not just the ones that pass.
-    #[test]
-    #[ignore = "re-seeding tool: writes docs/kernel-contracts/.fkc-verified-ledger.json; run manually via `cargo test -p fuel-dispatch seed_cpu_verified_ledger -- --ignored --nocapture` to regenerate the ledger. The verified ledger is committed; the default suite must not rewrite it."]
-    fn seed_cpu_verified_ledger() {
-        // BOTH halves of the CPU surface. The fused registry and the primitive
-        // binding table are disjoint populations registered by different
-        // production paths; seeding only one leaves the other's claims resting
-        // on `fill_unset_cpu_precision`, which is the thing GAP-207 exists to
-        // retire. Reported as a SPLIT, never as one total — the two passes
-        // have different coverage and different reasons for their misses.
-        let (fused_records, fused_log) = run_cpu_verification();
-        let (prim_records, prim_log) = run_cpu_primitive_verification();
-        // The THIRD claim: `max_ulp: 0` against an exact in-process
-        // reference. Separate from bit-stability because it is a different
-        // claim about the same kernels, and `gate_precision` needs BOTH
-        // before a dual-claim entry's guarantee changes at all.
-        let (ulp_records, ulp_log) = run_cpu_max_ulp_verification();
-
-        for (tag, log) in [
-            ("fused", &fused_log),
-            ("primitive", &prim_log),
-            ("max_ulp", &ulp_log),
-        ] {
-            for attempt in log.iter() {
-                println!(
-                    "[gap-207/{tag}] {} {:?} (rev={}): {}",
-                    attempt.op_name, attempt.dtypes, attempt.kernel_revision_hash, attempt.outcome,
-                );
-            }
-        }
-        for (tag, recs, log) in [
-            ("fused", &fused_records, &fused_log),
-            ("primitive", &prim_records, &prim_log),
-            ("max_ulp", &ulp_records, &ulp_log),
-        ] {
-            println!(
-                "[gap-207/{tag}] {} passed, {} unverified/failed, {} total attempts",
-                recs.len(),
-                log.iter().filter(|a| a.outcome != "pass").count(),
-                log.len(),
-            );
-        }
-
-        assert!(
-            !fused_records.is_empty(),
-            "expected at least one CPU FUSED op to empirically verify bit-stable; got 0 — see log above",
-        );
-        assert!(
-            !prim_records.is_empty(),
-            "expected at least one CPU PRIMITIVE op to empirically verify bit-stable; got 0 — see log above",
-        );
-
-        // One flat set for the writer; the split above is the report, this is
-        // the payload. `upsert` keys on (backend, dtypes, revision, claim), so
-        // an op present in BOTH populations updates one row rather than
-        // producing two — which is why concatenating is safe here.
-        let mut records = fused_records;
-        records.extend(prim_records);
-        records.extend(ulp_records);
-
-        // MERGE, never replace: this file also holds Vulkan and CUDA records
-        // that need live devices to re-earn and that CI cannot regenerate.
-        // The merge lives inside the writer, not here (GAP-210).
-        let summary = super::super::ledger::write_merged_ledger(&records);
-        println!(
-            "[task-4.5b] merged {} fresh CPU record(s) into {} existing -> {} total, written to {}",
-            summary.fresh,
-            summary.before,
-            summary.after,
-            summary.path.display(),
         );
     }
 }

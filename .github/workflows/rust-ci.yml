@@ -300,6 +300,15 @@ jobs:
       - name: Check jit-gated compilation (GAP-233)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-dispatch --features jit --all-targets
+      # The maintenance tools (ledger re-seeding, GAP-228 flip) used to be ignored
+      # tests that nothing ran or built on a bad day. They are a binary behind the
+      # non-default `dev-tools` feature, so a build that never enables it would let
+      # them rot unbuilt. `vulkan` is added so the Vulkan seeder compiles too; the
+      # CUDA seeder (`--features cuda`) is still built by no CI job (see the
+      # fuel-cuda-backend note at the top of this file).
+      - name: Check dev-tools binary (ignore retirement step 3)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-dispatch --features dev-tools,vulkan --bins --all-targets
       # `dlpack` is default-off and, before this step, NO workflow compiled a line
       # behind `--features dlpack` — so fuel-ir's exhaustive `DType`→FDX match
       # (`dlpack::convert::dtype_to_fdx`, the §6.1 wire codec) and fuel-memory's

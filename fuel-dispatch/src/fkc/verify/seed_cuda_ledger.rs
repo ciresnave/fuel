@@ -545,59 +545,51 @@ pub fn run_cuda_verification(
     Ok((ledger, log))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    /// CapturedRun 4b-resume Step 3 — sweep the production CUDA binding table,
-    /// empirically verify `bit_stable_on_same_hardware` for every op this
-    /// harness has a recipe for, and WRITE the merged ledger back to the
-    /// git-checked-in `docs/kernel-contracts/.fkc-verified-ledger.json`.
-    ///
-    /// Requires a live CUDA device (`#[ignore]`'d). Run:
-    ///   `cargo test -p fuel-dispatch --features cuda --lib \
-    ///    seed_cuda_verified_ledger -- --ignored --nocapture`
-    #[test]
-    #[ignore = "re-seeding tool: writes the verified ledger; needs a live CUDA device + --features cuda"]
-    fn seed_cuda_verified_ledger() {
-        let (ledger, log) = run_cuda_verification(None, true).expect("cuda seeding runs");
-        for a in &log {
-            println!(
-                "[step3] {} {:?} (rev={}): {}",
-                a.op, a.dtypes, a.kernel_revision_hash, a.outcome
-            );
-        }
-        let passed = log.iter().filter(|a| a.outcome == "pass").count();
-        let failed = log.iter().filter(|a| a.outcome.starts_with("fail")).count();
-        let skipped = log.iter().filter(|a| a.outcome.starts_with("skip")).count();
+#[cfg(feature = "dev-tools")]
+/// CapturedRun 4b-resume Step 3 — sweep the production CUDA binding table,
+/// empirically verify `bit_stable_on_same_hardware` for every op this
+/// harness has a recipe for, and WRITE the merged ledger back to the
+/// git-checked-in `docs/kernel-contracts/.fkc-verified-ledger.json`.
+///
+/// Requires a live CUDA device (a maintenance tool, not a test). Run:
+///   `cargo run -p fuel-dispatch --features dev-tools --bin fuel-dev-tools -- seed-cuda (with --features cuda)`
+pub(crate) fn run_seed_cuda_ledger() {
+    let (ledger, log) = run_cuda_verification(None, true).expect("cuda seeding runs");
+    for a in &log {
         println!(
-            "[step3] {passed} passed, {failed} failed, {skipped} skipped, {} attempts",
-            log.len()
-        );
-        assert!(
-            passed > 0,
-            "expected at least one CUDA kernel to verify bit-stable; got 0 — see log"
-        );
-
-        let cuda_passes = ledger
-            .records()
-            .iter()
-            .filter(|r| r.backend == "Cuda" && r.claim == CLAIM && r.result == "pass")
-            .count();
-        println!("[step3] ledger now holds {cuda_passes} CUDA bit-stable pass records");
-
-        // Route through the ONE merging writer (GAP-210): three seeders
-        // share this file and no backend may truncate another's records.
-        // `ledger` already carries the embedded set, so the merge is a
-        // no-op here — routing through it is what keeps that true.
-        let summary = super::super::ledger::write_merged_ledger(ledger.records());
-        println!(
-            "[step3] merged {} record(s) into {} existing -> {} total, written to {}",
-            summary.fresh,
-            summary.before,
-            summary.after,
-            summary.path.display(),
+            "[step3] {} {:?} (rev={}): {}",
+            a.op, a.dtypes, a.kernel_revision_hash, a.outcome
         );
     }
+    let passed = log.iter().filter(|a| a.outcome == "pass").count();
+    let failed = log.iter().filter(|a| a.outcome.starts_with("fail")).count();
+    let skipped = log.iter().filter(|a| a.outcome.starts_with("skip")).count();
+    println!(
+        "[step3] {passed} passed, {failed} failed, {skipped} skipped, {} attempts",
+        log.len()
+    );
+    assert!(
+        passed > 0,
+        "expected at least one CUDA kernel to verify bit-stable; got 0 — see log"
+    );
+
+    let cuda_passes = ledger
+        .records()
+        .iter()
+        .filter(|r| r.backend == "Cuda" && r.claim == CLAIM && r.result == "pass")
+        .count();
+    println!("[step3] ledger now holds {cuda_passes} CUDA bit-stable pass records");
+
+    // Route through the ONE merging writer (GAP-210): three seeders
+    // share this file and no backend may truncate another's records.
+    // `ledger` already carries the embedded set, so the merge is a
+    // no-op here — routing through it is what keeps that true.
+    let summary = super::ledger::write_merged_ledger(ledger.records());
+    println!(
+        "[step3] merged {} record(s) into {} existing -> {} total, written to {}",
+        summary.fresh,
+        summary.before,
+        summary.after,
+        summary.path.display(),
+    );
 }

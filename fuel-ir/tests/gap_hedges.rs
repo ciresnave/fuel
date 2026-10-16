@@ -50,8 +50,11 @@
 //! and FAILS the gate, listing the stale keys. This forces removal of a hedge's
 //! allowlist line when the hedge itself is removed, so the allowlist cannot rot
 //! into permanent amnesty and its size is a real, monotonically-shrinking metric
-//! of outstanding prose debt. Regenerate deliberately (never to paper over a new
-//! hedge) via the ignored `regenerate_allowlist` test below.
+//! of outstanding prose debt. The allowlist is EDITED BY HAND: each line may carry a
+//! tab-separated reason, which a regenerated file would erase (a generator
+//! that was once an ignored test here did exactly that, dropping 16 reasons, so
+//! it was removed rather than kept as a tool). The gate above already fails on
+//! both a new hedge and a stale key, so the file cannot drift unnoticed.
 //!
 //! # Policy decisions (documented so a later disagreement sees a decision)
 //!   - **`examples/` excluded — a JUDGMENT CALL.** An example program is not a
@@ -612,54 +615,4 @@ fn no_new_prose_hedge_in_workspace() {
         ));
     }
     assert!(failure.is_empty(), "{failure}");
-}
-
-/// Regenerate the baseline allowlist from the current tree. Ignored by default;
-/// run deliberately (NEVER to paper over a new hedge) with:
-///   `GAP_HEDGE_REGEN=1 cargo test -p fuel-ir --test gap_hedges regenerate_allowlist -- --ignored --nocapture`
-/// Shares `scan_file_hedges` with the gate, so the generated baseline can never
-/// diverge from what the gate enforces. GAP-referenced hedges are tracked and
-/// deliberately NOT written to the allowlist.
-#[test]
-#[ignore]
-fn regenerate_allowlist() {
-    if std::env::var("GAP_HEDGE_REGEN").is_err() {
-        eprintln!("set GAP_HEDGE_REGEN=1 to actually rewrite gap_hedge_allowlist.txt");
-        return;
-    }
-    let root = workspace_root();
-    let files = collect_rs_files(&root);
-    let mut keys: Vec<String> = Vec::new();
-    for path in &files {
-        if path.file_name().and_then(|f| f.to_str()) == Some("gap_hedges.rs") {
-            continue;
-        }
-        if excluded_component(path).is_some() {
-            continue;
-        }
-        // Mirror the gate's parent-`#[cfg(test)]` exclusion exactly, so the
-        // regenerated baseline can never diverge from what the gate enforces.
-        if parent_gates_as_cfg_test(path) {
-            continue;
-        }
-        let rel = workspace_relative(&root, path);
-        let text = std::fs::read_to_string(path).unwrap_or_default();
-        for hit in scan_file_hedges(&rel, &text) {
-            if !hit.tracked {
-                keys.push(hit.key);
-            }
-        }
-    }
-    keys.sort();
-    keys.dedup();
-    let body = if keys.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n", keys.join("\n"))
-    };
-    std::fs::write(allowlist_path(&root), body).unwrap();
-    eprintln!(
-        "wrote {} allowlist keys to gap_hedge_allowlist.txt",
-        keys.len()
-    );
 }
