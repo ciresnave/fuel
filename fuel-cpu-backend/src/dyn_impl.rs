@@ -1648,6 +1648,30 @@ unsafe fn cpu_alloc_uninit(shape: &Shape, dtype: DType) -> Result<HostBuffer> {
     Ok(storage)
 }
 
+/// Draw one `f32` in `[min, max)` and narrow it to a low-precision dtype,
+/// redrawing when rounding carries the value outside the interval (an `f32`
+/// just below `max` can round up to `max`). If the dtype has no representable
+/// value inside a very narrow interval, the bounded retry falls back to the
+/// narrowed lower bound rather than looping forever.
+fn sample_narrow_in_range<T: Copy>(
+    rng: &mut impl rand::Rng,
+    uniform: rand::distr::Uniform<f32>,
+    min: f32,
+    max: f32,
+    narrow: impl Fn(f32) -> T,
+    widen: impl Fn(T) -> f32,
+) -> T {
+    use rand::RngExt;
+    for _ in 0..64 {
+        let v = narrow(rng.sample::<f32, _>(uniform));
+        let w = widen(v);
+        if w >= min && w < max {
+            return v;
+        }
+    }
+    narrow(min)
+}
+
 fn cpu_rand_uniform(shape: &Shape, dtype: DType, min: f64, max: f64) -> Result<HostBuffer> {
     use rand::prelude::*;
     let elem_count = shape.elem_count();
@@ -1657,7 +1681,16 @@ fn cpu_rand_uniform(shape: &Shape, dtype: DType, min: f64, max: f64) -> Result<H
             let uniform =
                 rand::distr::Uniform::new(min as f32, max as f32).map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count)
-                .map(|_| bf16::from_f32(rng.sample::<f32, _>(uniform)))
+                .map(|_| {
+                    sample_narrow_in_range(
+                        &mut rng,
+                        uniform,
+                        min as f32,
+                        max as f32,
+                        bf16::from_f32,
+                        |x| x.to_f32(),
+                    )
+                })
                 .collect();
             Ok(HostBuffer::BF16(data))
         }
@@ -1665,7 +1698,16 @@ fn cpu_rand_uniform(shape: &Shape, dtype: DType, min: f64, max: f64) -> Result<H
             let uniform =
                 rand::distr::Uniform::new(min as f32, max as f32).map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count)
-                .map(|_| f16::from_f32(rng.sample::<f32, _>(uniform)))
+                .map(|_| {
+                    sample_narrow_in_range(
+                        &mut rng,
+                        uniform,
+                        min as f32,
+                        max as f32,
+                        f16::from_f32,
+                        |x| x.to_f32(),
+                    )
+                })
                 .collect();
             Ok(HostBuffer::F16(data))
         }
@@ -1673,7 +1715,16 @@ fn cpu_rand_uniform(shape: &Shape, dtype: DType, min: f64, max: f64) -> Result<H
             let uniform =
                 rand::distr::Uniform::new(min as f32, max as f32).map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count)
-                .map(|_| F8E4M3::from_f32(rng.sample::<f32, _>(uniform)))
+                .map(|_| {
+                    sample_narrow_in_range(
+                        &mut rng,
+                        uniform,
+                        min as f32,
+                        max as f32,
+                        F8E4M3::from_f32,
+                        |x| x.to_f32(),
+                    )
+                })
                 .collect();
             Ok(HostBuffer::F8E4M3(data))
         }
@@ -2282,5 +2333,39 @@ mod binary_op_nan_tests {
             panic!("expected I32");
         };
         assert_eq!(n, vec![5], "positive control: neg(-5) is still 5");
+    }
+}
+
+#[cfg(test)]
+mod rand_bounds_tests {
+    use super::*;
+
+    /// An `f32` draw just below `max` can round UP to `max` in a narrower
+    /// dtype. 200k draws over `[0, 1)` hit that ~2^-9 band hundreds of times
+    /// in bf16 (and ~2^-12 in f16), so any escape is all but certain.
+    #[test]
+    fn low_precision_uniform_stays_inside_half_open_range() {
+        let shape = Shape::from((200_000,));
+        match cpu_rand_uniform(&shape, DType::BF16, 0.0, 1.0).unwrap() {
+            HostBuffer::BF16(v) => assert!(v.iter().all(|x| (0.0..1.0).contains(&x.to_f32()))),
+            _ => panic!("wrong buffer"),
+        }
+        match cpu_rand_uniform(&shape, DType::F16, 0.0, 1.0).unwrap() {
+            HostBuffer::F16(v) => assert!(v.iter().all(|x| (0.0..1.0).contains(&x.to_f32()))),
+            _ => panic!("wrong buffer"),
+        }
+    }
+
+    /// Sabotage sibling: the naive narrowing the finding describes DOES escape
+    /// the range on the same draw count, so the test above can fail.
+    #[test]
+    fn naive_narrowing_escapes_the_range() {
+        use rand::RngExt;
+        let mut rng = rand::rng();
+        let u = rand::distr::Uniform::new(0.0f32, 1.0).unwrap();
+        let escaped = (0..200_000)
+            .filter(|_| bf16::from_f32(rng.sample::<f32, _>(u)).to_f32() >= 1.0)
+            .count();
+        assert!(escaped > 0, "control found no escape in 200k draws");
     }
 }
