@@ -330,7 +330,7 @@ fn load() -> Vec<serde_json::Value> {
     let doc: serde_json::Value = serde_json::from_str(VECTORS).expect("vectors parse");
     assert_eq!(
         doc["structure_key_schema_version"].as_u64(),
-        Some(5),
+        Some(6),
         "schema version moved: re-measure"
     );
     doc["vectors"].as_array().expect("vectors").clone()
@@ -464,7 +464,7 @@ fn divergences_and_absent_surfaces_are_exactly_the_pinned_sets() {
     let vs = load();
     let tok = vs.iter().find(|v| v["expect"] == "token").unwrap();
     let mut wrong = tok.clone();
-    wrong["value"] = serde_json::Value::String("sk5|not-the-token".to_string());
+    wrong["value"] = serde_json::Value::String("sk6|not-the-token".to_string());
     assert!(matches!(evaluate(&wrong, true), Outcome::Fail(..)));
     let dec = vs
         .iter()

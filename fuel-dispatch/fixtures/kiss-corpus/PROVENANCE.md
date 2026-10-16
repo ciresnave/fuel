@@ -25,8 +25,9 @@ vendoring (2026-10-14) added `ops-narrow-move-nan`, `ops-narrow-select-nan`,
 | `ops-arith.json` | `f4952b4c` (same blob at `5b28bf51`) | `aee2de79a709e722f3c439047bf90c638aec9b24` | `kiss-oracle-vectors-v1.json` |
 | `ops-minmax-ordinary.json` | `f4952b4c` (same blob at `5b28bf51`) | `7bd6cc394bd247f9ca34edfc957d70a37432af97` | `kiss-oracle-vectors-v1.json` |
 | `ops-minmax-signed-zero.json` | `f4952b4c` (same blob at `5b28bf51`) | `d06bdb85c8e626750318b61585b4af3ea5c8d4b4` | `kiss-oracle-vectors-v1.json` |
-| `dtype_manifest.json` | **`5b28bf51`** (same blob at `a33282c`) | `24ff38f068aa18be723c07d307c86ae572c1333f` | `kiss-dtype-manifest` |
-| `structure_key_vectors.json` | **`5b28bf51`** | `e5eec85c82754f030f1ee2f0ab4bf7829fa7e5d2` | `kiss-structure-key-vectors` |
+| `dtype_manifest.json` | **`86196f7`** (sk6; was `5b28bf51`) | `ab50a92692ce92447913cd14d910c466cdf7e315` | `kiss-dtype-manifest` |
+| `structure_key_vectors.json` | **`86196f7`** (sk6; was `5b28bf51`) | `019f646f607d068db4dfe23396fc817093b6f455` | `kiss-structure-key-vectors` |
+| `structure_key_derivation_vectors.json` | **`86196f7`** (sk6) | `393138b0540bfec0e81e78666ecf1c18f6c665f9` | derivation vectors |
 | `ops-narrow-move-nan.json` | **`5b28bf51`** | `c108226af556aa1c6a45e8e43b85ab29b96dec2d` | `kiss-oracle-vectors-v1.json` |
 | `ops-narrow-select-nan.json` | **`5b28bf51`** | `2efbfd259c43936d8cf6dc24b1375f6c9b5ae81b` | `kiss-oracle-vectors-v1.json` |
 | `ops-transcendental-nan.json` | **`ff9f52f5`** (blob first at `9ea8c05d`) | `d4f8b7486ca2b082252f4d305dff8edff2db5672` | `kiss-oracle-vectors-v1.json` |
@@ -46,6 +47,19 @@ other lanes. The
 files were read through the GitHub API at the pinned SHA rather than from the
 local KISS checkout, whose `origin/main` was stale (`9d36c0a` vs the true tip
 `f4952b4c`) — and fetching in a shared checkout moves refs under other lanes.
+
+## The sk6 re-vendor (2026-10-16): sk5 -> sk6, KISS #588 at `86196f7` (conformance 0.4.0)
+
+Three files re-vendored byte-for-byte via `git show 86196f7:conformance/corpus/<file>`
+(blobs above verified with `git hash-object --no-filters`). KISS's own diff is
+`docs/sk6-vector-changes.md` at that commit: of the 105 changed rows 101 changed
+only `sk5|` -> `sk6|`; `structure_key_vectors.json` gains 6 vectors (2 positive
+`quantized_ctr_scale_*` carrying `/q<sdt>`, 4 decline, one of them
+`retired_sk5_token`) and `dtype_manifest.json` changes only `structure_key_schema_version`
+5 -> 6 / `token_prefix`. `announce_vectors.json` (`list_version` 2, `op_identity`) is NOT
+vendored: no Fuel consumer reads it. The two positive scale cells are `i4` cells
+(GAP-097), so they are excluded from the direct byte-match and measured modulo the
+i4 coordinate by `quantized_scale_vectors_match_modulo_the_i4_coordinate`.
 
 ## The sk5 re-vendor (2026-10-11): sk4 -> sk5, `contract_version` 3, at `5b28bf51`
 

@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.0 - 2026-10-16
+
+### Changed
+
+- feat(fuel-dispatch)!: structure_key deriver sk5 -> sk6 (KISS #588): GemCell gains scale_dtype (trailing /q<sdt>), sk5_dtype_token renamed sk6_dtype_token (Breaking)
+
 ## v0.19.12 - 2026-10-15
 
 ### Changed
