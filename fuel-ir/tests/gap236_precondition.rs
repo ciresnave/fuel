@@ -8,7 +8,8 @@
 //! from the moment it is written until the work is done, so it must be
 //! `#[ignore]`d to keep the suite green — and **an ignored test fires never**.
 //! `jit_ingest_probe.rs::gap_236_the_probe_set_is_actually_consumed` is exactly
-//! that test, and it is exactly that shape: correct, ignored, silent.
+//! that test, and it was exactly that shape: correct, ignored, silent, until increment 2
+//! landed and it was un-ignored (it now also runs under `--features jit`).
 //!
 //! This guard inverts the polarity. It asserts the *dangerous combination*:
 //!
@@ -51,7 +52,7 @@ const TRIGGER_SYMBOLS: [&str; 2] = ["IngestionService", "CandidateKernel"];
 /// The anchor proving the wiring scan is reading the admission block, not some
 /// unrelated part of the file. Without it, "no call found" is a wrong-path
 /// verdict wearing the costume of a missing wire.
-const ADMISSION_BLOCK_ANCHOR: &str = "(1) Probe synthesis";
+const ADMISSION_BLOCK_ANCHOR: &str = "fn verify_candidate_on_probe(";
 
 /// The call that closes GAP-236: the divergence-reaching probe set, consumed.
 const WIRED_MARKER: &str = "admission_probes(";
