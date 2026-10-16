@@ -18,35 +18,33 @@
 //! ROW: GAP-315 / GAP-316 sibling probe
 //!
 //! ══════════════════════════════════════════════════════════════════════════
-//! ⚠️ THIS IS AN INSTRUMENT, NOT A GATE. IT IS `#[ignore]`d ON PURPOSE.
+//! ⚠️ THIS IS AN INSTRUMENT, NOT A GATE. IT IS AN EXAMPLE, NOT A TEST, ON PURPOSE.
 //! ══════════════════════════════════════════════════════════════════════════
 //!
 //! It ASSERTS NOTHING about correctness. It prints what the code does and stops.
-//! Left un-ignored it would report `ok` on every run while checking nothing —
-//! a vacuous green that reads as coverage. So it is `#[ignore]`d, which means it
-//! still COMPILES on every CI run (so it cannot rot unnoticed) but never RUNS
-//! (so it can never masquerade as a passing test).
-//!
-//! ⚠️ `#[ignore]` on its own reads as "flaky" or "slow". It is neither. The
-//! reason is this paragraph, and it must survive any edit to the attribute.
+//! As a test it would report `ok` on every run while checking nothing -- a
+//! vacuous green that reads as coverage -- and `#[ignore]` would only hide it
+//! (CireSnave 2026-10-16: `#[ignore]` is a last resort). So it is an EXAMPLE:
+//! `cargo test` / `--all-targets` still BUILD it (it cannot rot unnoticed) and
+//! nothing runs it by accident.
 //!
 //! WHY IT IS KEPT: it is the reproducer for a MEASURED defect. Deleting it makes
 //! the measurement unrepeatable by anyone who was not here.
 //!
 //! ⚠️ WHAT IT BECOMES WHEN THE DEFECT IS FIXED — this is the whole reason a
 //! PRESERVED reproducer beats a REBUILT one:
-//!   the fixer UN-IGNORES it and INVERTS its assertion, and it is then the
+//!   the fixer turns it back into a `#[test]` and INVERTS its assertion, and it is then the
 //!   BORN-RED that proves the fix. It was written BEFORE anyone knew what the
 //!   fix would be, so it CANNOT have been shaped to fit that fix. A probe
 //!   reconstructed afterwards always can be, and nothing in it would show the
 //!   difference.
 //!
 //! HOW TO RUN IT:
-//!   arm A (guard present):  cargo test -p <crate> --test <this> -- --ignored --nocapture
+//!   arm A (guard present):  cargo run -p <crate> --example <this>
 //!   arm B (guard ABSENT, = the shipped configuration):
 //!     RUSTFLAGS="-C target-cpu=native -C debug-assertions=off" \
 //!     CARGO_TARGET_DIR=<a separate dir> \
-//!     cargo test -p <crate> --test <this> -- --ignored --nocapture
+//!     cargo run -p <crate> --example <this>
 //!
 //! ⚠️ `-C target-cpu=native` is NOT decoration: an env `RUSTFLAGS` REPLACES
 //! `.cargo/config.toml`'s `[build] rustflags` rather than appending to it, so
@@ -57,11 +55,6 @@ use fuel_tensor::Device;
 use fuel_tensor::lazy::Tensor;
 
 /// What actually happened, classified by OUTCOME rather than by value.
-#[allow(
-    dead_code,
-    reason = "every field here is read by the `{:?}` in the printed report; \n`derive(Debug)` does not count as a read for the dead_code lint, and the \nreport IS this instrument's entire output"
-)]
-#[derive(Debug)]
 enum Outcome {
     /// Typed `Err` from the build — a guard that survives release.
     BuildErr(String),
@@ -71,6 +64,23 @@ enum Outcome {
     OkRealized { dims: Vec<usize>, elems: usize },
     /// Built, but realize objected — outcome (b).
     OkBuildRealizeErr { dims: Vec<usize> },
+}
+
+// A hand-written `Debug` (not `derive`) so the report below really READS every
+// field; a derived `Debug` does not count as a read for `dead_code`.
+impl std::fmt::Debug for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outcome::BuildErr(s) => write!(f, "BuildErr({s:?})"),
+            Outcome::Panic(s) => write!(f, "Panic({s:?})"),
+            Outcome::OkRealized { dims, elems } => {
+                write!(f, "OkRealized {{ dims: {dims:?}, elems: {elems:?} }}")
+            }
+            Outcome::OkBuildRealizeErr { dims } => {
+                write!(f, "OkBuildRealizeErr {{ dims: {dims:?} }}")
+            }
+        }
+    }
 }
 
 fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
@@ -124,9 +134,7 @@ fn arm_label(guard_present: bool) -> &'static str {
     }
 }
 
-#[test]
-#[ignore = "instrument, not a gate: asserts nothing; see the module doc"]
-fn gap315_split_heads_probe() {
+fn main() {
     let guard_present = cfg!(debug_assertions);
     println!(
         "\n=== GAP-315 probe: Tensor::split_heads (pub fn, caller SHAPE, lazy) ===\n\
