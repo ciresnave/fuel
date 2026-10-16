@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.5 - 2026-10-16
+
+### Changed
+
+- Docs: ROADMAP item 14 (#[ignore] and #[allow(dead_code)] retirement, self-hosted GPU runner).
+
 ## v0.20.4 - 2026-10-16
 
 ### Changed
