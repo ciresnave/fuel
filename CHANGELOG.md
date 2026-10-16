@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.4 - 2026-10-16
+
+### Changed
+
+- Test infrastructure: new `Hub` hardware family (`FUEL_REQUIRE_HUB`, Permissive by default) with `fuel_test_support::hub`; the three timm `from_hub_smoke_*` tests and `fuel-datasets` `test_dataset` run when the checkpoint/network exists and otherwise declare a loud `SKIP[hub]`; seven empty `#[ignore]`d `from_hub_smoke_*` tests removed (#[ignore] retirement step 2).
+
 ## v0.20.3 - 2026-10-16
 
 ### Changed

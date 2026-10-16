@@ -1257,12 +1257,10 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        #[test]
-        #[ignore]
-        fn from_hub_smoke_paddleocr_vl_text() {
-            // Canonical: PaddlePaddle/PaddleOCR-VL (text decoder lives
-            // under top-level `model.*` + `lm_head.weight`).
-        }
+        // (A from-hub smoke test used to sit here as an empty #[ignore]d body: it
+        // asserted nothing, so it was removed rather than kept as a vacuous green.)
+        // Canonical: PaddlePaddle/PaddleOCR-VL (text decoder lives
+        // under top-level `model.*` + `lm_head.weight`).
     }
 
     /// GAP-281: an odd `head_dim` must DECLINE, not panic. `half = head_dim / 2`

@@ -80,8 +80,14 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "hits the live HuggingFace Hub: a network fault fails this test \n                without saying anything about `from_hub`. Same convention as the \n                live-GPU tests -- a plain `cargo test` must skip it. Run it \n                deliberately with `--ignored` when you mean to exercise the Hub."]
+    /// Hits the live Hub (it lists the dataset's parquet files), so it needs the
+    /// network. A fault there says nothing about `from_hub`, so an unreachable Hub
+    /// is a declared `Hub` skip -- fatal under `FUEL_REQUIRE_HUB`, which the
+    /// self-hosted runner sets -- instead of an `#[ignore]` that nothing ever ran.
     fn test_dataset() {
+        if !fuel_test_support::hub::require_reachable() {
+            return;
+        }
         let api = Api::new().unwrap();
         let files = from_hub(
             &api,
