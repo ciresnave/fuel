@@ -12913,19 +12913,21 @@ mod tests {
         );
     }
 
-    /// Picker-alternatives audit harness — enumerates the global
-    /// binding table at process start and prints every `(op, dtypes)`
-    /// key with `>1` registered alternative (either multi-backend or
-    /// multi-impl within one backend). `--ignored` because it's
-    /// diagnostic, not a regression check; it always passes and
-    /// produces output for the audit doc via `--nocapture`.
+    /// Picker-alternatives audit harness: enumerates the global binding
+    /// table and prints every `(op, dtypes)` key with `>1` registered
+    /// alternative (multi-backend or multi-impl within one backend). Read the
+    /// table with `--nocapture`; the only assertion is that the table is
+    /// non-empty, so a registry that silently emptied cannot pass as an
+    /// empty audit.
     ///
-    /// Run: `cargo test -p fuel-storage --features cuda,vulkan \
-    ///     audit_multi_backend_coverage -- --ignored --nocapture`
+    /// Run: `cargo test -p fuel-dispatch --features cuda,vulkan     ///     audit_multi_backend_coverage -- --nocapture`
     #[test]
-    #[ignore]
     fn audit_multi_backend_coverage() {
         let b = global_bindings();
+        assert!(
+            !b.is_empty(),
+            "the global binding table is empty, so this audit would report nothing"
+        );
 
         // Group by (op_kind, dtypes); each entry maps to the list of
         // (backend, n_alts_within_backend). Iterates via iter_precision
