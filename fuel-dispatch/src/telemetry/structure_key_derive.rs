@@ -2,7 +2,7 @@
 //! Fuel's INDEPENDENT `structure_key` derivation — the second implementation
 //! for the two-implementation freeze-gate (KISS-CLASSIFY §6.6/§6.7).
 //!
-//! This is deliberately **Baracuda-free**: it recomputes the same `sk5` token
+//! This is deliberately **Baracuda-free**: it recomputes the same `sk6` token
 //! from Fuel's own [`FdxOperandDesc`] projection, with **no** `baracuda_kernels_*`
 //! import, so a byte-match against Baracuda's emitted token is a genuine
 //! two-implementation agreement. (K1 opacity — "Fuel never derives the key" —
@@ -10,11 +10,25 @@
 //! deliberate exception: Fuel derives the key independently *to check* it, never
 //! to route.)
 //!
-//! Schema version: **sk5** (KISS-CLASSIFY, KISS `a33282c`; vectors as regenerated
-//! by KISS #536 at `5b28bf51`; `contract_version` 3). Derived from the spec clauses, not from Baracuda's
-//! implementation.
+//! Schema version: **sk6** (KISS-CLASSIFY §6.6-0022 / §6.7-0014, KISS #588 at
+//! `86196f7`, conformance 0.4.0). Derived from the spec clauses, not from
+//! Baracuda's implementation.
 //!
-//! # The sk4→sk5 delta this deriver implements
+//! # The sk5→sk6 delta this deriver implements
+//!
+//! - **The version prefix is `sk6|`** (§6.7-0014); a persisted `sk5` token is
+//!   re-derived, never decoded.
+//! - **A quantized `ctr` cell keys its scale dtype** as the optional LAST
+//!   contraction coordinate `/q<sdt>` ([`GemCell::scale_dtype`], §6.6-0022). The
+//!   caller designates the scale operand's dtype; with none designated the
+//!   coordinate is omitted. There is no such coordinate for any other class:
+//!   [`AccMp`] has no scale field, so the reader-side
+//!   `scale_dtype_on_non_contraction_field` decline is unrepresentable here.
+//!   A reserved scale dtype (`f8e6m2`) declines the whole derivation like any
+//!   other keyed dtype.
+//! - Every non-`ctr` cell is byte-identical to sk5 modulo the prefix.
+//!
+//! # The sk4→sk5 delta (still implemented; unchanged at sk6)
 //!
 //! One schema event (KISS #263 ruling D, #520, #517):
 //! - **Field 1 is a derived `cell_class`, not a caller-chosen op family**
@@ -38,8 +52,8 @@
 //!   reduced-axis set that is *empty* in the iteration frame is not a
 //!   reduction, so it derives the class its shape gives it — never `rdc` with
 //!   a `-` reduce field (`RdcWithoutReduce`).
-//! - The version prefix is `sk5|`, and `f8e6m2` is **reserved** (§6.1-0013,
-//!   KISS #517): see [`sk5_dtype_token`].
+//! - The version prefix was `sk5|` (now `sk6|`), and `f8e6m2` is **reserved** (§6.1-0013,
+//!   KISS #517): see [`sk6_dtype_token`].
 //!
 //! # What this deliberately does NOT do
 //!
@@ -56,7 +70,7 @@
 //! - The production path (`baracuda_provider::map_op_category` → Baracuda's
 //!   codec) is untouched and still derives `sk4` until Baracuda follows
 //!   Unpopped's keyer. The two therefore **differ in version on purpose** for
-//!   now; this deriver's conformance claim is the sk5 byte-match, not
+//!   now; this deriver's conformance claim is the sk6 byte-match, not
 //!   equality with production.
 //!
 //! # History
@@ -188,7 +202,7 @@ impl GemMathPrecision {
 /// this fact, never supplied beside it.
 ///
 /// The dtype coordinates are Fuel [`DType`]s, not spellings: the closed §6.1
-/// token set is applied by [`sk5_dtype_token`] at emission, so a reserved
+/// token set is applied by [`sk6_dtype_token`] at emission, so a reserved
 /// (`fnuz`, `f8e6m2`) or out-of-set spelling is **unrepresentable** here —
 /// build-time closure instead of a parse-time decline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +225,13 @@ pub struct GemCell {
     pub out_dtype: DType,
     /// Math-precision class `<mp>` ∈ {`st`, `rm`}.
     pub math_precision: GemMathPrecision,
+    /// Dtype of the caller-designated **scale operand** of a quantized
+    /// weight — the optional last `/q<sdt>` coordinate (KISS-CLASSIFY
+    /// §6.6-0022, `sk6`). `None` when the caller designates no scale
+    /// operand: the coordinate is then omitted, never empty or a placeholder.
+    /// The caller names the role; it is never inferred from operand position
+    /// or dtype (an `f16` scale is as legitimate as an `f8e8m0` one).
+    pub scale_dtype: Option<DType>,
 }
 
 /// The **non-contraction** precision coordinate `(acc + mp)` — the optional
@@ -267,7 +288,7 @@ impl AccMp {
     fn field(&self) -> Option<String> {
         Some(format!(
             "{}/{}",
-            sk5_dtype_token(self.acc_dtype)?,
+            sk6_dtype_token(self.acc_dtype)?,
             self.math_precision.code(),
         ))
     }
@@ -666,7 +687,7 @@ impl DeriveDecline {
     }
 }
 
-/// The decline for a dtype that [`sk5_dtype_token`] refused: reserved if it is
+/// The decline for a dtype that [`sk6_dtype_token`] refused: reserved if it is
 /// the reserved one, else unspellable.
 fn dtype_decline(dt: DType) -> DeriveDecline {
     if matches!(dt, DType::F8E6M2) {
@@ -725,17 +746,17 @@ fn validate_shape(operands: &[CellOperand]) -> Result<Vec<i64>, DeriveDecline> {
 /// Operand 0's dtype and the target: the two fields read from outside the cell
 /// body. KISS-CLASSIFY §3.2: F8E8M0 is a ratified MX **scale**, valid only as a
 /// sibling operand, never as the dense/primary dtype this generic path reads
-/// from operand 0. `sk5_dtype_token` is the position-agnostic "is this dtype
+/// from operand 0. `sk6_dtype_token` is the position-agnostic "is this dtype
 /// spellable at all" table, shared with call sites where F8E8M0 IS valid (e.g.
 /// `contraction_field`'s `<wdt>` field, which reads a caller-supplied role hint,
 /// never operand 0 positionally). This decline is scoped to operand 0, not to
 /// the dtype itself, so it does not narrow anything KISS ratifies. (`F8E6M2` is
-/// reserved outright at sk5 and `sk5_dtype_token` declines it everywhere.)
+/// reserved outright at sk5 and `sk6_dtype_token` declines it everywhere.)
 fn validate_primary(first: DType, target: &str) -> Result<&'static str, DeriveDecline> {
     if matches!(first, DType::F8E8M0) {
         return Err(DeriveDecline::ScaleDtypeAtOperand0);
     }
-    let dtype = sk5_dtype_token(first).ok_or_else(|| dtype_decline(first))?;
+    let dtype = sk6_dtype_token(first).ok_or_else(|| dtype_decline(first))?;
     if !is_valid_namespaced_target(target) {
         return Err(DeriveDecline::InvalidTarget); // namespaced target required (§6.8-0001/-0005)
     }
@@ -885,7 +906,7 @@ pub fn derive_structure_key_token_typed(
         .collect();
 
     let mut token = format!(
-        "sk5|{class}|{dtype}|{target}|{idx}|{work}|r{rank}|{ops}|{reduce}",
+        "sk6|{class}|{dtype}|{target}|{idx}|{work}|r{rank}|{ops}|{reduce}",
         class = class.code(),
         idx = index_width(operands),
         work = work_class(&frame),
@@ -935,11 +956,15 @@ fn contraction_field(cell: &GemCell) -> Option<String> {
         Some(b) => format!("/b{}", size_class(b)?),
         None => String::new(),
     };
-    let wdt = sk5_dtype_token(cell.weight_dtype)?;
-    let acc = sk5_dtype_token(cell.acc_dtype)?;
-    let out = sk5_dtype_token(cell.out_dtype)?;
+    let wdt = sk6_dtype_token(cell.weight_dtype)?;
+    let acc = sk6_dtype_token(cell.acc_dtype)?;
+    let out = sk6_dtype_token(cell.out_dtype)?;
+    let scale = match cell.scale_dtype {
+        Some(dt) => format!("/q{}", sk6_dtype_token(dt)?),
+        None => String::new(),
+    };
     Some(format!(
-        "c{m}{n}{k}/{kdiv}{batch}/{wdt}/{acc}/{out}/{mp}",
+        "c{m}{n}{k}/{kdiv}{batch}/{wdt}/{acc}/{out}/{mp}{scale}",
         mp = cell.math_precision.code(),
     ))
 }
@@ -1016,7 +1041,7 @@ fn size_class(extent: i64) -> Option<char> {
 /// because the key it produces is still well-formed. `sk4_token` is a
 /// wildcard-free `match`, so a new Fuel `DType` is still a compile error
 /// forcing a decision in the crate that owns `DType`.
-pub fn sk5_dtype_token(dt: DType) -> Option<&'static str> {
+pub fn sk6_dtype_token(dt: DType) -> Option<&'static str> {
     match dt {
         DType::F8E6M2 => None,
         other => fuel_ir::sk4_token(other),
@@ -1234,7 +1259,7 @@ mod tests {
     }
 
     /// **SPELLED and DERIVABLE are different axes, and only one of them was ever
-    /// measured.** [`sk5_dtype_token`] maps a `DType` to its seam token — that is
+    /// measured.** [`sk6_dtype_token`] maps a `DType` to its seam token — that is
     /// *spelling*, and `token_kind.rs` already asserts a partition over the
     /// underlying vocabulary. This asks the other question: **can Fuel construct
     /// a real cell whose operand 0 carries that dtype, so a token containing the
@@ -1269,7 +1294,7 @@ mod tests {
         let mut mismatched: Vec<(DType, &'static str, String)> = Vec::new();
 
         for dt in DType::ALL.iter().copied() {
-            let Some(spelling) = sk5_dtype_token(dt) else {
+            let Some(spelling) = sk6_dtype_token(dt) else {
                 continue; // no sk5 seam token — outside this axis by construction
             };
             spelled += 1;
@@ -1279,7 +1304,7 @@ mod tests {
             match derive(DeclaredFacts::none(), &ops, "cuda:sm89") {
                 None => not_derivable.push((dt, spelling)),
                 Some(token) => {
-                    // Field 3 (0-indexed 2) is `<dtype>`: sk5|<class>|<dtype>|<target>|…
+                    // Field 3 (0-indexed 2) is `<dtype>`: sk6|<class>|<dtype>|<target>|…
                     let got = token.split('|').nth(2).unwrap_or("<missing>");
                     if got != spelling {
                         mismatched.push((dt, spelling, got.to_string()));
@@ -1336,6 +1361,7 @@ mod tests {
             acc_dtype: DType::F32,
             out_dtype: DType::F32,
             math_precision: GemMathPrecision::BitStable,
+            scale_dtype: None,
         }
     }
 
@@ -1356,7 +1382,7 @@ mod tests {
         .expect("relu_add f32 must derive a token");
         assert_eq!(
             token,
-            "sk5|ew2|f32|cuda:sm89|ix32|grid|r1|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
+            "sk6|ew2|f32|cuda:sm89|ix32|grid|r1|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
         );
     }
 
@@ -1382,7 +1408,7 @@ mod tests {
         for f in facts {
             let token = derive(f, std::slice::from_ref(&op), "cuda:sm89")
                 .unwrap_or_else(|| panic!("{f:?} must derive"));
-            assert!(token.starts_with("sk5|"), "{token} lacks the sk5 prefix");
+            assert!(token.starts_with("sk6|"), "{token} lacks the sk6 prefix");
             assert!(!token.contains("sk2") && !token.contains("sk4"), "{token}");
             let class = token.split('|').nth(1).unwrap();
             assert!(
@@ -1400,7 +1426,7 @@ mod tests {
 
     /// The four committed sk2-era battery cells (pinned inline from the
     /// fdc1e987/97307020 test battery). At sk2 the first two fields were
-    /// `sk2|<op family>`; at sk5 they are `sk5|<derived cell class>`. Everything
+    /// `sk2|<op family>`; at sk5 they are `sk6|<derived cell class>`. Everything
     /// from field 4 on — target, index width, work class, rank, operand
     /// sub-keys, reduce field — must be **byte-identical** to the sk2 token,
     /// and the dtype field is identical except the `s16` -> `i16` respell.
@@ -1418,22 +1444,22 @@ mod tests {
             (
                 vec![f32c(&[4096]), f32c(&[4096]), f32c(&[4096])],
                 "sk2|bin|f32|cuda:sm89|ix32|grid|r1|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-",
-                "sk5|ew2|f32|cuda:sm89|ix32|grid|r1|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-",
+                "sk6|ew2|f32|cuda:sm89|ix32|grid|r1|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-",
             ),
             (
                 vec![f32c(&[7])],
                 "sk2|bin|f32|cuda:sm89|ix32|warp|r1|co/00/v1/da/f|-",
-                "sk5|ew1|f32|cuda:sm89|ix32|warp|r1|co/00/v1/da/f|-",
+                "sk6|ew1|f32|cuda:sm89|ix32|warp|r1|co/00/v1/da/f|-",
             ),
             (
                 vec![co(&[4096], DType::I16)],
                 "sk2|bin|s16|cuda:sm89|ix32|grid|r1|co/00/v8/d16/f|-",
-                "sk5|ew1|i16|cuda:sm89|ix32|grid|r1|co/00/v8/d16/f|-",
+                "sk6|ew1|i16|cuda:sm89|ix32|grid|r1|co/00/v8/d16/f|-",
             ),
             (
                 vec![f32c(&[128, 256])],
                 "sk2|bin|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f|-",
-                "sk5|ew1|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f|-",
+                "sk6|ew1|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f|-",
             ),
         ];
         for (ops, sk2, expect) in cases {
@@ -1463,14 +1489,14 @@ mod tests {
         let cuda = derive(cell, &ops, "cuda:sm89").expect("derives");
         assert_eq!(
             cuda,
-            "sk5|ctr|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/st"
+            "sk6|ctr|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/st"
         );
         // The same cell for a Vulkan target is a different cell (byte-exact
         // target rule, §6.8-0002).
         let vk = derive(cell, &ops, "vulkan:spirv1.6").expect("derives");
         assert_eq!(
             vk,
-            "sk5|ctr|f32|vulkan:spirv1.6|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/st"
+            "sk6|ctr|f32|vulkan:spirv1.6|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/st"
         );
     }
 
@@ -1615,7 +1641,7 @@ mod tests {
             derive(DeclaredFacts::contraction(batched), &ops, "cuda:sm90").expect("derives");
         assert_eq!(
             token,
-            "sk5|ctr|f32|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|cmll/d16/bm/f32/f32/f32/st"
+            "sk6|ctr|f32|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|cmll/d16/bm/f32/f32/f32/st"
         );
         // The non-batched twin differs exactly by the absent /bm coordinate.
         let plain = derive(
@@ -1648,11 +1674,11 @@ mod tests {
             derive(DeclaredFacts::contraction(tf32_cell), &ops, "cuda:sm90").expect("derives");
         assert_eq!(
             simt,
-            "sk5|ctr|f32|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/st"
+            "sk6|ctr|f32|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/st"
         );
         assert_eq!(
             tf32,
-            "sk5|ctr|f32|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/rm"
+            "sk6|ctr|f32|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f32/f32/f32/rm"
         );
         assert_ne!(simt, tf32, "SIMT-f32 and TF32 must not collide");
     }
@@ -1693,7 +1719,7 @@ mod tests {
         let token = derive(DeclaredFacts::contraction(cell), &ops, "cuda:sm90").expect("derives");
         assert_eq!(
             token,
-            "sk5|ctr|f8e4m3fn|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f8e4m3fn/f32/f16/st"
+            "sk6|ctr|f8e4m3fn|cuda:sm90|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-|ctll/d16/f8e4m3fn/f32/f16/st"
         );
         // The f32-out twin is a DISTINCT token (the sk2 collision resolved
         // in-key by the precision coordinates, §6.6-0018).
@@ -1867,7 +1893,7 @@ mod tests {
             "cuda:sm89",
         )
         .expect("f8e4m3fn derives");
-        assert!(token.starts_with("sk5|ew1|f8e4m3fn|"), "got {token}");
+        assert!(token.starts_with("sk6|ew1|f8e4m3fn|"), "got {token}");
     }
 
     /// **Corrected 2026-09-26, re-cut at sk5.** This test used to assert that a
@@ -1881,7 +1907,7 @@ mod tests {
     ///   operand 0 is a POSITIONAL decline, not "this dtype doesn't exist".
     /// - `F8E6M2` — **reserved at sk5** (KISS #517, §6.1-0013). It declines at
     ///   operand 0 because it is reserved, NOT because of its position, and it
-    ///   has **no spelling** from [`sk5_dtype_token`] — while `fuel_ir`'s own
+    ///   has **no spelling** from [`sk6_dtype_token`] — while `fuel_ir`'s own
     ///   table still spells it (a real, implemented Fuel dtype). That
     ///   disagreement is the named, deriver-local reservation.
     /// - `F6E2M3`/`F6E3M2`/`F4` — outside the closed set entirely.
@@ -1906,7 +1932,7 @@ mod tests {
              only as a sibling operand (KISS-CLASSIFY §3.2)",
         );
         assert!(
-            sk5_dtype_token(DType::F8E8M0).is_some(),
+            sk6_dtype_token(DType::F8E8M0).is_some(),
             "F8E8M0 must remain a spellable token — the decline above is \
              positional (operand-0 usage), not a vocabulary exclusion",
         );
@@ -1922,7 +1948,7 @@ mod tests {
             "F8E6M2 is reserved at sk5 (KISS #517) and must typed-decline",
         );
         assert_eq!(
-            sk5_dtype_token(DType::F8E6M2),
+            sk6_dtype_token(DType::F8E6M2),
             None,
             "F8E6M2 has no sk5 spelling: reserved, never emitted",
         );
@@ -1940,7 +1966,7 @@ mod tests {
 
         // (3) Negative control: the block-scoped sub-byte ELEMENT formats are
         // outside the closed set entirely (a vocabulary exclusion, not a
-        // positional one — `sk5_dtype_token` returns None for these too).
+        // positional one — `sk6_dtype_token` returns None for these too).
         for dt in [DType::F6E2M3, DType::F6E3M2, DType::F4] {
             assert_eq!(
                 derive(DeclaredFacts::none(), &[co(&[4096], dt)], "cuda:sm89"),
@@ -1948,7 +1974,7 @@ mod tests {
                 "{dt:?} is NOT in the §6.1 set and must still typed-decline",
             );
             assert!(
-                sk5_dtype_token(dt).is_none(),
+                sk6_dtype_token(dt).is_none(),
                 "{dt:?} is a vocabulary exclusion, not a positional one",
             );
         }
@@ -1958,7 +1984,7 @@ mod tests {
     /// dtype position, not only operand 0** — the declines above would pass if
     /// only the primary-dtype path were guarded. A `ctr` cell's three
     /// coordinates and the `(acc + mp)` accumulator are all caller-supplied
-    /// `DType`s, each of which funnels through [`sk5_dtype_token`]; this pins
+    /// `DType`s, each of which funnels through [`sk6_dtype_token`]; this pins
     /// that none of them emits the reserved spelling.
     ///
     /// Positive control per position: the same cell with `f32` in that slot
@@ -2196,7 +2222,7 @@ mod tests {
         .expect("reduction must derive");
         assert_eq!(
             token,
-            "sk5|rdc|f32|cuda:sm89|ix32|grid|r1|co/00/v1/d16/f|rall"
+            "sk6|rdc|f32|cuda:sm89|ix32|grid|r1|co/00/v1/d16/f|rall"
         );
     }
 
@@ -2216,7 +2242,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             token,
-            "sk5|rdc|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/01/v4/d16/f|x01"
+            "sk6|rdc|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/01/v4/d16/f|x01"
         );
     }
 
@@ -2240,7 +2266,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             token,
-            "sk5|rdc|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/02/v1/da/f|rlast"
+            "sk6|rdc|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/02/v1/da/f|rlast"
         );
     }
 
@@ -2255,7 +2281,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             token,
-            "sk5|rdc|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/03/v1/da/f|rall"
+            "sk6|rdc|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/03/v1/da/f|rall"
         );
     }
 
@@ -2271,7 +2297,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             token,
-            "sk5|rdc|f32|cuda:sm89|ix32|warp|r1|co/00/v1/d8/f;co/01/v1/da/f|rall"
+            "sk6|rdc|f32|cuda:sm89|ix32|warp|r1|co/00/v1/d8/f;co/01/v1/da/f|rall"
         );
     }
 
@@ -2287,7 +2313,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             token,
-            "sk5|rdc|f32|cuda:sm89|ix32|block|r4|co/00/v1/da/f;co/0a/v1/da/f|x0a"
+            "sk6|rdc|f32|cuda:sm89|ix32|block|r4|co/00/v1/da/f;co/0a/v1/da/f|x0a"
         );
     }
 
@@ -2312,7 +2338,7 @@ mod tests {
         )
         .expect("derives");
         assert_eq!(
-            token, "sk5|rdc|f32|cuda:sm89|ix32|warp|r1|co/00/v1/d8/f;co/01/v1/da/f|rall",
+            token, "sk6|rdc|f32|cuda:sm89|ix32|warp|r1|co/00/v1/d8/f;co/01/v1/da/f|rall",
             "a rank-1 TrailingAxis reduction is the same operation as All at rank 1 \
              and must derive the same reduce field",
         );
@@ -2332,7 +2358,7 @@ mod tests {
         )
         .expect("derives");
         assert_eq!(
-            token, "sk5|rdc|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/03/v1/da/f|rall",
+            token, "sk6|rdc|f32|cuda:sm89|ix32|warp|r2|co/00/v1/d8/f;co/03/v1/da/f|rall",
             "Keepdim(0x03) at rank 2 reduces every axis, same operation as All",
         );
     }
@@ -2352,7 +2378,7 @@ mod tests {
         )
         .expect("derives");
         assert_eq!(
-            token, "sk5|ew1|f32|cuda:sm89|ix32|warp|r2|co/00/v4/d8/f;co/00/v4/d8/f|-",
+            token, "sk6|ew1|f32|cuda:sm89|ix32|warp|r2|co/00/v4/d8/f;co/00/v4/d8/f|-",
             "an empty reduced-axis set is not a reduction (§6.5-0015 rule 3): the cell \
              derives the class its shape gives it (`ew1`, one input pointwise), never \
              `rdc` with a `-` reduce field (the reader's `RdcWithoutReduce` decline), and \
@@ -2457,7 +2483,7 @@ mod tests {
     #[test]
     fn trailing_unit_axis_reads_rank_minus_1_inner() {
         let token = derive(DeclaredFacts::none(), &[f32c(&[4, 1])], "cuda:sm89").expect("derives");
-        assert_eq!(token, "sk5|ew1|f32|cuda:sm89|ix32|warp|r2|co/00/v1/da/f|-");
+        assert_eq!(token, "sk6|ew1|f32|cuda:sm89|ix32|warp|r2|co/00/v1/da/f|-");
     }
 
     /// A zero inner extent buckets `da` AND vectorizes `v1` — the coherent
@@ -2471,7 +2497,7 @@ mod tests {
     fn zero_extent_buckets_da() {
         let token = derive(DeclaredFacts::none(), &[f32c(&[0])], "cuda:sm89")
             .expect("derives (never panics)");
-        assert_eq!(token, "sk5|ew1|f32|cuda:sm89|ix32|warp|r1|co/00/v1/da/f|-");
+        assert_eq!(token, "sk6|ew1|f32|cuda:sm89|ix32|warp|r1|co/00/v1/da/f|-");
     }
 
     /// A fully reversed view is `co` under the |stride| layout algorithm
@@ -2486,7 +2512,7 @@ mod tests {
         );
         let desc = FdxOperandDesc::from_layout(&layout, DType::F32);
         let token = derive(DeclaredFacts::none(), &[desc], "cuda:sm89").expect("derives");
-        assert_eq!(token, "sk5|ew1|f32|cuda:sm89|ix32|warp|r2|co/00/v1/da/r|-");
+        assert_eq!(token, "sk6|ew1|f32|cuda:sm89|ix32|warp|r2|co/00/v1/da/r|-");
     }
 
     /// `alignment = 0` (unspecified base) cannot honor a packed load ⇒ v1
@@ -2496,7 +2522,7 @@ mod tests {
         let mut desc = f32c(&[4096]);
         desc.align_bytes = 0;
         let token = derive(DeclaredFacts::none(), &[desc], "cuda:sm89").expect("derives");
-        assert_eq!(token, "sk5|ew1|f32|cuda:sm89|ix32|grid|r1|co/00/v1/d16/f|-");
+        assert_eq!(token, "sk6|ew1|f32|cuda:sm89|ix32|grid|r1|co/00/v1/d16/f|-");
     }
 
     /// Work class and per-operand masks read the ITERATION FRAME
@@ -2519,7 +2545,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             token,
-            "sk5|ew2|f32|cuda:sm89|ix32|grid|r2|co/01/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
+            "sk6|ew2|f32|cuda:sm89|ix32|grid|r2|co/01/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
         );
     }
 
@@ -2548,7 +2574,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             token,
-            "sk5|ew2|f32|cuda:sm89|ix32|grid|r2|co/01/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
+            "sk6|ew2|f32|cuda:sm89|ix32|grid|r2|co/01/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
         );
     }
 
@@ -2585,13 +2611,13 @@ mod tests {
         .expect("derives");
         assert_eq!(
             dense_token,
-            "sk5|ew1|f32|cuda:sm89|ix32|grid|r4|co/01/v4/d16/f;co/00/v4/d16/f|-"
+            "sk6|ew1|f32|cuda:sm89|ix32|grid|r4|co/01/v4/d16/f;co/00/v4/d16/f|-"
         );
 
         let strided_token =
             derive(DeclaredFacts::none(), &[strided, frame_setter], "cuda:sm89").expect("derives");
         assert_eq!(
-            strided_token, "sk5|ew1|f32|cuda:sm89|ix32|grid|r4|st/01/v1/d16/f;co/00/v4/d16/f|-",
+            strided_token, "sk6|ew1|f32|cuda:sm89|ix32|grid|r4|st/01/v1/d16/f;co/00/v4/d16/f|-",
             "a non-forward-unit own stride must derive `st`/`v1` even though \
              the frame-padded extents are byte-identical to the dense case"
         );
@@ -2618,7 +2644,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             token,
-            "sk5|ew2|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;br/01/v1/d16/f;co/00/v4/d16/f|-"
+            "sk6|ew2|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;br/01/v1/d16/f;co/00/v4/d16/f|-"
         );
     }
 
@@ -2638,7 +2664,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             canonical,
-            "sk5|ew2|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
+            "sk6|ew2|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f;co/00/v4/d16/f|-"
         );
         // Explicit roles: `acc += x` — input, then the in-place accumulator.
         let inplace = derive_structure_key_token(
@@ -2653,7 +2679,7 @@ mod tests {
         .expect("derives");
         assert_eq!(
             inplace,
-            "sk5|ew2|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f|-"
+            "sk6|ew2|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f|-"
         );
         // The same two descriptors as input + OUTPUT are a different cell: one
         // input, so `ew1`. The in-place role is what makes it `ew2`.
@@ -2661,7 +2687,7 @@ mod tests {
             derive(DeclaredFacts::none(), &[op.clone(), op], "cuda:sm89").expect("derives");
         assert_eq!(
             in_out,
-            "sk5|ew1|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f|-"
+            "sk6|ew1|f32|cuda:sm89|ix32|grid|r2|co/00/v4/d16/f;co/00/v4/d16/f|-"
         );
     }
 
@@ -2675,7 +2701,7 @@ mod tests {
         let token = derive(DeclaredFacts::none(), &[op.clone(), op], "cuda:sm89").expect("derives");
         assert_eq!(
             token,
-            "sk5|ew1|f16|cuda:sm89|ix32|grid|r2|co/00/v8/d16/f;co/00/v8/d16/f|-"
+            "sk6|ew1|f16|cuda:sm89|ix32|grid|r2|co/00/v8/d16/f;co/00/v8/d16/f|-"
         );
     }
 
