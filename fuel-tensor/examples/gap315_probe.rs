@@ -73,8 +73,12 @@ impl std::fmt::Debug for Outcome {
         match self {
             Outcome::BuildErr(s) => write!(f, "BuildErr({s:?})"),
             Outcome::Panic(s) => write!(f, "Panic({s:?})"),
-            Outcome::OkRealized { dims, elems } => write!(f, "OkRealized {{ dims: {dims:?}, elems: {elems:?} }}"),
-            Outcome::OkBuildRealizeErr { dims } => write!(f, "OkBuildRealizeErr {{ dims: {dims:?} }}"),
+            Outcome::OkRealized { dims, elems } => {
+                write!(f, "OkRealized {{ dims: {dims:?}, elems: {elems:?} }}")
+            }
+            Outcome::OkBuildRealizeErr { dims } => {
+                write!(f, "OkBuildRealizeErr {{ dims: {dims:?} }}")
+            }
         }
     }
 }

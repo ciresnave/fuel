@@ -69,7 +69,13 @@ enum Outcome {
 impl std::fmt::Debug for Outcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Outcome::Returned { wrote, tail_untouched } => write!(f, "Returned {{ wrote: {wrote:?}, tail_untouched: {tail_untouched:?} }}"),
+            Outcome::Returned {
+                wrote,
+                tail_untouched,
+            } => write!(
+                f,
+                "Returned {{ wrote: {wrote:?}, tail_untouched: {tail_untouched:?} }}"
+            ),
             Outcome::Panic(s) => write!(f, "Panic({s:?})"),
         }
     }

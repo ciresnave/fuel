@@ -70,7 +70,13 @@ impl std::fmt::Debug for Outcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Outcome::Panic(s) => write!(f, "Panic({s:?})"),
-            Outcome::Built { advertised_len, validate } => write!(f, "Built {{ advertised_len: {advertised_len:?}, validate: {validate:?} }}"),
+            Outcome::Built {
+                advertised_len,
+                validate,
+            } => write!(
+                f,
+                "Built {{ advertised_len: {advertised_len:?}, validate: {validate:?} }}"
+            ),
         }
     }
 }
