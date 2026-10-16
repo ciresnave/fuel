@@ -417,9 +417,9 @@ checksum = "64578550db9c98fe24935e08cd4a18cbdff63c298fec930a0f49feef13e3fd2c"
 
 [[package]]
 name = "baracuda-core"
-version = "0.0.1-alpha.86"
+version = "0.0.1-alpha.94"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "342ddd0355e67fa67a651508f7f19626e2b7b8ed33b3c43001e72a7345b5ebdc"
+checksum = "ea3063fbda7f327d8f9d4e67fac7147bfa0ba19ece458df8da6776feae0497b4"
 dependencies = [
  "baracuda-types",
  "libloading 0.8.9",
@@ -676,13 +676,13 @@ dependencies = [
 
 [[package]]
 name = "baracuda-types"
-version = "0.0.1-alpha.86"
+version = "0.0.1-alpha.116"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "959e63a9037b02706cdf15afee73899b0a62bbbc39ad45b90c1c7599cb66312c"
+checksum = "a20e8afe5ae38b6c3dd98031a9880a34f094387a3e742e288669e817b04e514c"
 dependencies = [
  "float8",
  "half",
- "unpopped-vocab 0.14.4",
+ "unpopped-vocab 0.20.1",
 ]
 
 [[package]]
@@ -5943,6 +5943,16 @@ name = "unpopped-vocab"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd6ea5514b8aad809e4f9d3ffe83843db62a178a115aed48ef1c915e51e44a91"
+dependencies = [
+ "float8",
+ "half",
+]
+
+[[package]]
+name = "unpopped-vocab"
+version = "0.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd86a36fd2334c6126906fcc78fef8cc83a6192803665dadbc75fcdf91bfd657"
 dependencies = [
  "float8",
  "half",
