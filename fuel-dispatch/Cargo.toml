@@ -20,7 +20,7 @@ fuel-graph = { workspace = true }
 # unconditional core infrastructure.
 fuel-kernel-seam-types = { workspace = true }
 # kiss-ref advisory cross-check (cuda-gated verify path only) — see the `cuda` feature.
-fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", version = "0.20.2", optional = true }
+fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", version = "0.20.3", optional = true }
 # kiss-ref-core (github.com/ThinkersJournal/kiss-ref, crates.io "0.4") — the SINGLE
 # cross-project source of truth for the ULP-distance metric. `fkc::verify::ulp::
 # ulp_distance` delegates to `kiss_ref_core::ulp_distance_f32` so Fuel's verify stack
@@ -160,6 +160,13 @@ metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
 # DispatchRecord/MissRecord JSONL. Default OFF; pulls fuel-ir/serde so the
 # ImplId basis tuple (OpKind/DType/BackendId) serializes. (serde itself is now
 # an unconditional dep, so it is no longer listed here.)
+# Maintenance tools (ledger re-seeding, GAP-228 contract flip) that used to be
+# `#[ignore]`d tests. A binary is a separate crate and cannot reach `pub(crate)`
+# internals, so this feature exposes ONE hidden module (`dev_tools`) for the
+# `fuel-dev-tools` binary. It is NOT part of the supported API: semver-exempt,
+# off by default, and built in CI (`cargo check --features dev-tools --bins`) so
+# the tools cannot rot unbuilt.
+dev-tools = []
 telemetry = ["fuel-ir/serde"]
 # JIT-on-request adopt glue (the seam-consumption site): synthesize -> take_kernel
 # -> load kernel (caller-provided CUDA seam) -> adopt_runtime_fused. Pulls the
@@ -170,3 +177,8 @@ jit = ["dep:fuel-kernel-seam", "baracuda-types", "dep:kiss-ops-vocab"]
 # synthesize -> take_kernel -> load_synth_kernel -> launch with Baracuda's own
 # generated kernel (not a mock). Needs the CUDA toolchain (nvrtc). Default OFF.
 jit-synth = ["jit", "cuda", "dep:baracuda-cuda-emit"]
+
+[[bin]]
+name = "fuel-dev-tools"
+path = "src/bin/fuel-dev-tools.rs"
+required-features = ["dev-tools"]

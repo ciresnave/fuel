@@ -379,6 +379,65 @@ pub fn run_vulkan_verification_on(
     Ok((device_name, gpu_id, ledger, log))
 }
 
+#[cfg(feature = "dev-tools")]
+/// V-FKC-9 precision half — sweep the production Vulkan binding table,
+/// empirically verify `bit_stable_on_same_hardware` (+ byte-exact
+/// `max_ulp: 0` for the data-mover / cast / arg-reduce families) for every
+/// op this harness has a recipe for, and WRITE the merged ledger back to
+/// the git-checked-in `docs/kernel-contracts/.fkc-verified-ledger.json`.
+///
+/// Requires a live Vulkan device (a maintenance tool, not a test). Run:
+///   `cargo run -p fuel-dispatch --features dev-tools --bin fuel-dev-tools -- seed-vulkan (with --features vulkan)`
+pub(crate) fn run_seed_vulkan_ledger() {
+    let (ledger, log) = run_vulkan_verification(true).expect("vulkan seeding runs");
+    for a in &log {
+        println!(
+            "[v-fkc-9] {} {:?} (rev={}): {}",
+            a.op, a.dtypes, a.kernel_revision_hash, a.outcome
+        );
+    }
+    let passed = log
+        .iter()
+        .filter(|a| a.outcome == "pass" || a.outcome == "max_ulp pass")
+        .count();
+    let failed = log
+        .iter()
+        .filter(|a| a.outcome.starts_with("fail") || a.outcome.contains("fail"))
+        .count();
+    let skipped = log
+        .iter()
+        .filter(|a| a.outcome.starts_with("skip") || a.outcome.contains("skip"))
+        .count();
+    println!(
+        "[v-fkc-9] {passed} passed, {failed} failed, {skipped} skipped, {} attempts",
+        log.len()
+    );
+    assert!(
+        passed > 0,
+        "expected at least one Vulkan kernel to verify; got 0 — see log"
+    );
+
+    let vk_passes = ledger
+        .records()
+        .iter()
+        .filter(|r| r.backend == "Vulkan" && r.result == "pass")
+        .count();
+    println!("[v-fkc-9] ledger now holds {vk_passes} Vulkan pass records");
+
+    // Route through the ONE merging writer (GAP-210): three seeders
+    // share this file and no backend may truncate another's records.
+    // `ledger` already carries the embedded set, so the merge is a
+    // no-op here — routing through it is what keeps that true.
+    let summary = super::ledger::write_merged_ledger(ledger.records());
+    println!(
+        "[v-fkc-9] merged {} record(s) into {} existing -> {} total, written to {}",
+        summary.fresh,
+        summary.before,
+        summary.after,
+        summary.path.display(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,67 +569,6 @@ mod tests {
              then wrong, which outranks any ledger record — report, do not reconcile.",
             fails(&amd),
             fails(&nv),
-        );
-    }
-
-    /// V-FKC-9 precision half — sweep the production Vulkan binding table,
-    /// empirically verify `bit_stable_on_same_hardware` (+ byte-exact
-    /// `max_ulp: 0` for the data-mover / cast / arg-reduce families) for every
-    /// op this harness has a recipe for, and WRITE the merged ledger back to
-    /// the git-checked-in `docs/kernel-contracts/.fkc-verified-ledger.json`.
-    ///
-    /// Requires a live Vulkan device (`#[ignore]`'d). Run:
-    ///   `cargo test -p fuel-dispatch --features vulkan --lib \
-    ///    seed_vulkan_verified_ledger -- --ignored --nocapture`
-    #[test]
-    #[ignore = "re-seeding tool: writes the verified ledger; needs a live Vulkan device + --features vulkan"]
-    fn seed_vulkan_verified_ledger() {
-        let (ledger, log) = run_vulkan_verification(true).expect("vulkan seeding runs");
-        for a in &log {
-            println!(
-                "[v-fkc-9] {} {:?} (rev={}): {}",
-                a.op, a.dtypes, a.kernel_revision_hash, a.outcome
-            );
-        }
-        let passed = log
-            .iter()
-            .filter(|a| a.outcome == "pass" || a.outcome == "max_ulp pass")
-            .count();
-        let failed = log
-            .iter()
-            .filter(|a| a.outcome.starts_with("fail") || a.outcome.contains("fail"))
-            .count();
-        let skipped = log
-            .iter()
-            .filter(|a| a.outcome.starts_with("skip") || a.outcome.contains("skip"))
-            .count();
-        println!(
-            "[v-fkc-9] {passed} passed, {failed} failed, {skipped} skipped, {} attempts",
-            log.len()
-        );
-        assert!(
-            passed > 0,
-            "expected at least one Vulkan kernel to verify; got 0 — see log"
-        );
-
-        let vk_passes = ledger
-            .records()
-            .iter()
-            .filter(|r| r.backend == "Vulkan" && r.result == "pass")
-            .count();
-        println!("[v-fkc-9] ledger now holds {vk_passes} Vulkan pass records");
-
-        // Route through the ONE merging writer (GAP-210): three seeders
-        // share this file and no backend may truncate another's records.
-        // `ledger` already carries the embedded set, so the merge is a
-        // no-op here — routing through it is what keeps that true.
-        let summary = super::super::ledger::write_merged_ledger(ledger.records());
-        println!(
-            "[v-fkc-9] merged {} record(s) into {} existing -> {} total, written to {}",
-            summary.fresh,
-            summary.before,
-            summary.after,
-            summary.path.display(),
         );
     }
 }

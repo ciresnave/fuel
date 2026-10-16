@@ -67,8 +67,9 @@ pub(crate) mod verify;
 // Contract-maintenance tooling for the `audited:` attestation (GAP-228).
 // OUTSIDE `verify/` on purpose: it writes `.fkc.md` files, and `verify/`'s
 // single-writer gate scans that directory for any write call. See its docs.
-#[cfg(test)]
-mod contract_audit_flip;
+// Tests exercise its guards; the `dev-tools` binary drives its two GAP-228 tools.
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) mod contract_audit_flip;
 #[cfg(feature = "vulkan")]
 mod vulkan_link;
 mod warn;
