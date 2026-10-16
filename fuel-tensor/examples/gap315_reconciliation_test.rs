@@ -29,17 +29,24 @@ use fuel_tensor::Device;
 use fuel_tensor::lazy::Tensor;
 use std::sync::Arc;
 
-#[allow(
-    dead_code,
-    reason = "every field is read by the `{:?}` in the printed report; derive(Debug) \
-does not count as a read for dead_code, and the report IS this instrument's output"
-)]
-#[derive(Debug)]
 enum Outcome {
     BuildErr(String),
     Panic(String),
     OkRealized { dims: Vec<usize>, elems: usize },
     OkBuildRealizeErr { dims: Vec<usize> },
+}
+
+// A hand-written `Debug` (not `derive`) so the report below really READS every
+// field; a derived `Debug` does not count as a read for `dead_code`.
+impl std::fmt::Debug for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outcome::BuildErr(s) => write!(f, "BuildErr({s:?})"),
+            Outcome::Panic(s) => write!(f, "Panic({s:?})"),
+            Outcome::OkRealized { dims, elems } => write!(f, "OkRealized {{ dims: {dims:?}, elems: {elems:?} }}"),
+            Outcome::OkBuildRealizeErr { dims } => write!(f, "OkBuildRealizeErr {{ dims: {dims:?} }}"),
+        }
+    }
 }
 
 fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
@@ -103,9 +110,7 @@ fn header() {
     println!("debug_assertions = {on}  ({})", arm_label(on));
 }
 
-#[test]
-#[ignore = "instrument, not a gate: asserts nothing; see the module doc"]
-fn gap315_reconciliation_predicate_probe() {
+fn main() {
     header();
 
     // ---- (A) layer_norm_affine: PREDICTED NOT (d) - reshape-family reconciles ----
