@@ -53,10 +53,28 @@ pub struct Content {
     pub magic: VersionedMagic,
     pub metadata: HashMap<String, Value>,
     pub tensor_infos: HashMap<String, TensorInfo>,
+    /// Tensors whose ggml type code fuel cannot represent, by name with the
+    /// raw code (GAP-211). Same contract as
+    /// [`fuel_formats::gguf::Content::unsupported_tensors`]: the file opens,
+    /// the tensor is absent from `tensor_infos`, and loading it is a typed
+    /// error from [`Content::missing_tensor_error`].
+    pub unsupported_tensors: HashMap<String, u32>,
     pub tensor_data_offset: u64,
 }
 
 impl Content {
+    /// The error for a tensor lookup that missed [`Self::tensor_infos`]; names
+    /// the ggml type code when the file declares the tensor but its type is
+    /// unsupported, plain "missing tensor" otherwise.
+    pub fn missing_tensor_error(&self, name: &str) -> Error {
+        match self.unsupported_tensors.get(name) {
+            Some(code) => Error::Msg(format!(
+                "gguf: tensor {name:?} is stored as ggml type code {code}, which this build                  cannot load (no GgmlDType variant; GAP-211)"
+            )),
+            None => Error::Msg(format!("gguf: missing tensor {name:?}")),
+        }
+    }
+
     /// The original byte-stream constructor. UNCHANGED — still
     /// `fuel-formats`' own parser, never touches tensor data.
     pub fn read<R: Read + Seek>(reader: &mut R) -> Result<Self> {
@@ -65,6 +83,7 @@ impl Content {
             magic: parsed.magic,
             metadata: parsed.metadata,
             tensor_infos: parsed.tensor_infos,
+            unsupported_tensors: parsed.unsupported_tensors,
             tensor_data_offset: parsed.tensor_data_offset,
         })
     }
@@ -170,14 +189,17 @@ impl Content {
 
         let metadata = decode_metadata(&meta, path)?;
         check_alignment_agrees(&metadata, meta.alignment(), path)?;
-        check_all_tensors_resolved(&tensors, &tensors_report, &header, path)?;
-        let tensor_infos = build_tensor_infos(&tensors, path)?;
+        let mut unsupported_tensors =
+            check_all_tensors_resolved(&tensors, &tensors_report, &header, path)?;
+        let (tensor_infos, more_unsupported) = build_tensor_infos(&tensors, path)?;
+        unsupported_tensors.extend(more_unsupported);
         let magic = resolve_magic(header.version, path)?;
 
         Ok(Self {
             magic,
             metadata,
             tensor_infos,
+            unsupported_tensors,
             tensor_data_offset: tensors.data_start(),
         })
     }
@@ -298,26 +320,38 @@ fn check_all_tensors_resolved(
     tensors_report: &mlmf_core::Report,
     header: &mlmf_gguf::Header,
     path: &Path,
-) -> Result<()> {
+) -> Result<HashMap<String, u32>> {
     use mlmf_core::TensorContainer as _;
 
-    if tensors.tensors().len() == header.tensor_count as usize {
-        return Ok(());
+    let missing =
+        header.tensor_count as usize - tensors.tensors().len().min(header.tensor_count as usize);
+    if missing == 0 {
+        return Ok(HashMap::new());
     }
-    let unresolved: Vec<String> = tensors_report
+    // GAP-211: a tensor whose type code MLMF cannot resolve is omitted by MLMF
+    // and reported with its raw code. Fuel cannot represent that type either, so
+    // it joins `Content::unsupported_tensors` (the file still opens; loading the
+    // tensor fails by name). Anything MLMF dropped WITHOUT a code we can record
+    // stays a typed error, never a silently smaller tensor table.
+    let unresolved: HashMap<String, u32> = tensors_report
         .entries()
         .iter()
         .filter_map(|u| match &u.kind {
-            mlmf_core::UnrecognizedKind::TensorEncoding { name, declared, .. } => {
-                Some(format!("{name} ({declared:?})"))
-            }
+            mlmf_core::UnrecognizedKind::TensorEncoding {
+                name,
+                declared: mlmf_core::DeclaredType::Code(code),
+                ..
+            } => Some((name.clone(), *code)),
             _ => None,
         })
         .collect();
+    if unresolved.len() == missing {
+        return Ok(unresolved);
+    }
     Err(Error::Msg(format!(
-        "gguf: {} of {} declared tensors have a type MLMF cannot resolve at all: {unresolved:?}",
-        header.tensor_count as usize - tensors.tensors().len(),
+        "gguf: {missing} of {} declared tensors were dropped by MLMF and only {} carry a recordable type code: {unresolved:?}",
         header.tensor_count,
+        unresolved.len(),
     ))
     .with_path(path))
 }
@@ -326,10 +360,11 @@ fn check_all_tensors_resolved(
 fn build_tensor_infos(
     tensors: &mlmf_gguf::GgufTensors<'_>,
     path: &Path,
-) -> Result<HashMap<String, TensorInfo>> {
+) -> Result<(HashMap<String, TensorInfo>, HashMap<String, u32>)> {
     use mlmf_core::TensorContainer as _;
 
     let mut tensor_infos = HashMap::new();
+    let mut unsupported = HashMap::new();
     for d in tensors.tensors() {
         let code = encoding_ggml_code(&d.encoding).ok_or_else(|| {
             Error::Msg(format!(
@@ -338,8 +373,11 @@ fn build_tensor_infos(
             ))
             .with_path(path)
         })?;
-        let ggml_dtype = fuel_ir::GgmlDType::from_u32(code)
-            .map_err(|e| Error::Msg(format!("gguf: tensor {:?}: {e}", d.name)).with_path(path))?;
+        // GAP-211: a type fuel has no variant for is recorded, not fatal.
+        let Ok(ggml_dtype) = fuel_ir::GgmlDType::from_u32(code) else {
+            unsupported.insert(d.name.clone(), code);
+            continue;
+        };
         // GGUF's on-disk dimension order needs reversing to match fuel's
         // row-major convention -- the same reversal
         // `fuel_formats::gguf::Content::read` performs
@@ -360,7 +398,7 @@ fn build_tensor_infos(
             },
         );
     }
-    Ok(tensor_infos)
+    Ok((tensor_infos, unsupported))
 }
 
 /// mlmf-gguf's own SUPPORTED version set is exactly {2, 3} -- `parse_header`

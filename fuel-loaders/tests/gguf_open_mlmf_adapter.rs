@@ -194,40 +194,68 @@ fn gguf_open_matches_read_for_real_metadata() {
     }
 }
 
-/// A tensor declaring ggml code 24 (I8) -- a type `GgmlType::encoding()`
-/// resolves to `Encoding::Dense(DType::I8)`, which fuel's narrower
-/// `GgmlDType` has no variant for. `Content::read` already fails this file
-/// with a typed Err (`GgmlDType::from_u32` has no arm for 24); `open` must
-/// fail the same way, never panic, never silently drop the tensor.
+/// GAP-211: a tensor whose ggml type code fuel has no variant for (24 = I8,
+/// and the whole IQ*/TQ* family) must NOT stop the file from opening --
+/// a metadata-only consumer (a `chat_template` reader) would otherwise be held
+/// hostage to the tensor type table. Both constructors must (1) succeed,
+/// (2) keep the supported tensor, (3) record the unsupported one by name with
+/// its raw code, and (4) turn a LOAD of that tensor into a typed error naming
+/// the tensor and the code -- never the generic "missing tensor", never silence.
+/// A name the file does not declare keeps the plain "missing tensor" message
+/// (positive control: the two messages must differ).
 #[test]
-fn gguf_open_returns_typed_err_for_an_i8_tensor() {
-    let gguf = build_gguf(
-        &[],
-        &[tensor_info_record("weird", &[4], /* I8 */ 24, 0)],
-        &[0i8; 4].iter().map(|&b| b as u8).collect::<Vec<_>>(),
-    );
+fn gguf_unsupported_tensor_type_opens_and_fails_by_name_on_load() {
+    for (label, code) in [("i8", 24u32), ("iq4_nl", 20u32), ("iq3_s", 21u32)] {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1.5f32.to_le_bytes()); // "good": one F32 at offset 0
+        data.extend_from_slice(&[0u8; 32]); // "weird": opaque bytes at offset 4
+        let gguf = build_gguf(
+            &[metadata_string_entry("general.name", b"hostage")],
+            &[
+                tensor_info_record("good", &[1], /* F32 */ 0, 0),
+                tensor_info_record("weird", &[32], code, 4),
+            ],
+            &data,
+        );
 
-    let mut cursor = Cursor::new(gguf.clone());
-    let read_err = Content::read(&mut cursor).expect_err("fuel's own parser already rejects I8");
+        let via_read = Content::read(&mut Cursor::new(gguf.clone()))
+            .unwrap_or_else(|e| panic!("{label}: read must open, got {e}"));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("unsupported.gguf");
+        std::fs::write(&path, &gguf).expect("write synthetic gguf");
+        let via_open =
+            Content::open(&path).unwrap_or_else(|e| panic!("{label}: open must open, got {e}"));
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("weird.gguf");
-    std::fs::write(&path, &gguf).expect("write synthetic gguf");
-    let open_err = Content::open(&path).expect_err("open must reject I8 too, not panic");
-
-    // Both are typed Errs (not a panic -- the call above would have
-    // aborted the test process otherwise), and both name the same root
-    // cause: an unknown/unsupported ggml dtype code.
-    let read_msg = read_err.to_string();
-    let open_msg = open_err.to_string();
-    assert!(
-        read_msg.contains("dtype") || read_msg.contains("24"),
-        "fuel's own error should name the dtype or code: {read_msg}"
-    );
-    assert!(
-        open_msg.contains("dtype") || open_msg.contains("24") || open_msg.contains("weird"),
-        "open's error should name the dtype, code, or tensor: {open_msg}"
-    );
+        for (ctor, content) in [("read", &via_read), ("open", &via_open)] {
+            assert!(
+                content.metadata.contains_key("general.name"),
+                "{label}/{ctor}: metadata must survive"
+            );
+            assert!(
+                content.tensor_infos.contains_key("good"),
+                "{label}/{ctor}: the supported tensor must still be listed"
+            );
+            assert!(
+                !content.tensor_infos.contains_key("weird"),
+                "{label}/{ctor}: the unsupported tensor must not be listed as loadable"
+            );
+            assert_eq!(
+                content.unsupported_tensors.get("weird"),
+                Some(&code),
+                "{label}/{ctor}: the unsupported tensor is recorded with its raw code"
+            );
+            let msg = content.missing_tensor_error("weird").to_string();
+            assert!(
+                msg.contains("weird") && msg.contains(&code.to_string()),
+                "{label}/{ctor}: load error must name the tensor and the code: {msg}"
+            );
+            let absent = content.missing_tensor_error("never_declared").to_string();
+            assert!(
+                absent.contains("missing tensor") && !absent.contains("type code"),
+                "{label}/{ctor}: an undeclared name keeps the plain message: {absent}"
+            );
+        }
+    }
 }
 
 /// GAP pin: a metadata string whose declared bytes are not valid UTF-8.
