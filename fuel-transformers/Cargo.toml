@@ -11,6 +11,7 @@ readme = "README.md"
 
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
 byteorder = { workspace = true }
 fuel-tensor = { workspace = true }
 fuel-cpu-backend = { workspace = true }
@@ -56,6 +57,10 @@ cuda = ["fuel-tensor/cuda"]
 cudnn = ["fuel-tensor/cudnn"]
 mkl = ["dep:intel-mkl-src", "fuel-tensor/mkl"]
 metal = ["fuel-tensor/metal"]
+# Manual developer tools (ignore retirement): the Qwen3 yardstick fixture
+# regenerator and speed harness, as `examples/qwen3_yardstick_tool.rs`. The
+# integration tests enable it through the self dev-dependency below.
+dev-tools = ["dep:anyhow"]
 
 # Doctest-only. The crate-level "Quick start" example names
 # `fuel_nn::varbuilder::VarBuilder`, which this crate does NOT depend on at
@@ -67,6 +72,7 @@ metal = ["fuel-tensor/metal"]
 # It broke because the fuel-nn EXTRACTION (2026-08-19) moved VarBuilder out of
 # fuel-core, and `--all-targets` does NOT build doctests, so no gate here saw it.
 [dev-dependencies]
+fuel-transformers = { path = ".", features = ["dev-tools"] }
 fuel-hardware = { path = "../fuel-hardware" }
 fuel-test-support = { path = "../fuel-test-support" }
 fuel-nn = { path = "../fuel-nn" }
@@ -74,3 +80,7 @@ fuel-nn = { path = "../fuel-nn" }
 # test (tests/qwen3_cpu_yardstick.rs) needs `anyhow::{anyhow, bail}` for its
 # GGUF-metadata loading path, mirroring fuel-examples/examples/quantized-qwen3.
 anyhow = { workspace = true }
+
+[[example]]
+name = "qwen3_yardstick_tool"
+required-features = ["dev-tools"]
