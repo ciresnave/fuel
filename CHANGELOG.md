@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.8 - 2026-10-17
+
+### Changed
+
+- CI: every `cargo check`/`cargo test`/`cargo clippy` step in `rust-ci.yml` now passes `--locked` (24 invocations; SUP-001), so a build can no longer resolve dependencies differently from the tracked `Cargo.lock`. The two `cargo metadata --no-deps` calls are left as they are (no resolution to lock).
+
 ## v0.20.7 - 2026-10-16
 
 ### Changed
