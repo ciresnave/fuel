@@ -205,7 +205,7 @@ fn gguf_open_matches_read_for_real_metadata() {
 /// (positive control: the two messages must differ).
 #[test]
 fn gguf_unsupported_tensor_type_opens_and_fails_by_name_on_load() {
-    for (label, code) in [("i8", 24u32), ("iq4_nl", 20u32), ("iq3_s", 21u32)] {
+    for (label, code) in [("i8", 24u32), ("iq2_xxs", 16u32), ("iq3_s", 21u32)] {
         // "good": one F32 at offset 0; "weird": 32 opaque bytes at offset 4.
         let data = [&1.5f32.to_le_bytes()[..], &[0u8; 32][..]].concat();
         let gguf = build_gguf(
@@ -254,6 +254,39 @@ fn gguf_unsupported_tensor_type_opens_and_fails_by_name_on_load() {
                 "{label}/{ctor}: an undeclared name keeps the plain message: {absent}"
             );
         }
+    }
+}
+
+/// GAP-211 B1: IQ4_NL (20) and IQ4_XS (23) are SUPPORTED types, so both
+/// constructors list them as ordinary tensors with the right dtype and byte
+/// size, and nothing lands in `unsupported_tensors`. (The sibling test uses
+/// types that stay unsupported; together they pin the boundary.)
+#[test]
+fn gguf_iq4_tensors_open_as_supported_types() {
+    use fuel_ir::GgmlDType;
+    let data = vec![0u8; 18 + 136]; // one IQ4_NL block (32 elems) + one IQ4_XS block (256)
+    let gguf = build_gguf(
+        &[],
+        &[
+            tensor_info_record("nl", &[32], 20, 0),
+            tensor_info_record("xs", &[256], 23, 18),
+        ],
+        &data,
+    );
+    let via_read = Content::read(&mut Cursor::new(gguf.clone())).expect("read");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("iq4.gguf");
+    std::fs::write(&path, &gguf).expect("write synthetic gguf");
+    let via_open = Content::open(&path).expect("open");
+    for (ctor, c) in [("read", &via_read), ("open", &via_open)] {
+        assert!(
+            c.unsupported_tensors.is_empty(),
+            "{ctor}: {:?}",
+            c.unsupported_tensors
+        );
+        assert_eq!(c.tensor_infos["nl"].ggml_dtype, GgmlDType::Iq4Nl, "{ctor}");
+        assert_eq!(c.tensor_infos["xs"].ggml_dtype, GgmlDType::Iq4Xs, "{ctor}");
+        assert_eq!(c.tensor_infos["xs"].offset, 18, "{ctor}");
     }
 }
 

@@ -116,6 +116,14 @@ impl QMetalStorage {
                 let vec: Vec<fuel_quantized::BlockQ8K> = read_to_vec(&buffer, block_len);
                 fuel_quantized::BlockQ8K::to_float(&vec, &mut out);
             }
+            GgmlDType::Iq4Nl => {
+                let vec: Vec<fuel_quantized::iq4::BlockIq4Nl> = read_to_vec(&buffer, block_len);
+                fuel_quantized::iq4::BlockIq4Nl::to_float(&vec, &mut out);
+            }
+            GgmlDType::Iq4Xs => {
+                let vec: Vec<fuel_quantized::iq4::BlockIq4Xs> = read_to_vec(&buffer, block_len);
+                fuel_quantized::iq4::BlockIq4Xs::to_float(&vec, &mut out);
+            }
         }
 
         let buffer = self.device.new_buffer_with_data(&out)?;
@@ -215,7 +223,7 @@ impl QMetalStorage {
                 device.device(),
                 &encoder,
                 device.kernels(),
-                to_metal_ggml(self.dtype),
+                to_metal_ggml(self.dtype)?,
                 (1, 1, n, k),
                 storage.buffer(),
                 (layout.start_offset() + batch_id * k) * storage.dtype().size_in_bytes(),
@@ -299,7 +307,7 @@ impl QMetalStorage {
             device.device(),
             &encoder,
             device.kernels(),
-            to_metal_ggml(self.dtype),
+            to_metal_ggml(self.dtype)?,
             src0_l.dims(),
             &src0_stride,
             &self.buffer,
@@ -464,9 +472,9 @@ fn read_to_vec<T: Clone>(buffer: &Buffer, n: usize) -> Vec<T> {
 /// A free fn rather than `impl From`: BOTH types are foreign to this crate, so
 /// the impl violated the orphan rule (E0117) and could never have compiled.
 /// Nothing built this crate, so the illegal impl sat here unnoticed.
-pub(crate) fn to_metal_ggml(value: GgmlDType) -> fuel_metal_kernels::GgmlDType {
+pub(crate) fn to_metal_ggml(value: GgmlDType) -> Result<fuel_metal_kernels::GgmlDType> {
     {
-        match value {
+        Ok(match value {
             GgmlDType::Q4_0 => fuel_metal_kernels::GgmlDType::Q4_0,
             GgmlDType::Q4_1 => fuel_metal_kernels::GgmlDType::Q4_1,
             GgmlDType::Q5_0 => fuel_metal_kernels::GgmlDType::Q5_0,
@@ -482,6 +490,11 @@ pub(crate) fn to_metal_ggml(value: GgmlDType) -> fuel_metal_kernels::GgmlDType {
             GgmlDType::F16 => fuel_metal_kernels::GgmlDType::F16,
             GgmlDType::F32 => fuel_metal_kernels::GgmlDType::F32,
             GgmlDType::BF16 => fuel_metal_kernels::GgmlDType::F16,
-        }
+            // No Metal matmul kernel for the IQ4 formats (GAP-211 B1): decline,
+            // never dispatch another format's kernel over their bytes.
+            GgmlDType::Iq4Nl | GgmlDType::Iq4Xs => {
+                fuel_ir::bail!("{value:?} has no Metal quantized-matmul kernel")
+            }
+        })
     }
 }

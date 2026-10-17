@@ -11,7 +11,10 @@ use crate::error::Result;
 
 /// The ggml block-format dtype tag. Mirrors llama.cpp's `ggml_type`
 /// **@`9d57ce456c`** for the subset fuel supports (the classic 15 — F32/F16/BF16
-/// plus Q4_0..Q8_1 and Q2K..Q8K; NOT the IQ*/TQ*/MXFP4/NVFP4 families).
+/// plus Q4_0..Q8_1 and Q2K..Q8K, plus IQ4_NL and IQ4_XS (GAP-211 B1; block
+/// geometry and the dequant formula verified against `ggml-common.h` and
+/// `ggml-quants.c` at that commit); NOT the other IQ*/TQ*/MXFP4/NVFP4 families,
+/// which an unsupported-tensor GGUF load reports by name instead).
 ///
 /// Geometry checked against that commit (GAP-248 instance 5), and the referee
 /// differs by column:
@@ -46,6 +49,10 @@ pub enum GgmlDType {
     Q5K,
     Q6K,
     Q8K,
+    /// llama.cpp `GGML_TYPE_IQ4_NL` (20): 32 elems/block, non-linear 4-bit codebook.
+    Iq4Nl,
+    /// llama.cpp `GGML_TYPE_IQ4_XS` (23): 256 elems/block, 4-bit codebook, 6-bit sub-block scales.
+    Iq4Xs,
 }
 
 impl GgmlDType {
@@ -65,6 +72,8 @@ impl GgmlDType {
             13 => Self::Q5K,
             14 => Self::Q6K,
             15 => Self::Q8K,
+            20 => Self::Iq4Nl,
+            23 => Self::Iq4Xs,
             30 => Self::BF16,
             _ => return Err(crate::Error::Msg(format!("unknown dtype for tensor {u}")).bt()),
         };
@@ -87,6 +96,8 @@ impl GgmlDType {
             Self::Q5K => 13,
             Self::Q6K => 14,
             Self::Q8K => 15,
+            Self::Iq4Nl => 20,
+            Self::Iq4Xs => 23,
             Self::BF16 => 30,
         }
     }
@@ -96,26 +107,36 @@ impl GgmlDType {
             Self::F32 => 4,
             Self::F16 | Self::BF16 => 2,
             // ggml block sizes (must match k_quants::BlockQX struct sizes)
-            Self::Q4_0 => 18, // 2 + 16
-            Self::Q4_1 => 20, // 4 + 16
-            Self::Q5_0 => 22, // 2 + 4 + 16
-            Self::Q5_1 => 24, // 4 + 4 + 16
-            Self::Q8_0 => 34, // 2 + 32
-            Self::Q8_1 => 36, // 4 + 32
-            Self::Q2K => 84,  // QK_K/16 + QK_K/4 + 2 + 2
-            Self::Q3K => 110, // QK_K/8 + QK_K/4 + 12 + 2
-            Self::Q4K => 144, // 2 + 2 + 12 + QK_K/2
-            Self::Q5K => 176, // 2 + 2 + 12 + QK_K/8 + QK_K/2
-            Self::Q6K => 210, // QK_K/2 + QK_K/4 + QK_K/16 + 2
-            Self::Q8K => 292, // 4 + QK_K + QK_K/16 * 2
+            Self::Q4_0 => 18,   // 2 + 16
+            Self::Q4_1 => 20,   // 4 + 16
+            Self::Q5_0 => 22,   // 2 + 4 + 16
+            Self::Q5_1 => 24,   // 4 + 4 + 16
+            Self::Q8_0 => 34,   // 2 + 32
+            Self::Q8_1 => 36,   // 4 + 32
+            Self::Q2K => 84,    // QK_K/16 + QK_K/4 + 2 + 2
+            Self::Q3K => 110,   // QK_K/8 + QK_K/4 + 12 + 2
+            Self::Q4K => 144,   // 2 + 2 + 12 + QK_K/2
+            Self::Q5K => 176,   // 2 + 2 + 12 + QK_K/8 + QK_K/2
+            Self::Q6K => 210,   // QK_K/2 + QK_K/4 + QK_K/16 + 2
+            Self::Q8K => 292,   // 4 + QK_K + QK_K/16 * 2
+            Self::Iq4Nl => 18,  // 2 + QK4_NL/2
+            Self::Iq4Xs => 136, // 2 + 2 + QK_K/64 + QK_K/2
         }
     }
 
     pub fn block_size(&self) -> usize {
         match self {
             Self::F32 | Self::F16 | Self::BF16 => 1,
-            Self::Q4_0 | Self::Q4_1 | Self::Q5_0 | Self::Q5_1 | Self::Q8_0 | Self::Q8_1 => 32,
-            Self::Q2K | Self::Q3K | Self::Q4K | Self::Q5K | Self::Q6K | Self::Q8K => 256,
+            Self::Q4_0
+            | Self::Q4_1
+            | Self::Q5_0
+            | Self::Q5_1
+            | Self::Q8_0
+            | Self::Q8_1
+            | Self::Iq4Nl => 32,
+            Self::Q2K | Self::Q3K | Self::Q4K | Self::Q5K | Self::Q6K | Self::Q8K | Self::Iq4Xs => {
+                256
+            }
         }
     }
 

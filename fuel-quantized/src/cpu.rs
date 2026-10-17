@@ -6,6 +6,7 @@
 //! `fuel-cpu-backend`-side `CpuQStorage` adapter and by the file-format
 //! readers in `fuel-core/src/quantized/`.
 
+use crate::iq4::{BlockIq4Nl, BlockIq4Xs};
 use crate::k_quants::{
     self, BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K,
     BlockQ6K, BlockQ8_0, BlockQ8_1, BlockQ8K, GgmlType,
@@ -111,6 +112,14 @@ pub fn cpu_zeros(dtype: GgmlDType, elem_count: usize) -> Box<dyn QuantizedType> 
         GgmlDType::Q5K => Box::new(vec![BlockQ5K::zeros(); elem_count / BlockQ5K::BLCK_SIZE]),
         GgmlDType::Q6K => Box::new(vec![BlockQ6K::zeros(); elem_count / BlockQ6K::BLCK_SIZE]),
         GgmlDType::Q8K => Box::new(vec![BlockQ8K::zeros(); elem_count / BlockQ8K::BLCK_SIZE]),
+        GgmlDType::Iq4Nl => Box::new(vec![
+            BlockIq4Nl::zeros();
+            elem_count / BlockIq4Nl::BLCK_SIZE
+        ]),
+        GgmlDType::Iq4Xs => Box::new(vec![
+            BlockIq4Xs::zeros();
+            elem_count / BlockIq4Xs::BLCK_SIZE
+        ]),
     }
 }
 
@@ -135,6 +144,8 @@ pub fn cpu_from_data(dtype: GgmlDType, data: Cow<'_, [u8]>) -> Result<Box<dyn Qu
         GgmlDType::Q5K => Box::new(blocks_from_bytes::<BlockQ5K>(data)?),
         GgmlDType::Q6K => Box::new(blocks_from_bytes::<BlockQ6K>(data)?),
         GgmlDType::Q8K => Box::new(blocks_from_bytes::<BlockQ8K>(data)?),
+        GgmlDType::Iq4Nl => Box::new(blocks_from_bytes::<BlockIq4Nl>(data)?),
+        GgmlDType::Iq4Xs => Box::new(blocks_from_bytes::<BlockIq4Xs>(data)?),
     })
 }
 

@@ -321,6 +321,8 @@ pub fn ggml_to_fdx(g: GgmlDType) -> u16 {
         GgmlDType::Q5K => FDX_GGML_Q5K,
         GgmlDType::Q6K => FDX_GGML_Q6K,
         GgmlDType::Q8K => FDX_GGML_Q8K,
+        GgmlDType::Iq4Nl => FDX_GGML_IQ4_NL,
+        GgmlDType::Iq4Xs => FDX_GGML_IQ4_XS,
     }
 }
 
@@ -345,6 +347,8 @@ pub fn fdx_to_ggml(code: u16) -> Option<GgmlDType> {
         FDX_GGML_Q5K => GgmlDType::Q5K,
         FDX_GGML_Q6K => GgmlDType::Q6K,
         FDX_GGML_Q8K => GgmlDType::Q8K,
+        FDX_GGML_IQ4_NL => GgmlDType::Iq4Nl,
+        FDX_GGML_IQ4_XS => GgmlDType::Iq4Xs,
         _ => return None,
     };
     Some(g)
@@ -810,6 +814,8 @@ mod tests {
         GgmlDType::Q5K,
         GgmlDType::Q6K,
         GgmlDType::Q8K,
+        GgmlDType::Iq4Nl,
+        GgmlDType::Iq4Xs,
     ];
 
     #[test]
@@ -840,6 +846,8 @@ mod tests {
         assert_eq!(ggml_to_fdx(GgmlDType::Q4_0), 2);
         assert_eq!(ggml_to_fdx(GgmlDType::Q5_0), 6);
         assert_eq!(ggml_to_fdx(GgmlDType::Q8K), 15);
+        assert_eq!(ggml_to_fdx(GgmlDType::Iq4Nl), 20);
+        assert_eq!(ggml_to_fdx(GgmlDType::Iq4Xs), 23);
         assert_eq!(ggml_to_fdx(GgmlDType::F16), 1);
         assert_eq!(ggml_to_fdx(GgmlDType::BF16), 30);
     }
