@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.6 - 2026-10-16
+
+### Changed
+
+- Dependencies: adopt the baracuda family at 0.0.1-alpha.116 (latest published; all 18 workspace pins, 21 locked crates; transitive unpopped-vocab 0.14.4 -> 0.20.1). `baracuda-cuda-emit` stays on its own 0.11 line. Verified: `cargo check --all-targets` of fuel-dispatch (cuda, jit) + fuel-cuda-backend, 0 errors; live GPU suite NOT re-run.
+
 ## v0.20.5 - 2026-10-16
 
 ### Changed
