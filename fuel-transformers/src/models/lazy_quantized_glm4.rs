@@ -235,9 +235,10 @@ impl QuantizedGlm4Model {
 
         let get_tensor_bytes =
             |name: &str| -> Result<(&[u8], fuel_loaders::quantized::GgmlDType, Vec<usize>)> {
-                let info = content.tensor_infos.get(name).ok_or_else(|| {
-                    fuel_ir::error::Error::Msg(format!("gguf: missing tensor {name:?}"))
-                })?;
+                let info = content
+                    .tensor_infos
+                    .get(name)
+                    .ok_or_else(|| content.missing_tensor_error(name))?;
                 let elems = info.shape.elem_count();
                 let block_size = info.ggml_dtype.block_size();
                 let bytes_len = elems / block_size * info.ggml_dtype.type_size();
