@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.7 - 2026-10-16
+
+### Changed
+
+- Dependencies: tokio 1.53.2 -> 1.53.3 (lock only).
+
 ## v0.20.6 - 2026-10-16
 
 ### Changed
