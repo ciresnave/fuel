@@ -49,6 +49,11 @@ const CORE_MANIFEST: &str = include_str!("../../fuel-tensor/Cargo.toml");
 const TRANSFORMERS_MANIFEST: &str = include_str!("../../fuel-transformers/Cargo.toml");
 const DISPATCH_MANIFEST: &str = include_str!("../../fuel-dispatch/Cargo.toml");
 
+/// Maintainer-only features that the facade deliberately does not surface:
+/// `fuel-transformers/dev-tools` (the Qwen3 yardstick tool) and
+/// `fuel-dispatch/dev-tools` (the ledger seeders). See the use site.
+const TOOLING_FEATURES: &[&str] = &["dev-tools"];
+
 /// Parse the `[features]` table into `(name, [array elements])` pairs, in order.
 ///
 /// Handles multi-line array values by bracket-depth accumulation (fuel-tensor's
@@ -155,8 +160,31 @@ fn facade_forwards_each_feature_to_every_dep_that_declares_it() {
         dispatch.len()
     );
 
-    let core_names = feature_names(&core);
-    let tf_names = feature_names(&transformers);
+    // Developer-tool features (ignore retirement): programs for maintainers, not
+    // consumer capabilities, so the facade neither surfaces nor forwards them.
+    // The exemption carries its own detector: each listed name must still be
+    // declared by a dep (else the entry is dead and must go) and must stay OUT of
+    // the facade (else it was surfaced and the exemption is stale).
+    for tool in TOOLING_FEATURES {
+        assert!(
+            feature_names(&transformers).contains(*tool)
+                || feature_names(&dispatch).contains(*tool)
+                || feature_names(&core).contains(*tool),
+            "TOOLING_FEATURES lists {tool:?} but no covered dep declares it any more -- delete the entry"
+        );
+        assert!(
+            !feature_names(&facade).contains(*tool),
+            "the facade surfaces tooling feature {tool:?}; either drop it from the facade or drop it from TOOLING_FEATURES and let the union rule cover it"
+        );
+    }
+    let without_tooling = |names: BTreeSet<String>| -> BTreeSet<String> {
+        names
+            .into_iter()
+            .filter(|n| !TOOLING_FEATURES.contains(&n.as_str()))
+            .collect()
+    };
+    let core_names = without_tooling(feature_names(&core));
+    let tf_names = without_tooling(feature_names(&transformers));
     let dispatch_names = feature_names(&dispatch);
     let facade_names = feature_names(&facade);
 
