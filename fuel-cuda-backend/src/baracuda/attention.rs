@@ -175,7 +175,6 @@ fn rope_run(
 /// `out` must already hold at least
 /// `outer_count * seq * head_dim * dtype_size_bytes` bytes; a smaller
 /// buffer is a surfaced error, never an out-of-bounds device write.
-#[allow(clippy::too_many_arguments)]
 fn rope_run_into(
     src: &CudaStorageBytes,
     src_layout: Option<&Layout>,
@@ -436,7 +435,6 @@ macro_rules! rope_kernel {
                 "Write-into-output variant of baracuda `rope_", stringify!($dtype_stem),
                 "` — writes into `out` (no alloc; CapturedRun capture mode)."
             )]
-            #[allow(clippy::too_many_arguments)]
             pub fn [<$name _into>](
                 src: &CudaStorageBytes,
                 src_layout: Option<&Layout>,
@@ -466,7 +464,6 @@ macro_rules! flash_sdpa_kernel {
     ($name:ident, $dtype_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
         ::paste::paste! {
             #[doc = concat!("Baracuda `flash_sdpa_", stringify!($dtype_stem), "` kernel.")]
-            #[allow(clippy::too_many_arguments)]
             pub fn $name(
                 q: &CudaStorageBytes,
                 k: &CudaStorageBytes,
@@ -546,7 +543,6 @@ type RopeApplyRun = unsafe extern "C" fn(
 /// ABI (`cos`/`sin` always F32, half-width `[seq, head_dim/2]`, `stride_b
 /// == 0`). `out` must already hold at least `outer_count * seq * head_dim *
 /// dtype_size_bytes` bytes (same never-alloc contract as `rope_run_into`).
-#[allow(clippy::too_many_arguments)]
 fn rope_apply_run_into(
     x: &CudaStorageBytes,
     cos: &CudaStorageBytes,
@@ -650,7 +646,6 @@ macro_rules! rope_apply_kernel {
                 "Write-into-output driver for baracuda `rope_apply_",
                 stringify!($dtype_stem), "` (Task 4.6 FKC acceptance kernel)."
             )]
-            #[allow(clippy::too_many_arguments)]
             pub fn [<$name _into>](
                 x: &CudaStorageBytes,
                 cos: &CudaStorageBytes,
@@ -914,7 +909,6 @@ flash_sdpa_kernel!(flash_sdpa_f64, f64, 8, "flash_sdpa_f64");
 /// Driver for `sdpa_<dt>_arbmask_run` (Phase 51 additive-mask SDPA).
 /// Same shape as `flash_sdpa_run` plus a `mask` byte view shaped
 /// `[B, H, q_len, k_len]` in F32 regardless of operand dtype.
-#[allow(clippy::too_many_arguments)]
 fn sdpa_arbmask_run(
     q: &CudaStorageBytes,
     k: &CudaStorageBytes,
@@ -995,7 +989,6 @@ macro_rules! sdpa_arbmask_kernel {
     ($name:ident, $dtype_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
         ::paste::paste! {
             #[doc = concat!("Baracuda `sdpa_", stringify!($dtype_stem), "_arbmask` kernel.")]
-            #[allow(clippy::too_many_arguments)]
             pub fn $name(
                 q: &CudaStorageBytes,
                 k: &CudaStorageBytes,
@@ -1218,7 +1211,6 @@ fn flash_decoding_rank4_strides(
 /// FlashDecoding driver. Allocates a zero-initialized output
 /// `[B, Hq, 1, D]`, sizes workspace at capacity (`sk`), and launches the
 /// baracuda decode kernel. Returns the attention output.
-#[allow(clippy::too_many_arguments)]
 fn flash_decoding_run(
     q: &CudaStorageBytes,
     k: &CudaStorageBytes,
@@ -1371,7 +1363,6 @@ macro_rules! flash_decoding_kernel {
     ($name:ident, $dtype_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
         ::paste::paste! {
             #[doc = concat!("Baracuda `flash_decoding_", stringify!($dtype_stem), "` decode-flash kernel (seq_q==1, capacity-K).")]
-            #[allow(clippy::too_many_arguments)]
             pub fn $name(
                 q: &CudaStorageBytes,
                 k: &CudaStorageBytes,

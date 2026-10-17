@@ -266,7 +266,6 @@ fn leaky_relu(x: &Tensor, slope: f64) -> fuel_ir::error::Result<Tensor> {
 
 /// Conv + BN-fused affine + Leaky-ReLU. Standard Darknet "DBL" block.
 /// Same-shape output (no stride, padding = (k-1)/2).
-#[allow(clippy::too_many_arguments)]
 fn cbn(
     x: &Tensor,
     cw: &CbnWeights,

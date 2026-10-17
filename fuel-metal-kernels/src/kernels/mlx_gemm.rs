@@ -253,7 +253,6 @@ fn should_use_split_k(b: usize, m: usize, n: usize, k: usize) -> bool {
     (tm * tn) <= 32 && tk >= 8
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_mlx_gemm(
     device: &Device,
     ep: impl EncoderProvider,

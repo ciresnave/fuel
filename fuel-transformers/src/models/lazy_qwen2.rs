@@ -611,7 +611,6 @@ impl Qwen2Model {
     ///   drop the window** on bf16/CUDA, the exact defect this port exists to
     ///   fix — while being invisible to this lane's f32/CPU gate, where the arm
     ///   declines anyway. Offering it needs a windowed `k` range first.
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_kv_writes(
         &self,
         x: &Tensor,

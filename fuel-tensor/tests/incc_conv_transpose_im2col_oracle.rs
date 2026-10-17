@@ -32,7 +32,6 @@ use fuel_tensor::pipelined_bridge::realize_one_as;
 
 /// Lower + realize one conv_transpose config on the CPU backend and compare to
 /// the native-kernel oracle. `weight` is `[Cin, Cout/groups, Kh, Kw]`.
-#[allow(clippy::too_many_arguments)]
 fn check_case(
     n: usize,
     cin: usize,

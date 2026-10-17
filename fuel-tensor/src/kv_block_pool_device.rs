@@ -642,7 +642,6 @@ impl DeviceKvPool {
     /// The write mutates the bound pool buffer in place (so it persists for the
     /// next step) AND feeds this step's `Op::PagedAttn` — one graph, one realize,
     /// exactly like the contiguous `write_slice`-then-attend path it replaces.
-    #[allow(clippy::too_many_arguments)]
     pub fn build_decode_attn(
         &self,
         k_pool_ph: &Tensor,
@@ -696,7 +695,6 @@ impl DeviceKvPool {
     /// `write_slice` returns the post-write handle) so all land before the op
     /// reads — one graph, one realize, exactly like the single-session path.
     /// `writes` must be non-empty and in `block_table`/`q` batch-row order.
-    #[allow(clippy::too_many_arguments)]
     pub fn build_decode_attn_batched(
         &self,
         k_pool_ph: &Tensor,
@@ -772,7 +770,6 @@ impl DeviceKvPool {
     ///
     /// Both land the same slab at the same offset — bit-identical to the concrete
     /// [`Self::build_decode_attn`]. Returns the attention output `[1, Hq, 1, D]`.
-    #[allow(clippy::too_many_arguments)]
     pub fn build_decode_attn_off(
         &self,
         k_pool_ph: &Tensor,

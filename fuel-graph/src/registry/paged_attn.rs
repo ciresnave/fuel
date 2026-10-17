@@ -150,7 +150,6 @@ fn r_perm(p: Vec<u8>) -> OpAttrs {
 /// `[B, Hkv, kv_len, D]`, then GQA-repeat heads up to `Hq`. `cache` is the bound
 /// k/v-cache operand; `bt_flat` the shared flattened block-table subtree (emit's
 /// identity-share dedups the two occurrences to one node).
-#[allow(clippy::too_many_arguments)]
 fn gather_kv_recipe(
     cache: PatternNode,
     bt_flat: PatternNode,
@@ -294,7 +293,6 @@ pub fn recipe_for(graph: &Graph, id: NodeId, params: &FusedOpParams) -> Option<P
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn recipe(
     b: usize,
     hq: usize,
@@ -585,7 +583,6 @@ mod tests {
     }
 
     /// FROZEN copy of the pre-C-T2 imperative `gather_kv` helper.
-    #[allow(clippy::too_many_arguments)]
     fn legacy_gather_kv(
         graph: &mut Graph,
         cache: NodeId,
@@ -651,7 +648,6 @@ mod tests {
     /// Build a fused PagedAttn node over the `[q, k_cache, v_cache, block_table,
     /// context_lens, [alibi]]` inputs, all F32/U32 `Op::Const` leaves. Returns
     /// the fused NodeId.
-    #[allow(clippy::too_many_arguments)]
     fn paged_node(
         g: &mut Graph,
         b: usize,

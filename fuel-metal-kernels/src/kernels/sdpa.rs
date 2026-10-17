@@ -19,7 +19,6 @@ pub enum SdpaDType {
 /// - q heads == kv heads
 /// - final type != bf16 (TODO maybe just template this kernel too?)
 /// - q,k,v are contiguous
-#[allow(clippy::too_many_arguments)]
 pub fn call_sdpa_full(
     device: &Device,
     ep: impl EncoderProvider,
@@ -251,7 +250,6 @@ pub fn call_sdpa_full(
 /// - q head dim == 64, 96, 128
 /// - no mask
 /// - q,k,v are contiguous
-#[allow(clippy::too_many_arguments)]
 pub fn call_sdpa_vector(
     device: &Device,
     ep: impl EncoderProvider,
@@ -366,7 +364,6 @@ pub const SDPA_2PASS_BLOCKS: usize = 32;
 /// - q head dim == 64, 96, 128
 /// - no mask
 /// - q,k,v are contiguous
-#[allow(clippy::too_many_arguments)]
 pub fn call_sdpa_vector_2pass(
     device: &Device,
     ep: impl EncoderProvider,

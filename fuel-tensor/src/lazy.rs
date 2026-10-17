@@ -2475,7 +2475,6 @@ mod tests {
     /// `out = softmax( softcap(scale·QKᵀ) [+ causal -inf] ) · V`. q
     /// `[hq,sq,d]`, k/v `[hkv,sk,d]` (GQA: q-head `h` attends kv-head
     /// `h / (hq/hkv)`), out `[hq,sq,d]`.
-    #[allow(clippy::too_many_arguments)]
     fn ref_attention(
         q: &[f32],
         k: &[f32],
@@ -2653,7 +2652,6 @@ mod tests {
     /// `kl` keys/values of a `cap`-capacity KV buffer, with bottom-right
     /// causal masking (query `i` attends keys `j ≤ (kl−Sq)+i`). GQA folds
     /// `h → h/(Hq/Hkv)`.
-    #[allow(clippy::too_many_arguments)]
     fn ref_decode_attn(
         q: &[f32],
         k: &[f32],
@@ -5258,7 +5256,6 @@ impl Tensor {
     /// Rank / batch / GQA-divisibility / head-dim mismatches surface
     /// as typed errors at build time rather than panicking inside the
     /// inner `fuel_graph` call.
-    #[allow(clippy::too_many_arguments)]
     pub fn flash_attn(
         &self,
         k: &Self,
@@ -5360,7 +5357,6 @@ impl Tensor {
     /// Rank / batch / GQA-divisibility / block-size / dtype mismatches
     /// surface as typed errors at build time rather than panicking
     /// inside the inner `fuel_graph` call.
-    #[allow(clippy::too_many_arguments)]
     pub fn paged_attn(
         &self,
         k_cache: &Self,
@@ -8520,7 +8516,6 @@ pub enum SessionDisposition {
 /// Generic in nothing — the capture rides in the `on_invalidate` closure,
 /// which is what lets this compile (and therefore be CPU-tested) without the
 /// `cuda` feature.
-#[allow(clippy::too_many_arguments)]
 pub fn refresh_decode_session(
     session: &mut Option<crate::inference_context::DecodeSession>,
     ctx: &mut InferenceContext,
@@ -8806,7 +8801,6 @@ mod decode_mask_tests {
 /// Returns `Ok(None)` (graph untouched, byte-identical to today) whenever the
 /// emitter's gate declines — f32/f64 dtype, `seq_q != 1` (prefill),
 /// `head_dim > 128`, or a non-CUDA / kernel-absent topology. Never panics.
-#[allow(clippy::too_many_arguments)]
 /// Translate a Fuel sliding-window width into the FA-v2 `window_size_*`
 /// convention the CUDA flash path speaks.
 ///
@@ -8833,7 +8827,6 @@ pub fn flash_window_bounds(window: Option<usize>) -> (Option<usize>, Option<usiz
 // scalar rewrite parameters (scale, attended-len sym, window, softcap, backend
 // capability) for one flash-decode-arm offer. Each is a distinct graph node or
 // scalar, not a bundle-able struct. Exceeds even the raised (10) threshold.
-#[allow(clippy::too_many_arguments)]
 pub fn offer_flash_decode_arm_for_region(
     graph: &fuel_graph::SharedGraph,
     q: fuel_graph::NodeId,

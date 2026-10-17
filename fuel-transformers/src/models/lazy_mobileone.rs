@@ -377,7 +377,6 @@ impl MobileOneWeights {
 /// Load and fuse one MobileOne block (depthwise or pointwise). Runs the
 /// RepVGG-style branch fusion (`k`-sum + scale + identity), bakes BN into
 /// the conv weights, and optionally attaches SE.
-#[allow(clippy::too_many_arguments)]
 fn mobileone_load_layer(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     prefix: &str,

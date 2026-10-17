@@ -268,7 +268,6 @@ macro_rules! gemm_dense_matmul {
             "difference is the output base pointer comes from `out` and ",
             "no device allocation happens.",
         )]
-        #[allow(clippy::too_many_arguments)]
         pub fn [<$name _into>](
             lhs: &CudaStorageBytes,
             rhs: &CudaStorageBytes,

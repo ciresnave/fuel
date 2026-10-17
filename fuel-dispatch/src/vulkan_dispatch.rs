@@ -4485,7 +4485,6 @@ pub mod flash_attn {
     /// Validates input counts (4-5: Q, K, V, dO, optional alibi),
     /// extracts shape params, asserts all inputs are F32, then hands
     /// off to the per-variant backend method.
-    #[allow(clippy::too_many_arguments)]
     fn flash_attn_backward_f32_typed<F>(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],

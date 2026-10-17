@@ -104,7 +104,6 @@ impl Qwen3VlModel {
     /// * `start_pos` — temporal-axis offset applied to MROPE positions
     ///   for both text and visual tokens, mirroring eager's
     ///   `seqlen_offset` for incremental decode.
-    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         image_pixels: Option<&Tensor>,

@@ -337,7 +337,6 @@ fn apply_decoder_layer(
 
 /// Scaled-softmax multi-head attention with optional GQA. When
 /// `kv_input` is `None`, K/V come from `q_input` (self-attn).
-#[allow(clippy::too_many_arguments)]
 fn apply_attention(
     q_input: &Tensor,
     kv_input: Option<&Tensor>,

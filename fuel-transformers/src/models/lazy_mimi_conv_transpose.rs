@@ -126,7 +126,6 @@ impl StreamableConvTranspose1dWeights {
     /// Validate shapes + store. `weight` must be
     /// `(in_channels, out_channels / groups, kernel_size)` row-major;
     /// `bias` (when `Some`) is `(out_channels,)`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         weight: Arc<[f32]>,
         bias: Option<Arc<[f32]>>,

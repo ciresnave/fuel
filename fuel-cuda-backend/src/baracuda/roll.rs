@@ -35,7 +35,6 @@ type RollRun = unsafe extern "C" fn(
     stream: *mut std::ffi::c_void,
 ) -> i32;
 
-#[allow(clippy::too_many_arguments)]
 fn roll_run(
     input: &CudaStorageBytes,
     src_layout: Option<&Layout>,

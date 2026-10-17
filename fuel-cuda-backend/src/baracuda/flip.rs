@@ -49,7 +49,6 @@ type FlipRun = unsafe extern "C" fn(
 ///
 /// Fuel's IR supports one flip dim at a time; multi-axis flip
 /// composes upstream by chaining Flip nodes.
-#[allow(clippy::too_many_arguments)]
 fn flip_run(
     input: &CudaStorageBytes,
     src_layout: Option<&Layout>,

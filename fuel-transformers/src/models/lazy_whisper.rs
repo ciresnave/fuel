@@ -599,7 +599,6 @@ pub(crate) fn conv1d_k3_s2_p1(
 /// encoder self-attention and the decoder self/cross-attention; the
 /// caller supplies the Q/K/V projections and whether a causal mask
 /// should be applied.
-#[allow(clippy::too_many_arguments)]
 fn multi_head_attn(
     q_src: &Tensor,
     k_src: &Tensor,

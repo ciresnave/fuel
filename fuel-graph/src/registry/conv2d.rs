@@ -157,10 +157,6 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 ///
 /// This mirrors the CPU kernel (im2col + batched GEMM) at the graph level and
 /// adds NO `Op` variant — the build-time-closed primitive basis is unchanged.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "graph-op recipe builder: the parameters are the conv operand dims / config; bundling into a struct obscures the recipe signature, not clarifies it"
-)]
 fn recipe(
     n: usize,
     cin: usize,
@@ -373,7 +369,6 @@ fn flat_gather_index(
 /// across the `N` batch). The `(Cin/g, Kh, Kw)` reshape ordering of `P` lines the
 /// contraction axis up with the weight's `[Cout, (Cin/g)·Kh·Kw]` reshape. Adds
 /// NO `Op` variant — the build-time-closed primitive basis is unchanged.
-#[allow(clippy::too_many_arguments)]
 fn recipe_grouped(
     n: usize,
     cin: usize,
@@ -616,7 +611,6 @@ mod tests {
 
     /// Build a fused CONV2D node over `x [N,Cin,Hin,Win]`,
     /// `weight [Cout, Cin/groups, Kh, Kw]`, optional `bias [Cout]`.
-    #[allow(clippy::too_many_arguments)]
     fn fused_conv(
         g: &mut Graph,
         n: usize,

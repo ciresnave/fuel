@@ -537,7 +537,6 @@ impl Storage {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn upsample_bilinear2d(
         &self,
         layout: &Layout,
@@ -686,7 +685,6 @@ impl Storage {
             .copy_strided_src_dyn(&mut *dst.inner, dst_offset, src_l)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn copy2d(
         &self,
         dst: &mut Self,

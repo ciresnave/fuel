@@ -388,7 +388,6 @@ fn check_w_extent(op_label: &str, fmt: MmvqFormat, call: &MmvqCall, offset: usiz
 ///
 /// Every argument the kernel trusts is checked by
 /// `validate_mmvq_extent` before anything is allocated or launched.
-#[allow(clippy::too_many_arguments)]
 fn mmvq_run(
     weights: &CudaStorageBytes,
     activations: &CudaStorageBytes,

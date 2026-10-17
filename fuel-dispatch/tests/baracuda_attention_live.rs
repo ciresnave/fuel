@@ -205,7 +205,6 @@ fn pick_flash(
 /// (b, hq) attend the LOGICAL prefix `0..k_len` of the capacity K/V with
 /// GQA head mapping. Inputs are the f16/bf16-rounded values (as f32) so the
 /// reference matches the kernel's f32-accumulation-of-half-inputs numerics.
-#[allow(clippy::too_many_arguments)]
 fn decode_reference(
     q: &[f32],
     k: &[f32],
@@ -307,7 +306,6 @@ fn register_baracuda_binds_flash_decoding_f16_bf16() {
 
 /// Shared live driver: GQA decode over a capacity-K buffer, compared to the
 /// decomposed base-map reference within `tol`. Returns the max abs diff.
-#[allow(clippy::too_many_arguments)]
 fn run_flash_decode_case(
     dev: &CudaDevice,
     dt: DType,

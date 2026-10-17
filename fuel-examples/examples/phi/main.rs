@@ -26,7 +26,6 @@ struct TextGeneration {
 }
 
 impl TextGeneration {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         model: PhiModel,
         tokenizer: Tokenizer,

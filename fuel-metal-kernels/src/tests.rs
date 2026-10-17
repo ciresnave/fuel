@@ -1231,7 +1231,6 @@ fn softmax() {
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_where_cond<I: Clone, T: Clone>(
     shape: &[usize],
     cond: &[I],
@@ -1355,7 +1354,6 @@ fn where_cond_u32_f32() {
     assert_eq!(approx(results, 4), vec![-1.0f32, 2.0, -3.0, -4.0, 5.0, 6.0]);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_mlx_gemm<T: Clone>(
     dtype: GemmDType,
     (b, m, n, k): (usize, usize, usize, usize),
@@ -2212,7 +2210,6 @@ fn avg_pool2d_u32() {
     assert_eq!(results, expected);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_conv_transpose1d<T: Clone>(
     input: &[T],
     input_shape: &[usize],

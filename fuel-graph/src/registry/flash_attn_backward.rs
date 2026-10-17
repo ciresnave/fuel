@@ -232,7 +232,6 @@ fn fold_recipe(x: PatternNode, b: usize, hkv: usize, hq: usize, s: usize, d: usi
 ///   dQ     = dScores · K_rep                              # Q variant
 ///   dK     = fold( dScoresᵀ · Q )   (Hq → Hkv sum-fold)   # K variant
 /// ```
-#[allow(clippy::too_many_arguments)]
 fn recipe_qk(
     variant: FusedOpId,
     b: usize,

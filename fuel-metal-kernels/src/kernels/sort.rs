@@ -4,7 +4,6 @@ use crate::{set_params, Kernels, MetalDType, MetalKernelError, Source};
 use crate::{Buffer, ComputeCommandEncoder, Device, MTLSize, RESOURCE_OPTIONS};
 use objc2_metal::MTLResourceUsage;
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_arg_sort(
     device: &Device,
     ep: impl EncoderProvider,
@@ -52,7 +51,6 @@ fn mlx_dtype_str(dtype: MetalDType) -> &'static str {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn multi_block_sort(
     device: &Device,
     ep: impl EncoderProvider,
@@ -216,7 +214,6 @@ fn multi_block_sort(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn block_sort(
     device: &Device,
     ep: impl EncoderProvider,
@@ -263,7 +260,6 @@ fn block_sort(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_mlx_arg_sort(
     device: &Device,
     ep: impl EncoderProvider,

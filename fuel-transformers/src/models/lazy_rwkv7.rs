@@ -290,7 +290,6 @@ impl Rwkv7Model {
     /// loop at graph build. Returns `(attn_out, v_first_per_t)`.
     /// `v_first_per_t` is non-empty only at layer 0 (it's what
     /// downstream layers consume).
-    #[allow(clippy::too_many_arguments)]
     fn time_mix(
         &self,
         x: &Tensor,

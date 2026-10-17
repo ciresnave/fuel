@@ -4,7 +4,6 @@ use crate::utils::{BufferOffset, EncoderProvider};
 use crate::{set_params, Buffer, ComputeCommandEncoder, Device, Kernels, MetalKernelError, Source};
 use objc2_metal::MTLResourceUsage;
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_index_select(
     device: &Device,
     ep: impl EncoderProvider,
@@ -58,7 +57,6 @@ pub fn call_index_select(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_gather(
     device: &Device,
     ep: impl EncoderProvider,
@@ -106,7 +104,6 @@ pub fn call_gather(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_scatter(
     device: &Device,
     ep: impl EncoderProvider,
@@ -155,7 +152,6 @@ pub fn call_scatter(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_index_add(
     device: &Device,
     ep: impl EncoderProvider,

@@ -221,7 +221,6 @@ pub trait PagedDecodeModel: DecodeModel {
     /// fixed block-table capacity (`⌈(prompt + max_new) / block_size⌉`), which
     /// pins the held graph's `block_table` shape across tokens. Single session
     /// (B = 1); the batched arm stays on `forward_paged_step_batched`.
-    #[allow(clippy::too_many_arguments)]
     fn forward_paged_step_persistent(
         &self,
         token: u32,
@@ -567,7 +566,6 @@ impl SessionState {
     /// a `Temperature` seed (else `0`), allocates the pre-sized `KvCache`
     /// (propagating an OOM `Err`), and creates the per-session
     /// `InferenceContext`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: SessionId,
         dims: ModelDims,

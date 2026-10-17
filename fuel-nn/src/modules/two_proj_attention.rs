@@ -323,7 +323,6 @@ mod tests {
     /// comparison (absolute position of row 0 of `x` is `q_start`); `kv`
     /// spans the *cached* prefix `[0, total)` while `x`/`q` span only the
     /// `rows` new tokens starting at `q_start`.
-    #[allow(clippy::too_many_arguments)]
     fn hand_reference_attn(
         q_proj: &[f32],  // [rows, H*d] -- new-token queries only
         kv_proj: &[f32], // [total, Hkv*d] -- full attended-prefix kv
