@@ -326,7 +326,6 @@ impl Llama2cModel {
     ///
     /// Delegates to
     /// [`LlamaModel::generate_streaming_spec_with_kv_context`].
-    #[allow(clippy::too_many_arguments)]
     pub fn generate_streaming_spec_with_kv_context(
         &self,
         draft: &Llama2cModel,

@@ -22,7 +22,6 @@ pub enum GgmlDType {
     BF16,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_quantized_matmul_mv_t(
     device: &Device,
     ep: impl EncoderProvider,
@@ -178,7 +177,6 @@ pub fn call_quantized_matmul_mv_t(
 
 /// - src0 is usually weight
 /// - src1 is usually xs
-#[allow(clippy::too_many_arguments)]
 pub fn call_quantized_matmul_mm_t(
     device: &Device,
     ep: impl EncoderProvider,

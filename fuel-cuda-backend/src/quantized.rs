@@ -322,7 +322,6 @@ fn mul_mat_vec_via_q8_1(
     baracuda_batched_mmvq(data, y, dtype, ncols, nrows, b_size, dev)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn mul_mat_via_q8_1(
     data: &PaddedCudaSlice,
     y: &CudaView<f32>,

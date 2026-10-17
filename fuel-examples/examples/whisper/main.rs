@@ -166,7 +166,6 @@ struct Decoder {
 }
 
 impl Decoder {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         model: Model,
         tokenizer: Tokenizer,

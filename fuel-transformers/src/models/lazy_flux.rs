@@ -1297,7 +1297,6 @@ fn time_shift(mu: f64, sigma: f64, t: f64) -> f64 {
 /// - `img_ids` / `txt_ids` are the per-token RoPE id tensors.
 /// - `guidance` is the per-batch guidance scalar (only used when
 ///   `model.config.guidance_embed == true`).
-#[allow(clippy::too_many_arguments)]
 pub fn generate(
     model: &FluxModel,
     text_clip: &Tensor,

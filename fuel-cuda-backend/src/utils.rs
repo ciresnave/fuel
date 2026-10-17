@@ -79,7 +79,6 @@ pub trait Map2 {
 }
 
 pub trait Map3 {
-    #[allow(clippy::too_many_arguments)]
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
         src1: &DeviceBuffer<T>,
@@ -91,7 +90,6 @@ pub trait Map3 {
         dev: &CudaDevice,
     ) -> Result<DeviceBuffer<T>>;
 
-    #[allow(clippy::too_many_arguments)]
     fn map(
         &self,
         s1: &S,

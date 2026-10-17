@@ -50,7 +50,6 @@ type IndexSelectRun = unsafe extern "C" fn(
 ///
 /// `src_layout` is `[outer_count, source_dim_size, inner_count]`
 /// in elements; the source dim size is the middle one.
-#[allow(clippy::too_many_arguments)]
 fn index_select_run(
     src: &CudaStorageBytes,
     idx: &CudaStorageBytes,
@@ -97,7 +96,6 @@ fn index_select_run(
 /// `out` must already hold at least
 /// `outer_count * n_indices * inner_count * dtype_size_bytes` bytes; a
 /// smaller buffer is a surfaced error, never an out-of-bounds device write.
-#[allow(clippy::too_many_arguments)]
 fn index_select_run_into(
     src: &CudaStorageBytes,
     idx: &CudaStorageBytes,
@@ -179,7 +177,6 @@ macro_rules! index_select_kernel {
     ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
         ::paste::paste! {
             #[doc = concat!("Baracuda `", $op_label, "` kernel (U32 indices).")]
-            #[allow(clippy::too_many_arguments)]
             pub fn $name(
                 src: &CudaStorageBytes,
                 idx: &CudaStorageBytes,
@@ -205,7 +202,6 @@ macro_rules! index_select_kernel {
                 "Write-into-output variant of baracuda `", $op_label,
                 "` — writes into `out` (no alloc; CapturedRun capture mode)."
             )]
-            #[allow(clippy::too_many_arguments)]
             pub fn [<$name _into>](
                 src: &CudaStorageBytes,
                 idx: &CudaStorageBytes,
@@ -596,7 +592,6 @@ macro_rules! scatter_add_kernel {
     ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
         ::paste::paste! {
             #[doc = concat!("Baracuda `", $op_label, "` kernel (U32 indices).")]
-            #[allow(clippy::too_many_arguments)]
             pub fn $name(
                 base: &CudaStorageBytes,
                 index: &CudaStorageBytes,

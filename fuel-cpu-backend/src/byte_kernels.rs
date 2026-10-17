@@ -4696,7 +4696,6 @@ pub fn matmul_f32(
 /// use `m_capacity` for striding (buffer layout), so the untouched tail rows
 /// keep their (zeroed) capacity slots. `matmul_f32` is the `m_compute ==
 /// m_capacity` special case.
-#[allow(clippy::too_many_arguments)]
 pub fn matmul_f32_capacity(
     lhs: &CpuStorageBytes,
     rhs: &CpuStorageBytes,
@@ -5476,7 +5475,6 @@ qmatmul_thin_wrapper!(qmatmul_q6k_f32, fuel_quantized::BlockQ6K, "qmatmul_q6k_f3
 /// hand-written version).
 macro_rules! conv2d_native_kernel {
     ($name:ident, $T:ty, $T_size:expr, $zero:expr) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             x: &CpuStorageBytes,
             weight: &CpuStorageBytes,
@@ -5572,7 +5570,6 @@ conv2d_native_kernel!(conv2d_f64, f64, std::mem::size_of::<f64>(), 0.0_f64);
 /// in f32, narrows at the end. Inputs (x, weight, bias) all in T.
 macro_rules! conv2d_half_kernel {
     ($name:ident, $T:ty) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             x: &CpuStorageBytes,
             weight: &CpuStorageBytes,
@@ -5692,7 +5689,6 @@ conv2d_half_kernel!(conv2d_f16, half::f16);
 /// ConvTranspose2D for native arithmetic ($T = f32 or f64).
 macro_rules! conv_transpose2d_native_kernel {
     ($name:ident, $T:ty, $T_size:expr, $zero:expr) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             x: &CpuStorageBytes,
             weight: &CpuStorageBytes,
@@ -5815,7 +5811,6 @@ conv_transpose2d_native_kernel!(
 /// pattern as conv2d_half_kernel!.
 macro_rules! conv_transpose2d_half_kernel {
     ($name:ident, $T:ty) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             x: &CpuStorageBytes,
             weight: &CpuStorageBytes,
@@ -6150,7 +6145,6 @@ fn fused_linear_check<T>(
 /// FusedLinear for native arithmetic.
 macro_rules! fused_linear_native_kernel {
     ($name:ident, $T:ty) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             lhs: &CpuStorageBytes,
             rhs: &CpuStorageBytes,
@@ -6229,7 +6223,6 @@ fused_linear_native_kernel!(fused_linear_f64, f64);
 /// FusedLinear for half-floats — accumulate in f32, narrow at end.
 macro_rules! fused_linear_half_kernel {
     ($name:ident, $T:ty) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             lhs: &CpuStorageBytes,
             rhs: &CpuStorageBytes,
@@ -6408,7 +6401,6 @@ fn fused_softmax_cross_entropy_check_shapes(
 /// `nll_loss` behavior under `reduction='mean'` with all rows masked).
 macro_rules! fused_softmax_cross_entropy_kernel {
     ($name:ident, $T:ty, $to_f64:expr) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             logits: &CpuStorageBytes,
             targets: &CpuStorageBytes,
@@ -6542,10 +6534,6 @@ fused_softmax_cross_entropy_kernel!(
 // typical kernel sizes (4 for Mamba).
 
 /// Shared shape-validation for the four CausalConv1d dtype variants.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
-)]
 fn causal_conv1d_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -6614,7 +6602,6 @@ macro_rules! causal_conv1d_native_kernel {
     ($name:ident, $T:ty) => {
         /// CausalConv1d CPU kernel. Output buffer size is
         /// `batch * channels * seq_out * sizeof::<T>()` bytes.
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             x: &CpuStorageBytes,
             weight: &CpuStorageBytes,
@@ -6688,7 +6675,6 @@ causal_conv1d_native_kernel!(causal_conv1d_f64, f64);
 /// Mamba trio.
 macro_rules! causal_conv1d_half_kernel {
     ($name:ident, $T:ty) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             x: &CpuStorageBytes,
             weight: &CpuStorageBytes,
@@ -6769,10 +6755,6 @@ causal_conv1d_half_kernel!(causal_conv1d_f16, half::f16);
 /// Shared shape-validation for the SelectiveScan dtype variants.
 /// Multi-output (Option C, 2026-06-01): the output buffer is always
 /// the bundled `[y_bytes ; last_state_bytes]` concatenation.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
-)]
 fn selective_scan_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -6832,7 +6814,6 @@ macro_rules! selective_scan_kernel {
         /// concatenation: slot 0 = `y [batch, seqlen, dim]` followed
         /// by slot 1 = `last_state [batch, dim, dstate]`, both in
         /// the same `T` dtype.
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             u: &CpuStorageBytes,
             delta: &CpuStorageBytes,
@@ -7026,10 +7007,6 @@ nonzero_indices_kernel!(nonzero_indices_u32, u32, |v: &u32| *v != 0);
 /// Shared shape-validation for the SsdChunkScan dtype variants.
 /// Multi-output (Option C, 2026-06-01): the output buffer is the
 /// bundled `[y_bytes ; last_state_bytes]` concatenation.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
-)]
 fn ssd_chunk_scan_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -7111,7 +7088,6 @@ macro_rules! ssd_chunk_scan_kernel {
         /// concatenation: slot 0 = `y [batch, seqlen, heads,
         /// head_dim]` followed by slot 1 = `last_state [batch,
         /// heads, head_dim, state_dim]`, both in the same `T` dtype.
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             x: &CpuStorageBytes,
             dt: &CpuStorageBytes,
@@ -7277,10 +7253,6 @@ pub const NF4_LUT: [f32; 16] = [
 /// Shared shape-validation for the three Nf4Matmul dtype variants.
 /// Returns the per-element byte size of `T` so callers can verify
 /// activation/output sizes without re-templating the check.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
-)]
 fn nf4_matmul_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -7350,7 +7322,6 @@ fn nf4_matmul_check_shapes(
 /// closures).
 macro_rules! nf4_matmul_native {
     ($name:ident, $T:ty, $to_f32:expr, $from_f32:expr) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             activations: &CpuStorageBytes,
             w_packed: &CpuStorageBytes,
@@ -7468,7 +7439,6 @@ fn flash_attn_admissible(
 /// FlashAttn kernel for native arithmetic ($T = f32 or f64).
 macro_rules! flash_attn_native_kernel {
     ($name:ident, $T:ty, $T_zero:expr) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             q: &CpuStorageBytes,
             k: &CpuStorageBytes,
@@ -7635,7 +7605,6 @@ flash_attn_native_kernel!(flash_attn_f64, f64, 0.0_f64);
 /// softmax math in f32, narrows back to T for the output.
 macro_rules! flash_attn_half_kernel {
     ($name:ident, $T:ty) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             q: &CpuStorageBytes,
             k: &CpuStorageBytes,
@@ -7808,7 +7777,6 @@ flash_attn_half_kernel!(flash_attn_f16, half::f16);
 /// (`$T = f32 | f64`). Writes into pre-allocated dq/dk/dv slices.
 macro_rules! flash_attn_backward_native_inner {
     ($name:ident, $T:ty, $T_zero:expr) => {
-        #[allow(clippy::too_many_arguments)]
         fn $name(
             q_view: &[$T],
             k_view: &[$T],
@@ -7996,7 +7964,6 @@ flash_attn_backward_native_inner!(flash_attn_backward_f64_inner, f64, 0.0_f64);
 /// narrow on store).
 macro_rules! flash_attn_backward_half_inner {
     ($name:ident, $T:ty) => {
-        #[allow(clippy::too_many_arguments)]
         fn $name(
             q_view: &[$T],
             k_view: &[$T],
@@ -8192,7 +8159,6 @@ pub enum FaBackwardWhich {
 /// path that the OpKind split implies.
 macro_rules! flash_attn_backward_native_wrapper {
     ($name:ident, $T:ty, $T_zero:expr, $inner:ident) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             q: &CpuStorageBytes,
             k: &CpuStorageBytes,
@@ -8304,7 +8270,6 @@ flash_attn_backward_native_wrapper!(
 /// FlashAttn backward byte wrapper for half-precision types.
 macro_rules! flash_attn_backward_half_wrapper {
     ($name:ident, $T:ty, $inner:ident) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             q: &CpuStorageBytes,
             k: &CpuStorageBytes,
@@ -8430,7 +8395,6 @@ flash_attn_backward_half_wrapper!(
 /// PagedAttn for native arithmetic.
 macro_rules! paged_attn_native_kernel {
     ($name:ident, $T:ty, $T_zero:expr) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             q: &CpuStorageBytes,
             k_cache: &CpuStorageBytes,
@@ -8621,7 +8585,6 @@ paged_attn_native_kernel!(paged_attn_f64, f64, 0.0_f64);
 /// PagedAttn for half-floats — f32 accumulator.
 macro_rules! paged_attn_half_kernel {
     ($name:ident, $T:ty) => {
-        #[allow(clippy::too_many_arguments)]
         pub fn $name(
             q: &CpuStorageBytes,
             k_cache: &CpuStorageBytes,
@@ -8816,7 +8779,6 @@ paged_attn_half_kernel!(paged_attn_f16, half::f16);
 ///
 /// Correctness-first; vendor backends (cuDNN, MKL-DNN) will
 /// dramatically outperform this once they're wired.
-#[allow(clippy::too_many_arguments)]
 pub fn conv2d_f32(
     x: &CpuStorageBytes,
     weight: &CpuStorageBytes,
@@ -10190,7 +10152,6 @@ pub fn write_slice_cpu(
 /// window caches store per-layer K/V as `[seq, n_kv_heads, head_dim]`
 /// with seq as axis 0, so this constraint is fine. Strided multi-
 /// axis splits are a follow-up if needed.
-#[allow(clippy::too_many_arguments)]
 pub fn write_slice_rotating_cpu(
     source: &CpuStorageBytes,
     position_bytes: &CpuStorageBytes,
@@ -10354,7 +10315,6 @@ pub fn write_slice_rotating_cpu(
 /// reads the start host-side and CAN — so it bounds-checks
 /// `offset + width <= dest_shape[axis]` and returns a typed error on
 /// overflow rather than corrupting memory.
-#[allow(clippy::too_many_arguments)]
 pub fn write_slice_doff_cpu(
     source: &CpuStorageBytes,
     offset_bytes: &CpuStorageBytes,

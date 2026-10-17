@@ -185,7 +185,6 @@ pub trait DynBackendStorage: Send + Sync + std::fmt::Debug {
     ) -> Result<Box<dyn DynBackendStorage>>;
 
     /// 2-D bilinear upsampling.
-    #[allow(clippy::too_many_arguments)]
     fn upsample_bilinear2d_dyn(
         &self,
         layout: &Layout,
@@ -265,7 +264,6 @@ pub trait DynBackendStorage: Send + Sync + std::fmt::Debug {
     ) -> Result<()>;
 
     /// Copy a 2-D tile from `self` into `dst`.
-    #[allow(clippy::too_many_arguments)]
     fn copy2d_dyn(
         &self,
         dst: &mut dyn DynBackendStorage,

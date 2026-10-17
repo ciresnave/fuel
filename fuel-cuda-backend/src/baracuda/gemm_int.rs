@@ -77,7 +77,6 @@ type GemmInt8WorkspaceSize = unsafe extern "C" fn(m: i32, n: i32, k: i32) -> usi
 /// Common driver for s8/u8 RRR Identity. Validates byte counts,
 /// rejects batched inputs (v1 limitation), allocates the output, calls
 /// the FFI, syncs.
-#[allow(clippy::too_many_arguments)]
 fn gemm_int8_run(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,

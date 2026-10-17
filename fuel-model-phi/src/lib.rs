@@ -295,7 +295,6 @@ impl PhiModel {
     /// built in the forward (was one Const per layer) — byte-exact (it
     /// depends only on `cached_len` / `seq` / `max_seq_len`), and it cuts
     /// the per-token data-Const re-bind on the persistent path to 1.
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_kv_writes(
         &self,
         x: &Tensor,

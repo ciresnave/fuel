@@ -161,7 +161,6 @@ pub struct DecodeFlashSpec {
 /// `causal` is intentionally NOT a disqualifier: with `seq_q == 1` the
 /// single query attends the whole `[0, k_len)` prefix, so the causal mask
 /// is a no-op the kernel omits.
-#[allow(clippy::too_many_arguments)]
 pub fn flash_decode_admissible(
     q_shape: &Shape,
     dtype: DType,

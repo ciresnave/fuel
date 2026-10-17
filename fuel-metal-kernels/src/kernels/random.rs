@@ -4,7 +4,6 @@ use crate::utils::EncoderProvider;
 use crate::{set_params, Buffer, ComputeCommandEncoder, Device, Kernels, MetalKernelError, Source};
 use objc2_metal::MTLResourceUsage;
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_random_uniform(
     device: &Device,
     ep: impl EncoderProvider,
@@ -38,7 +37,6 @@ pub fn call_random_uniform(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_random_normal(
     device: &Device,
     ep: impl EncoderProvider,

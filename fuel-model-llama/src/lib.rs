@@ -747,7 +747,6 @@ impl LlamaModel {
     // window) threaded through one attention application. They are heterogeneous
     // graph/sym handles, not a reusable cluster — a struct would obscure the
     // seam without removing an argument. Exceeds even the raised (10) threshold.
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_kv_writes(
         &self,
         x: &Tensor,
@@ -1622,7 +1621,6 @@ impl LlamaModel {
     /// `project_qkv_roped` (batch-agnostic) + `build_decode_attn_batched` (K
     /// per-session slot writes + one `Op::PagedAttn` at B=K) + the shared
     /// `ffn_block`. `x` is `[K, 1, dim]`.
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer_paged_batched(
         &self,
         x: &Tensor,
@@ -1669,7 +1667,6 @@ impl LlamaModel {
     /// — write the new token's K/V into its pool slot, then `Op::PagedAttn`. The
     /// o-projection + residual + SwiGLU FFN tail is identical to the contiguous
     /// layer. `seq == batch == 1` (single-token decode step).
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer_paged(
         &self,
         x: &Tensor,
@@ -1722,7 +1719,6 @@ impl LlamaModel {
     /// changes. `k_pool_ph`/`v_pool_ph` are `pool_shape_flat()` placeholders;
     /// `write_off` is `Some` on the device-offset path (CPU/CUDA) / `None` on
     /// the SymEnv path (Vulkan), with `write_sym` carrying the offset there.
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer_paged_off(
         &self,
         x: &Tensor,
@@ -3092,7 +3088,6 @@ impl LlamaModel {
 ///
 /// Returns whether it invalidated. On `true` the caller's `session` is `None`,
 /// so the ordinary first-decode-token arm rebuilds both.
-#[allow(clippy::too_many_arguments)]
 fn realize_kv_write_targets(
     ctx: &InferenceContext,
     graph: &std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>,
@@ -3593,7 +3588,6 @@ impl LlamaModel {
     ///   target's distribution over draft's vocab is well-defined).
     /// - Both models share the same tokenizer (caller's
     ///   responsibility).
-    #[allow(clippy::too_many_arguments)]
     // needless_range_loop here: the bound is a semantic count that need not equal the
     // indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
     // iterations.
@@ -9459,7 +9453,6 @@ mod generate_tests {
     /// arm B runs `plan_b` (the flags are parameters so the mutation test can
     /// flip them). Each arm is primed with `history` via the re-planning
     /// `forward_paged_step`, then decodes `decode` via the persistent path.
-    #[allow(clippy::too_many_arguments)]
     fn run_paged_plan_once_gate(
         model: &LlamaModel,
         geom: fuel_kv_pool::KvGeometry,

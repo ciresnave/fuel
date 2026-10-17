@@ -629,7 +629,6 @@ where
 // Copy helpers (same as in fuel-core/src/cpu_backend/mod.rs)
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 fn copy2d_<T: Copy>(
     src: &[T],
     dst: &mut [T],

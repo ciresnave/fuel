@@ -51,7 +51,6 @@ use super::status::check;
 ///
 /// `groupsize ∈ {-1, 128}`. `max_par` is the parallel-tile upper
 /// bound — typical 16 (matches upstream IST-DASLab default).
-#[allow(clippy::too_many_arguments)]
 pub fn marlin_gemm_f16(
     a: &CudaStorageBytes,
     b_packed: &CudaStorageBytes,
@@ -134,7 +133,6 @@ pub fn marlin_can_implement_f16(m: i32, n: i32, k: i32, groupsize: i32) -> Resul
 /// `group_size ∈ {64, 128}`. `split_k_iters` is caller-chosen — typical
 /// 8. Internal workspace sized via baracuda's
 /// `int4_awq_gemm_f16_workspace_bytes(M, OC, split_k_iters)`.
-#[allow(clippy::too_many_arguments)]
 pub fn awq_gemm_f16(
     in_feats: &CudaStorageBytes,
     kernel_weights: &CudaStorageBytes,

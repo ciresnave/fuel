@@ -4737,7 +4737,6 @@ impl NodeHandle {
     /// deliberate and replaces the hang a cross-graph handle used to produce.
     /// Build every operand from one graph, or use a `Result`-returning entry
     /// point where one exists.
-    #[allow(clippy::too_many_arguments)]
     pub fn paged_attn(
         &self,
         k_cache: &NodeHandle,
@@ -5198,7 +5197,6 @@ impl NodeHandle {
     /// deliberate and replaces the hang a cross-graph handle used to produce.
     /// Build every operand from one graph, or use a `Result`-returning entry
     /// point where one exists.
-    #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_dyn(
         &self,
         k: &NodeHandle,
@@ -6056,7 +6054,6 @@ impl NodeHandle {
     /// **Returns `Result`**: a malformed body/carry/bound, or a non-scalar /
     /// non-`U8` / `Elem`-referencing predicate, surfaces as a typed error —
     /// never a panic (validated at graph-build time).
-    #[allow(clippy::too_many_arguments)]
     pub fn scan_until(
         &self,
         xs: &[NodeHandle],
@@ -7256,7 +7253,6 @@ impl NodeHandle {
     /// Panics if any operand belongs to a different [`Graph`] than the one
     /// this builder is building into, or if any shape/dtype precondition
     /// above doesn't hold — same discipline as [`Self::nf4_matmul`].
-    #[allow(clippy::too_many_arguments)]
     pub fn awq_matmul(
         &self,
         qweight: &NodeHandle,

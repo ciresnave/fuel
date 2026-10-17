@@ -4,7 +4,6 @@ use crate::{get_tile_size, linear_split};
 use crate::{set_params, Buffer, ComputeCommandEncoder, Device, Kernels, MetalKernelError, Source};
 use objc2_metal::MTLResourceUsage;
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_cast_contiguous(
     device: &Device,
     ep: impl EncoderProvider,
@@ -32,7 +31,6 @@ pub fn call_cast_contiguous(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_cast_strided(
     device: &Device,
     ep: impl EncoderProvider,

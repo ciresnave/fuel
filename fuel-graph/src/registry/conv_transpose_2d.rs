@@ -149,7 +149,6 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 /// mirrors the native CPU ConvTranspose2D kernel's `out = inp·stride + k·dilation`
 /// scatter positions exactly (the crop, applied by [`col2im_tail`], subtracts
 /// `padding` and drops `output_padding` overflow).
-#[allow(clippy::too_many_arguments)]
 fn scatter_flat_index(
     kh: usize,
     kw: usize,
@@ -234,7 +233,6 @@ fn scatter_flat_index(
 /// full buffer to `[N, Cout, Hout, Wout]` (dropping the `padding` border and any
 /// `output_padding` overflow), matching the native kernel's `out -= padding`
 /// bounds check.
-#[allow(clippy::too_many_arguments)]
 fn col2im_tail(
     csrc: PatternNode,
     sidx: PatternNode,
@@ -343,7 +341,6 @@ fn col2im_tail(
 /// transposed-conv column contribution — via a `weightᵀ`-arranged batched matmul
 /// (the `Permute` is materialized row-major by the executor's auto-Contiguize
 /// before the reshape). Adds NO `Op` variant.
-#[allow(clippy::too_many_arguments)]
 fn recipe(
     n: usize,
     cin: usize,
@@ -441,7 +438,6 @@ fn recipe(
 /// and `(Kh,Kw,Hin,Win) → L` byte-identically to the groups=1 stack. The scatter
 /// index and crop ([`col2im_tail`]) are identical to the groups=1 path. Adds NO
 /// `Op` variant.
-#[allow(clippy::too_many_arguments)]
 fn recipe_grouped(
     n: usize,
     cin: usize,
@@ -654,7 +650,6 @@ mod tests {
     /// Build a fused CONV_TRANSPOSE2D node over `x [N,Cin,Hin,Win]`,
     /// `weight [Cin, Cout/groups, Kh, Kw]` (2-input, no bias — what the
     /// builder emits).
-    #[allow(clippy::too_many_arguments)]
     fn fused_conv_transpose(
         g: &mut Graph,
         n: usize,

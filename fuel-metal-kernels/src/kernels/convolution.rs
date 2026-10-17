@@ -4,7 +4,6 @@ use crate::utils::{BufferOffset, EncoderProvider};
 use crate::{set_params, Buffer, ComputeCommandEncoder, Device, Kernels, MetalKernelError, Source};
 use objc2_metal::MTLResourceUsage;
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_im2col1d_strided(
     device: &Device,
     ep: impl EncoderProvider,
@@ -34,7 +33,6 @@ pub fn call_im2col1d_strided(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_col2im1d(
     device: &Device,
     ep: impl EncoderProvider,
@@ -66,7 +64,6 @@ pub fn call_col2im1d(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_im2col_strided(
     device: &Device,
     ep: impl EncoderProvider,
@@ -104,7 +101,6 @@ pub fn call_im2col_strided(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_upsample_nearest_2d(
     device: &Device,
     ep: impl EncoderProvider,
@@ -135,7 +131,6 @@ pub fn call_upsample_nearest_2d(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_upsample_bilinear_2d(
     device: &Device,
     ep: impl EncoderProvider,
@@ -182,7 +177,6 @@ pub fn call_upsample_bilinear_2d(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_pool2d(
     device: &Device,
     ep: impl EncoderProvider,
@@ -215,7 +209,6 @@ pub fn call_pool2d(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_conv_transpose1d(
     device: &Device,
     ep: impl EncoderProvider,
@@ -285,7 +278,6 @@ pub struct CallConvTranspose2dCfg<'a> {
     pub kernel_offset: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_conv_transpose2d(
     device: &Device,
     ep: impl EncoderProvider,

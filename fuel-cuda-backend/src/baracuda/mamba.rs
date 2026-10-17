@@ -48,7 +48,6 @@ fn shape_i32(op: &'static str, dim_index: usize, dim_value: usize) -> Result<i32
 /// `bias` may be null (passed as zero-len `CudaStorageBytes`).
 ///
 /// The kernel is causal: output `y[..., t]` depends only on `x[..., t-w+1 .. t]`.
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_f32(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -73,7 +72,6 @@ pub fn causal_conv1d_f32(
         "causal_conv1d_f32",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_f16(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -98,7 +96,6 @@ pub fn causal_conv1d_f16(
         "causal_conv1d_f16",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_bf16(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -123,7 +120,6 @@ pub fn causal_conv1d_bf16(
         "causal_conv1d_bf16",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_f64(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -164,7 +160,6 @@ type CausalConv1dRun = unsafe extern "C" fn(
     *mut std::ffi::c_void,
 ) -> i32;
 
-#[allow(clippy::too_many_arguments)]
 fn causal_conv1d_inner(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -295,7 +290,6 @@ fn strip_prepad_d2d(
 /// `[batch, channels, seq_in]`, contiguous output `[batch, channels,
 /// seq_out]` where `seq_in == seq_out + kernel - 1`. Bias is required
 /// (matches the Fuel-IR builder gate).
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_fuel_prepad_f32(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -322,7 +316,6 @@ pub fn causal_conv1d_fuel_prepad_f32(
         "causal_conv1d_fuel_prepad_f32",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_fuel_prepad_f64(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -349,7 +342,6 @@ pub fn causal_conv1d_fuel_prepad_f64(
         "causal_conv1d_fuel_prepad_f64",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_fuel_prepad_bf16(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -376,7 +368,6 @@ pub fn causal_conv1d_fuel_prepad_bf16(
         "causal_conv1d_fuel_prepad_bf16",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_fuel_prepad_f16(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -415,7 +406,6 @@ type CausalConv1dRawFw = fn(
     bool,
 ) -> Result<CudaStorageBytes>;
 
-#[allow(clippy::too_many_arguments)]
 fn causal_conv1d_fuel_prepad_inner(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -470,7 +460,6 @@ pub struct CausalConv1dBackward {
 /// Causal conv1d backward, F32. Allocates dx / dw / db internally;
 /// bias gradient is always written (caller can drop it if bias was
 /// null on the FW pass).
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_backward_f32(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -497,7 +486,6 @@ pub fn causal_conv1d_backward_f32(
         "causal_conv1d_f32_backward",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_backward_f16(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -524,7 +512,6 @@ pub fn causal_conv1d_backward_f16(
         "causal_conv1d_f16_backward",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_backward_bf16(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -551,7 +538,6 @@ pub fn causal_conv1d_backward_bf16(
         "causal_conv1d_bf16_backward",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_backward_f64(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -597,7 +583,6 @@ type CausalConv1dBackwardRun = unsafe extern "C" fn(
     *mut std::ffi::c_void,
 ) -> i32;
 
-#[allow(clippy::too_many_arguments)]
 fn causal_conv1d_backward_inner(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
@@ -662,7 +647,6 @@ fn causal_conv1d_backward_inner(
 ///
 /// Output `y: [batch, seqlen, heads, head_dim]` allocated fresh.
 /// `chunk_size` is the SSD chunk-scan block size; typically 256.
-#[allow(clippy::too_many_arguments)]
 pub fn ssd_chunk_scan_f32(
     x: &CudaStorageBytes,
     dt: &CudaStorageBytes,
@@ -694,7 +678,6 @@ pub fn ssd_chunk_scan_f32(
         "ssd_chunk_scan_f32",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn ssd_chunk_scan_f16(
     x: &CudaStorageBytes,
     dt: &CudaStorageBytes,
@@ -726,7 +709,6 @@ pub fn ssd_chunk_scan_f16(
         "ssd_chunk_scan_f16",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn ssd_chunk_scan_bf16(
     x: &CudaStorageBytes,
     dt: &CudaStorageBytes,
@@ -777,7 +759,6 @@ type SsdChunkScanRun = unsafe extern "C" fn(
     *mut std::ffi::c_void,
 ) -> i32;
 
-#[allow(clippy::too_many_arguments)]
 fn ssd_chunk_scan_inner(
     x: &CudaStorageBytes,
     dt: &CudaStorageBytes,
@@ -872,7 +853,6 @@ pub struct SelectiveScanForward {
 /// - `delta_softplus`: when true, apply softplus to delta + delta_bias
 ///
 /// Outputs `y: [batch, seqlen, dim]`, `last_state: [batch, dim, dstate]`.
-#[allow(clippy::too_many_arguments)]
 pub fn selective_scan_f32(
     u: &CudaStorageBytes,
     delta: &CudaStorageBytes,
@@ -908,7 +888,6 @@ pub fn selective_scan_f32(
         "selective_scan_f32",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn selective_scan_f16(
     u: &CudaStorageBytes,
     delta: &CudaStorageBytes,
@@ -944,7 +923,6 @@ pub fn selective_scan_f16(
         "selective_scan_f16",
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub fn selective_scan_bf16(
     u: &CudaStorageBytes,
     delta: &CudaStorageBytes,
@@ -1002,7 +980,6 @@ type SelectiveScanRun = unsafe extern "C" fn(
     *mut std::ffi::c_void,
 ) -> i32;
 
-#[allow(clippy::too_many_arguments)]
 fn selective_scan_inner(
     u: &CudaStorageBytes,
     delta: &CudaStorageBytes,

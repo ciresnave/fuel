@@ -7,7 +7,6 @@ use crate::{
 };
 use objc2_metal::MTLResourceUsage;
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_where_cond(
     device: &Device,
     ep: impl EncoderProvider,

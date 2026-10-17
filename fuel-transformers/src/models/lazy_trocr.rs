@@ -275,7 +275,6 @@ fn apply_decoder_layer(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn apply_attention(
     q_input: &Tensor,
     kv_input: &Tensor,

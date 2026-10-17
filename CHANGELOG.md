@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.10 - 2026-10-17
+
+### Changed
+
+- Lint policy: all 256 per-item `too_many_arguments` attributes removed (242 `#[allow]`, 14 `#[expect]`); `clippy.toml` threshold 10 -> 22, the measured kernel-dispatch maximum (compiler max 20 in CI scope; Metal `call_sdpa_full` 22 hand-counted), with the method and numbers in the file. ROADMAP item 14 row (e). PM ruling 2026-10-17.
+
 ## v0.20.8 - 2026-10-17
 
 ### Changed
