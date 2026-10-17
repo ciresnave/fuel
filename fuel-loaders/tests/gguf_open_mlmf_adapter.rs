@@ -206,9 +206,8 @@ fn gguf_open_matches_read_for_real_metadata() {
 #[test]
 fn gguf_unsupported_tensor_type_opens_and_fails_by_name_on_load() {
     for (label, code) in [("i8", 24u32), ("iq4_nl", 20u32), ("iq3_s", 21u32)] {
-        let mut data = Vec::new();
-        data.extend_from_slice(&1.5f32.to_le_bytes()); // "good": one F32 at offset 0
-        data.extend_from_slice(&[0u8; 32]); // "weird": opaque bytes at offset 4
+        // "good": one F32 at offset 0; "weird": 32 opaque bytes at offset 4.
+        let data = [&1.5f32.to_le_bytes()[..], &[0u8; 32][..]].concat();
         let gguf = build_gguf(
             &[metadata_string_entry("general.name", b"hostage")],
             &[
