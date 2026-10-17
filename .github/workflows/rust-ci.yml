@@ -177,23 +177,23 @@ jobs:
       # MKL is a missing-SDK one, and macOS needs the second but not the first.
       - name: Run macos with metal
         if: matrix.os == 'macOS-latest'
-        run: cargo check --workspace --features metal ${{ env.MACOS_EXCLUDES }}
+        run: cargo check --locked --workspace --features metal ${{ env.MACOS_EXCLUDES }}
 
       - name: Run normal cpu
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest'
-        run: cargo check --workspace ${{ env.WORKSPACE_EXCLUDES }}
+        run: cargo check --locked --workspace ${{ env.WORKSPACE_EXCLUDES }}
 
       - name: Run with avx2
         if: matrix.os == 'ubuntu-24.04'
         run: |
           export RUSTFLAGS="-C target-feature=avx2"
-          cargo check --workspace ${{ env.WORKSPACE_EXCLUDES }}
+          cargo check --locked --workspace ${{ env.WORKSPACE_EXCLUDES }}
 
       - name: Run with arm neon
         if: matrix.os == 'ubuntu-24.04-arm'
         run: |
           export RUSTFLAGS="-C target-feature=neon"
-          cargo check --workspace ${{ env.WORKSPACE_EXCLUDES }}
+          cargo check --locked --workspace ${{ env.WORKSPACE_EXCLUDES }}
 
       # `fuel-dispatch/src/telemetry/` is gated on the non-default `telemetry`
       # feature, so `cargo check --workspace` above — which uses default
@@ -233,7 +233,7 @@ jobs:
       # described as coverage. Demonstrate it failing before claiming it works.
       - name: Check telemetry-gated dispatch (sk4 wire codec)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-dispatch --features telemetry --all-targets
+        run: cargo check --locked -p fuel-dispatch --features telemetry --all-targets
 
       # ── Non-default FEATURE compile coverage (GAP-233) ──────────────────
       # `cargo check --workspace` above uses DEFAULT features, and its exclude
@@ -296,10 +296,10 @@ jobs:
       #     backends — same reasons as WORKSPACE_EXCLUDES at the top of file.
       - name: Check vulkan-gated compilation (GAP-233)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-tensor -p fuel-dispatch --features fuel-tensor/vulkan --all-targets
+        run: cargo check --locked -p fuel-tensor -p fuel-dispatch --features fuel-tensor/vulkan --all-targets
       - name: Check jit-gated compilation (GAP-233)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-dispatch --features jit --all-targets
+        run: cargo check --locked -p fuel-dispatch --features jit --all-targets
       # The maintenance tools (ledger re-seeding, GAP-228 flip) used to be ignored
       # tests that nothing ran or built on a bad day. They are a binary behind the
       # non-default `dev-tools` feature, so a build that never enables it would let
@@ -308,7 +308,7 @@ jobs:
       # fuel-cuda-backend note at the top of this file).
       - name: Check dev-tools binary (ignore retirement step 3)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-dispatch --features dev-tools,vulkan --bins --all-targets
+        run: cargo check --locked -p fuel-dispatch --features dev-tools,vulkan --bins --all-targets
       # `dlpack` is default-off and, before this step, NO workflow compiled a line
       # behind `--features dlpack` — so fuel-ir's exhaustive `DType`→FDX match
       # (`dlpack::convert::dtype_to_fdx`, the §6.1 wire codec) and fuel-memory's
@@ -352,7 +352,7 @@ jobs:
       # under test, never anywhere the invocation merely touches.
       - name: Check dlpack-gated compilation (GAP-233; §6.1 wire codec)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-ir -p fuel-memory --features fuel-memory/dlpack --all-targets
+        run: cargo check --locked -p fuel-ir -p fuel-memory --features fuel-memory/dlpack --all-targets
 
       # ── Non-default FEATURE compile coverage, second tranche (GAP-247) ──
       # A 45-cell census measured every non-default feature NO CI step names.
@@ -468,13 +468,13 @@ jobs:
       #     cannot tell them apart - read STEP conclusions per job.
       - name: Check serde-gated fuel-ir (GAP-247)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-ir --features serde --all-targets
+        run: cargo check --locked -p fuel-ir --features serde --all-targets
       - name: Check capture-gated correctness fixtures (GAP-247)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-correctness-fixtures --features capture --all-targets
+        run: cargo check --locked -p fuel-correctness-fixtures --features capture --all-targets
       - name: Check baracuda-types-gated dispatch (GAP-247)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-dispatch --features telemetry,baracuda-types --all-targets
+        run: cargo check --locked -p fuel-dispatch --features telemetry,baracuda-types --all-targets
       - name: Check onnx-gated examples (GAP-247)
         # `fuel-examples` is Fuel's de-facto CONSTRUCTOR gate — the working
         # agreement's field-add rule depends on it building, because a struct
@@ -483,7 +483,7 @@ jobs:
         # check, so the rot would not merely break an example.
         # Needs `protoc` (fuel-onnx's build script); installed earlier in this job.
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-examples --features onnx --all-targets
+        run: cargo check --locked -p fuel-examples --features onnx --all-targets
 
       # GAP-338: `symphonia` is `optional = true` in fuel-examples/Cargo.toml
       # and its only consumer (`src/audio.rs::pcm_decode`) is
@@ -501,7 +501,7 @@ jobs:
       # external-input requirement, not a coverage hole of this shape.
       - name: Check symphonia/pdf2image/depth_anything_v2/fuel-datasets-gated examples (GAP-338)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-examples --features symphonia,pdf2image,depth_anything_v2,fuel-datasets --all-targets
+        run: cargo check --locked -p fuel-examples --features symphonia,pdf2image,depth_anything_v2,fuel-datasets --all-targets
 
       # ⚠️ UNPROVEN ON A CLEAN RUNNER — THIS STEP EXISTS TO BE OBSERVED.
       # `fuel-cpu-backend --features mkl` had NINETEEN errors and had not
@@ -541,7 +541,7 @@ jobs:
       # the guess is the kind that would otherwise have justified never trying.
       - name: Check mkl-gated cpu backend (GAP-247, EXPERIMENT)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p fuel-cpu-backend --features mkl --all-targets
+        run: cargo check --locked -p fuel-cpu-backend --features mkl --all-targets
 
       # DOC-LINK CENSUS (GAP-319). Every broken intra-doc link must carry a
       # human disposition in scripts/doc_link_census.py, or this step fails.
@@ -670,10 +670,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
-        run: cargo test --workspace --no-fail-fast ${{ env.WORKSPACE_EXCLUDES }}
+        run: cargo test --locked --workspace --no-fail-fast ${{ env.WORKSPACE_EXCLUDES }}
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo test --workspace --no-fail-fast ${{ env.WORKSPACE_EXCLUDES }}
+        run: cargo test --locked --workspace --no-fail-fast ${{ env.WORKSPACE_EXCLUDES }}
       # macOS gets its OWN exclusion set, and the difference is the point: this
       # runner CAN build the Metal crates (objc2 is happy on Apple), so
       # excluding them here would throw away the only Metal test coverage in the
@@ -683,7 +683,7 @@ jobs:
       # not collapse them into one list.
       - name: Run tests (macOS)
         if: runner.os == 'macOS'
-        run: cargo test --workspace --no-fail-fast ${{ env.MACOS_EXCLUDES }}
+        run: cargo test --locked --workspace --no-fail-fast ${{ env.MACOS_EXCLUDES }}
       - name: Run telemetry-gated dispatch tests (sk4 wire codec)
         # `always() &&` is LOAD-BEARING, not defensive. Without it this step is
         # skipped whenever ANY earlier step in the job fails — and on a CI
@@ -714,7 +714,7 @@ jobs:
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP:-/tmp}/sk4-telemetry-test.log"
-          cargo test -p fuel-dispatch --features telemetry 2>&1 | tee "$out"
+          cargo test --locked -p fuel-dispatch --features telemetry 2>&1 | tee "$out"
           st=${PIPESTATUS[0]}
           [ "$st" -eq 0 ] || exit "$st"
           grep -qE 'test result: ok\. [1-9]' "$out" \
@@ -759,7 +759,7 @@ jobs:
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP:-/tmp}/dlpack-fuel-ir-test.log"
-          cargo test -p fuel-ir --features dlpack 2>&1 | tee "$out"
+          cargo test --locked -p fuel-ir --features dlpack 2>&1 | tee "$out"
           st=${PIPESTATUS[0]}
           [ "$st" -eq 0 ] || exit "$st"
           grep -qE 'test result: ok\. [1-9]' "$out" \
@@ -880,7 +880,7 @@ jobs:
       # Runs on ubuntu-latest, so it needs the full non-Apple exclusion set —
       # clippy compiles what it lints, and would die on `objc2` exactly as
       # `cargo check` does.
-      - run: cargo clippy --workspace --tests --examples --benches ${{ env.WORKSPACE_EXCLUDES }} -- -D warnings
+      - run: cargo clippy --locked --workspace --tests --examples --benches ${{ env.WORKSPACE_EXCLUDES }} -- -D warnings
       # GAP-242: the workspace leg above enables `fuel-dispatch/vulkan` through
       # feature unification, so it never lints the crate at DEFAULT features --
       # the configuration a developer gets from the natural
@@ -899,7 +899,7 @@ jobs:
       # no claim about. A gate that fails for something outside its own scope
       # reports the wrong subject.
       - name: Clippy (fuel-dispatch, DEFAULT features - GAP-242)
-        run: cargo clippy -p fuel-dispatch --no-deps --all-targets -- -D warnings
+        run: cargo clippy --locked -p fuel-dispatch --no-deps --all-targets -- -D warnings
       # GAP-299: `dlpack` is `default = []`, and NO clippy leg named it. The
       # workspace leg above runs at DEFAULT features, and the `--no-deps` legs
       # cannot reach a feature nothing enables -- so every lint behind the
@@ -921,7 +921,7 @@ jobs:
       # dependency's warnings become this leg's failure and the gate reports a
       # subject it makes no claim about.
       - name: Clippy (fuel-ir, --features dlpack - GAP-299)
-        run: cargo clippy -p fuel-ir --features dlpack --no-deps --all-targets -- -D warnings
+        run: cargo clippy --locked -p fuel-ir --features dlpack --no-deps --all-targets -- -D warnings
 
       # GENERALISES THE LEG ABOVE FROM ONE CRATE TO THE DERIVED POPULATION.
       # The GAP-242 leg closes the divergence for fuel-dispatch only, and its own
@@ -1026,7 +1026,7 @@ jobs:
             # it and attribution would be lost. Measured: fuel-hardware's two lints were
             # reported identically by fuel-datasets and fuel-parallel until --no-deps was
             # added, turning one defect into three false reports.
-            if cargo clippy -p "$c" --no-deps --tests -- -D warnings; then
+            if cargo clippy --locked -p "$c" --no-deps --tests -- -D warnings; then
               if [[ " $KNOWN_FAILING " == *" $c "* ]]; then
                 echo "   ^ PASSES but is listed KNOWN_FAILING -- delete the entry (GAP-267)"
                 unexpected_pass+=("$c")
