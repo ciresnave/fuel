@@ -270,7 +270,6 @@ type WriteSliceDoffRun = unsafe extern "C" fn(
 /// `build_and_realize_first_decode_token` (and, for paged KV, the block-pool
 /// allocator's valid physical slot). Those are the PRIMARY live paths, NOT an
 /// exhaustive caller census — every new caller must re-establish this bound.
-#[allow(clippy::too_many_arguments)]
 pub unsafe fn write_slice_doff_run(
     dest: &mut CudaStorageBytes,
     source: &CudaStorageBytes,
@@ -420,7 +419,6 @@ macro_rules! write_slice_doff_kernel {
             /// `start + source_shape[dyn_axis] <= dest_shape[dyn_axis]`. The start is
             /// device-only and the kernel does not clamp, so an out-of-range value is an
             /// out-of-bounds device write the caller must prevent (GAP-337).
-            #[allow(clippy::too_many_arguments)]
             pub unsafe fn $name(
                 dest: &mut CudaStorageBytes,
                 source: &CudaStorageBytes,

@@ -1182,7 +1182,6 @@ fn node_bytes(graph: &Graph, id: NodeId) -> u64 {
 /// partition into known-fixed residencies (priced per device into
 /// the row's base cost), open-row chain edges (extended via the DP
 /// recurrence), and unknown edges (no term — conservative).
-#[allow(clippy::too_many_arguments)]
 fn open_dp_row(
     dp: &mut PlacementDp,
     graph: &Graph,

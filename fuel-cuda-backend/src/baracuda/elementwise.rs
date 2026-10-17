@@ -125,7 +125,6 @@ fn unary_run(
 ///
 /// `out` must already hold at least `numel * dtype_size_bytes` bytes; a
 /// smaller buffer is a surfaced error, never an out-of-bounds device write.
-#[allow(clippy::too_many_arguments)]
 fn unary_run_into(
     src: &CudaStorageBytes,
     src_layout: Option<&Layout>,

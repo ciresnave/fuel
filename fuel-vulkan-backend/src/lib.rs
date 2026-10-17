@@ -1790,10 +1790,6 @@ impl VulkanBackend {
     /// Dispatch a 2-storage + 1-uniform compute shader.
     /// `params_buf` + `params_mem` transfer ownership; they're kept
     /// alive by the recorder until the GPU consumes this CB.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan kernel dispatch / op path: the parameters are the operand buffers, byte offsets, dims and workgroup dimensions of the shader ABI; bundling into a struct obscures the dispatch signature"
-    )]
     fn dispatch_2buf(
         &self,
         op_name: &'static str,
@@ -1923,10 +1919,6 @@ impl VulkanBackend {
 
     /// Internal helper for element-wise binary ops. Element size +
     /// pipeline selected by caller.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan kernel dispatch / op path: the parameters are the operand buffers, byte offsets, dims and workgroup dimensions of the shader ABI; bundling into a struct obscures the dispatch signature"
-    )]
     fn binary_typed_bytes(
         &self,
         elem_size: usize,
@@ -3638,7 +3630,6 @@ impl VulkanBackend {
     /// One thread per output element with an f32 accumulator. Same
     /// param shape as the coop helpers; differs only in pipeline
     /// selection + output byte width.
-    #[allow(clippy::too_many_arguments)]
     fn matmul_small_half_inner(
         &self,
         debug_name: &'static str,
@@ -3825,7 +3816,6 @@ impl VulkanBackend {
     /// shape and bind plumbing to `matmul_half_half_f32_coop_bytes`,
     /// but the output buffer is 2 bytes per element (packed bf16 or
     /// f16 in u32 storage) instead of 4 bytes per element.
-    #[allow(clippy::too_many_arguments)]
     fn matmul_half_half_half_coop_bytes(
         &self,
         debug_name: &'static str,
@@ -4070,7 +4060,6 @@ impl VulkanBackend {
     /// `matmul_f16_f16_f32_bytes`. Element type only changes the
     /// pipeline selection; everything else (descriptor bind sizes,
     /// dispatch shape, batch handling) is identical.
-    #[allow(clippy::too_many_arguments)]
     fn matmul_half_half_f32_coop_bytes(
         &self,
         debug_name: &'static str,
@@ -5630,7 +5619,6 @@ impl VulkanBackend {
     ///   3. Dispatch matmul (`weight [c_out, k_dim]` × `patches`) into
     ///      `out [batch, c_out, h_out, w_out]`. Weight is broadcast
     ///      across batch via sa_batch=0; B (patches) walks per batch.
-    #[allow(clippy::too_many_arguments)]
     pub fn conv2d_f32_bytes(
         &self,
         input: &VulkanStorageBytes,
@@ -5881,7 +5869,6 @@ impl VulkanBackend {
     /// `flash_attn_f32_bytes`; produces grad-Q (same shape as Q)
     /// given (Q, K, V, dO, `[alibi]`). Dispatch: one workgroup per
     /// (b, h_q, q_i).
-    #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_backward_q_f32_bytes(
         &self,
         q: &VulkanStorageBytes,
@@ -5924,7 +5911,6 @@ impl VulkanBackend {
 
     /// FlashAttention backward — dK, f32. Output shape == K shape.
     /// Dispatch: one workgroup per (b, h_kv, k_j).
-    #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_backward_k_f32_bytes(
         &self,
         q: &VulkanStorageBytes,
@@ -5967,7 +5953,6 @@ impl VulkanBackend {
 
     /// FlashAttention backward — dV, f32. Output shape == V shape.
     /// Same dispatch shape as dK.
-    #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_backward_v_f32_bytes(
         &self,
         q: &VulkanStorageBytes,
@@ -6012,7 +5997,6 @@ impl VulkanBackend {
     /// per-variant difference is which output gradient is produced
     /// (Q/K/V) — selected by the `which` arg, which determines the
     /// expected output size and the workgroup dispatch shape.
-    #[allow(clippy::too_many_arguments)]
     fn flash_attn_backward_bytes_impl(
         &self,
         debug_name: &'static str,
@@ -6226,7 +6210,6 @@ impl VulkanBackend {
     }
 
     /// FlashAttention forward, f32.
-    #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_f32_bytes(
         &self,
         q: &VulkanStorageBytes,
@@ -6266,7 +6249,6 @@ impl VulkanBackend {
     }
 
     /// FlashAttention forward, bf16.
-    #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_bf16_bytes(
         &self,
         q: &VulkanStorageBytes,
@@ -6306,7 +6288,6 @@ impl VulkanBackend {
     }
 
     /// FlashAttention forward, f16.
-    #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_f16_bytes(
         &self,
         q: &VulkanStorageBytes,
@@ -6349,7 +6330,6 @@ impl VulkanBackend {
     /// single-pass kernel; one workgroup per (b, h_q, q_i). Supports
     /// GQA, causal, scale, alibi; bails on Sk > 4096 / D > 256
     /// (the in-kernel shared-mem budget).
-    #[allow(clippy::too_many_arguments)]
     fn flash_attn_bytes_impl(
         &self,
         debug_name: &'static str,
@@ -6531,7 +6511,6 @@ impl VulkanBackend {
     /// `h_out * w_out % 16 == 0`, `c_in * k_h * k_w >= 1`). Smaller
     /// shapes bail; the route picker should fall through to f32
     /// conv2d via a Cast in those cases.
-    #[allow(clippy::too_many_arguments)]
     pub fn conv2d_bf16_bytes(
         &self,
         input: &VulkanStorageBytes,
@@ -6792,7 +6771,6 @@ impl VulkanBackend {
     /// `conv2d_im2col_bf16` shader because the im2col stage only
     /// shuffles 2-byte lanes (bit-pattern-opaque); the matmul stage
     /// uses `matmul_coop_f16_f16_f16` instead. Same shape constraints.
-    #[allow(clippy::too_many_arguments)]
     pub fn conv2d_f16_bytes(
         &self,
         input: &VulkanStorageBytes,
@@ -7303,10 +7281,6 @@ impl VulkanBackend {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan kernel dispatch / op path: the parameters are the operand buffers, byte offsets, dims and workgroup dimensions of the shader ABI; bundling into a struct obscures the dispatch signature"
-    )]
     fn layer_norm_backward_typed_bytes(
         &self,
         op_name: &'static str,
@@ -7513,10 +7487,6 @@ impl VulkanBackend {
     /// Per-dtype LayerNorm core. `eps_is_f64` selects between two
     /// Params layouts — `{u32, u32, f32, u32}` (16 bytes) or
     /// `{u32, u32, f64}` (16 bytes with f64 at offset 8).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan kernel dispatch / op path: the parameters are the operand buffers, byte offsets, dims and workgroup dimensions of the shader ABI; bundling into a struct obscures the dispatch signature"
-    )]
     fn layer_norm_typed_bytes(
         &self,
         op_name: &'static str,
@@ -8011,10 +7981,6 @@ impl VulkanBackend {
     /// the target half of the output u32 word. The output descriptor
     /// is bound with a u32-rounded length so robust-access does not
     /// discard the final half-word write when `n_dst` is odd.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan kernel dispatch / op path: the parameters are the operand buffers, byte offsets, dims and workgroup dimensions of the shader ABI; bundling into a struct obscures the dispatch signature"
-    )]
     fn scatter_add_subword_bytes(
         &self,
         base: &VulkanStorageBytes,
@@ -8595,10 +8561,6 @@ impl VulkanBackend {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan kernel dispatch / op path: the parameters are the operand buffers, byte offsets, dims and workgroup dimensions of the shader ABI; bundling into a struct obscures the dispatch signature"
-    )]
     fn index_add_bytes_impl(
         &self,
         dtype: DType,
@@ -10230,10 +10192,6 @@ impl VulkanBackend {
     /// Per-dtype concat core. Identical layout/params/dispatch to
     /// `concat_along_dim_f32_bytes`; the f32 method predates the
     /// extraction.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan kernel dispatch / op path: the parameters are the operand buffers, byte offsets, dims and workgroup dimensions of the shader ABI; bundling into a struct obscures the dispatch signature"
-    )]
     fn concat_along_dim_typed_bytes(
         &self,
         op_name: &'static str,
@@ -10262,10 +10220,6 @@ impl VulkanBackend {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan kernel dispatch / op path: the parameters are the operand buffers, byte offsets, dims and workgroup dimensions of the shader ABI; bundling into a struct obscures the dispatch signature"
-    )]
     fn concat_along_dim_typed_bytes_with_bind(
         &self,
         op_name: &'static str,
@@ -11260,10 +11214,6 @@ impl VulkanBackend {
 
     /// Per-dtype IndexSelect core. `elem_bytes` sizes the output check
     /// and the bf16 pair-thread variant halves the dispatch count.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan kernel dispatch / op path: the parameters are the operand buffers, byte offsets, dims and workgroup dimensions of the shader ABI; bundling into a struct obscures the dispatch signature"
-    )]
     fn index_select_typed_bytes(
         &self,
         op_name: &'static str,
@@ -12344,7 +12294,6 @@ impl VulkanBackend {
     /// Triu / Tril (selectable via `keep_upper`). Element-wise mask
     /// against the matrix triangle (last two dims). Byte-width-keyed
     /// dispatch: 2/4/8.
-    #[allow(clippy::too_many_arguments)]
     pub fn triangular_bytes(
         &self,
         byte_width: usize,

@@ -13,7 +13,6 @@ ops!(
     recip, silu, sign, sigmoid, const_set
 );
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_unary_contiguous(
     device: &Device,
     ep: impl EncoderProvider,
@@ -41,7 +40,6 @@ pub fn call_unary_contiguous(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_unary_strided(
     device: &Device,
     ep: impl EncoderProvider,
@@ -68,7 +66,6 @@ pub fn call_unary_strided(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_const_set_contiguous(
     device: &Device,
     ep: impl EncoderProvider,
@@ -94,7 +91,6 @@ pub fn call_const_set_contiguous(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_const_set_strided(
     device: &Device,
     ep: impl EncoderProvider,
@@ -130,7 +126,6 @@ pub mod copy2d {
     pub const U8: Kernel = Kernel("copy2d_u8");
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_copy2d(
     device: &Device,
     ep: impl EncoderProvider,

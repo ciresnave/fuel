@@ -1140,7 +1140,6 @@ impl KernelBindingTable {
     /// Otherwise identical to [`Self::register_full_with_source`]:
     /// append-only, never-panic; the same `KernelRef` on one key is caught by
     /// [`Self::finalize`], not an inline panic.
-    #[allow(clippy::too_many_arguments)]
     pub fn register_full_with_source_generic(
         &mut self,
         op: impl Into<BindingKey>,

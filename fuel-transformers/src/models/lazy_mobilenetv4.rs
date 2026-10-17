@@ -839,7 +839,6 @@ fn mv4_load_block(
 
 /// Load a `conv2d_no_bias` + `batch_norm` pair into a `Conv2dBnWeights`,
 /// baking BN at load time.
-#[allow(clippy::too_many_arguments)]
 fn mv4_load_conv_bn(
     st: &fuel_loaders::safetensors::MmapedSafetensors,
     conv_prefix: &str,

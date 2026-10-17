@@ -2684,7 +2684,6 @@ fn upsample_nearest2d_dispatch(
 // closing the parity gap with PyTorch's
 // `nn.functional.interpolate(mode='bilinear', align_corners=...)`.
 
-#[allow(clippy::too_many_arguments)]
 fn upsample_bilinear2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     inp: &CudaSlice<T>,
     dev: &CudaDevice,

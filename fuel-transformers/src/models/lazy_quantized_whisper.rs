@@ -543,7 +543,6 @@ fn q_linear(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn multi_head_attn(
     q_src: &Tensor,
     k_src: &Tensor,

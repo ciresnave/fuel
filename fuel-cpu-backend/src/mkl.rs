@@ -79,7 +79,6 @@ mod ffi {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline]
 pub unsafe fn sgemm(
     transa: u8,
@@ -113,7 +112,6 @@ pub unsafe fn sgemm(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline]
 pub unsafe fn dgemm(
     transa: u8,
@@ -147,7 +145,6 @@ pub unsafe fn dgemm(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline]
 pub unsafe fn hgemm(
     transa: u8,

@@ -546,7 +546,6 @@ impl Glm4Model {
     /// - **No flash-decode arm.** Glm4 has no windowed layer so the arm would be
     ///   numerically fine, but the seam declines it uniformly and this port does
     ///   not special-case that.
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_kv_writes(
         &self,
         x: &Tensor,

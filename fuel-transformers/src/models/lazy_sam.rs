@@ -527,7 +527,6 @@ fn apply_attention(
 /// Add the decomposed relative-position bias to the attention scores.
 /// `attn` is `(b*nh, q_h*q_w, k_h*k_w)`. `q` is the query
 /// pre-matmul tensor `(b*nh, q_h*q_w, head_dim)`.
-#[allow(clippy::too_many_arguments)]
 fn add_decomposed_rel_pos(
     attn: &Tensor,
     q: &Tensor,

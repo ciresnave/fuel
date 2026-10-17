@@ -1,50 +1,34 @@
-# `too_many_arguments` is CALIBRATED for this domain, not suppressed — and this
-# file is where the justification now lives, because it previously lived in 54
-# copies of one sentence.
+# `too_many_arguments` is CALIBRATED for this domain, not suppressed: there are NO
+# per-item `#[allow]`/`#[expect]` for it anywhere (PM ruling 2026-10-17; the 256
+# that existed were removed in the PR that wrote this block), and this file is the
+# one place the policy lives.
 #
-# The lint still fires, at a bound chosen for a tensor library instead of
-# clippy's default of 7. Kernel entry points here carry the operand buffers,
-# strides and dims of an op ABI: input / weight / bias / scale / zero_point /
-# stride / padding / dilation / groups is nine before anything unusual happens.
-# Bundling them into a struct obscures the signature rather than clarifying it.
+# Kernel entry points here carry the operand buffers, strides and dims of an op
+# ABI (input / weight / bias / scale / zero_point / stride / padding / dilation /
+# groups is nine before anything unusual happens), and bundling them into a struct
+# obscures the signature rather than clarifying it. So the threshold is the
+# MEASURED MAXIMUM of the kernel-dispatch code, and the lint still fires above it.
 #
-# MEASURED at head over CI's own clippy scope — `--workspace --tests --examples
-# --benches` minus the five WORKSPACE_EXCLUDES crates — with
-# `target/debug/.fingerprint` CLEARED, since a warm cache suppresses warnings
-# and a census over one is an undercount:
+# MEASURED, two ways, at origin/main 6411a54c5 (0.20.8) plus the removal of every
+# per-item attribute:
 #
-#     62 distinct sites
-#       8 args : 41      <- the median offender
-#       9 args : 13
-#      10 args :  6
-#      11 args :  1
-#      12 args :  1
-#     by crate:  fuel-core 56 · fuel-dispatch 4 · fuel-nn 2
+#   (1) COMPILER, CI's clippy scope (`--workspace --tests --examples --benches`
+#       minus the five WORKSPACE_EXCLUDES crates), threshold set to clippy's
+#       default 7, fresh target dir. 237 distinct flagged sites:
+#           8 args: 91   9: 51   10: 25   11: 20   12: 13   13: 7   14: 8
+#           15: 4   16: 2   17: 6   18: 4   19: 5   20: 1
+#       Max 20: `flash_attn_backward_bytes_impl` (fuel-vulkan-backend).
+#   (2) HAND COUNT of the crates CI does not lint (CUDA needs the forge, Metal
+#       needs macOS): fuel-cuda-backend max 19 (`flash_decoding_run`),
+#       fuel-metal-kernels max 22 (`call_sdpa_full`, counted by eye: 22
+#       parameters). These are NOT compiler-verified here.
 #
-# THE MEDIAN OFFENDER HAS EIGHT ARGUMENTS AGAINST A DEFAULT OF SEVEN.
+# 22 is the highest of the two, so every kernel entry point passes, including the
+# Metal one nothing on this box compiles. The compiler-verified in-scope maximum
+# is 20; if Metal's 22 is ever reduced, lower this to the new measured maximum.
 #
-# WHY A THRESHOLD RATHER THAN PER-SITE ATTRIBUTES, given that
-# `#[expect(...)]` self-invalidates and a config line never does:
-# the population was ALREADY classified, and the classification was uniform.
-# 68 `#[expect(clippy::too_many_arguments, reason = "...")]` attributes across
-# fuel-vulkan-backend, fuel-cpu-backend and fuel-graph carried just SIX distinct
-# reason strings, one of them repeated 46 times. That is not 46 per-site
-# judgements; it is one policy written 46 times because there was nowhere to
-# put it once. This is that place.
-#
-# The threshold does not REPLACE the self-invalidating mechanism, it PARTITIONS
-# the population. 14 of those 68 attributes cover functions that genuinely
-# exceed 10 arguments: they stay fulfilled, stay in the source, and will still
-# report if they ever stop being exceptional. Config carries the uniform case;
-# `#[expect]` keeps watching the outliers.
-#
-# 10 is chosen so the lint still catches them: clippy fires ABOVE the threshold,
-# so 11+ still warns. That leaves exactly two functions, both in
-# fuel-core/src/lazy.rs — `apply_layer_with_kv_writes` (12) and
-# `offer_flash_decode_arm_for_region` (11) — reviewed individually.
-#
-# A third existed, `dispatch_3buf` in fuel-vulkan-backend at 13 arguments, the
-# worst in the tree. It is absent because it was DELETED rather than allowed:
-# zero callers anywhere in the repo, and private, so it carried both this lint
-# and a `dead_code` warning. Removing it cleared both.
-too-many-arguments-threshold = 10
+# Not every site is a kernel: `fuel_tensor::inference_context::new` (19) and a
+# handful of `fuel-graph` builders (<= 18) sit under the threshold too. They were
+# allowed before and are not outliers against a kernel-derived bound; if one is
+# worth a struct it is a design change for its own PR, not a lint exemption.
+too-many-arguments-threshold = 22

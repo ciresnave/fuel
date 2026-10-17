@@ -331,7 +331,6 @@ impl Gemma4TextModel {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer(
         &self,
         x: &Tensor,

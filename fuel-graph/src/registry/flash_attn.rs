@@ -254,7 +254,6 @@ pub(crate) struct AttnRecomputeRecipe {
 /// sharing. The concrete `q_pos_offset` shifts every band diagonal (`o+1`,
 /// `o+r+1`, `o-l-1`) and the alibi rel, baked per call. ZERO open scalar slots
 /// (scale, `1/cap`, `cap`, `0`, `-inf` are all baked pattern constants).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn recompute_probs_recipe(
     q: PatternNode,
     k_use: PatternNode,
@@ -360,7 +359,6 @@ pub(crate) fn recompute_probs_recipe(
 ///
 /// Bind space: `0 = q`, `1 = k`, `2 = v`, `3 = alibi_slopes` (present iff
 /// `has_alibi`) — the fused node's input order.
-#[allow(clippy::too_many_arguments)]
 fn recipe(
     b: usize,
     hq: usize,
@@ -557,7 +555,6 @@ pub(crate) struct AttnRecompute {
 /// repeated K/V, all from primitive ops. Shared by the forward decompose and
 /// the backward so their recompute of the score/probability state is
 /// byte-identical.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn recompute_probs(
     graph: &mut Graph,
     q_id: NodeId,

@@ -92,7 +92,6 @@ fn shape_strides_from_layout(
 /// Single binary concat: `y = cat(a, b)` along `axis`. `a` and `b`
 /// must agree on every dim except `axis`. Output layout is contig
 /// over the merged shape (axis dim = a_dim + b_dim).
-#[allow(clippy::too_many_arguments)]
 fn concat2_run(
     a: &CudaStorageBytes,
     a_layout: &Layout,
@@ -190,7 +189,6 @@ fn concat2_run(
 /// graph's only Concat is the rope rotate-half's 2-input `concat(-x2,
 /// x1)`). See the per-dtype `concat_*_into` entry points below, which
 /// refuse N>2 explicitly rather than silently falling back to allocating.
-#[allow(clippy::too_many_arguments)]
 pub fn concat2_into(
     a: &CudaStorageBytes,
     a_layout: &Layout,
@@ -281,7 +279,6 @@ pub fn concat2_into(
 /// N-ary concat via N-1 chained `concat2` calls. The first call
 /// consumes `inputs[0]` + `inputs[1]` at their actual layouts; each
 /// subsequent iteration consumes the contig accumulator + `inputs[i]`.
-#[allow(clippy::too_many_arguments)]
 fn concat_n_chain(
     inputs: &[&CudaStorageBytes],
     input_layouts: &[Layout],

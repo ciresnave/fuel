@@ -1304,7 +1304,6 @@ impl DecodeSession {
     /// held decode graph; `effective_target` / `optimized` come from
     /// [`InferenceContext::prebuild_optimized_as_with_env`]; the node ids
     /// are the STABLE data-Const NodeIds the builder minted.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         graph: Arc<RwLock<Graph>>,
         optimized: OptimizedGraph,
@@ -1858,7 +1857,6 @@ impl PagedDecodeSession {
     /// Assemble a held paged session from the artifacts a first-realize
     /// prebuild produced. The node ids are the STABLE data-Const NodeIds the
     /// paged builder minted.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         graph: Arc<RwLock<Graph>>,
         optimized: OptimizedGraph,

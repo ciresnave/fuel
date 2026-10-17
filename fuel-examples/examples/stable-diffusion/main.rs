@@ -182,7 +182,6 @@ fn output_filename(
 ///
 /// `latents_flat` is the realized `[bsize, 4, h_lat, w_lat]` f32 buffer;
 /// the VAE lazy module decodes one batch entry at a time.
-#[allow(clippy::too_many_arguments)]
 fn save_image(
     vae: &SdVaeDecoder,
     latents_flat: &[f32],

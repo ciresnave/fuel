@@ -957,7 +957,6 @@ impl DeepSeek2Model {
     /// `latent_c`/`kpe_c` `Op::WriteSlice` destinations
     /// [`Self::forward_with_latent_kv_context`] bound into `ctx` before
     /// calling this fn.
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_latent_kv_writes(
         &self,
         x: &Tensor,
@@ -1030,7 +1029,6 @@ impl DeepSeek2Model {
     /// `cached_len + seq_new` still gets attended (masked to `-inf` before
     /// softmax, contributing exactly zero) — numerically consistent with
     /// LlamaModel's identical full-capacity-read trade.
-    #[allow(clippy::too_many_arguments)]
     fn mla_attention_latent_kv(
         &self,
         x: &Tensor,

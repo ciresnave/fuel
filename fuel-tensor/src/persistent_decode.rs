@@ -762,7 +762,6 @@ pub(crate) struct RebindableNodes {
 /// The only thing `consts` changes inside this body is how the four per-token
 /// data Consts are minted. Everything else — including the KV placeholder
 /// binding, which both paths do identically — is shared.
-#[allow(clippy::too_many_arguments)]
 fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     model: &M,
     consts: DataConsts,

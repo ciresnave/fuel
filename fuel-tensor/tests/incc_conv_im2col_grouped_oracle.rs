@@ -29,7 +29,6 @@ use fuel_tensor::pipelined_bridge::realize_one_as;
 
 /// Lower + realize one `groups>1` conv config on the CPU backend and compare to
 /// the direct-conv oracle. `bias` toggles the optional broadcast-`Add` tail.
-#[allow(clippy::too_many_arguments)]
 fn check_case(
     n: usize,
     cin: usize,

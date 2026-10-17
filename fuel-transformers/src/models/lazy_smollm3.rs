@@ -452,7 +452,6 @@ impl SmolLm3Model {
     /// GQA, SwiGLU) plus **per-layer conditional RoPE** (`uses_rope`), with the
     /// seam's two decode differences shared by every ported family: GQA left to
     /// `matmul`'s head broadcast (no `repeat_interleave`), and no flash-decode arm.
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_kv_writes(
         &self,
         x: &Tensor,

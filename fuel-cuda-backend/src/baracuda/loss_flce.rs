@@ -51,7 +51,6 @@ use super::status::check;
 /// `i+1` in `logits`); for a contig `[n_rows, V]` it's just `V`.
 /// `scale_per_row` matches PyTorch's gradient scaling — typically
 /// `1.0` (None reduction) or `1.0 / count_non_ignore` (Mean).
-#[allow(clippy::too_many_arguments)]
 pub fn per_row_f32(
     logits: &CudaStorageBytes,  // mutated in place
     target: &CudaStorageBytes,  // i64
@@ -77,7 +76,6 @@ pub fn per_row_f32(
 }
 
 /// FLCE per-row, F16 logits.
-#[allow(clippy::too_many_arguments)]
 pub fn per_row_f16(
     logits: &CudaStorageBytes,
     target: &CudaStorageBytes,
@@ -103,7 +101,6 @@ pub fn per_row_f16(
 }
 
 /// FLCE per-row, BF16 logits.
-#[allow(clippy::too_many_arguments)]
 pub fn per_row_bf16(
     logits: &CudaStorageBytes,
     target: &CudaStorageBytes,
@@ -129,7 +126,6 @@ pub fn per_row_bf16(
 }
 
 /// FLCE per-row, F64 logits.
-#[allow(clippy::too_many_arguments)]
 pub fn per_row_f64(
     logits: &CudaStorageBytes,
     target: &CudaStorageBytes,
@@ -166,7 +162,6 @@ type PerRowRun = unsafe extern "C" fn(
     stream: *mut std::ffi::c_void,
 ) -> i32;
 
-#[allow(clippy::too_many_arguments)]
 fn per_row_inner(
     logits: &CudaStorageBytes,
     target: &CudaStorageBytes,

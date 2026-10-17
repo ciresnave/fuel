@@ -170,7 +170,6 @@ fn binary_run(
 /// `out` must already hold at least `numel * dtype_size_bytes` bytes
 /// (the executor pre-sizes it from the node's output shape); a smaller
 /// buffer is a surfaced error, never an out-of-bounds device write.
-#[allow(clippy::too_many_arguments)]
 fn binary_run_into(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,

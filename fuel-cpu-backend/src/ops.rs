@@ -844,7 +844,6 @@ impl<I: IntDType> Map2 for IndexAdd<'_, I> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn copy2d_<T: Copy>(
     src: &[T],
     dst: &mut [T],

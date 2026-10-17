@@ -87,7 +87,6 @@ fn translate_window(
 /// Session 7). The launcher itself is preserved for the queued FA2
 /// eager-wrapper retirement session, which will re-wire it onto the
 /// pipelined `Op::Fused(FLASH_ATTN, _)` dispatch path; hence `dead_code`.
-#[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 pub(crate) fn launch(
     q: &CudaStorage,

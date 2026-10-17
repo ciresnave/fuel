@@ -362,7 +362,6 @@ fn apply_segformer_layer(
 /// Efficient self-attention. Input is (B, C, H, W); output is
 /// (B, H*W, C). Q from (B, H*W, C); K/V from a sequence-reduced
 /// view (Conv2d stride=sr_ratio + LN) when `attn.sr` is Some.
-#[allow(clippy::too_many_arguments)]
 fn apply_efficient_attention(
     x: &Tensor,
     attn: &EfficientSelfAttentionWeights,

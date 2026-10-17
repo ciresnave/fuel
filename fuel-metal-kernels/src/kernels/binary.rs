@@ -7,7 +7,6 @@ use objc2_metal::MTLResourceUsage;
 
 ops!(badd, bsub, bmul, bdiv, bminimum, bmaximum, eq, ne, le, lt, ge, gt);
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_binary_contiguous<S: ToString>(
     device: &Device,
     ep: impl EncoderProvider,
@@ -38,7 +37,6 @@ pub fn call_binary_contiguous<S: ToString>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_binary_strided<S: ToString>(
     device: &Device,
     ep: impl EncoderProvider,

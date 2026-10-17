@@ -386,7 +386,6 @@ impl Glm4NewModel {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn apply_layer(
         &self,
         x: &Tensor,

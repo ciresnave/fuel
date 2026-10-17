@@ -4,7 +4,6 @@ use crate::utils::{BufferOffset, EncoderProvider};
 use crate::{set_params, Buffer, ComputeCommandEncoder, Device, Kernels, MetalKernelError, Source};
 use objc2_metal::{MTLResourceUsage, MTLSize};
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_reduce_contiguous(
     device: &Device,
     ep: impl EncoderProvider,
@@ -59,7 +58,6 @@ pub fn call_reduce_contiguous(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_reduce_strided(
     device: &Device,
     ep: impl EncoderProvider,
@@ -117,7 +115,6 @@ pub fn call_reduce_strided(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_last_softmax(
     device: &Device,
     ep: impl EncoderProvider,
@@ -165,7 +162,6 @@ pub fn call_last_softmax(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_rms_norm(
     device: &Device,
     ep: impl EncoderProvider,
@@ -223,7 +219,6 @@ pub fn call_rms_norm(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_layer_norm(
     device: &Device,
     ep: impl EncoderProvider,
@@ -286,7 +281,6 @@ pub fn call_layer_norm(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_rope_i(
     device: &Device,
     ep: impl EncoderProvider,
@@ -329,7 +323,6 @@ pub fn call_rope_i(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_rope_thd(
     device: &Device,
     ep: impl EncoderProvider,
@@ -376,7 +369,6 @@ pub fn call_rope_thd(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_rope(
     device: &Device,
     ep: impl EncoderProvider,

@@ -171,7 +171,6 @@ pub trait Sd3Denoiser {
 ///
 /// The final denoised latent, shape == `latent.shape()`, ready for
 /// VAE decode.
-#[allow(clippy::too_many_arguments)]
 pub fn flow_match_euler_sample<M: Sd3Denoiser>(
     model: &M,
     latent: Tensor,

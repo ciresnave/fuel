@@ -4,7 +4,6 @@ use crate::{get_tile_size, linear_split};
 use crate::{set_params, Buffer, ComputeCommandEncoder, Device, Kernels, MetalKernelError, Source};
 use objc2_metal::MTLResourceUsage;
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_affine(
     device: &Device,
     ep: impl EncoderProvider,
@@ -34,7 +33,6 @@ pub fn call_affine(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_affine_strided(
     device: &Device,
     ep: impl EncoderProvider,
@@ -75,7 +73,6 @@ pub fn call_affine_strided(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_powf(
     device: &Device,
     ep: impl EncoderProvider,
@@ -104,7 +101,6 @@ pub fn call_powf(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_powf_strided(
     device: &Device,
     ep: impl EncoderProvider,
@@ -135,7 +131,6 @@ pub fn call_powf_strided(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_elu(
     device: &Device,
     ep: impl EncoderProvider,
@@ -164,7 +159,6 @@ pub fn call_elu(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn call_elu_strided(
     device: &Device,
     ep: impl EncoderProvider,
