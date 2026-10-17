@@ -431,10 +431,31 @@ pub struct Content {
     /// See the note on the `metadata` field — the same `HashMap` last-wins
     /// caveat applies to duplicate tensor names.
     pub tensor_infos: HashMap<String, TensorInfo>,
+    /// Tensors whose ggml type code this build cannot represent
+    /// ([`GgmlDType::from_u32`] rejects it: every `IQ*`/`TQ*` code, `F64`, the
+    /// integer codes), keyed by name with the raw code. GAP-211: such a tensor
+    /// is NOT in [`Self::tensor_infos`] and the file still opens, so a
+    /// metadata-only consumer (a `chat_template` reader) is not held hostage
+    /// to the tensor type table. Loading the tensor is a typed error naming it
+    /// and its code: use [`Self::missing_tensor_error`], never a bare "missing".
+    pub unsupported_tensors: HashMap<String, u32>,
     pub tensor_data_offset: u64,
 }
 
 impl Content {
+    /// The error for a tensor lookup that missed [`Self::tensor_infos`]:
+    /// "unsupported ggml type code N" when the file declares the tensor but
+    /// this build cannot represent its type, plain "missing tensor" when the
+    /// file does not declare it at all.
+    pub fn missing_tensor_error(&self, name: &str) -> Error {
+        match self.unsupported_tensors.get(name) {
+            Some(code) => Error::Msg(format!(
+                "gguf: tensor {name:?} is stored as ggml type code {code}, which this build                  cannot load (no GgmlDType variant; GAP-211)"
+            )),
+            None => Error::Msg(format!("gguf: missing tensor {name:?}")),
+        }
+    }
+
     /// Parse a GGUF header from `reader`. After this call, `reader`'s
     /// stream position points to the start of the tensor data
     /// section (post-padding).
@@ -470,6 +491,7 @@ impl Content {
             metadata.insert(key, value);
         }
         let mut tensor_infos = HashMap::new();
+        let mut unsupported_tensors = HashMap::new();
         for _idx in 0..tensor_count {
             let tensor_name = read_string(reader, &magic)?;
             let n_dimensions = reader.read_u32::<LittleEndian>()?;
@@ -497,9 +519,13 @@ impl Content {
             };
 
             dimensions.reverse();
-            let ggml_dtype = reader.read_u32::<LittleEndian>()?;
-            let ggml_dtype = GgmlDType::from_u32(ggml_dtype)?;
+            let ggml_code = reader.read_u32::<LittleEndian>()?;
             let offset = reader.read_u64::<LittleEndian>()?;
+            let Ok(ggml_dtype) = GgmlDType::from_u32(ggml_code) else {
+                // Do not abort the whole read (GAP-211): record it, keep going.
+                unsupported_tensors.insert(tensor_name, ggml_code);
+                continue;
+            };
             tensor_infos.insert(
                 tensor_name,
                 TensorInfo {
@@ -534,6 +560,7 @@ impl Content {
             magic,
             metadata,
             tensor_infos,
+            unsupported_tensors,
             tensor_data_offset,
         })
     }

@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.12 - 2026-10-17
+
+### Changed
+
+- GGUF (GAP-211, structural half): an unknown ggml type code (every IQ*/TQ* code, F64, the integer codes) no longer aborts `Content::read`/`Content::open`; the tensor is recorded in the new `Content::unsupported_tensors` (name -> raw code) and loading it fails with an error naming the tensor and the code. IQ dequantization is still open.
+
 ## v0.20.11 - 2026-10-17
 
 ### Changed

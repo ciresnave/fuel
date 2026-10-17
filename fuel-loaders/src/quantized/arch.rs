@@ -252,6 +252,7 @@ mod tests {
             magic: super::super::gguf_file::VersionedMagic::GgufV3,
             metadata,
             tensor_infos,
+            unsupported_tensors: Default::default(),
             tensor_data_offset: 0,
         }
     }

@@ -268,6 +268,7 @@ mod tests {
             magic: VersionedMagic::GgufV3,
             metadata,
             tensor_infos: std::collections::HashMap::new(),
+            unsupported_tensors: Default::default(),
             tensor_data_offset: 0,
         }
     }
@@ -333,6 +334,7 @@ mod tests {
             magic: VersionedMagic::GgufV3,
             metadata,
             tensor_infos,
+            unsupported_tensors: Default::default(),
             tensor_data_offset: 0,
         };
 
