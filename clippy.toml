@@ -21,11 +21,13 @@
 #   (2) HAND COUNT of the crates CI does not lint (CUDA needs the forge, Metal
 #       needs macOS): fuel-cuda-backend max 19 (`flash_decoding_run`),
 #       fuel-metal-kernels max 22 (`call_sdpa_full`, counted by eye: 22
-#       parameters). These are NOT compiler-verified here.
+#       parameters). UNVERIFIED: not compiled here.
 #
 # 22 is the highest of the two, so every kernel entry point passes, including the
-# Metal one nothing on this box compiles. The compiler-verified in-scope maximum
-# is 20; if Metal's 22 is ever reduced, lower this to the new measured maximum.
+# Metal one nothing on this box compiles. A looser bound for uncompiled backends
+# is the safe side. The compiler-verified in-scope maximum is 20: when the runner
+# or a macOS job compiles the CUDA/Metal crates, TIGHTEN this to the measured
+# value (ROADMAP item 14(e)).
 #
 # Not every site is a kernel: `fuel_tensor::inference_context::new` (19) and a
 # handful of `fuel-graph` builders (<= 18) sit under the threshold too. They were
