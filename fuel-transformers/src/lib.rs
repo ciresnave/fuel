@@ -72,6 +72,9 @@
 // re-measure at the next rust-toolchain pin bump (docs/gaps.md GAP-229).
 #![allow(clippy::identity_op)]
 
+#[cfg(feature = "dev-tools")]
+#[doc(hidden)]
+pub mod dev_tools;
 pub mod generation;
 pub mod models;
 pub mod object_detection;
