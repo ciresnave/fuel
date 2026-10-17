@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.11 - 2026-10-17
+
+### Changed
+
+- Test infrastructure: the Qwen3 yardstick fixture regenerator and speed harness stop being `#[ignore]`d tests and become `examples/qwen3_yardstick_tool.rs` (new `fuel-transformers` feature `dev-tools`; shared machinery in `fuel_transformers::dev_tools::qwen3_yardstick`, which the yardstick tests now import). #[ignore] retirement step 2b.
+
 ## v0.20.10 - 2026-10-17
 
 ### Changed
