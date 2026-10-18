@@ -46,6 +46,7 @@ impl DynQuantizedStorage for CpuQStorage {
         self.0.storage_size_in_bytes()
     }
     fn quantize(&mut self, src: &dyn DynBackendStorage) -> Result<()> {
+        self.0.dtype().check_quantize()?;
         self.0.from_float(cpu_src_as_slice(src)?);
         Ok(())
     }
@@ -55,11 +56,13 @@ impl DynQuantizedStorage for CpuQStorage {
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
+        self.0.dtype().check_quantize()?;
         self.0
             .from_float_imatrix(cpu_src_as_slice(src)?, imatrix_weights, n_per_row);
         Ok(())
     }
     fn quantize_onto(&mut self, src: &dyn DynBackendStorage) -> Result<()> {
+        self.0.dtype().check_quantize()?;
         self.0.from_float(cpu_src_as_slice(src)?);
         Ok(())
     }
@@ -69,6 +72,7 @@ impl DynQuantizedStorage for CpuQStorage {
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
+        self.0.dtype().check_quantize()?;
         self.0
             .from_float_imatrix(cpu_src_as_slice(src)?, imatrix_weights, n_per_row);
         Ok(())

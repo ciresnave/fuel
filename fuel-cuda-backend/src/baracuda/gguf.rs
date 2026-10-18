@@ -229,7 +229,14 @@ pub(crate) fn mmvq_format(dtype: GgmlDType) -> Result<MmvqFormat> {
         | GgmlDType::BF16
         | GgmlDType::Q8_1
         | GgmlDType::Iq4Nl
-        | GgmlDType::Iq4Xs => {
+        | GgmlDType::Iq4Xs
+        | GgmlDType::Iq2Xxs
+        | GgmlDType::Iq2Xs
+        | GgmlDType::Iq3Xxs
+        | GgmlDType::Iq1S
+        | GgmlDType::Iq3S
+        | GgmlDType::Iq2S
+        | GgmlDType::Iq1M => {
             return Err(Error::Msg(format!("{dtype:?} has no baracuda MMVQ kernel")).bt());
         }
     };
