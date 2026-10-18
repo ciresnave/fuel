@@ -1,4 +1,6 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// Derived in part from llama.cpp / ggml (MIT License, Copyright (c) 2023-2026 The ggml authors).
+// The full licence text is in THIRD-PARTY-NOTICES.md at the repository root. No licence identifier line
+// is stamped here: the file derives from somebody else's copyright.
 //! `IQ4_NL` and `IQ4_XS` block formats (GAP-211 B1).
 //!
 //! # Provenance
