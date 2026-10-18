@@ -450,6 +450,12 @@ impl QCudaStorage {
             GgmlDType::Q5K => deq::<fuel_quantized::BlockQ5K>(&buffer, block_len, &mut out),
             GgmlDType::Q6K => deq::<fuel_quantized::BlockQ6K>(&buffer, block_len, &mut out),
             GgmlDType::Q8K => deq::<fuel_quantized::BlockQ8K>(&buffer, block_len, &mut out),
+            GgmlDType::Iq4Nl => {
+                deq::<fuel_quantized::iq4::BlockIq4Nl>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Iq4Xs => {
+                deq::<fuel_quantized::iq4::BlockIq4Xs>(&buffer, block_len, &mut out)
+            }
         }
 
         self.device

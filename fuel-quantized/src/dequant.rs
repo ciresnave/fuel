@@ -134,6 +134,8 @@ pub fn dequant_ggml_bytes(bytes: &[u8], dtype: GgmlDType, name: &str) -> Result<
         GgmlDType::Q5K => cast_and_dequant::<BlockQ5K>(bytes),
         GgmlDType::Q6K => cast_and_dequant::<BlockQ6K>(bytes),
         GgmlDType::Q8K => cast_and_dequant::<BlockQ8K>(bytes),
+        GgmlDType::Iq4Nl => cast_and_dequant::<crate::iq4::BlockIq4Nl>(bytes),
+        GgmlDType::Iq4Xs => cast_and_dequant::<crate::iq4::BlockIq4Xs>(bytes),
     })
 }
 
@@ -174,6 +176,8 @@ mod tests {
             GgmlDType::Q5K,
             GgmlDType::Q6K,
             GgmlDType::Q8K,
+            GgmlDType::Iq4Nl,
+            GgmlDType::Iq4Xs,
         ] {
             // One full block's worth of zeroed bytes is a valid (if degenerate) input for
             // every block format here -- big enough that `n_blocks >= 1` for every dtype's

@@ -170,6 +170,8 @@ pub const FDX_GGML_Q4K: u16 = 12;
 pub const FDX_GGML_Q5K: u16 = 13;
 pub const FDX_GGML_Q6K: u16 = 14;
 pub const FDX_GGML_Q8K: u16 = 15;
+pub const FDX_GGML_IQ4_NL: u16 = 20;
+pub const FDX_GGML_IQ4_XS: u16 = 23;
 pub const FDX_GGML_BF16: u16 = 30;
 
 // --- FDX logical dtype codes (§6.1 table) — the subset the validators name.
