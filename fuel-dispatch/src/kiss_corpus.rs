@@ -24,12 +24,6 @@
 //! first** (big-endian value bytes). They are stored here verbatim, as parsed.
 //! A consumer comparing against Fuel's little-endian tensor storage must swap.
 
-// Staged reader: its only intended runtime consumer (`corpus_verdict`) is
-// dormant pending the seam correction above, so the public surface is currently
-// exercised only by the in-module tests. Suppress dead-code noise in the
-// non-test `--features jit` build until the corrected seam consumes it.
-#![allow(dead_code)]
-
 use std::collections::BTreeSet;
 use thiserror::Error;
 
@@ -417,6 +411,29 @@ mod tests {
         assert!(corpus.transcendental_atoms.contains(&"exp".to_string()));
         // `add` is exact-class, so it is NOT a transcendental atom.
         assert!(!corpus.transcendental_atoms.contains(&"add".to_string()));
+    }
+
+    #[test]
+    fn covered_cells_agrees_with_covers_and_every_vector_names_a_rounding_mode() {
+        let corpus = load_vendored_corpus().expect("vendored corpus parses");
+        let cells = corpus.covered_cells();
+        // CONTROL: the set is non-empty and contains the known cell.
+        assert!(cells.contains(&("add".to_string(), "f32".to_string())));
+        // Every reported cell is one `covers` agrees on, and no cell is invented.
+        for (op, dtype) in &cells {
+            assert!(
+                corpus.covers(op, dtype),
+                "({op}, {dtype}) listed but not covered"
+            );
+        }
+        // The reader requires a rounding mode on every vector; none may be blank.
+        assert!(
+            corpus
+                .cells("add", "f32")
+                .iter()
+                .all(|v| !v.rounding.is_empty()),
+            "an add/f32 vector carries an empty rounding mode"
+        );
     }
 
     #[test]

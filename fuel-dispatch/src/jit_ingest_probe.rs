@@ -77,7 +77,6 @@ use std::sync::{Arc, RwLock};
 /// `--features cuda`, and a `pub fn` that nothing calls emits no warning**, so
 /// `gap_236_the_probe_set_is_actually_consumed` below scans the source for the
 /// call and fails if it is ever removed.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub fn admission_probes(operands: &[OperandDesc], seed: u64) -> Vec<Vec<HostTensor>> {
     probe_from_operands(operands, seed)
         .into_iter()
@@ -110,7 +109,6 @@ pub fn admission_probes(operands: &[OperandDesc], seed: u64) -> Vec<Vec<HostTens
 /// It deliberately does NOT short-circuit on the first failure: every probe is
 /// examined so the detail can report the full picture, and so that a future
 /// caller cannot make "we only ran probe 0" invisible.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub fn combine_probe_verdicts(per_probe: Vec<VerifyVerdict>) -> VerifyVerdict {
     if per_probe.is_empty() {
         return VerifyVerdict::Fail {
@@ -175,7 +173,6 @@ pub fn combine_probe_verdicts(per_probe: Vec<VerifyVerdict>) -> VerifyVerdict {
 /// both-NaN is agreement regardless of payload, while a NaN on exactly one
 /// side is `u64::MAX` and fails every bound. That asymmetry is precisely what
 /// catches `fmaxf` lifted as `Max`.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 const SPECIAL_F32: [f32; 8] = [
     f32::NAN,
     f32::INFINITY,
@@ -207,7 +204,6 @@ const SPECIAL_F32: [f32; 8] = [
 ///
 /// Returns `None` under the same contract as [`probe_from_operands`]: any
 /// operand this cannot faithfully represent yields no probe at all.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub fn special_value_probe_from_operands(operands: &[OperandDesc]) -> Option<Vec<HostTensor>> {
     operands
         .iter()
@@ -244,7 +240,6 @@ pub fn special_value_probe_from_operands(operands: &[OperandDesc]) -> Option<Vec
         .collect()
 }
 
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 pub fn probe_from_operands(operands: &[OperandDesc], seed: u64) -> Option<Vec<HostTensor>> {
     operands
         .iter()

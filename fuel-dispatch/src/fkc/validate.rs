@@ -121,9 +121,7 @@ pub(crate) fn fkc_version_is_supported(version: u32) -> bool {
 ///
 /// Never called: an unreferenced private fn is still fully type-checked (the
 /// `dead_code` lint runs *after* type-checking), so the destructures are enforced
-/// on every build; `#[allow(dead_code)]` only silences the unused-fn report. Each
-/// arm binds every field to `_`, which reads (and thereby pins) the field set.
-#[allow(dead_code)] // deliberate exhaustive schema pin (front-matter block), never called
+/// on every build; `/// arm binds every field to `_`, which reads (and thereby pins) the field set.
 fn _fkc_pin_front_matter(front_matter: FkcFrontMatter, provider: FkcProvider) {
     let FkcFrontMatter {
         fkc_version: _,
@@ -138,7 +136,6 @@ fn _fkc_pin_front_matter(front_matter: FkcFrontMatter, provider: FkcProvider) {
     } = provider;
 }
 
-#[allow(dead_code)] // deliberate exhaustive schema pin (kernel block), never called
 fn _fkc_pin_kernel(kernel: FkcKernel) {
     let FkcKernel {
         kernel: _,
@@ -160,7 +157,6 @@ fn _fkc_pin_kernel(kernel: FkcKernel) {
     } = kernel;
 }
 
-#[allow(dead_code)] // deliberate exhaustive schema pin (accept block), never called
 fn _fkc_pin_accept(
     accept: AcceptBlock,
     op_params: OpParamsSchema,
@@ -181,7 +177,6 @@ fn _fkc_pin_accept(
     } = op_param_field;
 }
 
-#[allow(dead_code)] // deliberate exhaustive schema pin (return block), never called
 fn _fkc_pin_return(ret: ReturnBlock, output: OutputDesc) {
     let ReturnBlock {
         outputs: _,
@@ -196,7 +191,6 @@ fn _fkc_pin_return(ret: ReturnBlock, output: OutputDesc) {
     } = output;
 }
 
-#[allow(dead_code)] // deliberate exhaustive schema pin (tensor / layout / fdx / quant / gather), never called
 fn _fkc_pin_tensor(
     tensor: TensorDesc,
     layout: LayoutSpec,
@@ -248,7 +242,6 @@ fn _fkc_pin_tensor(
     } = gather;
 }
 
-#[allow(dead_code)] // deliberate exhaustive schema pin (caps / cost / precision), never called
 fn _fkc_pin_caps_cost_precision(
     caps: CapsBlock,
     cost: CostBlock,
@@ -1148,7 +1141,6 @@ macro_rules! variant_table {
         /// Never called — it exists so the compiler checks the variant list
         /// below against the real enum. A new variant makes this match
         /// non-exhaustive; a removed or renamed one makes an arm unresolvable.
-        #[allow(dead_code)]
         fn $guard(p: &$enum) {
             match p { $( $enum::$v { .. } => (), )+ }
         }
