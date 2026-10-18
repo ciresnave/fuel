@@ -194,7 +194,7 @@ fn map_element_kind(dt: DType) -> Option<ElementKind> {
 /// target and is therefore an identity, not a classification. It is
 /// **lossy-but-FORCED rather than a mistake**: there is no `ArchSku::Sm90` at
 /// the locked `baracuda-kernel-vocab 0.0.1-alpha.78` to map `"90"` onto. See
-/// [`arch_sku_digits`] for the compile-time trap that fires when that changes.
+/// [`_arch_sku_digits`] for the compile-time trap that fires when that changes.
 fn map_arch_sku(arch: &str) -> Option<ArchSku> {
     let digits = arch
         .strip_prefix("sm_")
@@ -252,8 +252,7 @@ fn map_arch_sku(arch: &str) -> Option<ArchSku> {
 // Deliberately unused in production — being type-checked IS the job. Dead code
 // is still exhaustiveness-checked, so the `E0004` fires on a plain
 // `cargo check`, not only when tests are compiled.
-#[allow(dead_code)]
-fn arch_sku_digits(sku: ArchSku) -> &'static str {
+fn _arch_sku_digits(sku: ArchSku) -> &'static str {
     match sku {
         ArchSku::Sm80 => "80",
         ArchSku::Sm89 => "89",
@@ -462,13 +461,13 @@ mod tests {
     /// Every [`ArchSku`] this build knows is reachable from its own canonical
     /// digits, in both accepted spellings.
     ///
-    /// This is what keeps [`arch_sku_digits`] from being satisfiable by an arm
+    /// This is what keeps [`_arch_sku_digits`] from being satisfiable by an arm
     /// that returns a spelling [`map_arch_sku`] does not accept — the witness
     /// forces a decision, and this forces that decision to be a *correct* one.
     ///
     /// ⚠️ **`KNOWN` is CONVENIENCE, NOT THE ANCHOR.** A hand-written list
     /// cannot detect a variant added upstream — it just stays short, silently.
-    /// `arch_sku_digits` can, and breaks *first*, because it is the only
+    /// `_arch_sku_digits` can, and breaks *first*, because it is the only
     /// construct here whose scrutinee is the enum itself. If you are reading
     /// this because the list looks stale, the error you should already have
     /// seen is an `E0004` in that match.
@@ -477,7 +476,7 @@ mod tests {
         const KNOWN: &[ArchSku] = &[ArchSku::Sm80, ArchSku::Sm89, ArchSku::Sm90a];
 
         for &sku in KNOWN {
-            let digits = arch_sku_digits(sku);
+            let digits = _arch_sku_digits(sku);
             assert_eq!(
                 map_arch_sku(&format!("sm_{digits}")),
                 Some(sku),
@@ -496,9 +495,9 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for &sku in KNOWN {
             assert!(
-                seen.insert(arch_sku_digits(sku)),
+                seen.insert(_arch_sku_digits(sku)),
                 "two ArchSku variants share canonical digits {:?}",
-                arch_sku_digits(sku)
+                _arch_sku_digits(sku)
             );
         }
         assert_eq!(seen.len(), 3, "non-vacuity: the known-SKU set is not empty");
@@ -506,11 +505,11 @@ mod tests {
 
     // ⚠️ THIS TEST AND `sm90a_canonical_digits_are_90a_not_90` ARE NOT
     // REDUNDANT, and the reason is not visible by reading them. MEASURED by
-    // sabotage: setting `arch_sku_digits(Sm90a)` to `"90"` leaves the
+    // sabotage: setting `_arch_sku_digits(Sm90a)` to `"90"` leaves the
     // round-trip above GREEN — because `map_arch_sku` used to accept `"90"`
     // for `Sm90a` too (before the GAP-179 split below), so a wrong canonical
     // spelling still round-tripped. Only the explicit
-    // `arch_sku_digits(Sm90a) == "90a"` assertion catches it. Do not delete
+    // `_arch_sku_digits(Sm90a) == "90a"` assertion catches it. Do not delete
     // that one on the grounds that this one covers it; it does not.
 
     /// `Sm90a`'s canonical digits are `"90a"`, not `"90"` — the bare form now
@@ -526,7 +525,7 @@ mod tests {
     /// the comment there).
     #[test]
     fn sm90a_canonical_digits_are_90a_not_90() {
-        assert_eq!(arch_sku_digits(ArchSku::Sm90a), "90a");
+        assert_eq!(_arch_sku_digits(ArchSku::Sm90a), "90a");
     }
 
     /// The arch + op-class mapping (incl. the underscore-tolerant form and the
