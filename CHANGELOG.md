@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.15 - 2026-10-18
+
+### Changed
+
+- GGUF (GAP-211 C): new `GgmlDType::Tq1_0`/`Tq2_0`/`Mxfp4`/`Nvfp4` (ggml codes 34, 35, 39, 40) with CPU dequantization (`fuel_quantized::tq_mx_types`, MIT notice in `THIRD-PARTY-NOTICES.md`). Dequantization compared bit-for-bit with llama.cpp compiled C on random blocks. DECODE-ONLY like the grid-table IQ types: quantizing to them is a typed error, CUDA/Metal matmul decline them. New FDX_GGML_* codes mirror the ggml numbers. Codes 41 and 42 (Q1_0, Q2_0) stay unsupported and are still reported by name.
+
 ## v0.20.14 - 2026-10-18
 
 ### Changed

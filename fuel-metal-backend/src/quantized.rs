@@ -159,6 +159,26 @@ impl QMetalStorage {
                     read_to_vec(&buffer, block_len);
                 fuel_quantized::iq_grid_types::BlockIq1M::to_float(&vec, &mut out);
             }
+            GgmlDType::Tq1_0 => {
+                let vec: Vec<fuel_quantized::tq_mx_types::BlockTq1_0> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::tq_mx_types::BlockTq1_0::to_float(&vec, &mut out);
+            }
+            GgmlDType::Tq2_0 => {
+                let vec: Vec<fuel_quantized::tq_mx_types::BlockTq2_0> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::tq_mx_types::BlockTq2_0::to_float(&vec, &mut out);
+            }
+            GgmlDType::Mxfp4 => {
+                let vec: Vec<fuel_quantized::tq_mx_types::BlockMxfp4> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::tq_mx_types::BlockMxfp4::to_float(&vec, &mut out);
+            }
+            GgmlDType::Nvfp4 => {
+                let vec: Vec<fuel_quantized::tq_mx_types::BlockNvfp4> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::tq_mx_types::BlockNvfp4::to_float(&vec, &mut out);
+            }
         }
 
         let buffer = self.device.new_buffer_with_data(&out)?;
@@ -536,7 +556,11 @@ pub(crate) fn to_metal_ggml(value: GgmlDType) -> Result<fuel_metal_kernels::Ggml
             | GgmlDType::Iq1S
             | GgmlDType::Iq3S
             | GgmlDType::Iq2S
-            | GgmlDType::Iq1M => {
+            | GgmlDType::Iq1M
+            | GgmlDType::Tq1_0
+            | GgmlDType::Tq2_0
+            | GgmlDType::Mxfp4
+            | GgmlDType::Nvfp4 => {
                 fuel_ir::bail!("{value:?} has no Metal quantized-matmul kernel")
             }
         })
