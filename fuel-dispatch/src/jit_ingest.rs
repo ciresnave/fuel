@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::time::Duration;
 
-use crate::fkc::verify::{LedgerRecord, is_transcendental};
+use crate::fkc::verify::LedgerRecord;
+#[cfg(any(feature = "cuda", test))]
+use crate::fkc::verify::is_transcendental;
 
 #[cfg(feature = "cuda")]
 use crate::fkc::verify::{
@@ -118,7 +120,7 @@ pub enum IngestOutcome {
 /// advisory diff's tolerance band (`Exact` vs 2×-widened for transcendentals);
 /// it does NOT gate the verdict (§6.6-0007: kiss-ref never verdicts, any class).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(feature = "cuda")]
 pub enum OpClass {
     Exact,
     Transcendental,
@@ -127,17 +129,16 @@ pub enum OpClass {
 /// Fuel-side summary of a kiss-ref differential (no kiss-ref types cross this
 /// boundary, keeping `classify_floor_verdict` cuda- and dependency-independent).
 #[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 pub struct DiffOutcome {
     pub within: bool,
-    pub max_ulp: Option<u64>,
     pub detail: String,
 }
 
 /// Fuel-side summary of the recipe-realize reference verdict (today's interim
 /// authority for every op class).
 #[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 pub struct RefOutcome {
     pub pass: bool,
     pub claim: &'static str,
@@ -147,7 +148,7 @@ pub struct RefOutcome {
 /// Fuel-side summary of a corpus verdict. Produced only when a covering frozen
 /// corpus cell exists — which is never, today (`corpus_verdict` returns None).
 #[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 pub struct CorpusOutcome {
     pub adopt: bool,
     pub claim: &'static str,
@@ -160,7 +161,7 @@ pub struct CorpusOutcome {
 /// recipe-realize (interim, all classes) → kiss-only ⇒ escalate → none ⇒ fail.
 /// kiss-ref NEVER produces a Pass/Fail here: agreement is not Adopt and a
 /// discrepancy is not Reject — it can only escalate.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 pub fn classify_floor_verdict(
     kiss: Option<&DiffOutcome>,
     recipe: Option<&RefOutcome>,
@@ -226,7 +227,7 @@ pub fn classify_floor_verdict(
 /// authority. Activation needs the seam correction recorded in
 /// `docs/design-notes/2026-07-23-kiss-corpus-verdict-seam-mismatch.md` — the
 /// precedence wiring in `verify_candidate_impl` is already live for it.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 pub fn corpus_verdict(
     _op: fuel_graph::jit::OpTag,
     _dtype: fuel_ir::DType,
@@ -238,7 +239,7 @@ pub fn corpus_verdict(
 /// Map a non-`Pass` verdict to its ingest outcome. Pure so the new
 /// `Inconclusive → Flagged` escalate path is tested without a device. `Pass`
 /// never reaches here (it adopts, which needs cuda) — a defensive `Rejected`.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn outcome_from_nonadopt_verdict(
     verdict: VerifyVerdict,
     records: Vec<LedgerRecord>,
@@ -286,7 +287,7 @@ fn outcome_from_nonadopt_verdict(
 /// [`FlagReport::diff_summary`]: the advisory result plus the diff evidence
 /// (max ULP, mismatch count, op count). Missing evidence keys render as `?`,
 /// never panic. Pure + CPU-testable.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn kiss_advisory_diff_summary(r: &LedgerRecord) -> String {
     let field = |k: &str| {
         r.evidence
@@ -310,8 +311,8 @@ fn kiss_advisory_diff_summary(r: &LedgerRecord) -> String {
 // The generalized (region-based) advisory block (T3) no longer consults this;
 // it is re-consumed by the dormant corpus consult in the numeric region (Task
 // 4/5) and by its CPU unit test. Unconditionally allowed until that re-wiring
-// lands (dead in the plain cuda build meanwhile).
-#[allow(dead_code)]
+// lands.
+#[cfg(test)]
 fn single_primitive_optag(
     dec: Option<&fuel_graph::jit::PatternNode>,
 ) -> Option<fuel_graph::jit::OpTag> {
@@ -335,7 +336,7 @@ fn single_primitive_optag(
 /// earlier note that "the array build can't panic" described a construction
 /// this no longer performs. A trailing partial chunk is discarded exactly as
 /// `chunks_exact` discarded it.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
     let (chunks, _rest) = bytes.as_chunks::<4>();
     chunks.iter().map(|c| f32::from_le_bytes(*c)).collect()
@@ -345,7 +346,7 @@ fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
 /// [`bytes_to_f32`]: `as_chunks::<8>()` yields `[u8; 8]` directly.
 // Consumed by the cuda advisory block's dtype dispatch (`run_region_diff`);
 // dead only in the CPU-only (`jit` without `cuda`) build.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn bytes_to_f64(bytes: &[u8]) -> Vec<f64> {
     let (chunks, _rest) = bytes.as_chunks::<8>();
     chunks.iter().map(|c| f64::from_le_bytes(*c)).collect()
@@ -354,7 +355,7 @@ fn bytes_to_f64(bytes: &[u8]) -> Vec<f64> {
 /// Reinterpret little-endian `f16` bytes as an owned `Vec<half::f16>`. Mirrors
 /// [`bytes_to_f32`]: `as_chunks::<2>()` yields `[u8; 2]` directly.
 // See `bytes_to_f64`: consumed by `run_region_diff`, dead only CPU-only.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn bytes_to_f16(bytes: &[u8]) -> Vec<half::f16> {
     let (chunks, _rest) = bytes.as_chunks::<2>();
     chunks
@@ -366,7 +367,7 @@ fn bytes_to_f16(bytes: &[u8]) -> Vec<half::f16> {
 /// Reinterpret little-endian `bf16` bytes as an owned `Vec<half::bf16>`.
 /// Mirrors [`bytes_to_f32`]: `as_chunks::<2>()` yields `[u8; 2]` directly.
 // See `bytes_to_f64`: consumed by `run_region_diff`, dead only CPU-only.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn bytes_to_bf16(bytes: &[u8]) -> Vec<half::bf16> {
     let (chunks, _rest) = bytes.as_chunks::<2>();
     chunks
@@ -380,6 +381,7 @@ fn bytes_to_bf16(bytes: &[u8]) -> Vec<half::bf16> {
 /// `Gelu`, `Rsqrt`) inherit their decomposition's tolerance and return `None`
 /// from `Op::ulp_ceiling`. Per the kiss-ref band refinement (2026-07-23): treat
 /// a mapped op with no exposed ceiling as 4 ULP.
+#[cfg(any(feature = "cuda", test))]
 const ADVISORY_FALLBACK_TRANSCENDENTAL_ULP_CEILING: u64 = 4;
 
 /// The per-op §6.8 ULP-ceiling contribution to the advisory band:
@@ -396,6 +398,7 @@ const ADVISORY_FALLBACK_TRANSCENDENTAL_ULP_CEILING: u64 = 4;
 /// restricted to that set — the
 /// adapter crate itself is cuda-gated, and this helper must stay CPU-testable
 /// (`--features jit` alone). Keep the two mappings in lockstep.
+#[cfg(any(feature = "cuda", test))]
 fn advisory_op_ulp_ceiling(op: fuel_graph::jit::OpTag) -> Option<u64> {
     use fuel_graph::jit::OpTag as T;
     use kiss_ops_vocab::Op as K;
@@ -450,7 +453,7 @@ fn advisory_op_ulp_ceiling(op: fuel_graph::jit::OpTag) -> Option<u64> {
 /// `SeeThrough` is traversed through (structural metadata, mirroring
 /// [`region_contains_transcendental`]); `Bind`/`Any` are leaves.
 // Consumed by the cuda advisory block (its band selection); dead only CPU-only.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn advisory_ulp_band(region: &fuel_graph::jit::PatternNode) -> Option<u64> {
     use fuel_graph::jit::PatternNode;
     fn walk(node: &PatternNode, n_ops: &mut u64, n_exact: &mut u64, trans_sum: &mut Option<u64>) {
@@ -498,7 +501,7 @@ fn advisory_ulp_band(region: &fuel_graph::jit::PatternNode) -> Option<u64> {
 /// migrate to PatternNode data, so it declines (`None` — no static table);
 /// an unregistered id likewise resolves to `None`, never a panic.
 // Consumed by the cuda advisory block (region derivation); dead only CPU-only.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn advisory_region(
     decompose: Option<&fuel_graph::jit::PatternNode>,
     claimed: Option<fuel_graph::registry::FusedOpId>,
@@ -522,7 +525,7 @@ fn advisory_region(
 ///
 /// Pure (the adapter support bool is threaded in) so the combining logic is
 /// unit-tested under `--features jit` alone, without the adapter or a device.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn nonf32_escalate_eligible(out_dtype: fuel_ir::DType, region_kiss_supported: bool) -> bool {
     region_kiss_supported
         && matches!(
@@ -578,7 +581,6 @@ mod flag_not_verdict_tests {
         // kiss-ref disagrees but recipe passes: recipe verdict stands, kiss never gates.
         let kiss = DiffOutcome {
             within: false,
-            max_ulp: Some(5),
             detail: "disagree".into(),
         };
         let recipe = RefOutcome {
@@ -596,7 +598,6 @@ mod flag_not_verdict_tests {
     fn classify_no_reference_but_kiss_is_inconclusive() {
         let agree = DiffOutcome {
             within: true,
-            max_ulp: Some(0),
             detail: "agree".into(),
         };
         assert!(
@@ -608,7 +609,6 @@ mod flag_not_verdict_tests {
         );
         let off = DiffOutcome {
             within: false,
-            max_ulp: Some(4),
             detail: "disagree".into(),
         };
         assert!(
@@ -1131,7 +1131,7 @@ mod flag_not_verdict_tests {
 /// positional `inputs[index]` bind resolution can never index out of bounds:
 /// one past the largest bind index the region references (0 for a bind-free
 /// region).
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn region_arity(region: &fuel_graph::jit::PatternNode) -> usize {
     region
         .bind_indices()
@@ -1147,7 +1147,7 @@ fn region_arity(region: &fuel_graph::jit::PatternNode) -> usize {
 /// [`base_map_hash`](fuel_graph::opt::base_map_hash) (which folds a const's
 /// shape/dtype and silently no-ops on an unpopulated storage slot) for a
 /// cross-graph base-map comparison to be meaningful.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn push_placeholder_leaves(g: &mut fuel_graph::Graph, arity: usize) -> Vec<fuel_graph::NodeId> {
     (0..arity)
         .map(|_| {
@@ -1167,7 +1167,7 @@ fn push_placeholder_leaves(g: &mut fuel_graph::Graph, arity: usize) -> Vec<fuel_
 /// `emit_region` — caught by [`recipe_identity_matches`]'s wrapper — a poisoned
 /// lock, or an empty lowering result); the caller treats `None` as "not a
 /// match" (conservative reject).
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn base_map_hash_of_region(region: &fuel_graph::jit::PatternNode) -> Option<u64> {
     let graph = std::sync::Arc::new(std::sync::RwLock::new(fuel_graph::Graph::new()));
     let sink = {
@@ -1190,7 +1190,7 @@ fn base_map_hash_of_region(region: &fuel_graph::jit::PatternNode) -> Option<u64>
 /// bind count so the leaf hashes line up; a genuine same-op match has equal
 /// arity, a mismatch merely yields a different base map (conservative
 /// non-match). `None` on any structural failure.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn base_map_hash_of_fused(
     claimed_op: fuel_graph::registry::FusedOpId,
     arity: usize,
@@ -1237,7 +1237,7 @@ fn base_map_hash_of_fused(
 /// the gate; rejecting it is the safe direction. The whole body is
 /// `catch_unwind`-wrapped so it never panics even when called directly (no
 /// outer guard) from unit tests.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn recipe_identity_matches(
     claimed_op: fuel_graph::registry::FusedOpId,
     submitted: &fuel_graph::jit::PatternNode,
@@ -1267,7 +1267,7 @@ fn recipe_identity_matches(
 /// a match arm keyed on `id`. Anything unmapped falling through to `Rope` at
 /// worst yields a non-matching base map or a wrong realize that fails the
 /// numeric bound — a conservative reject, never a wrong adopt.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn fused_params_for(id: fuel_graph::registry::FusedOpId) -> fuel_graph::registry::FusedOpParams {
     // No per-id branch needed yet — see doc above. `id` is bound for the
     // future match arm and to document intent.
@@ -1296,7 +1296,7 @@ fn fused_params_for(id: fuel_graph::registry::FusedOpId) -> fuel_graph::registry
 /// unit-testable under `--features jit` alone.
 // The sole non-test caller (`verify_candidate_impl`) is `cuda`-gated; in a
 // non-`cuda` build only the `jit` unit test uses it, so silence dead-code there.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 fn claimed_op_lacks_numeric_bound(
     claimed_op: Option<fuel_graph::registry::FusedOpId>,
     declared: &crate::fused::PrecisionGuarantee,
@@ -1340,7 +1340,7 @@ fn expected_input_arity(id: fuel_graph::registry::FusedOpId) -> Option<usize> {
 // Un-gated (the enum itself is cuda-independent; only its cuda producers in
 // `verify_candidate_impl` stay gated) so the CPU-testable `classify_floor_verdict`
 // / `outcome_from_nonadopt_verdict` can build + match it without a device.
-#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+#[cfg(any(feature = "cuda", test))]
 #[derive(Debug)]
 pub enum VerifyVerdict {
     /// Every DECLARED claim was empirically backed.
@@ -1956,7 +1956,6 @@ fn verify_candidate_on_probe(
         ));
         Some(DiffOutcome {
             within: report.conforms(),
-            max_ulp: Some(report.max_ulp),
             detail: format!(
                 "kiss-ref region diff (op_count={op_count}, max_ulp={}, mismatches={})",
                 report.max_ulp, report.mismatches

@@ -152,16 +152,6 @@ pub(crate) struct StreamingPick {
     /// Judge rank). It holds its own `BackendRuntimeLookup`, so it reads
     /// both VRAM fit and live device load off that lookup's handles.
     pub selector: Arc<dyn RuntimeSelector>,
-    /// The live per-tier free-memory + load lookup the picker fingerprints
-    /// telemetry through (consulted *through* the selector). `None` ⇒ no
-    /// pressure/load signal ⇒ arm-0 (the no-telemetry contract). The
-    /// streaming walk consults VRAM + load through the selector (the
-    /// production `ChainedSelector` holds its own lookup), so this is
-    /// carried for the `RouteCache`-fingerprint parity / future direct
-    /// reads but not re-queried in the walk (mirrors `pick_route`'s
-    /// `let _ = lookup`).
-    #[allow(dead_code)]
-    pub lookup: Option<BackendRuntimeLookup>,
 }
 
 /// Map from NodeId to a realized Storage Arc. Used both as the
@@ -1164,7 +1154,10 @@ impl PipelinedExecutor {
     fn streaming_pick_for(
         graph: &Arc<RwLock<Graph>>,
         selector: Option<Arc<dyn RuntimeSelector>>,
-        lookup: Option<BackendRuntimeLookup>,
+        // Accepted for call-site parity with `pick_route` but not stored: the
+        // streaming walk reads VRAM + load through the selector, which holds its
+        // own `BackendRuntimeLookup`.
+        _lookup: Option<BackendRuntimeLookup>,
     ) -> Result<Option<StreamingPick>> {
         let Some(selector) = selector else {
             return Ok(None);
@@ -1176,7 +1169,7 @@ impl PipelinedExecutor {
         if !has_branch {
             return Ok(None);
         }
-        Ok(Some(StreamingPick { selector, lookup }))
+        Ok(Some(StreamingPick { selector }))
     }
 
     /// Capture a single-device CUDA decode step's kernel launches into a

@@ -127,12 +127,13 @@ pub use jit_ingest::{
     CandidateKernel, FlagReport, IngestOutcome, IngestionConfig, IngestionService,
     ProviderFeedback, RejectionReport,
 };
-#[cfg(feature = "jit")]
+#[cfg(all(feature = "jit", any(feature = "cuda", test)))]
 mod jit_ingest_probe;
 pub mod judge_cache;
 pub mod judge_report_path;
 pub mod kernel;
 #[cfg(feature = "jit")]
+#[cfg(test)]
 mod kiss_corpus;
 pub mod optimize;
 pub mod pipelined;

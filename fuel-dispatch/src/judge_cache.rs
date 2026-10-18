@@ -243,7 +243,6 @@ mod tests {
     /// Variant that lets a test pin a specific `kernel_source` on the
     /// fixture entry — exercises per-alternative dispatch (e.g. AOCL vs
     /// MKL siblings at one cell).
-    #[allow(dead_code)]
     fn entry_with_source(
         backend: BackendId,
         op: OpKind,

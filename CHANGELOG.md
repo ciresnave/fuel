@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.16 - 2026-10-18
+
+### Changed
+
+- fuel-dispatch: all 41 `allow(dead_code)` retired. `jit_ingest`/`jit_ingest_probe` and their `fkc::verify` re-exports now compile only under `cuda` or `jit`+test; removed never-read `DiffOutcome.max_ulp` and `StreamingPick.lookup` (public `realize_with_optimized_picking*` signatures unchanged); `kiss_corpus` is test-only. No behaviour change.
+
 ## v0.20.15 - 2026-10-18
 
 ### Changed
