@@ -417,6 +417,10 @@ const COPYRIGHT_ACCOUNTED_FOR: &[(&str, &str)] = &[
         "tables generated from llama.cpp (MIT); asserted by INHERITED_WITH_NOTICE",
     ),
     (
+        "scripts/gen_iq_grids.py",
+        "our generator; the word appears only in the upstream notice text it writes into iq_grids.rs",
+    ),
+    (
         "THIRD-PARTY-NOTICES.md",
         "the ledger of third-party licence texts; reproduces upstream notices verbatim",
     ),

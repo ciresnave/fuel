@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Regenerate fuel-quantized/src/iq_grids.rs from llama.cpp's ggml-common.h.
 
 Usage:

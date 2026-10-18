@@ -203,7 +203,7 @@ impl BlockIq3S {
                 d * (1 + 2 * i32::from(self.scales[pair] & 0xf)) as f32,
                 d * (1 + 2 * i32::from(self.scales[pair] >> 4)) as f32,
             ];
-            for half in 0..2 {
+            for (half, dbh) in db.iter().enumerate() {
                 let ib32 = 2 * pair + half;
                 let qh = usize::from(self.qh[ib32]);
                 let qs = &self.qs[8 * ib32..8 * ib32 + 8];
@@ -214,9 +214,8 @@ impl BlockIq3S {
                     let g2 = IQ3S_GRID[i2].to_le_bytes();
                     let signs = self.signs[4 * ib32 + l];
                     for j in 0..4 {
-                        y[32 * ib32 + 8 * l + j] = db[half] * f32::from(g1[j]) * sign(signs, j);
-                        y[32 * ib32 + 8 * l + j + 4] =
-                            db[half] * f32::from(g2[j]) * sign(signs, j + 4);
+                        y[32 * ib32 + 8 * l + j] = dbh * f32::from(g1[j]) * sign(signs, j);
+                        y[32 * ib32 + 8 * l + j + 4] = dbh * f32::from(g2[j]) * sign(signs, j + 4);
                     }
                 }
             }
