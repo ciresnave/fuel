@@ -116,7 +116,9 @@ impl BlockTq1_0 {
         let mut out = 0;
         // 48 bytes of `qs`: one run of 32, then one of 16 (upstream's two loops).
         let (head, tail) = self.qs.split_at(self.qs.len() - self.qs.len() % 32);
-        for chunk in head.chunks_exact(32).chain(tail.chunks_exact(16)) {
+        let runs32 = head.as_chunks::<32>().0.iter().map(|c| &c[..]);
+        let runs16 = tail.as_chunks::<16>().0.iter().map(|c| &c[..]);
+        for chunk in runs32.chain(runs16) {
             for p in POW3 {
                 for q in chunk {
                     y[out] = tq1_digit(*q, p) * d;
@@ -138,7 +140,7 @@ impl BlockTq2_0 {
     fn decode(&self, y: &mut [f32]) {
         let d = self.d.to_f32();
         let mut out = 0;
-        for chunk in self.qs.chunks_exact(32) {
+        for chunk in self.qs.as_chunks::<32>().0 {
             for l in 0..4 {
                 for q in chunk {
                     let v = ((q >> (l * 2)) & 3) as i8;
