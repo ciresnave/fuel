@@ -798,7 +798,7 @@ mod tests {
 
     // ── GgmlDType ─────────────────────────────────────────────────────────
 
-    const ALL_GGML: [GgmlDType; 15] = [
+    const ALL_GGML: [GgmlDType; 17] = [
         GgmlDType::F32,
         GgmlDType::F16,
         GgmlDType::BF16,
