@@ -885,7 +885,8 @@ mod tests {
         assert_eq!(fdx_to_ggml(FDX_QUANT_NONE), None); // 0xFFFF
         assert_eq!(fdx_to_ggml(4), None); // gap in ggml numbering
         assert_eq!(fdx_to_ggml(5), None); // gap in ggml numbering
-        assert_eq!(fdx_to_ggml(16), None);
+        assert_eq!(fdx_to_ggml(24), None); // I8: not a Fuel GgmlDType
+        assert_eq!(fdx_to_ggml(34), None); // TQ1_0: not yet supported
     }
 
     // ── ScaleGranularity ──────────────────────────────────────────────────

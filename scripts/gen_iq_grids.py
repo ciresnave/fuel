@@ -46,13 +46,15 @@ HEADER = """\
 
 def parse(src, name):
     m = re.search(r"GGML_TABLE_BEGIN\((\w+),\s*%s,\s*(\w+)\)(.*?)GGML_TABLE_END\(\)" % name, src, re.S)
-    assert m, name
+    if not m:
+        sys.exit("table %s not found" % name)
     size = m.group(2)
     if not size.isdigit():
         size = re.search(r"#define\s+%s\s+(\d+)" % size, src).group(1)
     vals = re.findall(r"0x[0-9a-fA-F]+|\b\d+\b", m.group(3))
     vals = [int(v, 0) for v in vals]
-    assert len(vals) == int(size), (name, len(vals), size)
+    if len(vals) != int(size):
+        sys.exit("table %s: parsed %d values, upstream declares %s" % (name, len(vals), size))
     return vals
 
 def render(src):
