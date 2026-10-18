@@ -330,6 +330,10 @@ pub fn ggml_to_fdx(g: GgmlDType) -> u16 {
         GgmlDType::Iq3S => FDX_GGML_IQ3_S,
         GgmlDType::Iq2S => FDX_GGML_IQ2_S,
         GgmlDType::Iq1M => FDX_GGML_IQ1_M,
+        GgmlDType::Tq1_0 => FDX_GGML_TQ1_0,
+        GgmlDType::Tq2_0 => FDX_GGML_TQ2_0,
+        GgmlDType::Mxfp4 => FDX_GGML_MXFP4,
+        GgmlDType::Nvfp4 => FDX_GGML_NVFP4,
     }
 }
 
@@ -363,6 +367,10 @@ pub fn fdx_to_ggml(code: u16) -> Option<GgmlDType> {
         FDX_GGML_IQ3_S => GgmlDType::Iq3S,
         FDX_GGML_IQ2_S => GgmlDType::Iq2S,
         FDX_GGML_IQ1_M => GgmlDType::Iq1M,
+        FDX_GGML_TQ1_0 => GgmlDType::Tq1_0,
+        FDX_GGML_TQ2_0 => GgmlDType::Tq2_0,
+        FDX_GGML_MXFP4 => GgmlDType::Mxfp4,
+        FDX_GGML_NVFP4 => GgmlDType::Nvfp4,
         _ => return None,
     };
     Some(g)
@@ -812,7 +820,7 @@ mod tests {
 
     // ── GgmlDType ─────────────────────────────────────────────────────────
 
-    const ALL_GGML: [GgmlDType; 24] = [
+    const ALL_GGML: [GgmlDType; 28] = [
         GgmlDType::F32,
         GgmlDType::F16,
         GgmlDType::BF16,
@@ -837,6 +845,10 @@ mod tests {
         GgmlDType::Iq3S,
         GgmlDType::Iq2S,
         GgmlDType::Iq1M,
+        GgmlDType::Tq1_0,
+        GgmlDType::Tq2_0,
+        GgmlDType::Mxfp4,
+        GgmlDType::Nvfp4,
     ];
 
     #[test]
@@ -876,6 +888,10 @@ mod tests {
         assert_eq!(ggml_to_fdx(GgmlDType::Iq3S), 21);
         assert_eq!(ggml_to_fdx(GgmlDType::Iq2S), 22);
         assert_eq!(ggml_to_fdx(GgmlDType::Iq1M), 29);
+        assert_eq!(ggml_to_fdx(GgmlDType::Tq1_0), 34);
+        assert_eq!(ggml_to_fdx(GgmlDType::Tq2_0), 35);
+        assert_eq!(ggml_to_fdx(GgmlDType::Mxfp4), 39);
+        assert_eq!(ggml_to_fdx(GgmlDType::Nvfp4), 40);
         assert_eq!(ggml_to_fdx(GgmlDType::F16), 1);
         assert_eq!(ggml_to_fdx(GgmlDType::BF16), 30);
     }
@@ -886,7 +902,7 @@ mod tests {
         assert_eq!(fdx_to_ggml(4), None); // gap in ggml numbering
         assert_eq!(fdx_to_ggml(5), None); // gap in ggml numbering
         assert_eq!(fdx_to_ggml(24), None); // I8: not a Fuel GgmlDType
-        assert_eq!(fdx_to_ggml(34), None); // TQ1_0: not yet supported
+        assert_eq!(fdx_to_ggml(41), None); // Q1_0: not a Fuel GgmlDType
     }
 
     // ── ScaleGranularity ──────────────────────────────────────────────────

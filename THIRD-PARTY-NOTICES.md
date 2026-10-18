@@ -12,11 +12,12 @@ if the notice is removed.
   (the commit `GgmlDType` in `fuel-ir/src/quantized.rs` is pinned to).
 - Used by: `fuel-quantized/src/iq4.rs` (IQ4_NL and IQ4_XS block layouts, codebook,
   dequantization arithmetic), `fuel-quantized/src/iq_grid_types.rs` (IQ2_XXS,
-  IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ1_S, IQ1_M block layouts and dequantization)
-  and `fuel-quantized/src/iq_grids.rs` (their lookup tables, generated from
-  `ggml/src/ggml-common.h` by `scripts/gen_iq_grids.py`); all verified against
-  `ggml/src/ggml-common.h`, `ggml/src/ggml-quants.c`, `ggml/include/ggml.h` at that
-  commit, and the dequantizers additionally byte-compared with llama.cpp's own
+  IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ1_S, IQ1_M block layouts and dequantization),
+  `fuel-quantized/src/tq_mx_types.rs` (TQ1_0, TQ2_0, MXFP4, NVFP4 block layouts, codebook
+  and scale decoding) and `fuel-quantized/src/iq_grids.rs` (the IQ lookup tables, generated
+  from `ggml/src/ggml-common.h` by `scripts/gen_iq_grids.py`); all verified against
+  `ggml/src/ggml-common.h`, `ggml/src/ggml-quants.c`, `ggml/src/ggml-impl.h`,
+  `ggml/include/ggml.h` at that commit, and the IQ dequantizers additionally byte-compared with llama.cpp's own
   compiled C (see GAP-211 in `docs/gaps.md`).
 
 ```text

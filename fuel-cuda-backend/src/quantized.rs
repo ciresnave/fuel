@@ -477,6 +477,18 @@ impl QCudaStorage {
             GgmlDType::Iq1M => {
                 deq::<fuel_quantized::iq_grid_types::BlockIq1M>(&buffer, block_len, &mut out)
             }
+            GgmlDType::Tq1_0 => {
+                deq::<fuel_quantized::tq_mx_types::BlockTq1_0>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Tq2_0 => {
+                deq::<fuel_quantized::tq_mx_types::BlockTq2_0>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Mxfp4 => {
+                deq::<fuel_quantized::tq_mx_types::BlockMxfp4>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Nvfp4 => {
+                deq::<fuel_quantized::tq_mx_types::BlockNvfp4>(&buffer, block_len, &mut out)
+            }
         }
 
         self.device

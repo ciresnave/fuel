@@ -205,7 +205,7 @@ fn gguf_open_matches_read_for_real_metadata() {
 /// (positive control: the two messages must differ).
 #[test]
 fn gguf_unsupported_tensor_type_opens_and_fails_by_name_on_load() {
-    for (label, code) in [("i8", 24u32), ("tq1_0", 34u32), ("mxfp4", 39u32)] {
+    for (label, code) in [("i8", 24u32), ("q1_0", 41u32), ("q2_0", 42u32)] {
         // "good": one F32 at offset 0; "weird": 32 opaque bytes at offset 4.
         let data = [&1.5f32.to_le_bytes()[..], &[0u8; 32][..]].concat();
         let gguf = build_gguf(
@@ -264,7 +264,7 @@ fn gguf_unsupported_tensor_type_opens_and_fails_by_name_on_load() {
 #[test]
 fn gguf_iq_tensors_open_as_supported_types() {
     use fuel_ir::GgmlDType;
-    let cases: [(&str, u32, GgmlDType); 9] = [
+    let cases: [(&str, u32, GgmlDType); 13] = [
         ("iq2_xxs", 16, GgmlDType::Iq2Xxs),
         ("iq2_xs", 17, GgmlDType::Iq2Xs),
         ("iq3_xxs", 18, GgmlDType::Iq3Xxs),
@@ -274,6 +274,10 @@ fn gguf_iq_tensors_open_as_supported_types() {
         ("iq2_s", 22, GgmlDType::Iq2S),
         ("iq4_xs", 23, GgmlDType::Iq4Xs),
         ("iq1_m", 29, GgmlDType::Iq1M),
+        ("tq1_0", 34, GgmlDType::Tq1_0),
+        ("tq2_0", 35, GgmlDType::Tq2_0),
+        ("mxfp4", 39, GgmlDType::Mxfp4),
+        ("nvfp4", 40, GgmlDType::Nvfp4),
     ];
     // One block of each, laid out back to back.
     let mut offset = 0u64;

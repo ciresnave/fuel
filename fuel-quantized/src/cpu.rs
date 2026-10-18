@@ -14,6 +14,7 @@ use crate::k_quants::{
     self, BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K,
     BlockQ6K, BlockQ8_0, BlockQ8_1, BlockQ8K, GgmlType,
 };
+use crate::tq_mx_types::{BlockMxfp4, BlockNvfp4, BlockTq1_0, BlockTq2_0};
 use fuel_ir::quantized::GgmlDType;
 use fuel_ir::{HostBuffer, Result};
 use half::{bf16, f16};
@@ -139,6 +140,22 @@ pub fn cpu_zeros(dtype: GgmlDType, elem_count: usize) -> Box<dyn QuantizedType> 
         GgmlDType::Iq3S => Box::new(vec![BlockIq3S::zeros(); elem_count / BlockIq3S::BLCK_SIZE]),
         GgmlDType::Iq2S => Box::new(vec![BlockIq2S::zeros(); elem_count / BlockIq2S::BLCK_SIZE]),
         GgmlDType::Iq1M => Box::new(vec![BlockIq1M::zeros(); elem_count / BlockIq1M::BLCK_SIZE]),
+        GgmlDType::Tq1_0 => Box::new(vec![
+            BlockTq1_0::zeros();
+            elem_count / BlockTq1_0::BLCK_SIZE
+        ]),
+        GgmlDType::Tq2_0 => Box::new(vec![
+            BlockTq2_0::zeros();
+            elem_count / BlockTq2_0::BLCK_SIZE
+        ]),
+        GgmlDType::Mxfp4 => Box::new(vec![
+            BlockMxfp4::zeros();
+            elem_count / BlockMxfp4::BLCK_SIZE
+        ]),
+        GgmlDType::Nvfp4 => Box::new(vec![
+            BlockNvfp4::zeros();
+            elem_count / BlockNvfp4::BLCK_SIZE
+        ]),
     }
 }
 
@@ -172,6 +189,10 @@ pub fn cpu_from_data(dtype: GgmlDType, data: Cow<'_, [u8]>) -> Result<Box<dyn Qu
         GgmlDType::Iq3S => Box::new(blocks_from_bytes::<BlockIq3S>(data)?),
         GgmlDType::Iq2S => Box::new(blocks_from_bytes::<BlockIq2S>(data)?),
         GgmlDType::Iq1M => Box::new(blocks_from_bytes::<BlockIq1M>(data)?),
+        GgmlDType::Tq1_0 => Box::new(blocks_from_bytes::<BlockTq1_0>(data)?),
+        GgmlDType::Tq2_0 => Box::new(blocks_from_bytes::<BlockTq2_0>(data)?),
+        GgmlDType::Mxfp4 => Box::new(blocks_from_bytes::<BlockMxfp4>(data)?),
+        GgmlDType::Nvfp4 => Box::new(blocks_from_bytes::<BlockNvfp4>(data)?),
     })
 }
 
