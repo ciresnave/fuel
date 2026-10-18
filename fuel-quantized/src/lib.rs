@@ -29,6 +29,7 @@ pub mod iq_grids;
 pub mod k_quants;
 #[cfg(target_feature = "neon")]
 pub mod neon;
+pub mod tq_mx_types;
 pub mod utils;
 
 pub use cpu::{QuantizedType, cpu_from_data, cpu_zeros};

@@ -143,6 +143,10 @@ pub fn dequant_ggml_bytes(bytes: &[u8], dtype: GgmlDType, name: &str) -> Result<
         GgmlDType::Iq3S => cast_and_dequant::<crate::iq_grid_types::BlockIq3S>(bytes),
         GgmlDType::Iq2S => cast_and_dequant::<crate::iq_grid_types::BlockIq2S>(bytes),
         GgmlDType::Iq1M => cast_and_dequant::<crate::iq_grid_types::BlockIq1M>(bytes),
+        GgmlDType::Tq1_0 => cast_and_dequant::<crate::tq_mx_types::BlockTq1_0>(bytes),
+        GgmlDType::Tq2_0 => cast_and_dequant::<crate::tq_mx_types::BlockTq2_0>(bytes),
+        GgmlDType::Mxfp4 => cast_and_dequant::<crate::tq_mx_types::BlockMxfp4>(bytes),
+        GgmlDType::Nvfp4 => cast_and_dequant::<crate::tq_mx_types::BlockNvfp4>(bytes),
     })
 }
 
@@ -192,6 +196,10 @@ mod tests {
             GgmlDType::Iq3S,
             GgmlDType::Iq2S,
             GgmlDType::Iq1M,
+            GgmlDType::Tq1_0,
+            GgmlDType::Tq2_0,
+            GgmlDType::Mxfp4,
+            GgmlDType::Nvfp4,
         ] {
             // One full block's worth of zeroed bytes is a valid (if degenerate) input for
             // every block format here -- big enough that `n_blocks >= 1` for every dtype's
