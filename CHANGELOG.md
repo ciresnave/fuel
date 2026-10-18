@@ -1,7 +1,7 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
-## Unreleased
+## v0.20.15 - 2026-10-18
 
 ### Changed
 
