@@ -124,6 +124,41 @@ impl QMetalStorage {
                 let vec: Vec<fuel_quantized::iq4::BlockIq4Xs> = read_to_vec(&buffer, block_len);
                 fuel_quantized::iq4::BlockIq4Xs::to_float(&vec, &mut out);
             }
+            GgmlDType::Iq2Xxs => {
+                let vec: Vec<fuel_quantized::iq_grid_types::BlockIq2Xxs> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::iq_grid_types::BlockIq2Xxs::to_float(&vec, &mut out);
+            }
+            GgmlDType::Iq2Xs => {
+                let vec: Vec<fuel_quantized::iq_grid_types::BlockIq2Xs> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::iq_grid_types::BlockIq2Xs::to_float(&vec, &mut out);
+            }
+            GgmlDType::Iq3Xxs => {
+                let vec: Vec<fuel_quantized::iq_grid_types::BlockIq3Xxs> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::iq_grid_types::BlockIq3Xxs::to_float(&vec, &mut out);
+            }
+            GgmlDType::Iq1S => {
+                let vec: Vec<fuel_quantized::iq_grid_types::BlockIq1S> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::iq_grid_types::BlockIq1S::to_float(&vec, &mut out);
+            }
+            GgmlDType::Iq3S => {
+                let vec: Vec<fuel_quantized::iq_grid_types::BlockIq3S> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::iq_grid_types::BlockIq3S::to_float(&vec, &mut out);
+            }
+            GgmlDType::Iq2S => {
+                let vec: Vec<fuel_quantized::iq_grid_types::BlockIq2S> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::iq_grid_types::BlockIq2S::to_float(&vec, &mut out);
+            }
+            GgmlDType::Iq1M => {
+                let vec: Vec<fuel_quantized::iq_grid_types::BlockIq1M> =
+                    read_to_vec(&buffer, block_len);
+                fuel_quantized::iq_grid_types::BlockIq1M::to_float(&vec, &mut out);
+            }
         }
 
         let buffer = self.device.new_buffer_with_data(&out)?;
@@ -136,6 +171,7 @@ impl QMetalStorage {
     }
 
     fn quantize_from_f32(&mut self, src: &[f32], imatrix: Option<(&[f32], usize)>) -> Result<()> {
+        self.dtype.check_quantize()?;
         let mut qcpu = fuel_quantized::cpu_zeros(self.dtype, src.len());
         match imatrix {
             None => qcpu.from_float(src),
@@ -492,7 +528,15 @@ pub(crate) fn to_metal_ggml(value: GgmlDType) -> Result<fuel_metal_kernels::Ggml
             GgmlDType::BF16 => fuel_metal_kernels::GgmlDType::F16,
             // No Metal matmul kernel for the IQ4 formats (GAP-211 B1): decline,
             // never dispatch another format's kernel over their bytes.
-            GgmlDType::Iq4Nl | GgmlDType::Iq4Xs => {
+            GgmlDType::Iq4Nl
+            | GgmlDType::Iq4Xs
+            | GgmlDType::Iq2Xxs
+            | GgmlDType::Iq2Xs
+            | GgmlDType::Iq3Xxs
+            | GgmlDType::Iq1S
+            | GgmlDType::Iq3S
+            | GgmlDType::Iq2S
+            | GgmlDType::Iq1M => {
                 fuel_ir::bail!("{value:?} has no Metal quantized-matmul kernel")
             }
         })

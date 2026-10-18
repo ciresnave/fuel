@@ -6,6 +6,9 @@
 //! `fuel-cpu-backend`-side `CpuQStorage` adapter and by the file-format
 //! readers in `fuel-core/src/quantized/`.
 
+use crate::iq_grid_types::{
+    BlockIq1M, BlockIq1S, BlockIq2S, BlockIq2Xs, BlockIq2Xxs, BlockIq3S, BlockIq3Xxs,
+};
 use crate::iq4::{BlockIq4Nl, BlockIq4Xs};
 use crate::k_quants::{
     self, BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K,
@@ -120,6 +123,22 @@ pub fn cpu_zeros(dtype: GgmlDType, elem_count: usize) -> Box<dyn QuantizedType> 
             BlockIq4Xs::zeros();
             elem_count / BlockIq4Xs::BLCK_SIZE
         ]),
+        GgmlDType::Iq2Xxs => Box::new(vec![
+            BlockIq2Xxs::zeros();
+            elem_count / BlockIq2Xxs::BLCK_SIZE
+        ]),
+        GgmlDType::Iq2Xs => Box::new(vec![
+            BlockIq2Xs::zeros();
+            elem_count / BlockIq2Xs::BLCK_SIZE
+        ]),
+        GgmlDType::Iq3Xxs => Box::new(vec![
+            BlockIq3Xxs::zeros();
+            elem_count / BlockIq3Xxs::BLCK_SIZE
+        ]),
+        GgmlDType::Iq1S => Box::new(vec![BlockIq1S::zeros(); elem_count / BlockIq1S::BLCK_SIZE]),
+        GgmlDType::Iq3S => Box::new(vec![BlockIq3S::zeros(); elem_count / BlockIq3S::BLCK_SIZE]),
+        GgmlDType::Iq2S => Box::new(vec![BlockIq2S::zeros(); elem_count / BlockIq2S::BLCK_SIZE]),
+        GgmlDType::Iq1M => Box::new(vec![BlockIq1M::zeros(); elem_count / BlockIq1M::BLCK_SIZE]),
     }
 }
 
@@ -146,6 +165,13 @@ pub fn cpu_from_data(dtype: GgmlDType, data: Cow<'_, [u8]>) -> Result<Box<dyn Qu
         GgmlDType::Q8K => Box::new(blocks_from_bytes::<BlockQ8K>(data)?),
         GgmlDType::Iq4Nl => Box::new(blocks_from_bytes::<BlockIq4Nl>(data)?),
         GgmlDType::Iq4Xs => Box::new(blocks_from_bytes::<BlockIq4Xs>(data)?),
+        GgmlDType::Iq2Xxs => Box::new(blocks_from_bytes::<BlockIq2Xxs>(data)?),
+        GgmlDType::Iq2Xs => Box::new(blocks_from_bytes::<BlockIq2Xs>(data)?),
+        GgmlDType::Iq3Xxs => Box::new(blocks_from_bytes::<BlockIq3Xxs>(data)?),
+        GgmlDType::Iq1S => Box::new(blocks_from_bytes::<BlockIq1S>(data)?),
+        GgmlDType::Iq3S => Box::new(blocks_from_bytes::<BlockIq3S>(data)?),
+        GgmlDType::Iq2S => Box::new(blocks_from_bytes::<BlockIq2S>(data)?),
+        GgmlDType::Iq1M => Box::new(blocks_from_bytes::<BlockIq1M>(data)?),
     })
 }
 

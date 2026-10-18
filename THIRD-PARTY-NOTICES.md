@@ -11,8 +11,13 @@ if the notice is removed.
 - Origin: https://github.com/ggml-org/llama.cpp, `LICENSE` at commit `9d57ce456c`
   (the commit `GgmlDType` in `fuel-ir/src/quantized.rs` is pinned to).
 - Used by: `fuel-quantized/src/iq4.rs` (IQ4_NL and IQ4_XS block layouts, codebook,
-  dequantization arithmetic; verified against `ggml/src/ggml-common.h`,
-  `ggml/src/ggml-quants.c`, `ggml/include/ggml.h` at that commit).
+  dequantization arithmetic), `fuel-quantized/src/iq_grid_types.rs` (IQ2_XXS,
+  IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ1_S, IQ1_M block layouts and dequantization)
+  and `fuel-quantized/src/iq_grids.rs` (their lookup tables, generated from
+  `ggml/src/ggml-common.h` by `scripts/gen_iq_grids.py`); all verified against
+  `ggml/src/ggml-common.h`, `ggml/src/ggml-quants.c`, `ggml/include/ggml.h` at that
+  commit, and the dequantizers additionally byte-compared with llama.cpp's own
+  compiled C (see GAP-211 in `docs/gaps.md`).
 
 ```text
 MIT License

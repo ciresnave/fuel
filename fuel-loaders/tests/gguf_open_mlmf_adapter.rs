@@ -205,7 +205,7 @@ fn gguf_open_matches_read_for_real_metadata() {
 /// (positive control: the two messages must differ).
 #[test]
 fn gguf_unsupported_tensor_type_opens_and_fails_by_name_on_load() {
-    for (label, code) in [("i8", 24u32), ("iq2_xxs", 16u32), ("iq3_s", 21u32)] {
+    for (label, code) in [("i8", 24u32), ("tq1_0", 34u32), ("mxfp4", 39u32)] {
         // "good": one F32 at offset 0; "weird": 32 opaque bytes at offset 4.
         let data = [&1.5f32.to_le_bytes()[..], &[0u8; 32][..]].concat();
         let gguf = build_gguf(
@@ -257,25 +257,41 @@ fn gguf_unsupported_tensor_type_opens_and_fails_by_name_on_load() {
     }
 }
 
-/// GAP-211 B1: IQ4_NL (20) and IQ4_XS (23) are SUPPORTED types, so both
-/// constructors list them as ordinary tensors with the right dtype and byte
-/// size, and nothing lands in `unsupported_tensors`. (The sibling test uses
-/// types that stay unsupported; together they pin the boundary.)
+/// GAP-211 B1/B2: every IQ type (ggml codes 16..=23 and 29) is a SUPPORTED type,
+/// so both constructors list them as ordinary tensors with the right dtype and
+/// byte offsets, and nothing lands in `unsupported_tensors`. (The sibling test
+/// uses types that stay unsupported; together they pin the boundary.)
 #[test]
-fn gguf_iq4_tensors_open_as_supported_types() {
+fn gguf_iq_tensors_open_as_supported_types() {
     use fuel_ir::GgmlDType;
-    let data = vec![0u8; 18 + 136]; // one IQ4_NL block (32 elems) + one IQ4_XS block (256)
-    let gguf = build_gguf(
-        &[],
-        &[
-            tensor_info_record("nl", &[32], 20, 0),
-            tensor_info_record("xs", &[256], 23, 18),
-        ],
-        &data,
-    );
+    let cases: [(&str, u32, GgmlDType); 9] = [
+        ("iq2_xxs", 16, GgmlDType::Iq2Xxs),
+        ("iq2_xs", 17, GgmlDType::Iq2Xs),
+        ("iq3_xxs", 18, GgmlDType::Iq3Xxs),
+        ("iq1_s", 19, GgmlDType::Iq1S),
+        ("iq4_nl", 20, GgmlDType::Iq4Nl),
+        ("iq3_s", 21, GgmlDType::Iq3S),
+        ("iq2_s", 22, GgmlDType::Iq2S),
+        ("iq4_xs", 23, GgmlDType::Iq4Xs),
+        ("iq1_m", 29, GgmlDType::Iq1M),
+    ];
+    // One block of each, laid out back to back.
+    let mut offset = 0u64;
+    let mut records = Vec::new();
+    for (name, code, dtype) in &cases {
+        records.push(tensor_info_record(
+            name,
+            &[dtype.block_size() as u64],
+            *code,
+            offset,
+        ));
+        offset += dtype.type_size() as u64;
+    }
+    let data = vec![0u8; offset as usize];
+    let gguf = build_gguf(&[], &records, &data);
     let via_read = Content::read(&mut Cursor::new(gguf.clone())).expect("read");
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("iq4.gguf");
+    let path = dir.path().join("iq.gguf");
     std::fs::write(&path, &gguf).expect("write synthetic gguf");
     let via_open = Content::open(&path).expect("open");
     for (ctor, c) in [("read", &via_read), ("open", &via_open)] {
@@ -284,9 +300,12 @@ fn gguf_iq4_tensors_open_as_supported_types() {
             "{ctor}: {:?}",
             c.unsupported_tensors
         );
-        assert_eq!(c.tensor_infos["nl"].ggml_dtype, GgmlDType::Iq4Nl, "{ctor}");
-        assert_eq!(c.tensor_infos["xs"].ggml_dtype, GgmlDType::Iq4Xs, "{ctor}");
-        assert_eq!(c.tensor_infos["xs"].offset, 18, "{ctor}");
+        let mut want = 0u64;
+        for (name, _, dtype) in &cases {
+            assert_eq!(c.tensor_infos[*name].ggml_dtype, *dtype, "{ctor}/{name}");
+            assert_eq!(c.tensor_infos[*name].offset, want, "{ctor}/{name}");
+            want += dtype.type_size() as u64;
+        }
     }
 }
 
