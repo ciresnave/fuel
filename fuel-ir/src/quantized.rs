@@ -11,9 +11,10 @@ use crate::error::Result;
 
 /// The ggml block-format dtype tag. Mirrors llama.cpp's `ggml_type`
 /// **@`9d57ce456c`** for the subset fuel supports (the classic 15 — F32/F16/BF16
-/// plus Q4_0..Q8_1 and Q2K..Q8K, plus IQ4_NL and IQ4_XS (GAP-211 B1; block
-/// geometry and the dequant formula verified against `ggml-common.h` and
-/// `ggml-quants.c` at that commit); NOT the other IQ*/TQ*/MXFP4/NVFP4 families,
+/// plus Q4_0..Q8_1 and Q2K..Q8K, plus every IQ family: IQ4_NL/IQ4_XS (GAP-211 B1)
+/// and the decode-only IQ1_S/IQ1_M/IQ2_XXS/IQ2_XS/IQ2_S/IQ3_XXS/IQ3_S (GAP-211 B2);
+/// block geometry and the dequant formula verified against `ggml-common.h` and
+/// `ggml-quants.c` at that commit); NOT the TQ*/MXFP4/NVFP4 families,
 /// which an unsupported-tensor GGUF load reports by name instead).
 ///
 /// Geometry checked against that commit (GAP-248 instance 5), and the referee
@@ -53,6 +54,20 @@ pub enum GgmlDType {
     Iq4Nl,
     /// llama.cpp `GGML_TYPE_IQ4_XS` (23): 256 elems/block, 4-bit codebook, 6-bit sub-block scales.
     Iq4Xs,
+    /// llama.cpp `GGML_TYPE_IQ2_XXS` (16): 256 elems/block, grid-table quantization; DECODE-ONLY (GAP-211 B2).
+    Iq2Xxs,
+    /// llama.cpp `GGML_TYPE_IQ2_XS` (17): 256 elems/block, grid-table quantization; DECODE-ONLY (GAP-211 B2).
+    Iq2Xs,
+    /// llama.cpp `GGML_TYPE_IQ3_XXS` (18): 256 elems/block, grid-table quantization; DECODE-ONLY (GAP-211 B2).
+    Iq3Xxs,
+    /// llama.cpp `GGML_TYPE_IQ1_S` (19): 256 elems/block, grid-table quantization; DECODE-ONLY (GAP-211 B2).
+    Iq1S,
+    /// llama.cpp `GGML_TYPE_IQ3_S` (21): 256 elems/block, grid-table quantization; DECODE-ONLY (GAP-211 B2).
+    Iq3S,
+    /// llama.cpp `GGML_TYPE_IQ2_S` (22): 256 elems/block, grid-table quantization; DECODE-ONLY (GAP-211 B2).
+    Iq2S,
+    /// llama.cpp `GGML_TYPE_IQ1_M` (29): 256 elems/block, grid-table quantization; DECODE-ONLY (GAP-211 B2).
+    Iq1M,
 }
 
 impl GgmlDType {
@@ -74,6 +89,13 @@ impl GgmlDType {
             15 => Self::Q8K,
             20 => Self::Iq4Nl,
             23 => Self::Iq4Xs,
+            16 => Self::Iq2Xxs,
+            17 => Self::Iq2Xs,
+            18 => Self::Iq3Xxs,
+            19 => Self::Iq1S,
+            21 => Self::Iq3S,
+            22 => Self::Iq2S,
+            29 => Self::Iq1M,
             30 => Self::BF16,
             _ => return Err(crate::Error::Msg(format!("unknown dtype for tensor {u}")).bt()),
         };
@@ -98,6 +120,13 @@ impl GgmlDType {
             Self::Q8K => 15,
             Self::Iq4Nl => 20,
             Self::Iq4Xs => 23,
+            Self::Iq2Xxs => 16,
+            Self::Iq2Xs => 17,
+            Self::Iq3Xxs => 18,
+            Self::Iq1S => 19,
+            Self::Iq3S => 21,
+            Self::Iq2S => 22,
+            Self::Iq1M => 29,
             Self::BF16 => 30,
         }
     }
@@ -121,6 +150,13 @@ impl GgmlDType {
             Self::Q8K => 292,   // 4 + QK_K + QK_K/16 * 2
             Self::Iq4Nl => 18,  // 2 + QK4_NL/2
             Self::Iq4Xs => 136, // 2 + 2 + QK_K/64 + QK_K/2
+            Self::Iq2Xxs => 66,
+            Self::Iq2Xs => 74,
+            Self::Iq3Xxs => 98,
+            Self::Iq1S => 50,
+            Self::Iq3S => 110,
+            Self::Iq2S => 82,
+            Self::Iq1M => 56,
         }
     }
 
@@ -134,9 +170,48 @@ impl GgmlDType {
             | Self::Q8_0
             | Self::Q8_1
             | Self::Iq4Nl => 32,
-            Self::Q2K | Self::Q3K | Self::Q4K | Self::Q5K | Self::Q6K | Self::Q8K | Self::Iq4Xs => {
-                256
-            }
+            Self::Q2K
+            | Self::Q3K
+            | Self::Q4K
+            | Self::Q5K
+            | Self::Q6K
+            | Self::Q8K
+            | Self::Iq4Xs
+            | Self::Iq2Xxs
+            | Self::Iq2Xs
+            | Self::Iq3Xxs
+            | Self::Iq1S
+            | Self::Iq3S
+            | Self::Iq2S
+            | Self::Iq1M => 256,
+        }
+    }
+
+    /// `false` for the grid-table IQ formats (GAP-211 B2): Fuel decodes them but
+    /// has no quantizer for them.
+    pub fn supports_quantize(self) -> bool {
+        !matches!(
+            self,
+            Self::Iq2Xxs
+                | Self::Iq2Xs
+                | Self::Iq2S
+                | Self::Iq3Xxs
+                | Self::Iq3S
+                | Self::Iq1S
+                | Self::Iq1M
+        )
+    }
+
+    /// Declines quantizing to a decode-only format with a typed error that names it,
+    /// instead of reaching `GgmlType::from_float`, which has nothing to run.
+    pub fn check_quantize(self) -> Result<()> {
+        if self.supports_quantize() {
+            Ok(())
+        } else {
+            Err(crate::Error::Msg(format!(
+                "cannot quantize to {self:?}: Fuel decodes this format but has no quantizer for it (GAP-211 B2)"
+            ))
+            .bt())
         }
     }
 

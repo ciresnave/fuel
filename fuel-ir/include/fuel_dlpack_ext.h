@@ -208,6 +208,13 @@ _Static_assert(sizeof(DLManagedTensorVersioned) == 80,
 #define FDX_GGML_Q8K  15u
 #define FDX_GGML_IQ4_NL 20u
 #define FDX_GGML_IQ4_XS 23u
+#define FDX_GGML_IQ2_XXS 16u
+#define FDX_GGML_IQ2_XS 17u
+#define FDX_GGML_IQ3_XXS 18u
+#define FDX_GGML_IQ1_S 19u
+#define FDX_GGML_IQ3_S 21u
+#define FDX_GGML_IQ2_S 22u
+#define FDX_GGML_IQ1_M 29u
 #define FDX_GGML_BF16 30u
 
 /* --- FDX logical dtype codes (§6.1 table) --- */

@@ -24,6 +24,8 @@ pub mod avx;
 pub mod cpu;
 pub mod dequant;
 pub mod iq4;
+pub mod iq_grid_types;
+pub mod iq_grids;
 pub mod k_quants;
 #[cfg(target_feature = "neon")]
 pub mod neon;

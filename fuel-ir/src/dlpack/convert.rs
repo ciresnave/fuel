@@ -323,6 +323,13 @@ pub fn ggml_to_fdx(g: GgmlDType) -> u16 {
         GgmlDType::Q8K => FDX_GGML_Q8K,
         GgmlDType::Iq4Nl => FDX_GGML_IQ4_NL,
         GgmlDType::Iq4Xs => FDX_GGML_IQ4_XS,
+        GgmlDType::Iq2Xxs => FDX_GGML_IQ2_XXS,
+        GgmlDType::Iq2Xs => FDX_GGML_IQ2_XS,
+        GgmlDType::Iq3Xxs => FDX_GGML_IQ3_XXS,
+        GgmlDType::Iq1S => FDX_GGML_IQ1_S,
+        GgmlDType::Iq3S => FDX_GGML_IQ3_S,
+        GgmlDType::Iq2S => FDX_GGML_IQ2_S,
+        GgmlDType::Iq1M => FDX_GGML_IQ1_M,
     }
 }
 
@@ -349,6 +356,13 @@ pub fn fdx_to_ggml(code: u16) -> Option<GgmlDType> {
         FDX_GGML_Q8K => GgmlDType::Q8K,
         FDX_GGML_IQ4_NL => GgmlDType::Iq4Nl,
         FDX_GGML_IQ4_XS => GgmlDType::Iq4Xs,
+        FDX_GGML_IQ2_XXS => GgmlDType::Iq2Xxs,
+        FDX_GGML_IQ2_XS => GgmlDType::Iq2Xs,
+        FDX_GGML_IQ3_XXS => GgmlDType::Iq3Xxs,
+        FDX_GGML_IQ1_S => GgmlDType::Iq1S,
+        FDX_GGML_IQ3_S => GgmlDType::Iq3S,
+        FDX_GGML_IQ2_S => GgmlDType::Iq2S,
+        FDX_GGML_IQ1_M => GgmlDType::Iq1M,
         _ => return None,
     };
     Some(g)
@@ -798,7 +812,7 @@ mod tests {
 
     // ── GgmlDType ─────────────────────────────────────────────────────────
 
-    const ALL_GGML: [GgmlDType; 17] = [
+    const ALL_GGML: [GgmlDType; 24] = [
         GgmlDType::F32,
         GgmlDType::F16,
         GgmlDType::BF16,
@@ -816,6 +830,13 @@ mod tests {
         GgmlDType::Q8K,
         GgmlDType::Iq4Nl,
         GgmlDType::Iq4Xs,
+        GgmlDType::Iq2Xxs,
+        GgmlDType::Iq2Xs,
+        GgmlDType::Iq3Xxs,
+        GgmlDType::Iq1S,
+        GgmlDType::Iq3S,
+        GgmlDType::Iq2S,
+        GgmlDType::Iq1M,
     ];
 
     #[test]
@@ -848,6 +869,13 @@ mod tests {
         assert_eq!(ggml_to_fdx(GgmlDType::Q8K), 15);
         assert_eq!(ggml_to_fdx(GgmlDType::Iq4Nl), 20);
         assert_eq!(ggml_to_fdx(GgmlDType::Iq4Xs), 23);
+        assert_eq!(ggml_to_fdx(GgmlDType::Iq2Xxs), 16);
+        assert_eq!(ggml_to_fdx(GgmlDType::Iq2Xs), 17);
+        assert_eq!(ggml_to_fdx(GgmlDType::Iq3Xxs), 18);
+        assert_eq!(ggml_to_fdx(GgmlDType::Iq1S), 19);
+        assert_eq!(ggml_to_fdx(GgmlDType::Iq3S), 21);
+        assert_eq!(ggml_to_fdx(GgmlDType::Iq2S), 22);
+        assert_eq!(ggml_to_fdx(GgmlDType::Iq1M), 29);
         assert_eq!(ggml_to_fdx(GgmlDType::F16), 1);
         assert_eq!(ggml_to_fdx(GgmlDType::BF16), 30);
     }
@@ -857,7 +885,8 @@ mod tests {
         assert_eq!(fdx_to_ggml(FDX_QUANT_NONE), None); // 0xFFFF
         assert_eq!(fdx_to_ggml(4), None); // gap in ggml numbering
         assert_eq!(fdx_to_ggml(5), None); // gap in ggml numbering
-        assert_eq!(fdx_to_ggml(16), None);
+        assert_eq!(fdx_to_ggml(24), None); // I8: not a Fuel GgmlDType
+        assert_eq!(fdx_to_ggml(34), None); // TQ1_0: not yet supported
     }
 
     // ── ScaleGranularity ──────────────────────────────────────────────────

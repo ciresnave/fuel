@@ -456,6 +456,27 @@ impl QCudaStorage {
             GgmlDType::Iq4Xs => {
                 deq::<fuel_quantized::iq4::BlockIq4Xs>(&buffer, block_len, &mut out)
             }
+            GgmlDType::Iq2Xxs => {
+                deq::<fuel_quantized::iq_grid_types::BlockIq2Xxs>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Iq2Xs => {
+                deq::<fuel_quantized::iq_grid_types::BlockIq2Xs>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Iq3Xxs => {
+                deq::<fuel_quantized::iq_grid_types::BlockIq3Xxs>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Iq1S => {
+                deq::<fuel_quantized::iq_grid_types::BlockIq1S>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Iq3S => {
+                deq::<fuel_quantized::iq_grid_types::BlockIq3S>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Iq2S => {
+                deq::<fuel_quantized::iq_grid_types::BlockIq2S>(&buffer, block_len, &mut out)
+            }
+            GgmlDType::Iq1M => {
+                deq::<fuel_quantized::iq_grid_types::BlockIq1M>(&buffer, block_len, &mut out)
+            }
         }
 
         self.device
@@ -469,6 +490,7 @@ impl QCudaStorage {
     /// Quantize host-resident f32 src onto self by running the scalar CPU
     /// quantizer in fuel-quantized then htod-copying the resulting bytes.
     fn quantize_from_f32(&mut self, src: &[f32], imatrix: Option<(&[f32], usize)>) -> Result<()> {
+        self.dtype.check_quantize()?;
         let mut qcpu = fuel_quantized::cpu_zeros(self.dtype, src.len());
         match imatrix {
             None => qcpu.from_float(src),

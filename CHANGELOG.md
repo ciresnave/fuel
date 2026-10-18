@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.14 - 2026-10-18
+
+### Changed
+
+- GGUF (GAP-211 B2): new `GgmlDType::Iq2Xxs`/`Iq2Xs`/`Iq2S`/`Iq3Xxs`/`Iq3S`/`Iq1S`/`Iq1M` (ggml codes 16, 17, 22, 18, 21, 19, 29) with CPU dequantization (`fuel_quantized::iq_grid_types`; lookup tables generated from llama.cpp `ggml-common.h` @9d57ce456c by `scripts/gen_iq_grids.py`, MIT notice in `THIRD-PARTY-NOTICES.md`). Dequantization compared bit-for-bit with llama.cpp compiled C on random blocks. DECODE-ONLY: quantizing to them is a typed error (`GgmlDType::check_quantize`); CUDA/Metal matmul decline them. New FDX_GGML_* codes mirror the ggml numbers.
+
 ## v0.20.13 - 2026-10-17
 
 ### Changed
