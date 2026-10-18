@@ -224,7 +224,12 @@ pub(crate) fn mmvq_format(dtype: GgmlDType) -> Result<MmvqFormat> {
         GgmlDType::Q4_1 | GgmlDType::Q5_1 => (4, 64),
         GgmlDType::Q3K | GgmlDType::Q6K => (2, 256),
         GgmlDType::Q2K | GgmlDType::Q4K | GgmlDType::Q5K | GgmlDType::Q8K => (4, 256),
-        GgmlDType::F32 | GgmlDType::F16 | GgmlDType::BF16 | GgmlDType::Q8_1 => {
+        GgmlDType::F32
+        | GgmlDType::F16
+        | GgmlDType::BF16
+        | GgmlDType::Q8_1
+        | GgmlDType::Iq4Nl
+        | GgmlDType::Iq4Xs => {
             return Err(Error::Msg(format!("{dtype:?} has no baracuda MMVQ kernel")).bt());
         }
     };

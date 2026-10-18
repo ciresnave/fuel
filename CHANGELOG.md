@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.13 - 2026-10-17
+
+### Changed
+
+- GGUF (GAP-211 B1): new `GgmlDType::Iq4Nl` (ggml code 20) and `Iq4Xs` (23) with CPU dequantization (`fuel_quantized::iq4`, verified against llama.cpp `ggml-common.h`/`ggml-quants.c` at 9d57ce456c; MIT notice in the module), so IQ4_NL/IQ4_XS GGUFs load. FDX gains `FDX_GGML_IQ4_NL`=20 and `FDX_GGML_IQ4_XS`=23. The quantizer is a simple nearest-codebook one, not llama.cpp's scale search. CUDA matmul (MMVQ) and Metal matmul decline these types; other IQ types are still reported by name.
+
 ## v0.20.12 - 2026-10-17
 
 ### Changed

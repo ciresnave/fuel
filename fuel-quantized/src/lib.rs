@@ -23,6 +23,7 @@
 pub mod avx;
 pub mod cpu;
 pub mod dequant;
+pub mod iq4;
 pub mod k_quants;
 #[cfg(target_feature = "neon")]
 pub mod neon;

@@ -338,6 +338,11 @@ const INHERITED_WITH_NOTICE: &[(&str, &str, &str)] = &[
         "Jeffrey Quesnelle and Bowen Peng (MIT), at LINE 2844",
         "Jeffrey Quesnelle",
     ),
+    (
+        "fuel-quantized/src/iq4.rs",
+        "The ggml authors (llama.cpp, MIT) @9d57ce456c; full text in THIRD-PARTY-NOTICES.md",
+        "The ggml authors",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -388,6 +393,14 @@ const COPYRIGHT_ACCOUNTED_FOR: &[(&str, &str)] = &[
     (
         "fuel-metal-kernels/src/metal_src/quantized.metal",
         "inherited notice at line 2844; asserted by INHERITED_WITH_NOTICE",
+    ),
+    (
+        "fuel-quantized/src/iq4.rs",
+        "derived from llama.cpp (MIT); asserted by INHERITED_WITH_NOTICE",
+    ),
+    (
+        "THIRD-PARTY-NOTICES.md",
+        "the ledger of third-party licence texts; reproduces upstream notices verbatim",
     ),
     (
         "fuel-examples/examples/yolo-v8/roboto-mono-stripped.ttf",
