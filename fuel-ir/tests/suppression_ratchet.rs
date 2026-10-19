@@ -18,7 +18,7 @@
 //! from pieces so this file cannot match itself.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Total count of lines starting `#[ignore` across tracked `.rs` files,
@@ -96,7 +96,7 @@ fn workspace_root() -> PathBuf {
     }
 }
 
-fn tracked_rs_files(root: &PathBuf) -> Result<Vec<String>, String> {
+fn tracked_rs_files(root: &Path) -> Result<Vec<String>, String> {
     let out = Command::new("git")
         .args(["ls-files", "-z", "--", "*.rs"])
         .current_dir(root)
@@ -139,7 +139,7 @@ fn ignore_prefix() -> String {
     format!("#[{}", "ignore")
 }
 
-fn read(root: &PathBuf, rel: &str) -> String {
+fn read(root: &Path, rel: &str) -> String {
     // Lossy: a stray non-UTF-8 file must not abort the scan of the rest.
     String::from_utf8_lossy(&std::fs::read(root.join(rel)).unwrap_or_default()).into_owned()
 }
