@@ -144,40 +144,55 @@ fn read(root: &Path, rel: &str) -> String {
     String::from_utf8_lossy(&std::fs::read(root.join(rel)).unwrap_or_default()).into_owned()
 }
 
-#[test]
-fn dead_code_allows_match_the_reasoned_list_exactly() {
-    let root = workspace_root();
-    let files = tracked_rs_files(&root).expect("enumerate tracked files");
+/// Count of dead-code allows per tracked `.rs` file that has any.
+fn dead_code_counts(root: &Path, files: &[String]) -> BTreeMap<String, usize> {
     let needle = dead_code_needle();
-
-    let mut found: BTreeMap<String, usize> = BTreeMap::new();
-    for rel in &files {
-        let n = count_where(&read(&root, rel), |l| is_code_line_with(l, &needle));
+    let mut found = BTreeMap::new();
+    for rel in files {
+        let n = count_where(&read(root, rel), |l| is_code_line_with(l, &needle));
         if n > 0 {
             found.insert(rel.replace('\\', "/"), n);
         }
     }
+    found
+}
 
-    let mut problems = Vec::new();
-    for (path, n) in &found {
-        match DEAD_CODE_ALLOWED.iter().find(|(p, _, _)| p == path) {
-            None => problems.push(format!(
-                "{path}: {n} new dead-code allow(s), not in the list"
-            )),
-            Some((_, want, _)) if n > want => problems.push(format!("{path}: {n} > {want} listed")),
-            Some((_, want, _)) if n < want => problems.push(format!(
-                "{path}: {n} < {want} listed; lower the count or drop the entry"
-            )),
-            _ => {}
-        }
+/// The problem (if any) with one file's count against the reasoned list.
+fn judge_count(path: &str, n: usize) -> Option<String> {
+    let Some((_, want, _)) = DEAD_CODE_ALLOWED.iter().find(|(p, _, _)| *p == path) else {
+        return Some(format!(
+            "{path}: {n} new dead-code allow(s), not in the list"
+        ));
+    };
+    match n.cmp(want) {
+        std::cmp::Ordering::Greater => Some(format!("{path}: {n} > {want} listed")),
+        std::cmp::Ordering::Less => Some(format!(
+            "{path}: {n} < {want} listed; lower the count or drop the entry"
+        )),
+        std::cmp::Ordering::Equal => None,
     }
-    for (path, want, _) in DEAD_CODE_ALLOWED {
-        if !found.contains_key(*path) {
-            problems.push(format!(
-                "{path}: listed ({want}) but has none; drop the entry"
-            ));
-        }
-    }
+}
+
+/// List entries whose file no longer has any allow.
+fn stale_entries(found: &BTreeMap<String, usize>) -> Vec<String> {
+    DEAD_CODE_ALLOWED
+        .iter()
+        .filter(|(path, _, _)| !found.contains_key(*path))
+        .map(|(path, want, _)| format!("{path}: listed ({want}) but has none; drop the entry"))
+        .collect()
+}
+
+#[test]
+fn dead_code_allows_match_the_reasoned_list_exactly() {
+    let root = workspace_root();
+    let files = tracked_rs_files(&root).expect("enumerate tracked files");
+    let found = dead_code_counts(&root, &files);
+
+    let mut problems: Vec<String> = found
+        .iter()
+        .filter_map(|(path, n)| judge_count(path, *n))
+        .collect();
+    problems.extend(stale_entries(&found));
     assert!(
         problems.is_empty(),
         "dead-code suppression ratchet:\n  {}\n\nDelete, gate behind the config that uses it, or \
