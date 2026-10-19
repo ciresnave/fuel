@@ -55,8 +55,7 @@ use std::path::Path;
 pub struct SharedMemHostStorage {
     // Order matters for Drop: mmap must be released before file on Windows.
     mmap: MmapMut,
-    #[allow(dead_code)]
-    file: File,
+    _file: File,
     dtype: DType,
     elem_count: usize,
 }
@@ -105,7 +104,7 @@ impl SharedMemHostStorage {
             .map_err(|e| Error::Msg(format!("shared_mem map_mut: {e}")).bt())?;
         Ok(Self {
             mmap,
-            file,
+            _file: file,
             dtype,
             elem_count,
         })
@@ -146,7 +145,7 @@ impl SharedMemHostStorage {
             .map_err(|e| Error::Msg(format!("shared_mem map_mut: {e}")).bt())?;
         Ok(Self {
             mmap,
-            file,
+            _file: file,
             dtype,
             elem_count,
         })

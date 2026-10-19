@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 // feature that has a consumer (`--features cuda`/`vulkan`/`dlpack`), never just
 // `-p fuel-ir`. Do NOT add `#[non_exhaustive]` here — it would force wildcards
 // onto those cross-crate exhaustive tables and route a new dtype to the wrong
-// buffer. (The `DType::ALL` + `all_variants_witness` pair below is the existing
+// buffer. (The `DType::ALL` + `_all_variants_witness` pair below is the existing
 // compile-time tripwire this marker names. Consumers that *decline* an unknown
 // dtype loudly — `Err`/`bail!`/`None` — are fine and expected; only the
 // exhaustive concrete-fact maps are load-bearing.) See GAP-049.
@@ -114,7 +114,7 @@ pub enum DType {
 impl DType {
     /// Every [`DType`] variant, in declaration order.
     ///
-    /// Completeness is REMINDED, not compiler-derived (GAP-248). `all_variants_witness`
+    /// Completeness is REMINDED, not compiler-derived (GAP-248). `_all_variants_witness`
     /// below is a wildcard-free `match`, so adding a `DType` fails to compile THERE — a
     /// variant cannot be added without being dragged to this file. But extending THIS
     /// list in the same edit is then convention: nothing ties `ALL` to the witness, so a
@@ -265,7 +265,7 @@ mod reserved_token_tests {
     /// conclusion (the name is fine).
     ///
     /// **Completeness is inherited, not assumed:** the population is
-    /// [`DType::ALL`], which [`all_variants_witness`] REMINDS the author to keep
+    /// [`DType::ALL`], which [`_all_variants_witness`] REMINDS the author to keep
     /// exhaustive (a variant cannot be added without a compile error at the witness,
     /// though nothing forces it into `ALL` — GAP-248; measured complete at head), and
     /// the count is derived through
@@ -369,8 +369,7 @@ mod reserved_token_tests {
 /// (non-exhaustive `match`) until the new variant is handled — and
 /// [`DType::ALL`] is to be extended in the same edit. Never called; it exists
 /// only so the compiler forces acknowledgement of every variant.
-#[allow(dead_code)]
-fn all_variants_witness(dt: DType) {
+fn _all_variants_witness(dt: DType) {
     match dt {
         DType::U8
         | DType::I8

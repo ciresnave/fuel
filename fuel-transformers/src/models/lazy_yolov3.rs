@@ -57,7 +57,6 @@ use std::sync::Arc;
 // that aren't used in the YOLOv3 port (only `load_tensor_as_f32` is
 // needed — Darknet has no linear/FC layers). Keeping the imports here
 // per the session's pub-helper contract.
-#[allow(dead_code)]
 fn _keep_helpers_alive() {
     let _ = load_transposed_matrix
         as fn(
