@@ -7,7 +7,7 @@
 //! assert!(dev.is_cpu());
 //! assert_eq!(dev.location(), fuel_tensor::DeviceLocation::Cpu);
 //! ```
-use crate::{DType, HostBuffer, Result, Shape, Storage, WithDType};
+use crate::{DType, HostBuffer, Result, Shape, WithDType};
 use fuel_backend_contract::dyn_backend::DynBackendDevice;
 use fuel_cpu_backend::dyn_impl::CpuBackendDevice;
 use std::sync::Arc;
@@ -403,79 +403,6 @@ impl Device {
         } else {
             DType::F32
         }
-    }
-
-    // Backend-delegating RNG + zeros path (`self.inner.{rand_*,zeros}_dyn`).
-    // Currently unused: the lazy graph never takes this path — `Tensor::randn`
-    // builds host-side via `rand_distr::Normal` and uploads through `from_f32`,
-    // and these methods' only callers are the `_f64`-to-generic delegations
-    // just below. They are SUPERSEDED, not vestigial: GAP-023 (the
-    // `Op::RandomBits` generator seam, Tier A) is the replacement. DELETE all
-    // five the moment `Op::RandomBits` lands in the op enum — that is the
-    // owned, dated deletion trigger this #[allow] is recorded against.
-    #[allow(dead_code)]
-    pub(crate) fn rand_uniform_f64(
-        &self,
-        lo: f64,
-        up: f64,
-        shape: &Shape,
-        dtype: DType,
-    ) -> Result<Storage> {
-        // CUDA doesn't support generating F16/BF16 directly; generate as F32 then convert.
-        if self.is_cuda() && (dtype == DType::F16 || dtype == DType::BF16) {
-            let storage =
-                Storage::from_dyn(self.inner.rand_uniform_dyn(shape, DType::F32, lo, up)?);
-            storage.to_dtype(&crate::Layout::contiguous(shape), dtype)
-        } else {
-            Ok(Storage::from_dyn(
-                self.inner.rand_uniform_dyn(shape, dtype, lo, up)?,
-            ))
-        }
-    }
-
-    #[allow(dead_code)] // superseded RNG path — delete with GAP-023 (Op::RandomBits)
-    pub(crate) fn rand_uniform<T: crate::FloatDType>(
-        &self,
-        lo: T,
-        up: T,
-        shape: &Shape,
-    ) -> Result<Storage> {
-        self.rand_uniform_f64(lo.to_f64(), up.to_f64(), shape, T::DTYPE)
-    }
-
-    #[allow(dead_code)] // superseded RNG path — delete with GAP-023 (Op::RandomBits)
-    pub(crate) fn rand_normal_f64(
-        &self,
-        mean: f64,
-        std: f64,
-        shape: &Shape,
-        dtype: DType,
-    ) -> Result<Storage> {
-        // CUDA doesn't support generating F16/BF16 directly; generate as F32 then convert.
-        if self.is_cuda() && (dtype == DType::F16 || dtype == DType::BF16) {
-            let storage =
-                Storage::from_dyn(self.inner.rand_normal_dyn(shape, DType::F32, mean, std)?);
-            storage.to_dtype(&crate::Layout::contiguous(shape), dtype)
-        } else {
-            Ok(Storage::from_dyn(
-                self.inner.rand_normal_dyn(shape, dtype, mean, std)?,
-            ))
-        }
-    }
-
-    #[allow(dead_code)] // superseded RNG path — delete with GAP-023 (Op::RandomBits)
-    pub(crate) fn rand_normal<T: crate::FloatDType>(
-        &self,
-        mean: T,
-        std: T,
-        shape: &Shape,
-    ) -> Result<Storage> {
-        self.rand_normal_f64(mean.to_f64(), std.to_f64(), shape, T::DTYPE)
-    }
-
-    #[allow(dead_code)] // superseded RNG path — delete with GAP-023 (Op::RandomBits)
-    pub(crate) fn zeros(&self, shape: &Shape, dtype: DType) -> Result<Storage> {
-        Ok(Storage::from_dyn(self.inner.zeros_impl_dyn(shape, dtype)?))
     }
 
     /// Synchronizes the device, waiting for all pending operations to complete.

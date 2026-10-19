@@ -377,7 +377,6 @@ fn zero_const_on(
 
 // Silence the unused-import lint in case the Arc import becomes
 // load-bearing later.
-#[allow(dead_code)]
 fn _arc_marker(_a: Arc<()>) {}
 
 #[cfg(test)]

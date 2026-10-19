@@ -13,6 +13,7 @@ use fuel_ir::{DType, Error, HostBuffer, IntDType, Layout, Result, Shape, WithDTy
 use rayon::prelude::*;
 
 /// Get the number of threads to use for parallelism.
+#[cfg(all(not(feature = "mkl"), not(feature = "accelerate")))]
 pub(crate) fn get_num_threads() -> usize {
     match std::env::var("RAYON_NUM_THREADS") {
         Ok(s) => s.parse::<usize>().unwrap_or_else(|_| num_cpus::get()),

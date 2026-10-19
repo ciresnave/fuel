@@ -808,28 +808,11 @@ pub struct PatternMatch {
 
 /// The metadata-side registry. Built at process startup, frozen
 /// thereafter (architecture v1.0: no runtime extensibility). Lookups
-/// are by [`FusedOpId`] (O(1)), by name, or by pattern hash.
+/// are by [`FusedOpId`] (O(1)) or by name.
 #[derive(Default)]
 pub struct FusedOpRegistry {
     entries: Vec<FusedOpEntry>,
     by_name: HashMap<&'static str, FusedOpId>,
-    /// Reserved for the declarative-pattern path (step 4). The fusion
-    /// driver hashes a base-map subgraph to a `PatternHash` and looks
-    /// it up here to decide which fused-op to emit. Unused in step 1.
-    ///
-    /// This index is scoped to the STATIC catalog (`entries`/`by_name`
-    /// above) — it is not the recipe-identity index runtime-registered ops
-    /// dedup against. Runtime ops (`crate::runtime_fused`) live in a
-    /// separate global (`RUNTIME_FUSED_OPS`, its own id space above
-    /// `FusedOpId::RUNTIME_FUSED_BASE`), never wrapped in a
-    /// `FusedOpRegistry`, so there is no `FusedOpRegistry` instance for
-    /// them to hash into here. `runtime_fused::register_runtime_fused`
-    /// dedups structurally-identical regions against a sibling
-    /// `HashMap<u64, FusedOpId>` local to that module instead (keyed by
-    /// `opt::base_map_hash`, the same content hash this field's
-    /// `PatternHash` wraps) — see `runtime_fused.rs`'s `hash_index`.
-    #[allow(dead_code)]
-    by_pattern_hash: HashMap<PatternHash, FusedOpId>,
 }
 
 impl FusedOpRegistry {
@@ -931,9 +914,9 @@ impl FusedOpRegistry {
 }
 
 /// Hash of a primitive-subgraph pattern. Reserved for step 4's
-/// declarative pattern engine. Step 1 ships the newtype so the
-/// `by_pattern_hash` index field type-checks; the hashing function
-/// itself is filled in alongside `PatternTree`.
+/// declarative pattern engine; the hashing function is filled in alongside
+/// `PatternTree`. (The static catalog's `by_pattern_hash` index placeholder
+/// was removed unread; re-add it with that engine.)
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PatternHash(pub u64);
 

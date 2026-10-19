@@ -65,13 +65,12 @@ static RUNTIME_FUSED_OPS: RwLock<Vec<RuntimeFusedOpEntry>> = RwLock::new(Vec::ne
 /// The recipe-identity index for runtime-registered ops: base-map content
 /// hash ([`crate::opt::base_map_hash`]) → the [`FusedOpId`] that first
 /// registered a region hashing to it. A **sibling** to `RUNTIME_FUSED_OPS`,
-/// not a reuse of [`crate::registry::FusedOpRegistry::by_pattern_hash`] —
-/// that field lives on the STATIC catalog (`FusedOpRegistry`, an
+/// not a reuse of any index on the STATIC catalog (`FusedOpRegistry`, an
 /// `OnceLock`-frozen struct built at process startup for build-time-known
 /// ids `1..RUNTIME_FUSED_BASE`); runtime ops never populate a
 /// `FusedOpRegistry` instance at all, they live in this module's own
 /// `RUNTIME_FUSED_OPS` global with the disjoint `RUNTIME_FUSED_BASE..` id
-/// space, so `by_pattern_hash` is unreachable from here. This index is the
+/// space. This index is the
 /// natural home for runtime-region dedup: same lifetime/global-ness as
 /// `RUNTIME_FUSED_OPS`, cleared in the same breath by
 /// `clear_runtime_fused_for_tests`.
