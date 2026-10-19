@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.19 - 2026-10-19
+
+### Changed
+
+- CI: new `cuda-metal-compile-check.yml` (self-hosted Windows runner, push-to-main + workflow_dispatch only, no secrets) that `cargo check --all-targets` the cuda/jit configs hosted runners cannot build. Metal and Accelerate remain unverified there.
+
 ## v0.20.18 - 2026-10-19
 
 ### Changed

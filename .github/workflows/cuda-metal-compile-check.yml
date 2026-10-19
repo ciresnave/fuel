@@ -1,0 +1,131 @@
+# Compile-only check of the feature configs no hosted runner can build (CUDA), on the self-hosted Windows runner.
+# Policy: agentlife docs/RUNNER-SETUP.md (push to main + workflow_dispatch only, NO pull_request trigger, no secrets).
+#
+# WHAT THIS COVERS: `cargo check --all-targets` of the cuda-gated code in fuel-dispatch (`cuda`, `jit`, `cuda`+`jit`),
+# fuel-cuda-backend and fuel-model-llama (`cuda`). Three retirement PRs (#401, #402, #403) changed cfg gates around
+# that code and could not compile it; GAP-211's CUDA match arms for IQ/TQ/MX are in the same boat.
+#
+# WHAT THIS DOES NOT COVER, stated so a green is not read wider than it is:
+#   * Metal: UNVERIFIED. objc2 hard-errors off Apple targets, so this Windows runner cannot compile fuel-metal-*.
+#     The only Metal coverage is the macOS job in rust-ci.yml.
+#   * Accelerate (macOS FFI): UNVERIFIED here for the same reason.
+#   * Running anything on the GPU: this is `check`, not `test`. A green says "it compiles", not "it is correct".
+#   * `cuda-build.ps1` slots: not used (its Global\ mutex is created by another account, so opening it from the
+#     restricted runner account may be denied). The forge is capped with BARACUDA_FORGE_THREADS=4, the protocol's
+#     K, and the runner takes one job at a time (ephemeral), so the risk is only overlap with lanes building by hand.
+#
+# One ephemeral registration runs one job, so EVERY config is a step of this one job. Each step runs even if an
+# earlier one failed (`if: always()`), so one red config does not hide the others.
+name: cuda-metal-compile-check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  BARACUDA_FORGE_THREADS: "4"
+
+jobs:
+  cuda-compile:
+    name: cargo check (cuda, jit) on the self-hosted runner
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Toolchain and CUDA visible to this account (fails loudly)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($t in 'rustup', 'cargo', 'rustc', 'nvcc') {
+            $c = Get-Command $t -ErrorAction SilentlyContinue
+            if (-not $c) { throw "$t is NOT on PATH for this account; the check cannot run" }
+            "$t : $($c.Source)"
+          }
+          rustc --version
+          nvcc --version
+
+      - name: MSVC environment (cl.exe for nvcc and cc-rs; fails loudly)
+        shell: powershell
+        run: |
+          # Same step as agentlife docs/RUNNER-SETUP.md section 2d: locate Visual Studio with vswhere, run VsDevCmd.bat
+          # in a scratch .cmd and export the resulting environment to LATER steps.
+          $ErrorActionPreference = 'Stop'
+          $component = 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw "MSVC env: vswhere.exe not found at $vswhere" }
+          $vs = & $vswhere -latest -products '*' -requires $component -property installationPath | Select-Object -First 1
+          if (-not $vs) {
+            $vs = & $vswhere -all -products '*' -requires $component -property installationPath | Select-Object -Last 1
+            if ($vs) { Write-Warning "MSVC env: $vs is incomplete or needs a reboot; using it anyway" }
+          }
+          if (-not $vs) { throw "MSVC env: no Visual Studio install has the component $component" }
+          $bat = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+          if (-not (Test-Path -LiteralPath $bat)) { throw "MSVC env: $bat does not exist" }
+          $env:VSCMD_SKIP_SENDTELEMETRY = '1'
+          $cmd = Join-Path $env:RUNNER_TEMP 'msvc-env.cmd'
+          Set-Content -LiteralPath $cmd -Encoding Ascii -Value @('@echo off', "call `"$bat`" -arch=x64 -host_arch=x64 -no_logo", 'if errorlevel 1 exit /b 1', 'set')
+          $dump = & cmd.exe /d /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "MSVC env: VsDevCmd.bat failed (exit $LASTEXITCODE)" }
+          $oldDirs = @($env:PATH -split ';')
+          foreach ($line in $dump) {
+            if ($line -notmatch '^([^=\s][^=]*)=(.*)$') { continue }
+            $k = $Matches[1]; $v = $Matches[2]
+            if ($k -ieq 'PATH') {
+              $env:PATH = $v
+              foreach ($d in ($v -split ';')) {
+                if ($d -and ($oldDirs -notcontains $d)) { [IO.File]::AppendAllText($env:GITHUB_PATH, "$d`n") }
+              }
+            }
+            elseif ([Environment]::GetEnvironmentVariable($k) -ne $v) {
+              [IO.File]::AppendAllText($env:GITHUB_ENV, "$k=$v`n")
+            }
+          }
+          $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
+          if (-not $cl) { throw "MSVC env: cl.exe is still not on PATH after VsDevCmd under $vs" }
+          "cl.exe : $($cl.Source)"
+
+      # One cargo invocation (the build-dir lock serialises them anyway) with `pkg/feature` syntax, capped at -j 4.
+      # The JSON stream is the evidence: the exit code alone cannot tell a real check from a warm cache or a run that
+      # never reached the crate, so the next step counts compiler-artifact lines for the crates under test.
+      - name: cargo check (cuda; cuda+jit; llama cuda) --all-targets
+        if: always()
+        shell: powershell
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cuda-check.json'
+          cargo check -j 4 --locked --all-targets --message-format json `
+            -p fuel-dispatch -p fuel-cuda-backend -p fuel-model-llama `
+            --features fuel-dispatch/cuda,fuel-dispatch/jit,fuel-model-llama/cuda `
+            > $out
+          $code = $LASTEXITCODE
+          "cargo exit: $code"
+          "json lines: $((Get-Content -LiteralPath $out | Measure-Object -Line).Lines)"
+          exit $code
+
+      - name: cargo check fuel-dispatch with `cuda` alone (no jit)
+        if: always()
+        shell: powershell
+        run: |
+          cargo check -j 4 --locked --all-targets -p fuel-dispatch --features cuda
+          exit $LASTEXITCODE
+
+      - name: Evidence the check reached the crates (artifact lines, not the exit code)
+        if: always()
+        shell: powershell
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cuda-check.json'
+          if (-not (Test-Path -LiteralPath $out)) { throw "no JSON stream: the cargo step never ran" }
+          $bad = 0
+          foreach ($crate in 'fuel_dispatch', 'fuel_cuda_backend', 'fuel_model_llama') {
+            $n = (Select-String -LiteralPath $out -Pattern '"reason":"compiler-artifact"' |
+              Where-Object { $_.Line -match ('"name":"' + $crate + '"') }).Count
+            $errs = (Select-String -LiteralPath $out -Pattern '"level":"error"').Count
+            "$crate : $n compiler-artifact line(s); error diagnostics in stream: $errs"
+            if ($n -eq 0) { $bad++ }
+          }
+          if ($bad -gt 0) { throw "$bad crate(s) have no compiler-artifact line: the exit code proves nothing" }
