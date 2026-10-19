@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.18 - 2026-10-19
+
+### Changed
+
+- Dead-code retirement: `allow(dead_code)` removed from fuel-vulkan-backend (`SubmittedBatch` lifetime anchors are now `_`-named), fuel-model-llama (decode helpers gate on `cuda`/test) and the musicgen, yolo-v8 and dp_diff examples (unused `KP_CONNECTIONS` and `print_breakdown` deleted). New `fuel-ir/tests/suppression_ratchet.rs` fails on any new `allow(dead_code)` not in its reasoned list and holds `#[ignore]` to a ceiling of 500.
+
 ## v0.20.17 - 2026-10-18
 
 ### Changed
