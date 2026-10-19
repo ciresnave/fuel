@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn scalar_ctors_never_unwind_over_all_dtypes() {
         use std::panic::{AssertUnwindSafe, catch_unwind};
-        // DType::ALL is kept complete by a REMINDER anchored to `all_variants_witness`
+        // DType::ALL is kept complete by a REMINDER anchored to `_all_variants_witness`
         // (adding a variant is a compile error there, but nothing forces it into ALL —
         // GAP-248), not compiler-derived. So this sweep covers every variant IN ALL,
         // which is measured complete at head — not a compiler proof against a vacuous pass.

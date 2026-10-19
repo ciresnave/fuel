@@ -409,7 +409,6 @@ impl StreamableConvTranspose1dWeights {
 // Silence the dead-code warning on the re-exported pad mode + the
 // `pad_last_1d` import which isn't directly called here but is part of
 // the sub-port-1 surface this module composes with.
-#[allow(dead_code)]
 fn _force_pad_imports_referenced(xs: &Tensor) -> Result<Tensor> {
     pad_last_1d(xs, 0, 0, LazyPadMode::Constant)
 }

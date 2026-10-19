@@ -1105,14 +1105,6 @@ fn id_f32_back(v: f32) -> f32 {
     v
 }
 #[inline]
-fn f64_to_f32(v: f64) -> f32 {
-    v as f32
-}
-#[inline]
-fn f32_to_f64(v: f32) -> f64 {
-    v as f64
-}
-#[inline]
 fn bf16_to_f32(v: half::bf16) -> f32 {
     v.to_f32()
 }
@@ -1189,14 +1181,6 @@ log_softmax_last_dim_kernel!(
     f32_to_f16,
     "Numerically-stable log-softmax along the last dim — f16 (f32 accumulator)."
 );
-
-// Avoid unused-fn lint warnings:
-#[allow(dead_code)]
-#[expect(
-    clippy::type_complexity,
-    reason = "a 2-tuple of fn pointers used only as a dead-code anchor to keep f64_to_f32/f32_to_f64 referenced; a type alias would be more indirection than the type it names"
-)]
-const _UNUSED_F32_F64_HELPERS: (fn(f64) -> f32, fn(f32) -> f64) = (f64_to_f32, f32_to_f64);
 
 // =============================================================================
 // LogSoftmax backward (per-dtype, last dim)

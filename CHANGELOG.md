@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.17 - 2026-10-18
+
+### Changed
+
+- Dead-code retirement (cpu-backend, tensor, ir, graph, transformers): 17 `allow(dead_code)` removed. Deleted unused code: `Device::{rand_uniform,rand_normal,zeros}*` (crate-private, superseded by GAP-023), `FusedOpRegistry::by_pattern_hash`, the cpu-backend `conv2d_direct`/`Conv2dImpl` selector (behaviour unchanged: tiled im2col was already the only reachable default), `f64_to_f32`/`f32_to_f64`. `fuel-cpu-backend/src/mkl.rs` module-wide allow removed. `AttnRecompute` keeps one documented allow (fields read only by tests).
+
 ## v0.20.16 - 2026-10-18
 
 ### Changed
