@@ -36,14 +36,15 @@
 use fuel_ir::shape::Shape;
 #[cfg(test)]
 use fuel_tensor::lazy::sample_multinomial;
+#[cfg(any(feature = "cuda", test))]
+use fuel_tensor::lazy::{SessionDisposition, invalidate_decode_pair_if_stale};
 use fuel_tensor::{DType, Device};
 use fuel_tensor::{
     inference_context::InferenceContext, inference_context::KvCache, inference_context::KvSlot,
 };
 use fuel_tensor::{
-    lazy::LayerWeights, lazy::SamplingStrategy, lazy::SessionDisposition, lazy::Tensor,
-    lazy::TokenDataHost, lazy::WeightStorage, lazy::apply_affine_rms_norm,
-    lazy::build_decode_causal_mask, lazy::invalidate_decode_pair_if_stale,
+    lazy::LayerWeights, lazy::SamplingStrategy, lazy::Tensor, lazy::TokenDataHost,
+    lazy::WeightStorage, lazy::apply_affine_rms_norm, lazy::build_decode_causal_mask,
     lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype,
     lazy::offer_flash_decode_arm_for_region, lazy::sample_logits, lazy::spec_argmax,
     lazy::spec_next_u01, lazy::spec_sample_cat, lazy::spec_softmax_temp,
@@ -2183,7 +2184,7 @@ impl LlamaModel {
     // used" on a default build is a FALSE signal from a feature-gated caller,
     // not an orphan: deleting this breaks `--features cuda`, which no gate on
     // this machine compiles cheaply.
-    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    #[cfg(feature = "cuda")]
     fn build_and_realize_first_decode_token(
         &self,
         tokens: &[u32],
@@ -2560,7 +2561,7 @@ impl LlamaModel {
     // used" on a default build is a FALSE signal from a feature-gated caller,
     // not an orphan: deleting this breaks `--features cuda`, which no gate on
     // this machine compiles cheaply.
-    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    #[cfg(feature = "cuda")]
     fn rebind_and_realize_prebuilt(
         &self,
         tokens: &[u32],
@@ -3010,7 +3011,7 @@ impl LlamaModel {
     // used" on a default build is a FALSE signal from a feature-gated caller,
     // not an orphan: deleting this breaks `--features cuda`, which no gate on
     // this machine compiles cheaply.
-    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    #[cfg(any(feature = "cuda", test))]
     fn invalidate_decode_pair_if_stale<C>(
         &self,
         session: &mut Option<fuel_tensor::inference_context::DecodeSession>,
@@ -3045,7 +3046,7 @@ impl LlamaModel {
     // used" on a default build is a FALSE signal from a feature-gated caller,
     // not an orphan: deleting this breaks `--features cuda`, which no gate on
     // this machine compiles cheaply.
-    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    #[cfg(any(feature = "cuda", test))]
     fn drop_decode_session(
         &self,
         session: &mut Option<fuel_tensor::inference_context::DecodeSession>,

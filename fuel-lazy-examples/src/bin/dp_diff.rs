@@ -25,7 +25,7 @@ use fuel::lazy::Tensor;
 use fuel::scheduling::{ScheduleOptions, dp_plan, prepare_dp_inputs, recommend_placement};
 use fuel_graph::{NodeId, Op};
 use fuel_ir::{DeviceLocation, probe::BackendId};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -501,21 +501,5 @@ fn build_yolov8() -> AnchorBuild {
     AnchorBuild {
         label: "YOLOv8".into(),
         outputs: vec![raw.cls_logits, raw.reg_dists],
-    }
-}
-
-#[allow(dead_code)] // placeholder for future per-op breakdown printing
-fn print_breakdown(b: &BTreeMap<(String, String), usize>) {
-    let mut by_op: HashMap<&str, Vec<(&str, usize)>> = HashMap::new();
-    for ((op, transition), count) in b {
-        by_op
-            .entry(op.as_str())
-            .or_default()
-            .push((transition.as_str(), *count));
-    }
-    for (op, transitions) in &by_op {
-        for (transition, count) in transitions {
-            println!("    {op:<10} {transition}  ×{count}");
-        }
     }
 }

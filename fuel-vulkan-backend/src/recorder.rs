@@ -109,23 +109,18 @@ pub struct SubmittedBatch {
     // solely as lifetime anchors: the GPU is still executing `cmd` (which binds
     // `descs` and reads `transients`, allocated from `retired_pool`) until
     // `fence` signals, so all four must outlive the wait and free only on this
-    // struct's drop. `#[allow(dead_code)]` documents that the ownership IS the
+    // struct's drop. the leading underscore documents that the ownership IS the
     // contract (dropping any of them early would be a use-after-free).
-    #[allow(dead_code)]
-    cmd: CommandBuffer,
-    #[allow(dead_code)]
-    transients: Vec<(Buffer, Allocation)>,
-    #[allow(dead_code)]
-    descs: Vec<DescriptorSet>,
-    #[allow(dead_code)]
-    retired_pool: CommandPool,
+    _cmd: CommandBuffer,
+    _transients: Vec<(Buffer, Allocation)>,
+    _descs: Vec<DescriptorSet>,
+    _retired_pool: CommandPool,
     // Step E A2.1: data buffers the executor evicted from its cache while this
     // batch was in flight, retained here (a refcount clone) so they outlive the
     // GPU's last read and free POST-fence on `Drop`. Never *read* — a lifetime
     // anchor, exactly like `transients`. Empty for a batch the executor never
     // deferred an eviction onto (the common case); the cost when used is one
     // `Arc::clone` per evicted buffer (no GPU work, no host block).
-    #[allow(dead_code)]
     retained_data: Vec<std::sync::Arc<crate::VulkanBuffer>>,
 }
 
@@ -445,10 +440,10 @@ impl Recorder {
         let batch = SubmittedBatch {
             fence,
             consumed: false,
-            cmd,
-            transients: std::mem::take(&mut self.batch_transients),
-            descs: std::mem::take(&mut self.batch_descs),
-            retired_pool: std::mem::replace(
+            _cmd: cmd,
+            _transients: std::mem::take(&mut self.batch_transients),
+            _descs: std::mem::take(&mut self.batch_descs),
+            _retired_pool: std::mem::replace(
                 &mut self.pool,
                 CommandPool::new(device, queue_family)?,
             ),

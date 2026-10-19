@@ -21,31 +21,6 @@ use fuel::lazy_yolov8::{NmsConfig, YoloV8Config, YoloV8Model, YoloV8Weights, dec
 use fuel::safetensors::MmapedSafetensors;
 use image::DynamicImage;
 
-// Keypoints (kept as reference for future Pose port; pose head not
-// yet wired through the lazy graph).
-// Nose, Left/Right Eye, Left/Right Ear, Left/Right Shoulder, Left/Right
-// Elbow, Left/Right Wrist, Left/Right Hip, Left/Right Knee,
-// Left/Right Ankle.
-#[allow(dead_code)]
-const KP_CONNECTIONS: [(usize, usize); 16] = [
-    (0, 1),
-    (0, 2),
-    (1, 3),
-    (2, 4),
-    (5, 6),
-    (5, 11),
-    (6, 12),
-    (11, 12),
-    (5, 7),
-    (6, 8),
-    (7, 9),
-    (8, 10),
-    (11, 13),
-    (12, 14),
-    (13, 15),
-    (14, 16),
-];
-
 /// Annotate `img` with detections decoded from the lazy YOLOv8 graph.
 ///
 /// `w` and `h` are the network input dimensions (square, equal to
