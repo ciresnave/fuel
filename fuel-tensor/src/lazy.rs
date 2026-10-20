@@ -3521,6 +3521,201 @@ mod tests {
         );
     }
 
+    /// Autograd gradient of `sum(build(x))` wrt the input `x` and its central
+    /// finite difference, per element. `build` receives the differentiated
+    /// input (a graph leaf) and must build every other operand on its graph.
+    fn grad_vs_fd(
+        x_vals: &[f32],
+        x_shape: &[usize],
+        build: impl Fn(&Tensor) -> Tensor,
+    ) -> (Vec<f32>, Vec<f32>) {
+        grad_vs_fd_impl(x_vals, x_shape, build, false)
+    }
+
+    /// As [`grad_vs_fd`], for a fused op with no backend kernel: the FORWARD
+    /// values are realized after lowering the fused node to primitives.
+    fn grad_vs_fd_lowered(
+        x_vals: &[f32],
+        x_shape: &[usize],
+        build: impl Fn(&Tensor) -> Tensor,
+    ) -> (Vec<f32>, Vec<f32>) {
+        grad_vs_fd_impl(x_vals, x_shape, build, true)
+    }
+
+    fn grad_vs_fd_impl(
+        x_vals: &[f32],
+        x_shape: &[usize],
+        build: impl Fn(&Tensor) -> Tensor,
+        lower_forward: bool,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let dev = Device::cpu();
+        let x = Tensor::from_f32(x_vals.to_vec(), Shape::from_dims(x_shape), &dev).unwrap();
+        let y = build(&x);
+        let grads = y.inner.backward();
+        let g_id = grads.get(x.graph_tensor()).expect("grad x").id();
+        let g =
+            crate::pipelined_bridge::realize_one_as::<f32>(&x.inner.graph().clone(), g_id, &dev)
+                .expect("realize");
+        let fwd_sum = |vals: &[f32]| -> f32 {
+            let t = Tensor::from_f32(vals.to_vec(), Shape::from_dims(x_shape), &dev).unwrap();
+            let y = build(&t);
+            if lower_forward {
+                let graph = y.inner.graph().clone();
+                let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+                    .optimize_to_fixpoint(&graph, &[y.inner.id()]);
+                crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &dev)
+                    .expect("realize lowered forward")
+                    .iter()
+                    .sum()
+            } else {
+                y.realize_f32().iter().sum()
+            }
+        };
+        let h = 1e-2f32;
+        let fd = (0..x_vals.len())
+            .map(|i| {
+                let (mut p, mut m) = (x_vals.to_vec(), x_vals.to_vec());
+                p[i] += h;
+                m[i] -= h;
+                (fwd_sum(&p) - fwd_sum(&m)) / (2.0 * h)
+            })
+            .collect();
+        (g, fd)
+    }
+
+    fn assert_grad_close(label: &str, g: &[f32], fd: &[f32]) {
+        assert_eq!(g.len(), fd.len(), "{label}: length");
+        for (i, (a, b)) in g.iter().zip(fd).enumerate() {
+            assert!(
+                (a - b).abs() < 5e-3 + 5e-3 * b.abs(),
+                "{label}[{i}]: autograd {a} vs FD {b}"
+            );
+        }
+    }
+
+    /// A fused op with no hand-written backward arm used to reach the "no
+    /// backward arm wired yet" panic. Its total `decompose` is differentiable,
+    /// so the backward pre-pass now lowers it first (ROADMAP item 17, H11).
+    #[test]
+    fn nf4_matmul_activation_gradient_matches_finite_difference() {
+        let (g, fd) = grad_vs_fd(&[1.0, 2.0, 2.0, 4.0], &[1, 4], |act| {
+            let w_packed = Tensor::from_graph_tensor(
+                act.graph_tensor()
+                    .const_u8_like(vec![247_u8, 247, 127, 127], Shape::from_dims(&[2, 2]))
+                    .unwrap(),
+            );
+            let absmax = act
+                .const_f32_like(vec![1.0_f32, 2.0, 10.0, 20.0], Shape::from_dims(&[2, 2]))
+                .unwrap();
+            act.nf4_matmul(&w_packed, &absmax, 2)
+        });
+        assert_grad_close("nf4_matmul d/dact", &g, &fd);
+    }
+
+    /// AWQ: arbitrary packed words are valid data (any nibble is a code), and
+    /// the gradient wrt the activation does not depend on the packing
+    /// convention, so a fixed set of words exercises the decompose's
+    /// dequantize-then-matmul path under autograd.
+    #[test]
+    fn awq_matmul_activation_gradient_matches_finite_difference() {
+        let (g, fd) = grad_vs_fd_lowered(
+            &[0.5, -1.0, 2.0, 0.25, -0.75, 1.5, 0.1, -0.3],
+            &[1, 8],
+            |act| {
+                let qweight = act
+                    .graph_tensor()
+                    .const_u32_like(
+                        vec![
+                            0x1234_5678,
+                            0x9ABC_DEF0,
+                            0x0FED_CBA9,
+                            0x8765_4321,
+                            0x1357_9BDF,
+                            0x2468_ACE0,
+                            0xFEDC_BA98,
+                            0x0123_4567,
+                        ],
+                        Shape::from_dims(&[8, 1]),
+                    )
+                    .unwrap();
+                let qzeros = act
+                    .graph_tensor()
+                    .const_u32_like(vec![0x7777_7777], Shape::from_dims(&[1, 1]))
+                    .unwrap();
+                let scales = act
+                    .const_f32_like(
+                        vec![0.1, 0.2, 0.15, 0.05, 0.3, 0.25, 0.12, 0.08],
+                        Shape::from_dims(&[1, 8]),
+                    )
+                    .unwrap();
+                Tensor::from_graph_tensor(act.graph_tensor().awq_matmul(
+                    &qweight,
+                    &qzeros,
+                    scales.graph_tensor(),
+                    8,
+                    8,
+                ))
+            },
+        );
+        assert_grad_close("awq_matmul d/dact", &g, &fd);
+    }
+
+    #[test]
+    fn causal_conv1d_weight_and_bias_gradients_match_finite_difference() {
+        let x_data = vec![0.3, -0.5, 0.8, 0.1, -0.2, 0.6, 0.4, -0.7];
+        for use_silu in [false, true] {
+            // d/dweight: weight is the differentiated leaf.
+            let (g, fd) = grad_vs_fd(&[0.5, -0.25, 0.75, 0.1, 0.9, -0.4], &[2, 1, 3], |w| {
+                let x = w
+                    .const_f32_like(x_data.clone(), Shape::from_dims(&[1, 2, 4]))
+                    .unwrap();
+                let b = w
+                    .const_f32_like(vec![0.05, -0.05], Shape::from_dims(&[2]))
+                    .unwrap();
+                x.causal_conv1d(w, &b, use_silu)
+            });
+            assert_grad_close(&format!("causal_conv1d(silu={use_silu}) d/dw"), &g, &fd);
+            // d/dbias.
+            let (g, fd) = grad_vs_fd(&[0.05, -0.05], &[2], |b| {
+                let x = b
+                    .const_f32_like(x_data.clone(), Shape::from_dims(&[1, 2, 4]))
+                    .unwrap();
+                let w = b
+                    .const_f32_like(
+                        vec![0.5, -0.25, 0.75, 0.1, 0.9, -0.4],
+                        Shape::from_dims(&[2, 1, 3]),
+                    )
+                    .unwrap();
+                x.causal_conv1d(&w, b, use_silu)
+            });
+            assert_grad_close(&format!("causal_conv1d(silu={use_silu}) d/dbias"), &g, &fd);
+        }
+    }
+
+    #[test]
+    fn causal_conv1d_input_gradient_matches_finite_difference() {
+        // x [1, 2, 4] (channels 2, seq 2, kernel 3 -> left-padded length 4).
+        for use_silu in [false, true] {
+            let (g, fd) = grad_vs_fd(
+                &[0.3, -0.5, 0.8, 0.1, -0.2, 0.6, 0.4, -0.7],
+                &[1, 2, 4],
+                |x| {
+                    let w = x
+                        .const_f32_like(
+                            vec![0.5, -0.25, 0.75, 0.1, 0.9, -0.4],
+                            Shape::from_dims(&[2, 1, 3]),
+                        )
+                        .unwrap();
+                    let b = x
+                        .const_f32_like(vec![0.05, -0.05], Shape::from_dims(&[2]))
+                        .unwrap();
+                    x.causal_conv1d(&w, &b, use_silu)
+                },
+            );
+            assert_grad_close(&format!("causal_conv1d(silu={use_silu}) d/dx"), &g, &fd);
+        }
+    }
+
     // Review Fix 2: the seqlen=1 SSM gates above multiply exp(dt*a) by a zero
     // initial carry, so `y` is linear in the input and the multi-step recurrent
     // gate is never FD-checked for the SSM ops. These seqlen>=2 gates carry a
