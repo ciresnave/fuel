@@ -235,9 +235,18 @@ const CASE_DEFAULT: Case = Case {
     splits: 4,
 };
 
-fn check() {
-    let be = backend();
-    let cases = [
+/// Decode and prefill shapes: GQA 1:1, 4:1 and 2:1, causal, ALiBi, splits 1-16.
+fn check_cases() -> Vec<Case> {
+    let prefill = Case {
+        hq: 4,
+        hkv: 2,
+        sq: 16,
+        sk: 2048,
+        d: 64,
+        causal: true,
+        ..CASE_DEFAULT
+    };
+    vec![
         CASE_DEFAULT,
         Case {
             hq: 32,
@@ -255,49 +264,46 @@ fn check() {
             ..CASE_DEFAULT
         },
         Case {
-            hq: 4,
-            hkv: 2,
-            sq: 16,
-            sk: 2048,
-            d: 64,
-            causal: true,
             splits: 2,
-            ..CASE_DEFAULT
+            ..prefill
         },
         Case {
-            hq: 4,
-            hkv: 2,
-            sq: 16,
-            sk: 2048,
-            d: 64,
-            causal: true,
             alibi: true,
             splits: 16,
+            ..prefill
         },
         Case {
             sk: 700,
             splits: 1,
             ..CASE_DEFAULT
         },
-    ];
-    for c in cases {
-        let inp = Inputs::new(&c);
-        let want = reference(&inp, &c);
-        let mut gpu = Gpu::upload(&be, &c, &inp);
-        gpu.run(&be, &c, 0);
-        let e_unsplit = max_abs_err(&gpu.read(&be), &want);
-        gpu.run(&be, &c, c.splits);
-        let e_split = max_abs_err(&gpu.read(&be), &want);
-        println!(
-            "hq={} hkv={} sq={} sk={} d={} causal={} alibi={} splits={}: \
-             max|err| unsplit={e_unsplit:.2e} split={e_split:.2e}",
-            c.hq, c.hkv, c.sq, c.sk, c.d, c.causal, c.alibi, c.splits
-        );
-        assert!(
-            e_unsplit < 1e-4,
-            "unsplit kernel off its reference: {e_unsplit}"
-        );
-        assert!(e_split < 1e-4, "split kernel off the reference: {e_split}");
+    ]
+}
+
+/// Run both kernels on `c` and assert each is within 1e-4 of the f64 reference.
+fn check_case(be: &VulkanBackend, c: &Case) {
+    let inp = Inputs::new(c);
+    let want = reference(&inp, c);
+    let mut gpu = Gpu::upload(be, c, &inp);
+    gpu.run(be, c, 0);
+    let e_unsplit = max_abs_err(&gpu.read(be), &want);
+    gpu.run(be, c, c.splits);
+    let e_split = max_abs_err(&gpu.read(be), &want);
+    println!(
+        "hq={} hkv={} sq={} sk={} d={} causal={} alibi={} splits={}: max|err| unsplit={e_unsplit:.2e} split={e_split:.2e}",
+        c.hq, c.hkv, c.sq, c.sk, c.d, c.causal, c.alibi, c.splits
+    );
+    assert!(
+        e_unsplit < 1e-4,
+        "unsplit kernel off its reference: {e_unsplit}"
+    );
+    assert!(e_split < 1e-4, "split kernel off the reference: {e_split}");
+}
+
+fn check() {
+    let be = backend();
+    for c in check_cases() {
+        check_case(&be, &c);
     }
 }
 
