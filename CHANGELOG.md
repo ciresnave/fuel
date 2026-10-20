@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.31 - 2026-10-20
+
+### Added
+
+- `fuel-kv-pool`: a content-addressed block index (ROADMAP item 17, H20). `commit_block` registers a FULL block under a caller-computed 128-bit key (`BlockHash`); `lookup_chain` / `splice_cached_chain` find and share the longest cached run of a request's hash chain at any block boundary; `evictable_cached` lists blocks only the index references, least recently used first; `release_cached` drops the index's reference; `chain_block_hash(parent, tokens, extra)` is a convenience (non-cryptographic) chained hash. New `KvAllocError::{BlockNotFull, UnknownCachedBlock}` variants. Mechanism only: what goes in a key, when to commit and what to release are the caller's. Measured on a synthetic multi-turn trace in `docs/research/block-chain-index-measurement.md`: 86.2% of prompt tokens served with no boundary annotations, against 0% for whole-prefix keys stored at request end and a tie with annotated whole-prefix keys.
+
 ## v0.20.30 - 2026-10-20
 
 ### Added
