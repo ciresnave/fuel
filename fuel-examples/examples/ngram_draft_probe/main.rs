@@ -157,19 +157,14 @@ fn print_row(name: &str, cfg: (usize, usize, usize), o: &Outcome) {
     );
 }
 
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let tok = Tokenizer::from_file(&cli.tokenizer).map_err(anyhow::Error::msg)?;
-    let a = std::fs::read_to_string(&cli.prompt_file)?;
-    let c = std::fs::read_to_string(&cli.other_file)?;
-    let enc = |s: &str| -> anyhow::Result<Vec<u32>> {
-        Ok(tok
-            .encode(s, false)
-            .map_err(anyhow::Error::msg)?
-            .get_ids()
-            .to_vec())
-    };
-    let a_tokens = enc(&a)?;
+fn encode(tok: &Tokenizer, text: &str) -> anyhow::Result<Vec<u32>> {
+    let encoding = tok.encode(text, false).map_err(anyhow::Error::msg)?;
+    Ok(encoding.get_ids().to_vec())
+}
+
+/// Run every scenario against every drafter setting and print the table.
+fn report(tok: &Tokenizer, a: &str, c: &str) -> anyhow::Result<()> {
+    let a_tokens = encode(tok, a)?;
     let c_lines: Vec<&str> = c.lines().filter(|l| !l.trim().is_empty()).collect();
     println!(
         "A: {} bytes, {} tokens; C: {} lines",
@@ -179,17 +174,25 @@ fn main() -> anyhow::Result<()> {
     );
     print_header();
     let scenarios = [
-        ("edit-2%", edit(&a, &c_lines, 0.02, 11)),
-        ("edit-10%", edit(&a, &c_lines, 0.10, 12)),
-        ("edit-30%", edit(&a, &c_lines, 0.30, 13)),
-        ("control", c.clone()),
+        ("edit-2%", edit(a, &c_lines, 0.02, 11)),
+        ("edit-10%", edit(a, &c_lines, 0.10, 12)),
+        ("edit-30%", edit(a, &c_lines, 0.30, 13)),
+        ("control", c.to_string()),
     ];
     for (name, b_text) in scenarios {
-        let b = enc(&b_text)?;
+        let b = encode(tok, &b_text)?;
         for cfg in CONFIGS {
             let drafter = NgramDrafter::new(cfg.0, cfg.1, cfg.2);
             print_row(name, cfg, &simulate(&a_tokens, &b, &drafter));
         }
     }
     Ok(())
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let tok = Tokenizer::from_file(&cli.tokenizer).map_err(anyhow::Error::msg)?;
+    let a = std::fs::read_to_string(&cli.prompt_file)?;
+    let c = std::fs::read_to_string(&cli.other_file)?;
+    report(&tok, &a, &c)
 }
