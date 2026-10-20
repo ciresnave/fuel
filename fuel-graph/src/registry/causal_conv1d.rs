@@ -74,7 +74,7 @@ pub fn entry() -> FusedOpEntry {
         family: FusedOpFamily::Forward,
         pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward: BackwardKind::NotDifferentiable,
+        backward: BackwardKind::Decompose,
         shape_rule,
         dtype_rule,
         output_views: None,
