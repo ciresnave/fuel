@@ -359,6 +359,43 @@ pub const DEFAULT_ITERATIONS: u32 = 7;
 /// where the first launch includes kernel-cache population.
 pub const DEFAULT_WARMUP: u32 = 3;
 
+/// EXPERIMENT (not for merge): class measurement order for one cell, from
+/// `FUEL_JUDGE_ORDER` = `sorted` (default) | `reversed` | `random:<seed>`.
+fn experiment_class_order<T: Copy>(keys: &[T], cell: u64) -> Vec<T> {
+    let mut v: Vec<T> = keys.to_vec();
+    let mode = std::env::var("FUEL_JUDGE_ORDER").unwrap_or_default();
+    if mode == "reversed" {
+        v.reverse();
+    } else if let Some(seed) = mode.strip_prefix("random:") {
+        let seed: u64 = seed.parse().unwrap_or(1);
+        let mut state = seed ^ cell.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut next = || {
+            // splitmix64
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        for i in (1..v.len()).rev() {
+            let j = (next() % (i as u64 + 1)) as usize;
+            v.swap(i, j);
+        }
+    }
+    v
+}
+
+/// EXPERIMENT (not for merge): sleep `FUEL_JUDGE_SETTLE_MS` before each
+/// class measurement so carry-over from the previous class can decay.
+fn experiment_settle() {
+    if let Some(ms) = std::env::var("FUEL_JUDGE_SETTLE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
 /// The runner. Consumes a [`ProbeReport`] (so it knows which devices
 /// exist and which equivalence classes to share across), builds the
 /// full measurement matrix, and produces a [`ProfileReport`].
@@ -772,6 +809,7 @@ impl Judge {
         // process invocations).
         let mut class_keys: Vec<_> = classes.keys().collect();
         class_keys.sort_by_key(|k| (k.backend as u32, k.device_id, k.vendor_id));
+        let mut cell_counter: u64 = 0;
 
         for &op in PROFILED_OPS {
             for sz in self.size_plan(op) {
@@ -812,8 +850,11 @@ impl Judge {
                     // `kernel_source` (the bridge's post-realize report,
                     // filled in by `time_op_capturing` — Session 3 rider).
                     let mut cell_runs: Vec<CellRun> = Vec::with_capacity(class_keys.len());
-                    for key in &class_keys {
-                        let devs = &classes[key];
+                    let cell_order = experiment_class_order(&class_keys, cell_counter);
+                    cell_counter += 1;
+                    for key in &cell_order {
+                        experiment_settle();
+                        let devs = &classes[*key];
                         let rep = devs[0];
                         if let Some(run) = self.measure_on_device_capturing(op, dtype, &sz, rep) {
                             let dispatched_source = run.kernel_source.clone();
