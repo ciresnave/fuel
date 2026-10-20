@@ -351,31 +351,43 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState
 fn parse_nested(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> fuel_ir::Result<Option<BnbNestedState>> {
-    let bs = obj.get("nested_blocksize");
-    let off = obj.get("nested_offset");
-    let dt = obj.get("nested_dtype");
-    if bs.is_none() && off.is_none() && dt.is_none() {
-        return Ok(None);
-    }
-    let err = |m: &str| fuel_ir::Error::Msg(format!("parse_bnb_quant_state: {m}")).bt();
-    let (Some(bs), Some(off), Some(dt)) = (bs, off, dt) else {
-        return Err(err(
+    match (
+        obj.get("nested_blocksize"),
+        obj.get("nested_offset"),
+        obj.get("nested_dtype"),
+    ) {
+        (None, None, None) => Ok(None),
+        (Some(bs), Some(off), Some(dt)) => nested_from_fields(bs, off, dt).map(Some),
+        _ => Err(nested_err(
             "double quantization needs all of nested_blocksize, nested_offset and nested_dtype",
-        ));
-    };
-    let block_size =
-        bs.as_u64()
-            .filter(|b| *b > 0)
-            .ok_or_else(|| err("nested_blocksize must be a positive integer"))? as usize;
-    let offset = off
-        .as_f64()
-        .ok_or_else(|| err("nested_offset must be a number"))? as f32;
+        )),
+    }
+}
+
+fn nested_err(m: &str) -> fuel_ir::Error {
+    fuel_ir::Error::Msg(format!("parse_bnb_quant_state: {m}")).bt()
+}
+
+/// Validate the three present `nested_*` values.
+fn nested_from_fields(
+    bs: &serde_json::Value,
+    off: &serde_json::Value,
+    dt: &serde_json::Value,
+) -> fuel_ir::Result<BnbNestedState> {
     if dt.as_str() != Some("float32") {
-        return Err(err(&format!(
+        return Err(nested_err(&format!(
             "only nested_dtype \"float32\" is supported, got {dt}"
         )));
     }
-    Ok(Some(BnbNestedState { block_size, offset }))
+    let block_size = bs
+        .as_u64()
+        .filter(|b| *b > 0)
+        .ok_or_else(|| nested_err("nested_blocksize must be a positive integer"))?
+        as usize;
+    let offset = off
+        .as_f64()
+        .ok_or_else(|| nested_err("nested_offset must be a number"))? as f32;
+    Ok(BnbNestedState { block_size, offset })
 }
 
 /// Decode a double-quantized absmax exactly as bitsandbytes does:
