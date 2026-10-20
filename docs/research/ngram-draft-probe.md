@@ -42,8 +42,22 @@ Shorter minimum n-grams are cheaper but accept less: (2,2,5) gives 2.17-2.57 tok
 
 ## Reading it
 
-- The hypothesis in the roadmap row ("at least 1.3 accepted tokens per target step on repetitive workloads") is met by a wide margin as an upper bound: 2.1-3.4 tokens per step on code edits and 2.7-7.3 on prose edits. How much of it survives a real model is not measured.
-- On the unrelated control the drafter still finds repeats inside B (1.17-1.44 tokens per step), so "no match, no gain" is not quite right; boilerplate repeats within one output.
+- **CORRECTION (2026-10-20, external review of #413).** The first version of this note said the roadmap hypothesis ("at least 1.3 accepted tokens per target step") was "met by a wide margin". That compared 1.3 against `tok/step`, which includes the one token the target emits every step (the bonus or correction). Accepted draft tokens per step = `tok/step` - 1. From the tables above (one run per cell, noise floor not measured):
+
+  | accepted per step | (4,2,3) | (4,2,5) | (4,2,10) |
+  |---|---:|---:|---:|
+  | code edit-2% | 1.44 | 1.87 | 2.41 |
+  | code edit-10% | **1.24** | 1.57 | 1.97 |
+  | code edit-30% | **1.08** | 1.33 | 1.62 |
+  | code control | 0.38 | 0.42 | 0.44 |
+  | prose edit-2% | 2.45 | 3.76 | 6.34 |
+  | prose edit-10% | 1.72 | 2.36 | 3.31 |
+  | prose edit-30% | 1.70 | 2.34 | 3.26 |
+  | prose control | 0.17 | 0.18 | 0.19 |
+
+  What the data supports: every prose-edit cell meets 1.3; every code-edit cell meets it at draft 5 and 10 (edit-30% at draft 5 by 0.03, inside what one unmeasured run can move); at draft 3 only code edit-2% meets it, and code edit-10% (1.24) and edit-30% (1.08) do **not**. No control cell meets it (0.17-0.44), so "no match, no gain" is closer to right than the earlier wording on repeats-within-B implied. All of this is a proxy upper bound (ground-truth target, no real model, no verification cost), so the hypothesis is **not confirmed** for a real model, and at small draft lengths on lightly repetitive code it is not met even by the proxy.
+- The earlier ranges "2.1-3.4 tokens per step on code edits, 2.7-7.3 on prose edits" are `tok/step` (accepted + 1), not accepted tokens.
+- On the unrelated control the drafter still finds repeats inside B (1.17-1.44 tokens per step, i.e. 0.17-0.44 accepted), a small gain from boilerplate repeating within one output.
 - Tokens per step cannot go below 1 in this proxy because the bonus token is always emitted. The real downside of a bad draft is the extra positions the target must verify and the lookup; neither is measured here. Prompt-lookup engines usually gate drafting on measured acceptance for exactly that reason (Strata, ROADMAP item 16 S3); the stats type `SpeculativeStats` already provides a windowed acceptance rate to gate on.
 
 ## Reproduce
