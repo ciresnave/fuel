@@ -328,7 +328,7 @@ pub enum Op {
     /// `Op::Silu`, mutates input 0. Not yet wired through autograd.
     SiluInplace,
     /// In-place GeluTanh (tanh approximation): mutates input 0 with the
-    /// same formula as `Op::GeluTanh`. Not yet wired through autograd.
+    /// same formula as `Op::GeluTanh`. Its backward is the same as `Op::GeluTanh`'s.
     GeluTanhInplace,
     /// In-place Tanh: mutates input 0. Same semantics as `Op::Tanh`.
     /// Not yet wired through autograd.
@@ -9322,30 +9322,9 @@ impl NodeHandle {
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::GeluTanh => {
-                    // GELU's tanh-approximation backward is non-trivial.
-                    // For the MVP, compute it numerically stable via
-                    // central differences — no, that's wrong for
-                    // backward. The proper rule differentiates
-                    // `0.5 x (1 + tanh(c * (x + 0.044715 x³)))` by chain
-                    // rule. That requires several new intermediate
-                    // nodes. Implemented below:
-                    //
-                    // Let u = c * (x + 0.044715 x³), t = tanh(u).
-                    // y = 0.5 x (1 + t)
-                    // du/dx = c * (1 + 3 * 0.044715 * x²)
-                    //       = c + 3 c * 0.044715 * x²
-                    // dt/dx = (1 - t²) * du/dx
-                    // dy/dx = 0.5 * (1 + t) + 0.5 * x * dt/dx
-                    //
-                    // This is enough ops that it deserves a dedicated
-                    // backward node. For the MVP, panic — users who need
-                    // GELU backward should use Silu, which we just
-                    // implemented properly.
-                    panic!(
-                        "backward: GeluTanh gradient is not yet supported. \
-                         Use Silu for differentiable training; GeluTanh is \
-                         currently inference-only."
-                    );
+                    let x = inputs[0];
+                    let grad_x = build_gelu_tanh_grad(&graph_handle, x, up_id);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::Relu => {
                     // d(relu(x))/dx = step(x). grad_x = upstream * step(x).
@@ -11308,16 +11287,13 @@ impl NodeHandle {
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::GeluTanhInplace => {
-                    // Mirrors Op::GeluTanh's panic — the tanh-approximation
-                    // gradient is non-trivial and not yet implemented
-                    // for the non-inplace variant either. Users who
-                    // need a differentiable GELU should use SiluInplace
-                    // (which has a proper backward).
-                    panic!(
-                        "backward: GeluTanhInplace gradient is not yet supported. \
-                         Use SiluInplace for differentiable training; GeluTanhInplace \
-                         is currently inference-only (mirrors Op::GeluTanh's status)."
-                    );
+                    // Same backward as Op::GeluTanh. The formula reads only the
+                    // pre-mutation input `x` (like SiluInplace's Sigmoid(x) read),
+                    // which the alias-aware ordering pass keeps ahead of the
+                    // in-place write.
+                    let x = inputs[0];
+                    let grad_x = build_gelu_tanh_grad(&graph_handle, x, up_id);
+                    accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
                 }
                 Op::NegInplace => {
                     // Same backward as Op::Neg — grad_x = -upstream. No
@@ -12007,6 +11983,56 @@ fn push_node(
 /// Build a ones tensor of the given shape and dtype as a `Const` node.
 /// Used to seed the initial upstream gradient at the root of the backward
 /// pass (`dL/dL = 1`).
+/// Backward of the tanh-approximation GELU, `y = 0.5 x (1 + tanh(u))` with
+/// `u = c (x + k x^3)`, `c = sqrt(2/pi)`, `k = 0.044715`:
+///
+/// `dy/dx = 0.5 (1 + t) + 0.5 x (1 - t^2) c (1 + 3 k x^2)`, `t = tanh(u)`.
+///
+/// Returns `upstream * dy/dx` as a new node. Built from existing primitives
+/// (no new Op); `t` is recomputed from `x` so the rule is safe at `x = 0`.
+fn build_gelu_tanh_grad(graph: &SharedGraph, x: NodeId, upstream: NodeId) -> NodeId {
+    // sqrt(2/pi), the constant the forward kernels use.
+    const C: f64 = 0.797_884_560_802_865_4;
+    const K: f64 = 0.044_715;
+    let shape = node_shape(graph, x);
+    let dtype = node_dtype(graph, x);
+    let un = |op: Op, input: NodeId| push_node(graph, op, vec![input], shape.clone(), dtype);
+    let x_sq = un(Op::Sqr, x);
+    let x_cu = push_node(graph, Op::Mul, vec![x_sq, x], shape.clone(), dtype);
+    let k_x_cu = un(Op::MulScalar(K), x_cu);
+    let inner = push_node(graph, Op::Add, vec![x, k_x_cu], shape.clone(), dtype);
+    let u = un(Op::MulScalar(C), inner);
+    let t = un(Op::Tanh, u);
+    // 0.5 (1 + t)
+    let t_plus_one = un(Op::AddScalar(1.0), t);
+    let half_one_plus_t = un(Op::MulScalar(0.5), t_plus_one);
+    // 1 - t^2
+    let t_sq = un(Op::Sqr, t);
+    let ones = build_ones(graph, shape.clone(), dtype);
+    let one_minus_t_sq = push_node(graph, Op::Sub, vec![ones, t_sq], shape.clone(), dtype);
+    // du/dx = c + 3 c k x^2
+    let scaled_x_sq = un(Op::MulScalar(3.0 * C * K), x_sq);
+    let du = un(Op::AddScalar(C), scaled_x_sq);
+    // 0.5 x (1 - t^2) du/dx
+    let dt = push_node(
+        graph,
+        Op::Mul,
+        vec![one_minus_t_sq, du],
+        shape.clone(),
+        dtype,
+    );
+    let x_dt = push_node(graph, Op::Mul, vec![x, dt], shape.clone(), dtype);
+    let half_x_dt = un(Op::MulScalar(0.5), x_dt);
+    let d_gelu = push_node(
+        graph,
+        Op::Add,
+        vec![half_one_plus_t, half_x_dt],
+        shape.clone(),
+        dtype,
+    );
+    push_node(graph, Op::Mul, vec![upstream, d_gelu], shape, dtype)
+}
+
 fn build_ones(graph: &SharedGraph, shape: Shape, dtype: DType) -> NodeId {
     build_filled_const(graph, shape, dtype, 1.0)
 }
@@ -14584,18 +14610,22 @@ mod tests {
     }
 
     #[test]
-    fn backward_through_gelu_inplace_panics_matching_op_gelu() {
-        // GeluTanhInplace mirrors Op::GeluTanh's "currently inference-only"
-        // panic — both rely on the same not-yet-implemented gradient.
-        // SiluInplace is the recommended differentiable alternative.
+    fn backward_through_gelu_tanh_inplace_does_not_panic() {
+        // Numerics are checked against finite differences in fuel-tensor
+        // (`gelu_tanh_inplace_backward_matches_finite_difference`).
         let x = NodeHandle::from_f32(vec![0.1], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let y = x.gelu_tanh_inplace();
         let loss = y.sum_all();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loss.backward()));
-        assert!(
-            result.is_err(),
-            "GeluTanhInplace backward should panic (mirrors Op::GeluTanh)"
-        );
+        let grads = loss.backward();
+        assert!(grads.get(&x).is_some());
+    }
+
+    #[test]
+    fn backward_through_gelu_tanh_does_not_panic() {
+        let x = NodeHandle::from_f32(vec![0.1], Shape::from_dims(&[1]), cpu_dev()).unwrap();
+        let loss = x.gelu_tanh().sum_all();
+        let grads = loss.backward();
+        assert!(grads.get(&x).is_some());
     }
 
     #[test]
