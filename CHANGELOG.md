@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.30 - 2026-10-20
+
+### Added
+
+- `fuel-inference`: `ngram_draft::NgramDrafter` (longest-recent-n-gram "prompt lookup" drafting, no second model) and `one_hot_logprobs` (the point-mass draft distribution the existing `speculative::verify_draft` needs). Policy-layer, additive, not yet wired into a decode loop. A proxy measurement (ground-truth target, so an upper bound) is in `docs/research/ngram-draft-probe.md` with the `fuel-examples` `ngram_draft_probe` example that produced it (adds `fuel-inference` as a dependency of `fuel-examples`). ROADMAP item 17, H24.
+
 ## v0.20.29 - 2026-10-20
 
 ### Added
