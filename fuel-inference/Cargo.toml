@@ -33,7 +33,7 @@
     # multi_session tests build BF16 tiny-model weights.
     half             = { workspace = true }
     # prefix_reuse_chain_vs_whole compares PrefixCache with the block index.
-    fuel-kv-pool     = { workspace = true }
+    fuel-kv-pool     = { path = "../fuel-kv-pool" }
 
 [features]
     accelerate = ["fuel-transformers/accelerate", "fuel/accelerate"]
