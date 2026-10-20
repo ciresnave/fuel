@@ -48,14 +48,18 @@
 //! cost-guided optimizer prefers when present (and `cpu_fallback` covers
 //! backends without one), but the decomposition is always available.
 //!
-//! ## Why `BackwardKind::NotDifferentiable` for v1
+//! ## Why `BackwardKind::Decompose` (changed 2026-10-20, PM ruling)
 //!
-//! Mamba's lazy migration ([docs/session-prompts/mamba-eager-to-lazy-migration.md])
-//! is inference-only. Without a backward consumer, training-time
-//! gradient support is premature. The backward formula (dX via
-//! "transposed" causal conv; dW via cross-correlation; dB via
-//! reduce-sum along batch×time) is mechanical to add when the first
-//! Mamba training consumer materializes.
+//! v1 recorded `NotDifferentiable` because Mamba's lazy migration was
+//! inference-only. Since then the two SSM recipes it feeds
+//! (`SELECTIVE_SCAN`, `SSD_CHUNK_SCAN`) became `Decompose`, so a Mamba block's
+//! backward panicked at this convolution instead. The decomposition is a
+//! depthwise convolution over primitives, so autograd lowers the node through
+//! [`decompose`] and differentiates it (the input, weight and bias gradients
+//! are derived, not hand-written). Checked against a finite difference in
+//! `fuel-tensor` (`causal_conv1d_input_gradient_matches_finite_difference` and
+//! `causal_conv1d_weight_and_bias_gradients_match_finite_difference`, with and
+//! without the fused SiLU).
 
 use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
@@ -74,7 +78,7 @@ pub fn entry() -> FusedOpEntry {
         family: FusedOpFamily::Forward,
         pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward: BackwardKind::NotDifferentiable,
+        backward: BackwardKind::Decompose,
         shape_rule,
         dtype_rule,
         output_views: None,

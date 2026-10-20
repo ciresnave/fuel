@@ -14625,7 +14625,8 @@ mod tests {
     /// is whatever the registry declares as `BackwardKind::Decompose`. Pin that
     /// set so adding or flipping one is a deliberate change that also adds its
     /// finite-difference test (SSM recipes: `fuel-tensor` scan tests;
-    /// FusedSoftmaxCrossEntropy: `fuel-training`).
+    /// FusedSoftmaxCrossEntropy: `fuel-training`; NF4/AWQ matmul and causal
+    /// conv1d: `fuel-tensor` `*_gradient_matches_finite_difference`).
     #[test]
     fn decompose_declared_fused_ops_are_exactly_the_tested_set() {
         use crate::registry::{BackwardKind, FusedOps, default_registry};
@@ -14638,6 +14639,9 @@ mod tests {
             FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
             FusedOps::SELECTIVE_SCAN,
             FusedOps::SSD_CHUNK_SCAN,
+            FusedOps::NF4_MATMUL,
+            FusedOps::AWQ_MATMUL,
+            FusedOps::CAUSAL_CONV1D,
         ];
         assert_eq!(declared.len(), expected.len(), "declared: {declared:?}");
         for id in expected {
