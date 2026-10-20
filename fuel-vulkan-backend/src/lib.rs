@@ -6248,6 +6248,230 @@ impl VulkanBackend {
         )
     }
 
+    /// Split-KV FlashAttention forward, f32 (ROADMAP item 17, H12). Same
+    /// contract as [`Self::flash_attn_f32_bytes`] plus `splits`: the key range
+    /// is cut into `splits` chunks that run as separate workgroups, then a
+    /// second dispatch merges the partials in fixed split order. The merge
+    /// reorders float adds, so the result differs from the unsplit kernel in
+    /// the last bits (deterministic for a given `splits`). Needs
+    /// `ceil(sk / splits) <= 1024`.
+    pub fn flash_attn_f32_split_bytes(
+        &self,
+        q: &VulkanStorageBytes,
+        k: &VulkanStorageBytes,
+        v: &VulkanStorageBytes,
+        alibi: Option<&VulkanStorageBytes>,
+        out: &mut VulkanStorageBytes,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
+        softmax_scale: f32,
+        causal: bool,
+        splits: usize,
+    ) -> fuel_ir::Result<()> {
+        let name = "flash_attn_f32_split_bytes";
+        if hkv == 0 || !hq.is_multiple_of(hkv) {
+            fuel_ir::bail!("{name}: hq={hq} must be a positive multiple of hkv={hkv}");
+        }
+        if sk == 0 || sk > 4096 || d == 0 || d > 256 {
+            fuel_ir::bail!("{name}: need 1 <= sk <= 4096 and 1 <= d <= 256, got sk={sk} d={d}");
+        }
+        if splits == 0 || splits > 64 {
+            fuel_ir::bail!("{name}: splits={splits} must be in 1..=64");
+        }
+        let chunk = sk.div_ceil(splits);
+        if chunk > 1024 {
+            fuel_ir::bail!("{name}: chunk={chunk} (sk={sk}, splits={splits}) > 1024");
+        }
+        let rows = b * hq * sq;
+        let (need_q, need_k) = (rows * d * 4, b * hkv * sk * d * 4);
+        for (what, have, need) in [
+            ("q", q.len_bytes(), need_q),
+            ("k", k.len_bytes(), need_k),
+            ("v", v.len_bytes(), need_k),
+            ("out", out.len_bytes(), need_q),
+        ] {
+            if have < need {
+                fuel_ir::bail!("{name}: {what} {have} < {need}");
+            }
+        }
+        if let Some(a) = alibi
+            && a.len_bytes() < hq * 4
+        {
+            fuel_ir::bail!("{name}: alibi {} < {}", a.len_bytes(), hq * 4);
+        }
+        let host_evicted =
+            |what: &str| fuel_ir::Error::Msg(format!("{name}: {what} is host-evicted"));
+        let q_buf = q.buffer_opt().ok_or_else(|| host_evicted("q"))?;
+        let k_buf = k.buffer_opt().ok_or_else(|| host_evicted("k"))?;
+        let v_buf = v.buffer_opt().ok_or_else(|| host_evicted("v"))?;
+        let o_buf = out.buffer_opt().ok_or_else(|| host_evicted("out"))?;
+
+        let dummy_alibi = match alibi {
+            Some(_) => None,
+            None => Some(self.alloc_bytes(16)?),
+        };
+        let (alibi_buf, alibi_len) = match (alibi, dummy_alibi.as_ref()) {
+            (Some(a), _) => (
+                a.buffer_opt().ok_or_else(|| host_evicted("alibi"))?,
+                a.len_bytes(),
+            ),
+            (None, Some(dm)) => (
+                dm.buffer_opt().ok_or_else(|| host_evicted("alibi dummy"))?,
+                16,
+            ),
+            (None, None) => unreachable!("dummy alibi is allocated when alibi is None"),
+        };
+        let scratch = self.alloc_bytes(rows * splits * (d + 2) * 4)?;
+        let s_buf = scratch
+            .buffer_opt()
+            .ok_or_else(|| host_evicted("scratch"))?;
+        let bind = |n: usize| ((n + 3) & !3) as u64;
+
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
+        struct SplitParams {
+            b: u32,
+            hq: u32,
+            hkv: u32,
+            sq: u32,
+            sk: u32,
+            d: u32,
+            softmax_scale: f32,
+            causal: u32,
+            use_alibi: u32,
+            splits: u32,
+            chunk: u32,
+            _pad0: u32,
+        }
+        let (pbuf, pmem) = self.upload_params(&SplitParams {
+            b: b as u32,
+            hq: hq as u32,
+            hkv: hkv as u32,
+            sq: sq as u32,
+            sk: sk as u32,
+            d: d as u32,
+            softmax_scale,
+            causal: causal as u32,
+            use_alibi: alibi.is_some() as u32,
+            splits: splits as u32,
+            chunk: chunk as u32,
+            _pad0: 0,
+        })?;
+        let desc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_5s1u)
+            .map_err(vk_err)?;
+        desc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            q_buf,
+            0,
+            bind(q.len_bytes()),
+        );
+        desc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            k_buf,
+            0,
+            bind(k.len_bytes()),
+        );
+        desc.write_buffer(
+            2,
+            DescriptorType::STORAGE_BUFFER,
+            v_buf,
+            0,
+            bind(v.len_bytes()),
+        );
+        desc.write_buffer(
+            3,
+            DescriptorType::STORAGE_BUFFER,
+            s_buf,
+            0,
+            bind(scratch.len_bytes()),
+        );
+        desc.write_buffer(
+            4,
+            DescriptorType::STORAGE_BUFFER,
+            alibi_buf,
+            0,
+            bind(alibi_len),
+        );
+        desc.write_buffer(
+            5,
+            DescriptorType::UNIFORM_BUFFER,
+            &pbuf,
+            0,
+            std::mem::size_of::<SplitParams>() as u64,
+        );
+        self.record_dispatch_batched(
+            "flash_attn_split_f32",
+            &self.pipelines.flash_attn_split_f32_pipeline,
+            &self.pipelines.flash_attn_split_f32_layout,
+            desc,
+            (splits as u32, 1, rows as u32),
+            vec![(pbuf, pmem)],
+            &[q_buf.raw(), k_buf.raw(), v_buf.raw(), alibi_buf.raw()],
+            &[s_buf.raw()],
+        )?;
+
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
+        struct CombineParams {
+            d: u32,
+            splits: u32,
+            rows: u32,
+            _pad0: u32,
+        }
+        let (cbuf, cmem) = self.upload_params(&CombineParams {
+            d: d as u32,
+            splits: splits as u32,
+            rows: rows as u32,
+            _pad0: 0,
+        })?;
+        let cdesc = self
+            .pipelines
+            .allocate_desc(&self.pipelines.layout_2s1u)
+            .map_err(vk_err)?;
+        cdesc.write_buffer(
+            0,
+            DescriptorType::STORAGE_BUFFER,
+            s_buf,
+            0,
+            bind(scratch.len_bytes()),
+        );
+        cdesc.write_buffer(
+            1,
+            DescriptorType::STORAGE_BUFFER,
+            o_buf,
+            0,
+            bind(out.len_bytes()),
+        );
+        cdesc.write_buffer(
+            2,
+            DescriptorType::UNIFORM_BUFFER,
+            &cbuf,
+            0,
+            std::mem::size_of::<CombineParams>() as u64,
+        );
+        self.record_dispatch_batched(
+            "flash_attn_combine_f32",
+            &self.pipelines.flash_attn_combine_f32_pipeline,
+            &self.pipelines.flash_attn_combine_f32_layout,
+            cdesc,
+            (1, 1, rows as u32),
+            vec![(cbuf, cmem)],
+            &[s_buf.raw()],
+            &[o_buf.raw()],
+        )?;
+        self.flush_pending()?;
+        drop((dummy_alibi, scratch));
+        Ok(())
+    }
+
     /// FlashAttention forward, bf16.
     pub fn flash_attn_bf16_bytes(
         &self,
