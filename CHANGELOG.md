@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.20 - 2026-10-19
+
+### Changed
+
+- Docs only: ROADMAP items 16 (Strata-derived experiments) and 17 (ideas harvested from 23 ML libraries), none started, with evidence in `docs/research/strata-ideas.md` and `docs/research/ml-library-harvest.md`. No code change.
+
 ## v0.20.19 - 2026-10-19
 
 ### Changed
