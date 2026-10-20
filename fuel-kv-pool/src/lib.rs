@@ -107,7 +107,9 @@ pub enum StateKind {
     // increment; enumerated here so "what's covered" is never implicit.
 }
 
+mod block_index;
 mod sizing;
+pub use block_index::{BlockHash, chain_block_hash};
 pub use sizing::{KvBudget, KvSizingError, non_kv_resident_bytes};
 
 /// KV pool geometry — the model-agnostic shape the pool manages. It speaks KV
@@ -317,6 +319,12 @@ pub enum KvAllocError {
     /// a partial last block would put the prefix mid-block (partial-block merge is
     /// a separate follow-on). Refused before any mutation.
     OffsetNotBlockAligned { filled: usize, block_size: usize },
+    /// [`commit_block`](KvBlockPool::commit_block) named a block that is not
+    /// fully filled yet; only complete blocks are content-addressable.
+    BlockNotFull { index: usize },
+    /// [`release_cached`](KvBlockPool::release_cached) named a hash the index
+    /// does not hold.
+    UnknownCachedBlock,
 }
 
 /// A registry-minted handle for a shared prefix owner (a named, refcounted KV
@@ -350,6 +358,13 @@ pub struct KvBlockPool {
     /// donor — controls when they're released ([`release_prefix`](Self::release_prefix)).
     prefixes: HashMap<PrefixId, PrefixOwner>,
     next_prefix: u64,
+    /// Content-addressed full blocks (see `block_index`): the index owns one
+    /// reference on each.
+    cached: HashMap<BlockHash, block_index::CachedBlock>,
+    /// Reverse map so a physical block is registered under at most one hash.
+    cached_by_block: HashMap<PhysBlockId, BlockHash>,
+    /// Monotonic use counter for LRU ordering of cached blocks.
+    tick: u64,
 }
 
 fn blocks_for(tokens: usize, block_size: usize) -> usize {
@@ -368,6 +383,9 @@ impl KvBlockPool {
             next_session: 0,
             prefixes: HashMap::new(),
             next_prefix: 0,
+            cached: HashMap::new(),
+            cached_by_block: HashMap::new(),
+            tick: 0,
         }
     }
 
