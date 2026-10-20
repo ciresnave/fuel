@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.32 - 2026-10-20
+
+### Added
+
+- `fuel-vulkan-backend`: `VulkanBackend::flash_attn_f32_split_bytes`, a split-KV decode attention path (ROADMAP item 17, H12). The key range is cut into `splits` chunks that run as separate workgroups (`flash_attn_split_f32`), then `flash_attn_combine_f32` merges the partials in fixed order. Not wired into any route: nothing selects it yet. Results differ from the unsplit kernel in the last bits (the merge reorders float adds); both match an f64 CPU reference to about 6e-8 on the tested cases. Measured on an RTX 4070 Laptop GPU: per-call latency at `h_q = 8`, `Sk = 4096` fell from about 1.03-1.10 ms to 0.55-0.65 ms (1.7-1.9x, readback included); 1.2-1.25x at 32 and 64 heads; no measured cell got slower. End-to-end decode speed was not measured. See `docs/research/split-kv-decode-measurement.md`.
+
 ## v0.20.31 - 2026-10-20
 
 ### Added
