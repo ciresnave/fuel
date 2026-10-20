@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.24 - 2026-10-20
+
+### Added
+
+- Docs/tooling only: `docs/research/judge-measurement-notes.md` records the Judge's own noise floor (84-87% winner agreement between identical runs), that measuring the CPU class before the Vulkan classes makes the latter read about 2x slower, and that the proposed early-stop does not cut wall time (timed iterations are ~12% of it); `scripts/judge_compare.py` compares two Judge reports. No library code change.
+
 ## v0.20.23 - 2026-10-20
 
 ### Added
