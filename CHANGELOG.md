@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.22 - 2026-10-20
+
+### Fixed
+
+- `fuel-tensor` NF4 loader (`load_nf4_layer`): **real bitsandbytes checkpoints now load correctly.** (1) Double-quantized NF4 (`bnb_4bit_use_double_quant=True`; U8 `absmax` plus `nested_absmax`, `nested_quant_map`, `nested_blocksize`, `nested_offset`) is decoded at load by the new `dequantize_nested_absmax` instead of being refused. (2) bitsandbytes packs the even-k code in the UPPER nibble while Fuel's fused NF4 op reads the LOWER one; the loader now swaps nibbles, so single-level NF4 checkpoints, which previously dequantized to garbage (relative RMS error 1.42 against the original weights), now land at 0.09. `nf4_from_bytes` still takes bytes in Fuel's order. `BnbQuantState` gains a `nested` field. FP4 remains refused (it needs its own codebook). Verified against a 16-row real excerpt of `unsloth/Qwen3-0.6B-unsloth-bnb-4bit` checked against the original `Qwen/Qwen3-0.6B` weights; see `fuel-tensor/tests/fixtures/bnb_double_quant/PROVENANCE.md`.
+
 ## v0.20.21 - 2026-10-20
 
 ### Fixed

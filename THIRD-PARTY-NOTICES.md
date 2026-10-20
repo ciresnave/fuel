@@ -43,3 +43,37 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## bitsandbytes
+
+- Origin: https://github.com/bitsandbytes-foundation/bitsandbytes, `LICENSE` at commit `833649043474794b8fe7a4136e0c40faf077b2e0`.
+- Used by: `fuel-tensor/src/nf4.rs` (the double-quantization absmax decode `code[q] * nested_absmax[i / nested_blocksize] + offset` and the packed-nibble order, re-implemented from `bitsandbytes/functional.py` and `bitsandbytes/backends/default/ops.py`; no source copied).
+
+```text
+MIT License
+
+Copyright (c) Facebook, Inc. and its affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Qwen3-0.6B weights (test fixture)
+
+- Origin: https://huggingface.co/Qwen/Qwen3-0.6B (Apache-2.0, Copyright 2024 Alibaba Cloud) and its bitsandbytes quantization https://huggingface.co/unsloth/Qwen3-0.6B-unsloth-bnb-4bit (apache-2.0).
+- Used by: `fuel-tensor/tests/fixtures/bnb_double_quant/` (a 16-row excerpt of one weight matrix in quantized and original form, modified as listed in that directory's `PROVENANCE.md`). The licence text is `fuel-tensor/tests/fixtures/bnb_double_quant/LICENSE-Qwen3-0.6B-Apache-2.0.txt`.
