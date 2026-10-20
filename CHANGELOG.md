@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.27 - 2026-10-20
+
+### Fixed
+
+- `fuel-graph`: `NF4_MATMUL`, `AWQ_MATMUL` and `CAUSAL_CONV1D` are now `BackwardKind::Decompose` (they were `NotDifferentiable`, so any `backward()` through them panicked with "no backward arm wired yet"). Autograd lowers them through their total `decompose`; the quantized weights stay constants, so the activation gradient (what QLoRA-style fine-tuning and Mamba training need) is defined. Finite-difference tests in `fuel-tensor` were red on `main` and are green (NF4 and AWQ activation gradient; causal conv1d input, weight and bias gradients, with and without SiLU). PM ruling 2026-10-20; the registry docs that recorded `NotDifferentiable` now say what changed and why. `QMATMUL` and `PAGED_ATTN` are unchanged.
+
 ## v0.20.26 - 2026-10-20
 
 ### Fixed
