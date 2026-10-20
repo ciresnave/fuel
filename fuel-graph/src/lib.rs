@@ -11683,6 +11683,14 @@ impl GradMap {
 
 // -------- internal helpers shared by the backward pass --------------------
 
+/// Does the registry declare this fused op's backward to be "lower it via its
+/// total `decompose`, then differentiate the primitives"?
+fn lowers_for_backward(fid: crate::registry::FusedOpId) -> bool {
+    crate::registry::default_registry()
+        .entry(fid)
+        .is_some_and(|e| e.backward == crate::registry::BackwardKind::Decompose)
+}
+
 /// The generic decompose-backward hook (Op::Scan Phase 2, C3): before the
 /// reverse walk takes its topo order, lower every reachable `Op::Scan` to
 /// `bound` primitives and decompose the two SSM `Op::Fused` recipes into their
@@ -11716,12 +11724,13 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
         }
     }
 
-    // --- Pass 1: decompose SSM Op::Fused(SELECTIVE_SCAN|SSD_CHUNK_SCAN) into Op::Scan.
+    // --- Pass 1: decompose every reachable Op::Fused whose registry entry declares
+    // `BackwardKind::Decompose` (the SSM recipes into Op::Scan, which pass 2 then
+    // unrolls; single-output recipes such as NF4/AWQ matmul and causal conv1d
+    // straight to primitives). The registry is the source of truth: an id with
+    // a hand-written backward arm in the reverse walk is `Fused(..)` or
+    // `NotDifferentiable` there, never `Decompose`.
     {
-        let ssm = [
-            crate::registry::FusedOps::SELECTIVE_SCAN,
-            crate::registry::FusedOps::SSD_CHUNK_SCAN,
-        ];
         let targets: Vec<(
             NodeId,
             crate::registry::FusedOpId,
@@ -11731,7 +11740,9 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
             crate::topo_order(&g, root)
                 .into_iter()
                 .filter_map(|id| match &g.node(id).op {
-                    Op::Fused(fid, params) if ssm.contains(fid) => Some((id, *fid, params.clone())),
+                    Op::Fused(fid, params) if lowers_for_backward(*fid) => {
+                        Some((id, *fid, params.clone()))
+                    }
                     _ => None,
                 })
                 .collect()
@@ -14607,6 +14618,37 @@ mod tests {
         let grads = loss.backward();
         let g_x = grads.get(&x);
         assert!(g_x.is_some());
+    }
+
+    /// The reverse walk has hand-written arms for some fused ids and lowers the
+    /// rest through their total `decompose` first; WHICH ids take the second path
+    /// is whatever the registry declares as `BackwardKind::Decompose`. Pin that
+    /// set so adding or flipping one is a deliberate change that also adds its
+    /// finite-difference test (SSM recipes: `fuel-tensor` scan tests;
+    /// FusedSoftmaxCrossEntropy: `fuel-training`).
+    #[test]
+    fn decompose_declared_fused_ops_are_exactly_the_tested_set() {
+        use crate::registry::{BackwardKind, FusedOps, default_registry};
+        let declared: Vec<_> = default_registry()
+            .entries_iter()
+            .filter(|e| e.backward == BackwardKind::Decompose)
+            .map(|e| e.id)
+            .collect();
+        let expected = [
+            FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
+            FusedOps::SELECTIVE_SCAN,
+            FusedOps::SSD_CHUNK_SCAN,
+        ];
+        assert_eq!(declared.len(), expected.len(), "declared: {declared:?}");
+        for id in expected {
+            assert!(declared.contains(&id), "{id:?} lost its Decompose backward");
+            assert!(
+                lowers_for_backward(id),
+                "{id:?} not lowered by the pre-pass"
+            );
+        }
+        // Control: a hand-armed op is not lowered.
+        assert!(!lowers_for_backward(FusedOps::SOFTMAX_LAST_DIM));
     }
 
     #[test]
