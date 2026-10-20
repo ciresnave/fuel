@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.21 - 2026-10-20
+
+### Fixed
+
+- `fuel-graph`: backward through `Op::GeluTanh` and `Op::GeluTanhInplace` no longer panics ("inference-only"); the gradient `0.5(1+t) + 0.5x(1-t²)·c(1+3kx²)` is built from existing primitives and checked against finite differences in `fuel-tensor` (with a retained sabotage sibling). Found by the 2026-10-19 library harvest (ROADMAP item 17).
+
 ## v0.20.20 - 2026-10-19
 
 ### Changed
