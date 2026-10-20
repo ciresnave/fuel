@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.29 - 2026-10-20
+
+### Added
+
+- Docs only: ROADMAP item 18 records that Judge profiles on a machine whose discrete GPU swings between a slow and a fast mode (2-3x, unrelated to measurement order) are not comparable run to run, with the evidence and four candidate fixes (none started).
+
 ## v0.20.27 - 2026-10-20
 
 ### Fixed
