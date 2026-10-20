@@ -95,7 +95,6 @@ fuel-examples/src/bs1770.rs	// TODO: Should this branch be marked cold?
 fuel-examples/src/mnist_train.rs	//! behaviour across platforms/backends is NOT yet established and must not be	required boundary statement: records what the convergence oracle does NOT prove
 fuel-formats/src/pickle.rs	// TODO: have a separate ordered dict and a separate default dict.
 fuel-graph/src/jit.rs	// The see_through-set skip is a follow-up; for now match `then`
-fuel-graph/src/lib.rs	// gradient is non-trivial and not yet implemented
 fuel-graph/src/lib.rs	// is the workaround if differentiable
 fuel-graph/src/lib.rs	/// Not yet wired through autograd.
 fuel-graph/src/lib.rs	/// Phase D substrate (PR-D1): the classification is recorded but not yet
@@ -111,7 +110,6 @@ fuel-graph/src/lib.rs	/// edge value). Not yet implemented.
 fuel-graph/src/lib.rs	/// hints that the executor may validate but does not yet act on.
 fuel-graph/src/lib.rs	/// mutates input 0. Not yet wired through autograd.
 fuel-graph/src/lib.rs	/// returns a clean "not yet implemented" error.
-fuel-graph/src/lib.rs	/// same formula as `Op::GeluTanh`. Not yet wired through autograd.
 fuel-graph/src/opt.rs	///    graph-rebinding workaround this fix makes unnecessary for
 fuel-graph/src/opt.rs	///   forward placement. Tracked as a follow-up TODO.
 fuel-graph/src/opt.rs	///   pass can fuse the two — tracked as a TODO alongside Phase 4's

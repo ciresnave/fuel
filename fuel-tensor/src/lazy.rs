@@ -3458,6 +3458,69 @@ mod tests {
         );
     }
 
+    /// Autograd gradient of `act(x)` at a scalar `x`, and the central finite
+    /// difference of the functional forward at the same point.
+    fn act_grad_and_fd(
+        x_v: f32,
+        act: impl Fn(&Tensor) -> Tensor,
+        fd_act: impl Fn(&Tensor) -> Tensor,
+    ) -> (f32, f32) {
+        let dev = Device::cpu();
+        let x = Tensor::from_f32(vec![x_v], Shape::from_dims(&[1]), &dev).unwrap();
+        let y = act(&x);
+        let grads = y.inner.backward();
+        let g_id = grads.get(x.graph_tensor()).expect("grad x").id();
+        let g =
+            crate::pipelined_bridge::realize_one_as::<f32>(&x.inner.graph().clone(), g_id, &dev)
+                .expect("realize")[0];
+        let fwd = |v: f32| -> f32 {
+            let t = Tensor::from_f32(vec![v], Shape::from_dims(&[1]), &dev).unwrap();
+            fd_act(&t).realize_f32()[0]
+        };
+        let h = 1e-2f32;
+        (g, (fwd(x_v + h) - fwd(x_v - h)) / (2.0 * h))
+    }
+
+    /// GeluTanh backward used to panic ("inference-only"); it must now match
+    /// the finite difference of the forward across the curve, including the
+    /// negative lobe and x = 0.
+    #[test]
+    fn gelu_tanh_backward_matches_finite_difference() {
+        for x_v in [-3.0f32, -1.5, -0.5, 0.0, 0.3, 1.0, 2.5] {
+            let (g, fd) = act_grad_and_fd(x_v, |x| x.gelu_tanh(), |x| x.gelu_tanh());
+            assert!(
+                (g - fd).abs() < 2e-3,
+                "gelu_tanh d/dx at {x_v}: autograd {g} vs FD {fd}"
+            );
+        }
+    }
+
+    /// Same gradient through the in-place op (its input is read pre-mutation).
+    #[test]
+    fn gelu_tanh_inplace_backward_matches_finite_difference() {
+        for x_v in [-3.0f32, -1.5, -0.5, 0.0, 0.3, 1.0, 2.5] {
+            let (g, fd) = act_grad_and_fd(x_v, |x| x.gelu_tanh_inplace(), |x| x.gelu_tanh());
+            assert!(
+                (g - fd).abs() < 2e-3,
+                "gelu_tanh_inplace d/dx at {x_v}: autograd {g} vs FD {fd}"
+            );
+        }
+    }
+
+    /// Retained sabotage sibling: the finite-difference harness must be able to
+    /// tell GeluTanh's derivative from a wrong one. SiLU's autograd gradient is
+    /// checked against GeluTanh's FD at a point where they differ by far more
+    /// than the tolerance above; if this ever passes the tolerance the two
+    /// gates above have gone vacuous.
+    #[test]
+    fn finite_difference_harness_rejects_a_wrong_activation_gradient() {
+        let (g_silu, fd_gelu) = act_grad_and_fd(-1.5, |x| x.silu(), |x| x.gelu_tanh());
+        assert!(
+            (g_silu - fd_gelu).abs() > 2e-2,
+            "silu grad {g_silu} too close to gelu_tanh FD {fd_gelu}: harness cannot discriminate"
+        );
+    }
+
     // Review Fix 2: the seqlen=1 SSM gates above multiply exp(dt*a) by a zero
     // initial carry, so `y` is linear in the input and the multi-step recurrent
     // gate is never FD-checked for the SSM ops. These seqlen>=2 gates carry a
