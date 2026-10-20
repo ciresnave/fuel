@@ -16,7 +16,10 @@
 //!            inserted line taken from file C (deterministic, seeded)
 //!   control  B = file C, which shares nothing with A (no gain expected)
 
+use std::path::PathBuf;
 use std::time::Instant;
+
+use clap::Parser;
 
 use fuel_inference::ngram_draft::NgramDrafter;
 use tokenizers::Tokenizer;
@@ -106,15 +109,59 @@ fn simulate(prompt: &[u32], b: &[u32], drafter: &NgramDrafter) -> Outcome {
     o
 }
 
-fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    anyhow::ensure!(
-        args.len() == 3,
-        "usage: ngram_draft_probe <tokenizer.json> <A> <C>"
+/// Drafter settings swept: (max n-gram, min n-gram, max draft length).
+const CONFIGS: [(usize, usize, usize); 5] =
+    [(4, 2, 3), (4, 2, 5), (4, 2, 10), (3, 2, 5), (2, 2, 5)];
+
+#[derive(Parser)]
+#[command(about = "Proxy measurement for n-gram drafting (ground-truth target)")]
+struct Cli {
+    /// A Hugging Face tokenizer.json
+    tokenizer: PathBuf,
+    /// File A: the prompt, and the base text the edited outputs are made from
+    prompt_file: PathBuf,
+    /// File C: unrelated text used for the inserted lines and the control
+    other_file: PathBuf,
+}
+
+fn print_header() {
+    println!(
+        "{:>10} {:>14} {:>9} {:>9} {:>12} {:>10} {:>11}",
+        "scenario",
+        "ngram(max,min,draft)",
+        "tok/step",
+        "draft%",
+        "accept/prop",
+        "us/draft",
+        "B tokens"
     );
-    let tok = Tokenizer::from_file(&args[0]).map_err(anyhow::Error::msg)?;
-    let a = std::fs::read_to_string(&args[1])?;
-    let c = std::fs::read_to_string(&args[2])?;
+}
+
+fn print_row(name: &str, cfg: (usize, usize, usize), o: &Outcome) {
+    let ratio = |num: usize, den: usize| {
+        if den == 0 {
+            0.0
+        } else {
+            num as f64 / den as f64
+        }
+    };
+    println!(
+        "{:>10} {:>14} {:>9.3} {:>8.1}% {:>12.3} {:>10.1} {:>11}",
+        name,
+        format!("({},{},{})", cfg.0, cfg.1, cfg.2),
+        ratio(o.tokens, o.steps),
+        100.0 * ratio(o.steps_with_draft, o.steps),
+        ratio(o.accepted, o.drafted),
+        o.draft_ns as f64 / o.steps as f64 / 1e3,
+        o.tokens
+    );
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let tok = Tokenizer::from_file(&cli.tokenizer).map_err(anyhow::Error::msg)?;
+    let a = std::fs::read_to_string(&cli.prompt_file)?;
+    let c = std::fs::read_to_string(&cli.other_file)?;
     let enc = |s: &str| -> anyhow::Result<Vec<u32>> {
         Ok(tok
             .encode(s, false)
@@ -130,47 +177,18 @@ fn main() -> anyhow::Result<()> {
         a_tokens.len(),
         c_lines.len()
     );
-
-    let configs = [
-        (4usize, 2usize, 3usize),
-        (4, 2, 5),
-        (4, 2, 10),
-        (3, 2, 5),
-        (2, 2, 5),
-    ];
-    println!(
-        "{:>10} {:>14} {:>9} {:>9} {:>12} {:>10} {:>11}",
-        "scenario",
-        "ngram(max,min,draft)",
-        "tok/step",
-        "draft%",
-        "accept/prop",
-        "us/draft",
-        "B tokens"
-    );
-    for (name, b_text) in [
+    print_header();
+    let scenarios = [
         ("edit-2%", edit(&a, &c_lines, 0.02, 11)),
         ("edit-10%", edit(&a, &c_lines, 0.10, 12)),
         ("edit-30%", edit(&a, &c_lines, 0.30, 13)),
         ("control", c.clone()),
-    ] {
+    ];
+    for (name, b_text) in scenarios {
         let b = enc(&b_text)?;
-        for (mx, mn, md) in configs {
-            let o = simulate(&a_tokens, &b, &NgramDrafter::new(mx, mn, md));
-            println!(
-                "{:>10} {:>14} {:>9.3} {:>8.1}% {:>12.3} {:>10.1} {:>11}",
-                name,
-                format!("({mx},{mn},{md})"),
-                o.tokens as f64 / o.steps as f64,
-                100.0 * o.steps_with_draft as f64 / o.steps as f64,
-                if o.drafted == 0 {
-                    0.0
-                } else {
-                    o.accepted as f64 / o.drafted as f64
-                },
-                o.draft_ns as f64 / o.steps as f64 / 1e3,
-                o.tokens
-            );
+        for cfg in CONFIGS {
+            let drafter = NgramDrafter::new(cfg.0, cfg.1, cfg.2);
+            print_row(name, cfg, &simulate(&a_tokens, &b, &drafter));
         }
     }
     Ok(())

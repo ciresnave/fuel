@@ -38,7 +38,7 @@ Prose: A = `docs/research/ml-library-harvest.md` (7,615 tokens), C = `docs/resea
 
 Shorter minimum n-grams are cheaper but accept less: (2,2,5) gives 2.17-2.57 tok/step on code edits against 2.33-2.87 for (4,2,5). Full 20-row tables for both corpora are reproducible with the command below.
 
-**Drafter cost.** 80-490 microseconds per call at a 7-12k-token history (the naive scan is O(history x n); (2,2,5) is the cheapest at about 80-125 us, (4,2,x) about 125-490 us). That is small beside a multi-millisecond model step at these lengths but grows linearly with context: at 100k tokens expect milliseconds per call, which would matter. A rolling index (n-gram hash to last position, updated per emitted token) removes that; it needs a stateful drafter and is the obvious follow-up, not part of this change.
+**Drafter cost.** 60-490 microseconds per call at a 7-12k-token history in the runs taken with the box otherwise quiet (four runs; the figures are timing, so they move with load: one run taken while other builds were running measured 0.9-2.4 ms for the same cells) (the naive scan is O(history x n); (2,2,5) is the cheapest at about 80-125 us, (4,2,x) about 125-490 us). That is small beside a multi-millisecond model step at these lengths but grows linearly with context: at 100k tokens expect milliseconds per call, which would matter. A rolling index (n-gram hash to last position, updated per emitted token) removes that; it needs a stateful drafter and is the obvious follow-up, not part of this change.
 
 ## Reading it
 
