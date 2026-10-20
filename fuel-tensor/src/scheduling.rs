@@ -746,6 +746,7 @@ mod tests {
             judge: Judge {
                 iterations: 3,
                 warmup: 1,
+                early_stop: None,
                 size_plan_override: Some(vec![(
                     OpKind::MatMul,
                     OpSize::MatMul {
@@ -794,6 +795,7 @@ mod tests {
         let tiny_judge = || Judge {
             iterations: 3,
             warmup: 1,
+            early_stop: None,
             size_plan_override: Some(vec![(
                 OpKind::MatMul,
                 OpSize::MatMul {
@@ -1038,6 +1040,7 @@ mod tests {
             judge: Judge {
                 iterations: 3,
                 warmup: 1,
+                early_stop: None,
                 size_plan_override: Some(vec![(
                     OpKind::MatMul,
                     OpSize::MatMul {

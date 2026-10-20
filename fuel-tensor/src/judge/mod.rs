@@ -359,6 +359,45 @@ pub const DEFAULT_ITERATIONS: u32 = 7;
 /// where the first launch includes kernel-cache population.
 pub const DEFAULT_WARMUP: u32 = 3;
 
+/// Opt-in bound on how long the Judge keeps timing a clear loser.
+///
+/// While measuring a cell, once a candidate has completed `min_iterations`
+/// timed runs and its FASTEST run so far is more than `factor` times the best
+/// median already recorded for the same cell, it stops: it cannot win, and the
+/// remaining iterations only refine a number nobody ranks first. The recorded
+/// entry keeps the median of the runs actually taken and its `iterations`
+/// field says how many that was, so a truncated measurement is never passed
+/// off as a full one. With this on, accelerator classes are measured before
+/// the CPU so the slow fallback is the one compared against a known best.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EarlyStop {
+    /// Timed runs always taken before a candidate may stop (at least 1).
+    pub min_iterations: u32,
+    /// Stop when the candidate's fastest run exceeds `factor` x the best
+    /// median recorded so far (must be > 1 to be meaningful).
+    pub factor: f64,
+}
+
+impl EarlyStop {
+    /// Tinygrad's BEAM search uses 3x; three timed runs keep one scheduler
+    /// hiccup from deciding.
+    pub const DEFAULT: EarlyStop = EarlyStop {
+        min_iterations: 3,
+        factor: 3.0,
+    };
+
+    /// Should a candidate with these timings so far stop, given the best
+    /// median recorded for the cell?
+    fn should_stop(&self, timings_ns: &[u64], best_ns: Option<u64>) -> bool {
+        let Some(best) = best_ns else { return false };
+        if (timings_ns.len() as u32) < self.min_iterations.max(1) {
+            return false;
+        }
+        let fastest = timings_ns.iter().copied().min().unwrap_or(u64::MAX);
+        (fastest as f64) > self.factor * (best as f64)
+    }
+}
+
 /// The runner. Consumes a [`ProbeReport`] (so it knows which devices
 /// exist and which equivalence classes to share across), builds the
 /// full measurement matrix, and produces a [`ProfileReport`].
@@ -387,6 +426,10 @@ pub struct Judge {
     /// fixture matches the cell's input seed (mismatch logged), the
     /// fallback consensus path is used for the cell.
     pub fixtures: Option<HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>>>,
+    /// Opt-in: stop timing a candidate that is clearly slower than the best
+    /// already recorded for its cell. `None` (the default) times every
+    /// candidate for the full `iterations`.
+    pub early_stop: Option<EarlyStop>,
 }
 
 impl Default for Judge {
@@ -396,6 +439,7 @@ impl Default for Judge {
             warmup: DEFAULT_WARMUP,
             size_plan_override: None,
             fixtures: None,
+            early_stop: None,
         }
     }
 }
@@ -772,6 +816,12 @@ impl Judge {
         // process invocations).
         let mut class_keys: Vec<_> = classes.keys().collect();
         class_keys.sort_by_key(|k| (k.backend as u32, k.device_id, k.vendor_id));
+        if self.early_stop.is_some() {
+            // Measure accelerators before the CPU: the CPU is the slow
+            // fallback on large cells, so it is the candidate worth stopping
+            // early, and it can only stop against a best that is already known.
+            class_keys.reverse();
+        }
 
         for &op in PROFILED_OPS {
             for sz in self.size_plan(op) {
@@ -815,7 +865,10 @@ impl Judge {
                     for key in &class_keys {
                         let devs = &classes[key];
                         let rep = devs[0];
-                        if let Some(run) = self.measure_on_device_capturing(op, dtype, &sz, rep) {
+                        let best_so_far = cell_runs.iter().map(|r| r.latency_ns).min();
+                        if let Some(run) =
+                            self.measure_on_device_capturing(op, dtype, &sz, rep, best_so_far)
+                        {
                             let dispatched_source = run.kernel_source.clone();
                             // The dispatched kernel's FULL identity — the tag
                             // alone no longer picks a sibling out (see
@@ -1111,6 +1164,7 @@ impl Judge {
         dtype: DType,
         size: &OpSize,
         device: &DeviceDescriptor,
+        best_so_far_ns: Option<u64>,
     ) -> Option<CellRun> {
         // Native-implementation gate (executor-unification Session 2):
         // the bridge realizer dispatches through the picker, whose
@@ -1163,7 +1217,8 @@ impl Judge {
             }
         };
 
-        let cell = self.time_op_capturing(op, dtype, size, device, realizer.as_mut());
+        let cell =
+            self.time_op_capturing(op, dtype, size, device, realizer.as_mut(), best_so_far_ns);
         drop(realizer);
         cell
     }
@@ -1188,6 +1243,7 @@ impl Judge {
         size: &OpSize,
         device: &DeviceDescriptor,
         realizer: &mut dyn crate::factories::Realizer,
+        best_so_far_ns: Option<u64>,
     ) -> Option<CellRun> {
         let tensor =
             match std::panic::catch_unwind(AssertUnwindSafe(|| build_input_graph(op, dtype, size)))
@@ -1259,7 +1315,13 @@ impl Judge {
             if captured_output.is_none() {
                 captured_output = Some(out);
             }
+            if let Some(es) = self.early_stop
+                && es.should_stop(&timings_ns, best_so_far_ns)
+            {
+                break;
+            }
         }
+        let iterations_taken = timings_ns.len() as u32;
         timings_ns.sort_unstable();
         let median = timings_ns[timings_ns.len() / 2];
         let output = captured_output?;
@@ -1300,7 +1362,7 @@ impl Judge {
             device_index: device.device_index,
             output,
             latency_ns: median,
-            iterations: self.iterations,
+            iterations: iterations_taken,
             kernel_source,
             kernel_revision_hash,
         })
@@ -2562,6 +2624,7 @@ mod tests {
             warmup: 0,
             size_plan_override: None,
             fixtures: None,
+            early_stop: None,
         };
         let device = DeviceDescriptor {
             backend: BackendId::Cpu,
@@ -2585,7 +2648,7 @@ mod tests {
             rev: Some(0x00AB_CDEF),
         };
         let run = judge
-            .time_op_capturing(op, DType::F32, &size, &device, &mut reporting)
+            .time_op_capturing(op, DType::F32, &size, &device, &mut reporting, None)
             .expect("attributed dispatch produces a CellRun");
         assert_eq!(run.kernel_source, "stub-sibling");
         assert_eq!(run.kernel_revision_hash, 0x00AB_CDEF);
@@ -2598,7 +2661,7 @@ mod tests {
         };
         assert!(
             judge
-                .time_op_capturing(op, DType::F32, &size, &device, &mut silent)
+                .time_op_capturing(op, DType::F32, &size, &device, &mut silent, None)
                 .is_none(),
             "unattributed dispatch must produce NO row, not a guessed/fabricated one",
         );
@@ -2630,6 +2693,7 @@ mod tests {
                 (OpKind::AddElementwise, OpSize::Elementwise(1 << 10)),
             ]),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
         assert_eq!(report.version, PROFILE_REPORT_VERSION);
@@ -2693,6 +2757,7 @@ mod tests {
             warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
         for &op in &unary {
@@ -2747,6 +2812,7 @@ mod tests {
             warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
         for &op in &binary {
@@ -2787,6 +2853,7 @@ mod tests {
             warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
         for &op in &reduce {
@@ -2824,6 +2891,7 @@ mod tests {
             warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
         for &op in &reduce_to {
@@ -2863,6 +2931,7 @@ mod tests {
             warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
         for &op in &scalar {
@@ -3015,6 +3084,7 @@ mod tests {
                 ),
             ]),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
         // v4 aspect keys — the same `matmul(m,n,k)` the producer's
@@ -3074,6 +3144,7 @@ mod tests {
                 },
             )]),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
 
@@ -3160,6 +3231,7 @@ mod tests {
                 ),
             ]),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
 
@@ -3275,6 +3347,7 @@ mod tests {
             warmup: 1,
             size_plan_override: Some(vec![(OpKind::FlashAttn, small), (OpKind::FlashAttn, cap)]),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
 
@@ -3368,6 +3441,7 @@ mod tests {
                 (OpKind::Affine, OpSize::Elementwise(1 << 8)),
             ]),
             fixtures: None,
+            early_stop: None,
         };
         let report = judge.run(&probe);
         let table = DispatchTable::build(&report);
@@ -3689,6 +3763,7 @@ mod tests {
                 OpSize::Elementwise(elem_count),
             )]),
             fixtures: Some(map),
+            early_stop: None,
         };
         let report = judge.run(&probe);
         // Dtype-axis note (2026-07-04): the planted fixture is keyed
@@ -3937,5 +4012,56 @@ mod tests {
         };
         let got = judge.lookup_fixture(op, dtype, sc, elem_count, 2 * elem_count);
         assert!(got.is_some(), "triple-agreement fixture should be returned");
+    }
+
+    // ---- EarlyStop (ROADMAP item 17, H15) ----
+
+    #[test]
+    fn early_stop_needs_a_best_to_compare_against() {
+        let es = EarlyStop::DEFAULT;
+        // Nothing recorded yet for the cell: never stop, however slow.
+        assert!(!es.should_stop(&[1_000_000, 1_000_000, 1_000_000], None));
+    }
+
+    #[test]
+    fn early_stop_waits_for_min_iterations() {
+        let es = EarlyStop::DEFAULT; // 3 runs, 3x
+        let slow = 10_000u64; // 10x the best below
+        assert!(!es.should_stop(&[slow], Some(1_000)));
+        assert!(!es.should_stop(&[slow, slow], Some(1_000)));
+        assert!(es.should_stop(&[slow, slow, slow], Some(1_000)));
+    }
+
+    #[test]
+    fn early_stop_keys_on_the_fastest_run_not_the_median() {
+        // One fast run proves the candidate can approach the best, so it keeps
+        // going even though the other runs are slow.
+        let es = EarlyStop::DEFAULT;
+        assert!(!es.should_stop(&[10_000, 1_500, 10_000], Some(1_000)));
+        // Every run is over 3x best: stop.
+        assert!(es.should_stop(&[10_000, 3_500, 10_000], Some(1_000)));
+    }
+
+    #[test]
+    fn early_stop_never_stops_a_candidate_within_the_factor() {
+        let es = EarlyStop::DEFAULT;
+        assert!(!es.should_stop(&[2_900, 2_900, 2_900], Some(1_000)));
+        assert!(!es.should_stop(&[3_000, 3_000, 3_000], Some(1_000))); // exactly 3x is not "over"
+    }
+
+    /// Retained sabotage sibling: a candidate that is a CLEAR WINNER over the
+    /// recorded best must never be stopped, for any sane configuration; the
+    /// guard against truncating the eventual winner.
+    #[test]
+    fn early_stop_never_stops_a_candidate_faster_than_the_best() {
+        for es in [
+            EarlyStop::DEFAULT,
+            EarlyStop {
+                min_iterations: 1,
+                factor: 1.01,
+            },
+        ] {
+            assert!(!es.should_stop(&[500, 500, 500, 500], Some(1_000)));
+        }
     }
 }

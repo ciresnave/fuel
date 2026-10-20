@@ -8,13 +8,18 @@
 //!     cargo run --release --bin judge
 //!     cargo run --release --bin judge --features cuda
 //!     cargo run --release --bin judge --features "cuda vulkan" -- /tmp/judge.json
+//!     cargo run --release --bin judge -- --early-stop /tmp/judge.json
+//!
+//! `--early-stop` stops timing a candidate once it has run 3 times and its
+//! fastest run is over 3x the best recorded for the cell (the recorded entry's
+//! `iterations` says how many runs it took). Off by default.
 //!
 //! The table's "latency" column is the median of `iterations` runs
 //! (default 7) after `warmup` throwaway runs (default 3). "rel err"
 //! is max element-wise relative error vs the reference backend's
 //! output on the same input.
 
-use fuel::judge::{Criterion, DispatchTable};
+use fuel::judge::{Criterion, DispatchTable, EarlyStop};
 use fuel::judge::{Judge, ProfileEntry};
 use fuel::probe::ProbeReport;
 
@@ -29,7 +34,29 @@ fn main() {
     eprintln!();
 
     eprintln!("Running Judge (this may take a minute)...");
-    let judge = Judge::default();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--early-stop-factor=F` turns early stop on with factor F (3.0 is the
+    // default of plain `--early-stop`). A huge F keeps early stop's measurement
+    // ORDER (accelerators before the CPU) without ever stopping a candidate, which
+    // separates the two effects when comparing runs.
+    let factor = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--early-stop-factor="))
+        .map(|f| f.parse::<f64>().expect("--early-stop-factor=<number>"));
+    let early_stop = match factor {
+        Some(factor) => Some(EarlyStop {
+            factor,
+            ..EarlyStop::DEFAULT
+        }),
+        None => args
+            .iter()
+            .any(|a| a == "--early-stop")
+            .then_some(EarlyStop::DEFAULT),
+    };
+    let judge = Judge {
+        early_stop,
+        ..Judge::default()
+    };
     let t0 = std::time::Instant::now();
     let report = judge.run(&probe);
     eprintln!(
@@ -43,8 +70,8 @@ fn main() {
     println!();
     print_dispatch_summary(&report);
 
-    if let Some(path) = std::env::args().nth(1) {
-        report.save(std::path::Path::new(&path)).expect("save");
+    if let Some(path) = args.iter().find(|a| !a.starts_with("--")) {
+        report.save(std::path::Path::new(path)).expect("save");
         eprintln!();
         eprintln!("Wrote profile report to {path}");
     } else if let Some(default) = fuel::judge::default_report_path() {

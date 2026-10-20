@@ -171,6 +171,7 @@ fn capture_fixture_judge_roundtrip_matches_cleanly() {
     let judge_for_run = Judge {
         iterations: 1,
         warmup: 0,
+        early_stop: None,
         size_plan_override: Some(vec![(op, OpSize::Elementwise(elem_count))]),
         fixtures: loaded_judge.fixtures.clone(),
     };
