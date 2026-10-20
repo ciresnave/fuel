@@ -36,9 +36,42 @@ use fuel_memory::Storage;
 use crate::Device;
 use crate::decode_shape::KvAllocId;
 use crate::lazy::Tensor;
+use fuel_dispatch::residency::ResidencyReport;
 use fuel_kv_pool::{
-    Externalized, KvAllocError, KvBlockPool, KvGeometry, PhysBlockId, SessionHandle,
+    Externalized, KvAllocError, KvBlockPool, KvBudget, KvGeometry, PhysBlockId, SessionHandle,
+    non_kv_resident_bytes,
 };
+
+/// Size a pool for a device from a residency analysis of the decode graph
+/// (ROADMAP item 17, row H19).
+///
+/// `report` is `ResidencyPlanner::analyze` over the decode graph built with a
+/// small **probe** pool of geometry `probe` as its leaves; the probe pool's
+/// bytes are removed from the peak so only weights, activations and workspace
+/// count as non-KV residency. `template` supplies the real pool's shape (its
+/// `num_blocks` is ignored); `device_bytes` is what the backend reports for the
+/// device and `utilization` the consumer's entitlement in `(0, 1]`.
+///
+/// Returns `template` with the largest `num_blocks` that fits, or an `Err`
+/// naming why none does. The analysis counts node OUTPUT bytes only, so
+/// backend-internal workspace is not included (ROADMAP item 17, H8): keep
+/// `utilization` below 1 to leave room for it.
+pub fn fit_geometry_from_residency(
+    template: KvGeometry,
+    report: &ResidencyReport,
+    probe: &KvGeometry,
+    device_bytes: u64,
+    utilization: f64,
+) -> Result<KvGeometry> {
+    let budget = KvBudget {
+        device_bytes,
+        utilization,
+        non_kv_resident_bytes: non_kv_resident_bytes(report.peak_bytes as u64, probe),
+    };
+    template
+        .fit_to_budget(&budget)
+        .map_err(|e| msg_err(e.to_string()))
+}
 
 /// Which of a layer's two pool buffers a block operation targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2284,5 +2317,85 @@ mod tests {
         pool.core_mut().evict(s).unwrap(); // slots now externalized
         let err = pool.materialize_block_table(&[s]);
         assert_eq!(err, Err(KvAllocError::SessionNotResident { slot: 0 }));
+    }
+
+    /// A decode-shaped graph for sizing tests: a weights leaf plus a probe pool
+    /// (`2 * n_layers` K/V leaves of `probe_blocks` blocks) each read by one op.
+    /// Returns the residency report and the probe geometry.
+    fn probe_report(weight_elems: usize, probe_blocks: usize) -> (ResidencyReport, KvGeometry) {
+        use fuel_dispatch::residency::ResidencyPlanner;
+        let probe = geom(/*n_layers*/ 2, probe_blocks, /*block_size*/ 4);
+        let mut g = Graph::new();
+        let mut push = |op: Op, inputs: Vec<NodeId>, dims: &[usize]| {
+            g.push(Node {
+                op,
+                inputs,
+                shape: Shape::from_dims(dims),
+                dtype: DType::F32,
+            })
+        };
+        let w = push(Op::Const, vec![], &[weight_elems]);
+        let mut roots = vec![push(Op::Neg, vec![w], &[weight_elems])];
+        for _ in 0..(2 * probe.n_layers) {
+            let dims = [
+                probe_blocks,
+                probe.block_size,
+                probe.n_kv_heads,
+                probe.head_dim,
+            ];
+            let leaf = push(Op::Const, vec![], &dims);
+            roots.push(push(Op::Neg, vec![leaf], &dims));
+        }
+        (ResidencyPlanner::analyze(&g, &roots), probe)
+    }
+
+    /// The sized geometry is exactly what the arithmetic says: floor of
+    /// (usable - (peak - probe pool)) / block bytes, and the pool it describes
+    /// really allocates with its free list at that size.
+    #[test]
+    fn fit_geometry_from_residency_matches_the_arithmetic_and_allocates() {
+        let (report, probe) = probe_report(/*weight_elems*/ 4096, /*probe_blocks*/ 2);
+        let non_kv = report.peak_bytes as u64 - probe.block_bytes() * probe.num_blocks as u64;
+        let template = geom(2, 1, 4);
+        let usable = non_kv + 10 * template.block_bytes() + 123; // room for 10 blocks + slack
+        let g = fit_geometry_from_residency(template, &report, &probe, usable, 1.0).unwrap();
+        assert_eq!(
+            g.num_blocks, 10,
+            "10 whole blocks fit, the 123 B slack is not a block"
+        );
+        let pool = DeviceKvPool::new(g, DType::F32, &Device::cpu()).unwrap();
+        assert_eq!(pool.core().free_blocks(), 10);
+    }
+
+    /// Retained sabotage sibling: forgetting to remove the probe pool from the
+    /// peak double-counts it and under-sizes the pool. The gate above must be
+    /// able to tell, so assert the double-counted answer is strictly smaller.
+    #[test]
+    fn forgetting_the_probe_pool_undersizes_the_pool() {
+        let (report, probe) = probe_report(4096, 2);
+        let template = geom(2, 1, 4);
+        let usable =
+            (report.peak_bytes as u64 - probe.block_bytes() * 2) + 10 * template.block_bytes();
+        let right = fit_geometry_from_residency(template, &report, &probe, usable, 1.0).unwrap();
+        let naive = template
+            .fit_to_budget(&KvBudget {
+                device_bytes: usable,
+                utilization: 1.0,
+                non_kv_resident_bytes: report.peak_bytes as u64,
+            })
+            .unwrap();
+        assert!(
+            naive.num_blocks < right.num_blocks,
+            "{naive:?} vs {right:?}"
+        );
+    }
+
+    /// A device too small for the graph's own residency is a typed error, not a
+    /// zero-block pool.
+    #[test]
+    fn fit_geometry_from_residency_errors_when_the_graph_alone_does_not_fit() {
+        let (report, probe) = probe_report(1 << 20, 2);
+        let r = fit_geometry_from_residency(geom(2, 1, 4), &report, &probe, 1024, 1.0);
+        assert!(r.is_err());
     }
 }
