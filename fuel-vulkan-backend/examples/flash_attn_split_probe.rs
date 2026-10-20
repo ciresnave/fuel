@@ -18,11 +18,13 @@
 //! hand under the machine-wide mutex, and the ignore ceiling stays where it is.
 //!
 //! ```sh
-//! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release //!     -p fuel-vulkan-backend --example flash_attn_split_probe -- check
-//! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release //!     -p fuel-vulkan-backend --example flash_attn_split_probe -- latency
+//! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release \
+//!     -p fuel-vulkan-backend --example flash_attn_split_probe -- check
+//! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release \
+//!     -p fuel-vulkan-backend --example flash_attn_split_probe -- latency
 //! ```
 
-use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
+use fuel_vulkan_backend::{DeviceSelection, VulkanBackend, VulkanStorageBytes};
 use std::time::Instant;
 
 fn backend() -> VulkanBackend {
@@ -30,10 +32,12 @@ fn backend() -> VulkanBackend {
         .expect("a Vulkan device (PreferDiscrete)")
 }
 
+/// The only argument is a fixed subcommand name matched against two literals;
+/// it is never used as a path, command or query.
 fn main() {
     match std::env::args().nth(1).as_deref() {
-        Some("check") => split_matches_cpu_reference(),
-        Some("latency") => decode_latency_by_shape(),
+        Some("check") => check(),
+        Some("latency") => latency(),
         _ => {
             eprintln!("usage: flash_attn_split_probe <check|latency>");
             std::process::exit(2);
@@ -63,175 +67,304 @@ fn fill(n: usize, seed: u32) -> Vec<f32> {
         .collect()
 }
 
-/// f64 reference: softmax(q k^T * scale [+ alibi * (kj - qi)] [causal]) v.
-fn reference(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
-    alibi: Option<&[f32]>,
-    (hq, hkv, sq, sk, d): (usize, usize, usize, usize, usize),
-    scale: f32,
+/// One attention problem. `splits` applies to the split kernel only.
+#[derive(Clone, Copy)]
+struct Case {
+    hq: usize,
+    hkv: usize,
+    sq: usize,
+    sk: usize,
+    d: usize,
     causal: bool,
-) -> Vec<f32> {
-    let mut out = vec![0f32; hq * sq * d];
-    for h in 0..hq {
-        let kvh = h / (hq / hkv);
-        for qi in 0..sq {
-            let qrow = &q[(h * sq + qi) * d..][..d];
-            let mut sc = vec![f64::NEG_INFINITY; sk];
-            for (kj, slot) in sc.iter_mut().enumerate() {
-                if causal && kj > qi {
-                    continue;
-                }
-                let krow = &k[(kvh * sk + kj) * d..][..d];
-                let dot: f64 = (0..d).map(|x| qrow[x] as f64 * krow[x] as f64).sum();
-                let mut s = dot * scale as f64;
-                if let Some(a) = alibi {
-                    s += a[h] as f64 * (kj as f64 - qi as f64);
-                }
-                *slot = s;
+    alibi: bool,
+    splits: usize,
+}
+
+impl Case {
+    fn scale(&self) -> f32 {
+        1.0 / (self.d as f32).sqrt()
+    }
+}
+
+/// Host-side inputs for a [`Case`].
+struct Inputs {
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    alibi: Vec<f32>,
+}
+
+impl Inputs {
+    fn new(c: &Case) -> Self {
+        Self {
+            q: fill(c.hq * c.sq * c.d, 1),
+            k: fill(c.hkv * c.sk * c.d, 2),
+            v: fill(c.hkv * c.sk * c.d, 3),
+            alibi: fill(c.hq, 4).iter().map(|x| x * 0.02).collect(),
+        }
+    }
+}
+
+/// Scaled, masked scores of one query row against every key (f64).
+fn score_row(inp: &Inputs, c: &Case, h: usize, qi: usize) -> Vec<f64> {
+    let kvh = h / (c.hq / c.hkv);
+    let qrow = &inp.q[(h * c.sq + qi) * c.d..][..c.d];
+    (0..c.sk)
+        .map(|kj| {
+            if c.causal && kj > qi {
+                return f64::NEG_INFINITY;
             }
+            let krow = &inp.k[(kvh * c.sk + kj) * c.d..][..c.d];
+            let dot: f64 = (0..c.d).map(|x| qrow[x] as f64 * krow[x] as f64).sum();
+            let bias = if c.alibi {
+                inp.alibi[h] as f64 * (kj as f64 - qi as f64)
+            } else {
+                0.0
+            };
+            dot * c.scale() as f64 + bias
+        })
+        .collect()
+}
+
+/// f64 reference: softmax(q k^T * scale [+ alibi * (kj - qi)] [causal]) v.
+fn reference(inp: &Inputs, c: &Case) -> Vec<f32> {
+    let mut out = vec![0f32; c.hq * c.sq * c.d];
+    for h in 0..c.hq {
+        let kvh = h / (c.hq / c.hkv);
+        for qi in 0..c.sq {
+            let sc = score_row(inp, c, h, qi);
             let m = sc.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
             if m == f64::NEG_INFINITY {
                 continue;
             }
             let w: Vec<f64> = sc.iter().map(|s| (s - m).exp()).collect();
             let l: f64 = w.iter().sum();
-            for x in 0..d {
-                let acc: f64 = (0..sk)
-                    .map(|kj| w[kj] * v[(kvh * sk + kj) * d + x] as f64)
+            for x in 0..c.d {
+                let acc: f64 = (0..c.sk)
+                    .map(|kj| w[kj] * inp.v[(kvh * c.sk + kj) * c.d + x] as f64)
                     .sum();
-                out[(h * sq + qi) * d + x] = (acc / l) as f32;
+                out[(h * c.sq + qi) * c.d + x] = (acc / l) as f32;
             }
         }
     }
     out
 }
 
-fn split_matches_cpu_reference() {
+/// Device buffers for a [`Case`].
+struct Gpu {
+    q: VulkanStorageBytes,
+    k: VulkanStorageBytes,
+    v: VulkanStorageBytes,
+    alibi: VulkanStorageBytes,
+    out: VulkanStorageBytes,
+}
+
+impl Gpu {
+    fn upload(be: &VulkanBackend, c: &Case, inp: &Inputs) -> Self {
+        let up = |x: &[f32]| be.upload_bytes(&bytes_of(x)).unwrap();
+        Self {
+            q: up(&inp.q),
+            k: up(&inp.k),
+            v: up(&inp.v),
+            alibi: up(&inp.alibi),
+            out: be.alloc_bytes(c.hq * c.sq * c.d * 4).unwrap(),
+        }
+    }
+
+    /// Run the unsplit kernel (`splits == 0`) or the split kernel.
+    fn run(&mut self, be: &VulkanBackend, c: &Case, splits: usize) {
+        let alibi = c.alibi.then_some(&self.alibi);
+        let (b, scale) = (1, c.scale());
+        if splits == 0 {
+            be.flash_attn_f32_bytes(
+                &self.q,
+                &self.k,
+                &self.v,
+                alibi,
+                &mut self.out,
+                b,
+                c.hq,
+                c.hkv,
+                c.sq,
+                c.sk,
+                c.d,
+                scale,
+                c.causal,
+            )
+        } else {
+            be.flash_attn_f32_split_bytes(
+                &self.q,
+                &self.k,
+                &self.v,
+                alibi,
+                &mut self.out,
+                b,
+                c.hq,
+                c.hkv,
+                c.sq,
+                c.sk,
+                c.d,
+                scale,
+                c.causal,
+                splits,
+            )
+        }
+        .unwrap();
+    }
+
+    fn read(&self, be: &VulkanBackend) -> Vec<f32> {
+        floats_of(&be.download_bytes(&self.out).unwrap())
+    }
+}
+
+fn max_abs_err(got: &[f32], want: &[f32]) -> f32 {
+    got.iter()
+        .zip(want)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max)
+}
+
+const CASE_DEFAULT: Case = Case {
+    hq: 8,
+    hkv: 8,
+    sq: 1,
+    sk: 4096,
+    d: 128,
+    causal: false,
+    alibi: false,
+    splits: 4,
+};
+
+fn check() {
     let be = backend();
-    // (hq, hkv, sq, sk, d, causal, alibi, splits)
     let cases = [
-        (
-            8usize, 8usize, 1usize, 4096usize, 128usize, false, false, 4usize,
-        ),
-        (32, 8, 1, 3000, 128, false, false, 8),
-        (8, 4, 1, 1000, 64, false, true, 3),
-        (4, 2, 16, 2048, 64, true, false, 2),
-        (4, 2, 16, 2048, 64, true, true, 16),
-        (8, 8, 1, 700, 128, false, false, 1),
+        CASE_DEFAULT,
+        Case {
+            hq: 32,
+            hkv: 8,
+            sk: 3000,
+            splits: 8,
+            ..CASE_DEFAULT
+        },
+        Case {
+            hkv: 4,
+            sk: 1000,
+            d: 64,
+            alibi: true,
+            splits: 3,
+            ..CASE_DEFAULT
+        },
+        Case {
+            hq: 4,
+            hkv: 2,
+            sq: 16,
+            sk: 2048,
+            d: 64,
+            causal: true,
+            splits: 2,
+            ..CASE_DEFAULT
+        },
+        Case {
+            hq: 4,
+            hkv: 2,
+            sq: 16,
+            sk: 2048,
+            d: 64,
+            causal: true,
+            alibi: true,
+            splits: 16,
+        },
+        Case {
+            sk: 700,
+            splits: 1,
+            ..CASE_DEFAULT
+        },
     ];
-    for (hq, hkv, sq, sk, d, causal, use_alibi, splits) in cases {
-        let q = fill(hq * sq * d, 1);
-        let k = fill(hkv * sk * d, 2);
-        let v = fill(hkv * sk * d, 3);
-        let al = fill(hq, 4).iter().map(|x| x * 0.02).collect::<Vec<_>>();
-        let scale = 1.0 / (d as f32).sqrt();
-        let want = reference(
-            &q,
-            &k,
-            &v,
-            use_alibi.then_some(&al[..]),
-            (hq, hkv, sq, sk, d),
-            scale,
-            causal,
-        );
-        let qb = be.upload_bytes(&bytes_of(&q)).unwrap();
-        let kb = be.upload_bytes(&bytes_of(&k)).unwrap();
-        let vb = be.upload_bytes(&bytes_of(&v)).unwrap();
-        let ab = be.upload_bytes(&bytes_of(&al)).unwrap();
-        let alibi = use_alibi.then_some(&ab);
-        let mut o1 = be.alloc_bytes(hq * sq * d * 4).unwrap();
-        let mut o2 = be.alloc_bytes(hq * sq * d * 4).unwrap();
-        be.flash_attn_f32_bytes(
-            &qb, &kb, &vb, alibi, &mut o1, 1, hq, hkv, sq, sk, d, scale, causal,
-        )
-        .unwrap();
-        be.flash_attn_f32_split_bytes(
-            &qb, &kb, &vb, alibi, &mut o2, 1, hq, hkv, sq, sk, d, scale, causal, splits,
-        )
-        .unwrap();
-        let g1 = floats_of(&be.download_bytes(&o1).unwrap());
-        let g2 = floats_of(&be.download_bytes(&o2).unwrap());
-        let err = |g: &[f32]| {
-            g.iter()
-                .zip(&want)
-                .map(|(a, b)| (a - b).abs())
-                .fold(0f32, f32::max)
-        };
-        let (e_unsplit, e_split) = (err(&g1), err(&g2));
+    for c in cases {
+        let inp = Inputs::new(&c);
+        let want = reference(&inp, &c);
+        let mut gpu = Gpu::upload(&be, &c, &inp);
+        gpu.run(&be, &c, 0);
+        let e_unsplit = max_abs_err(&gpu.read(&be), &want);
+        gpu.run(&be, &c, c.splits);
+        let e_split = max_abs_err(&gpu.read(&be), &want);
         println!(
-            "hq={hq} hkv={hkv} sq={sq} sk={sk} d={d} causal={causal} alibi={use_alibi} \
-             splits={splits}: max|err| unsplit={e_unsplit:.2e} split={e_split:.2e}"
+            "hq={} hkv={} sq={} sk={} d={} causal={} alibi={} splits={}: \
+             max|err| unsplit={e_unsplit:.2e} split={e_split:.2e}",
+            c.hq, c.hkv, c.sq, c.sk, c.d, c.causal, c.alibi, c.splits
         );
         assert!(
             e_unsplit < 1e-4,
-            "unsplit kernel is off its own reference: {e_unsplit}"
+            "unsplit kernel off its reference: {e_unsplit}"
         );
         assert!(e_split < 1e-4, "split kernel off the reference: {e_split}");
     }
 }
 
-fn decode_latency_by_shape() {
+/// 0 = the unsplit kernel.
+const VARIANTS: [usize; 6] = [0, 2, 4, 8, 16, 32];
+
+fn variant_name(s: usize) -> String {
+    if s == 0 {
+        "unsplit".to_string()
+    } else {
+        format!("split{s}")
+    }
+}
+
+/// Median wall time in us of `run(variant)` per usable variant, interleaved.
+fn median_times(be: &VulkanBackend, c: &Case, gpu: &mut Gpu, usable: &[usize]) -> Vec<f64> {
+    let mut one = |s: usize| {
+        let t0 = Instant::now();
+        gpu.run(be, c, s);
+        gpu.read(be);
+        t0.elapsed().as_secs_f64() * 1e6
+    };
+    for &s in usable {
+        for _ in 0..5 {
+            one(s);
+        }
+    }
+    let mut times: Vec<Vec<f64>> = vec![Vec::new(); usable.len()];
+    for _ in 0..60 {
+        for (i, &s) in usable.iter().enumerate() {
+            times[i].push(one(s));
+        }
+    }
+    times
+        .into_iter()
+        .map(|mut t| {
+            t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            t[t.len() / 2]
+        })
+        .collect()
+}
+
+fn latency() {
     let be = backend();
-    let d = 128usize;
-    let variants: [usize; 6] = [0, 2, 4, 8, 16, 32]; // 0 = unsplit kernel
     print!("{:>4} {:>4} {:>6}", "hq", "hkv", "sk");
-    for s in variants {
-        let name = if s == 0 {
-            "unsplit".to_string()
-        } else {
-            format!("split{s}")
-        };
-        print!(" {name:>9}");
+    for s in VARIANTS {
+        print!(" {:>9}", variant_name(s));
     }
     println!("   (median us per call incl. readback)");
     for &(hq, hkv) in &[(8usize, 8usize), (32, 8), (64, 8)] {
         for &sk in &[1024usize, 2048, 4096] {
-            let q = be.upload_bytes(&bytes_of(&fill(hq * d, 1))).unwrap();
-            let k = be.upload_bytes(&bytes_of(&fill(hkv * sk * d, 2))).unwrap();
-            let v = be.upload_bytes(&bytes_of(&fill(hkv * sk * d, 3))).unwrap();
-            let mut o = be.alloc_bytes(hq * d * 4).unwrap();
-            let scale = 1.0 / (d as f32).sqrt();
-            let mut run = |splits: usize| {
-                let t0 = Instant::now();
-                if splits == 0 {
-                    be.flash_attn_f32_bytes(
-                        &q, &k, &v, None, &mut o, 1, hq, hkv, 1, sk, d, scale, false,
-                    )
-                } else {
-                    be.flash_attn_f32_split_bytes(
-                        &q, &k, &v, None, &mut o, 1, hq, hkv, 1, sk, d, scale, false, splits,
-                    )
-                }
-                .unwrap();
-                be.download_bytes(&o).unwrap();
-                t0.elapsed().as_secs_f64() * 1e6
+            let c = Case {
+                hq,
+                hkv,
+                sk,
+                ..CASE_DEFAULT
             };
-            let usable: Vec<usize> = variants
-                .iter()
-                .copied()
+            let mut gpu = Gpu::upload(&be, &c, &Inputs::new(&c));
+            let usable: Vec<usize> = VARIANTS
+                .into_iter()
                 .filter(|&s| s == 0 || sk.div_ceil(s) <= 1024)
                 .collect();
-            for &s in &usable {
-                for _ in 0..5 {
-                    run(s);
-                }
-            }
-            let mut times: Vec<Vec<f64>> = vec![Vec::new(); usable.len()];
-            for _ in 0..60 {
-                for (i, &s) in usable.iter().enumerate() {
-                    times[i].push(run(s));
-                }
-            }
+            let medians = median_times(&be, &c, &mut gpu, &usable);
             print!("{hq:>4} {hkv:>4} {sk:>6}");
-            for s in variants {
+            for s in VARIANTS {
                 match usable.iter().position(|&u| u == s) {
-                    Some(i) => {
-                        let t = &mut times[i];
-                        t.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                        print!(" {:>9.1}", t[t.len() / 2]);
-                    }
+                    Some(i) => print!(" {:>9.1}", medians[i]),
                     None => print!(" {:>9}", "-"),
                 }
             }
