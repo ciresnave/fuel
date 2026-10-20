@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.23 - 2026-10-20
+
+### Added
+
+- `fuel-kv-pool`: `KvBudget`, `KvGeometry::fit_to_budget` / `block_bytes`, `non_kv_resident_bytes` and `KvSizingError` — size a pool to the most whole blocks a device budget allows instead of guessing `num_blocks` (ROADMAP item 17, H19). `fuel-tensor`: `kv_block_pool_device::fit_geometry_from_residency` feeds it from a `ResidencyPlanner` report of the decode graph built with a small probe pool. Output bytes only: backend workspace is not counted (H8), so keep `utilization` below 1.
+
 ## v0.20.22 - 2026-10-20
 
 ### Fixed

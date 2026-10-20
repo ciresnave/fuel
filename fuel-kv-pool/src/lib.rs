@@ -107,6 +107,9 @@ pub enum StateKind {
     // increment; enumerated here so "what's covered" is never implicit.
 }
 
+mod sizing;
+pub use sizing::{KvBudget, KvSizingError, non_kv_resident_bytes};
+
 /// KV pool geometry — the model-agnostic shape the pool manages. It speaks KV
 /// block geometry and **never a model**, which is what keeps the eventual
 /// `fuel-inference` move cheap.
