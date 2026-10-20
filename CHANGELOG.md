@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.33 - 2026-10-20
+
+### Fixed
+
+- Docs only: corrects the H24 n-gram drafter proxy note (`docs/research/ngram-draft-probe.md`), ROADMAP item 17 and the v0.20.30 entry below. The note said the 1.3-accepted-tokens-per-step hypothesis was "met by a wide margin" by comparing 1.3 to tokens per step, which includes the target's own token. Accepted per step is one lower: prose edits 1.7-6.3, code edits 1.1-2.4 (code edit-10% and edit-30% at draft 3 are 1.24 and 1.08, under 1.3), unrelated control 0.2-0.4. Still a ground-truth proxy upper bound, not a real-model result.
+
 ## v0.20.32 - 2026-10-20
 
 ### Added
@@ -17,7 +23,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Added
 
-- `fuel-inference`: `ngram_draft::NgramDrafter` (longest-recent-n-gram "prompt lookup" drafting, no second model) and `one_hot_logprobs` (the point-mass draft distribution the existing `speculative::verify_draft` needs). Policy-layer, additive, not yet wired into a decode loop. A proxy measurement (ground-truth target, so an upper bound) is in `docs/research/ngram-draft-probe.md` with the `fuel-examples` `ngram_draft_probe` example that produced it (adds `fuel-inference` as a dependency of `fuel-examples`). ROADMAP item 17, H24.
+- `fuel-inference`: `ngram_draft::NgramDrafter` (longest-recent-n-gram "prompt lookup" drafting, no second model) and `one_hot_logprobs` (the point-mass draft distribution the existing `speculative::verify_draft` needs). Policy-layer, additive, not yet wired into a decode loop. A proxy measurement (ground-truth target, so an upper bound; see the v0.20.33 correction of its hypothesis reading) is in `docs/research/ngram-draft-probe.md` with the `fuel-examples` `ngram_draft_probe` example that produced it (adds `fuel-inference` as a dependency of `fuel-examples`). ROADMAP item 17, H24.
 
 ## v0.20.29 - 2026-10-20
 
