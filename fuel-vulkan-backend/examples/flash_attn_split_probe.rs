@@ -7,21 +7,39 @@
 //! cuts the key range into chunks that run as separate workgroups and merges
 //! them in fixed order.
 //!
-//! * `split_matches_cpu_reference` checks both kernels against an f64 CPU
-//!   reference (max abs error), including causal and ALiBi cases.
-//! * `decode_latency_by_shape` prints per-call wall time (record + submit +
-//!   wait + readback) for the unsplit kernel and several split counts. Variants
-//!   are interleaved round-robin so a slow stretch of the (bimodal) GPU hits all
-//!   of them alike. It asserts nothing about speed.
+//! * `check` compares both kernels against an f64 CPU reference (max abs
+//!   error), including causal and ALiBi cases, and exits non-zero on a miss.
+//! * `latency` prints per-call wall time (record + submit + wait + readback)
+//!   for the unsplit kernel and several split counts. Variants are interleaved
+//!   round-robin so a slow stretch of the (bimodal) GPU hits all of them alike.
+//!   It asserts nothing about speed.
+//!
+//! An example rather than an `#[ignore]` test: it needs a GPU, so it runs by
+//! hand under the machine-wide mutex, and the ignore ceiling stays where it is.
 //!
 //! ```sh
-//! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -j 4 -p fuel-vulkan-backend \
-//!     --release --test flash_attn_decode_latency -- --ignored --nocapture
+//! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release //!     -p fuel-vulkan-backend --example flash_attn_split_probe -- check
+//! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release //!     -p fuel-vulkan-backend --example flash_attn_split_probe -- latency
 //! ```
 
-mod live_adapter;
-use live_adapter::backend_or_skip;
+use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 use std::time::Instant;
+
+fn backend() -> VulkanBackend {
+    VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)
+        .expect("a Vulkan device (PreferDiscrete)")
+}
+
+fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("check") => split_matches_cpu_reference(),
+        Some("latency") => decode_latency_by_shape(),
+        _ => {
+            eprintln!("usage: flash_attn_split_probe <check|latency>");
+            std::process::exit(2);
+        }
+    }
+}
 
 fn bytes_of(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
@@ -90,10 +108,8 @@ fn reference(
     out
 }
 
-#[test]
-#[ignore]
 fn split_matches_cpu_reference() {
-    let Some(be) = backend_or_skip() else { return };
+    let be = backend();
     // (hq, hkv, sq, sk, d, causal, alibi, splits)
     let cases = [
         (
@@ -156,10 +172,8 @@ fn split_matches_cpu_reference() {
     }
 }
 
-#[test]
-#[ignore]
 fn decode_latency_by_shape() {
-    let Some(be) = backend_or_skip() else { return };
+    let be = backend();
     let d = 128usize;
     let variants: [usize; 6] = [0, 2, 4, 8, 16, 32]; // 0 = unsplit kernel
     print!("{:>4} {:>4} {:>6}", "hq", "hkv", "sk");

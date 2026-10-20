@@ -1,6 +1,6 @@
 # Split-KV decode attention on Vulkan: what was measured
 
-ROADMAP item 17, row **H12** (FlashAttention `num_splits_heuristic`). Measured 2026-10-20, RTX 4070 Laptop GPU via Vulkan (`PreferDiscrete`), release build, `scripts/gpu-run.ps1`, nothing else running. Test: `fuel-vulkan-backend/tests/flash_attn_decode_latency.rs`.
+ROADMAP item 17, row **H12** (FlashAttention `num_splits_heuristic`). Measured 2026-10-20, RTX 4070 Laptop GPU via Vulkan (`PreferDiscrete`), release build, `scripts/gpu-run.ps1`, nothing else running. Probe: `fuel-vulkan-backend/examples/flash_attn_split_probe.rs` (an example, not an `#[ignore]` test, to keep the ignore ceiling).
 
 ## What the production kernel does
 
@@ -17,7 +17,7 @@ The Vulkan attention forward that runs today is `fuel-kernels-source/kernels/fla
 
 ## Correctness
 
-`split_matches_cpu_reference` compares both kernels with an f64 CPU reference on six cases (decode and prefill shapes; GQA 1:1, 4:1, 2:1; causal; ALiBi; `splits` 1, 2, 3, 4, 8, 16; `Sk` 700 to 4096; `D` 64 and 128). Max absolute error: unsplit 2e-8 to 6e-8, split 8e-9 to 6e-8. The assertion bound is 1e-4, so it is loose by about three orders of magnitude; the printed errors are the evidence, and a bug that moved the result by less than 1e-4 would pass. Run it with `--ignored --nocapture`.
+`flash_attn_split_probe check` compares both kernels with an f64 CPU reference on six cases (decode and prefill shapes; GQA 1:1, 4:1, 2:1; causal; ALiBi; `splits` 1, 2, 3, 4, 8, 16; `Sk` 700 to 4096; `D` 64 and 128). Max absolute error: unsplit 2e-8 to 6e-8, split 8e-9 to 6e-8. The assertion bound is 1e-4, so it is loose by about three orders of magnitude; the printed errors are the evidence, and a bug that moved the result by less than 1e-4 would pass. Run it with `--ignored --nocapture`.
 
 ## Latency
 
@@ -32,7 +32,7 @@ Median microseconds per call over 60 interleaved rounds (variants round-robin in
 | 64 (8) | 4096 | 1412 / 1499 | 1211 / 1306 | 1139 / 1197 | 1147 / 1217 |
 | 64 (8) | 1024 | 724 / 796 | 727 / 782 | 706 / 786 | 721 / 782 |
 
-(split 2 and 32 are in the test output; omitted here. The run-to-run spread of one cell is about +-15%, so only differences larger than that are read.)
+A third run through the final example binary agrees (`h_q = 8`, `Sk = 4096`: unsplit 1075, split 8 638, split 16 607; `h_q = 64`, `Sk = 4096`: 1518 vs 1271 / 1230). (split 2 and 32 are in the probe output; omitted here. The run-to-run spread of one cell is about +-15%, so only differences larger than that are read.)
 
 Reading, for this box and these shapes only:
 - `h_q = 8`, `Sk = 4096`: 1034-1096 us down to 547-647 us, **1.7-1.9x** with 8 or 16 splits, against the hypothesis threshold of 1.5x (stated for `Sk` 4k-32k; only `Sk <= 4096` can be measured because the kernel family is capped there). `Sk = 2048`: 1.3-1.4x. `Sk = 1024`: 1.15-1.2x, close to the spread.
@@ -48,5 +48,6 @@ Reading, for this box and these shapes only:
 ## Reproduce
 
 ```text
-pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -j 4 -p fuel-vulkan-backend --release --test flash_attn_decode_latency -- --ignored --nocapture
+pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release -p fuel-vulkan-backend --example flash_attn_split_probe -- check
+pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release -p fuel-vulkan-backend --example flash_attn_split_probe -- latency
 ```
