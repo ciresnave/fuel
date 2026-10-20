@@ -71,13 +71,21 @@
 //! call — `decompose` only supplies the recipe. `cpu_fallback` handles
 //! backends without a native kernel.
 //!
-//! ## Why `BackwardKind::NotDifferentiable`
+//! ## Why `BackwardKind::Decompose` (changed 2026-10-20, PM ruling)
 //!
-//! NF4 is an inference format. The weight is frozen (the U8 byte
-//! stream isn't a smooth function of any continuous parameter), and
-//! the activation gradient via "dequantize then standard matmul" is
-//! the wrong recipe (any caller wanting that should use F32 weights
-//! to begin with). Mirrors QMATMUL's same decision.
+//! The weight is frozen: the U8 byte stream is not a smooth function of any
+//! continuous parameter, so there is no weight gradient and the packed bytes
+//! and absmax scales are constants of the backward. The ACTIVATION gradient
+//! is well defined, and it is what QLoRA-style fine-tuning needs (the adapter
+//! sits upstream of this matmul), so autograd lowers the node through
+//! [`decompose`] (dequantize, then matmul) and differentiates the primitives.
+//! This replaces the earlier `NotDifferentiable` ("NF4 is an inference
+//! format; use F32 weights"), under which every backward through a quantized
+//! layer panicked with "no backward arm wired yet". Checked against a finite
+//! difference in `fuel-tensor`
+//! (`nf4_matmul_activation_gradient_matches_finite_difference`). The lowered
+//! backward re-materializes the dequantized weight; a fused backward kernel
+//! is future work.
 
 use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
@@ -123,7 +131,7 @@ pub fn entry() -> FusedOpEntry {
         family: FusedOpFamily::Quantized,
         pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward: BackwardKind::NotDifferentiable,
+        backward: BackwardKind::Decompose,
         shape_rule,
         dtype_rule,
         output_views: None,

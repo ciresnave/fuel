@@ -83,10 +83,15 @@
 //! `F32` before the affine dequant math, which is exact since codes are
 //! tiny integers.
 //!
-//! ## Why `BackwardKind::NotDifferentiable`
+//! ## Why `BackwardKind::Decompose` (changed 2026-10-20, PM ruling)
 //!
-//! AWQ is an inference format — the weight is frozen, same reasoning as
-//! NF4 and QMatMul.
+//! The weight is frozen, so there is no weight gradient; the activation
+//! gradient is well defined and is what adapter fine-tuning over a quantized
+//! base needs. Autograd lowers the node through [`decompose`] (unpack,
+//! dequantize, matmul) and differentiates the primitives. This replaces the
+//! earlier `NotDifferentiable` ("AWQ is an inference format"), under which a
+//! backward through this op panicked. Checked against a finite difference in
+//! `fuel-tensor` (`awq_matmul_activation_gradient_matches_finite_difference`).
 
 use crate::registry::{BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps};
 use crate::{Graph, Node, NodeId, Op};
@@ -110,7 +115,7 @@ pub fn entry() -> FusedOpEntry {
         family: FusedOpFamily::Quantized,
         pattern: crate::registry::SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward: BackwardKind::NotDifferentiable,
+        backward: BackwardKind::Decompose,
         shape_rule,
         dtype_rule,
         output_views: None,
