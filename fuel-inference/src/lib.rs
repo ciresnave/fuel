@@ -127,6 +127,9 @@ pub mod streaming;
 /// Speculative decoding: draft-then-verify parallel token generation.
 pub mod speculative;
 
+/// Model-free n-gram (prompt-lookup) drafting for the speculative verifier.
+pub mod ngram_draft;
+
 pub mod chunked_prefill;
 
 pub mod segmented_eviction;
