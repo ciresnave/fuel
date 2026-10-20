@@ -199,6 +199,10 @@ const SOURCE_PATHS_WITHOUT_EXTENSION: &[&str] = &["Makefile", "scripts/hooks/pre
 const NON_SOURCE_EXTENSIONS: &[(&str, &str)] = &[
     ("md", "prose"),
     ("txt", "prose and plain-text fixtures"),
+    (
+        "bin",
+        "binary test fixtures; provenance in the fixture directory's PROVENANCE.md",
+    ),
     ("org", "prose"),
     (
         "toml",
@@ -367,6 +371,10 @@ const INHERITED_WITH_NOTICE: &[(&str, &str, &str)] = &[
 /// Every tracked file allowed to contain the word this gate searches for, with
 /// the reason. Anything else reddens Part 1.
 const COPYRIGHT_ACCOUNTED_FOR: &[(&str, &str)] = &[
+    (
+        "fuel-tensor/tests/fixtures/bnb_double_quant/LICENSE-Qwen3-0.6B-Apache-2.0.txt",
+        "the licence text itself (Apache-2.0 of the Qwen3-0.6B weights excerpted in the fixture; THIRD-PARTY-NOTICES.md)",
+    ),
     ("LICENSE-APACHE", "the licence text itself"),
     ("LICENSE-MIT", "the licence text itself"),
     (
