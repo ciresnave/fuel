@@ -806,6 +806,42 @@ mod tests {
         );
     }
 
+    /// The registry declares `BackwardKind::Decompose` for FusedSoftmaxCrossEntropy
+    /// ("autograd lowers the fused node via decompose and runs the normal primitive
+    /// backward"). Check that claim against a finite difference of the loss.
+    #[test]
+    fn fused_softmax_cross_entropy_backward_matches_finite_difference() {
+        let device = fuel::Device::cpu();
+        let logits: Vec<f32> = vec![
+            1.0, 2.0, 3.0, 4.0, 0.5, 0.0, -0.5, 1.0, -1.0, -2.0, -3.0, 4.0,
+        ];
+        let targets_i64: Vec<i64> = vec![3, 0, 3];
+        let loss_of = |vals: &[f32]| -> f32 {
+            let l = Tensor::from_f32(vals.to_vec(), Shape::from_dims(&[3, 4]), &device).unwrap();
+            let t = lt_const_i64_like(&l, targets_i64.clone(), Shape::from_dims(&[3]));
+            loss::fused_softmax_cross_entropy(&l, &t, Reduction::Mean, -100).realize_f32()[0]
+        };
+        let l = Tensor::from_f32(logits.clone(), Shape::from_dims(&[3, 4]), &device).unwrap();
+        let t = lt_const_i64_like(&l, targets_i64.clone(), Shape::from_dims(&[3]));
+        let loss_t = loss::fused_softmax_cross_entropy(&l, &t, Reduction::Mean, -100);
+        let grads = loss_t.backward();
+        let g =
+            Tensor::from_graph_tensor(grads.get(l.graph_tensor()).expect("grad of logits").clone())
+                .realize_f32();
+        let h = 1e-2f32;
+        for i in 0..logits.len() {
+            let (mut p, mut m) = (logits.clone(), logits.clone());
+            p[i] += h;
+            m[i] -= h;
+            let fd = (loss_of(&p) - loss_of(&m)) / (2.0 * h);
+            assert!(
+                (g[i] - fd).abs() < 2e-3,
+                "logit {i}: autograd {} vs FD {fd}",
+                g[i]
+            );
+        }
+    }
+
     /// Reduction::None returns per-row losses with shape == targets.shape.
     #[test]
     fn fused_softmax_cross_entropy_none_returns_per_row() {

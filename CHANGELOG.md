@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.26 - 2026-10-20
+
+### Fixed
+
+- `fuel-graph`: `NodeHandle::backward` now lowers EVERY fused op whose registry entry declares `BackwardKind::Decompose` (previously a hard-coded pair of SSM ids). `FusedSoftmaxCrossEntropy` declared `Decompose` but panicked with "no backward arm wired yet" on any `backward()`, including through `fuel_training::loss::fused_softmax_cross_entropy`; it now differentiates (checked against a finite difference). A pinned-set test makes adding or flipping a `Decompose` op deliberate. ROADMAP item 17, H11.
+
 ## v0.20.25 - 2026-10-20
 
 ### Fixed
