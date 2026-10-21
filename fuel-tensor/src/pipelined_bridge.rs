@@ -1569,6 +1569,20 @@ pub fn upload_host_buffer_to_device(
         return Ok(Arc::new(RwLock::new(storage)));
     }
 
+    // Vulkan: stage the bytes straight into device-local storage. The generic
+    // path below builds and realizes a transient graph per call (about 2.5 ms of
+    // host time each, measured on the per-token decode uploads); a Vulkan
+    // `Op::Copy` from host bytes is exactly this `upload_bytes_handle`.
+    #[cfg(feature = "vulkan")]
+    if matches!(target_loc, DeviceLocation::Vulkan { .. }) {
+        let backend = crate::vulkan_backend::as_device(device)?;
+        let vk_bytes = backend.upload_bytes_handle(&bytes)?;
+        return Ok(Arc::new(RwLock::new(Storage::new(
+            BackendStorage::Vulkan(vk_bytes),
+            dtype,
+        ))));
+    }
+
     // Non-CPU: transient Op::Const → Op::Copy { target } upload.
     let transient = Arc::new(RwLock::new(Graph::new()));
     let mut transient_cache = StorageCache::new();

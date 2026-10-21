@@ -107,6 +107,18 @@ impl Drop for VulkanBuffer {
     }
 }
 
+/// How many buffers of `size` bytes the recycler keeps per bucket: as many as fit in
+/// 16 MiB, between 4 and 1,024. A decode step frees hundreds of same-sized small
+/// temporaries at once and needs them again on the next step, so a flat depth of 4
+/// destroyed and recreated nearly all of them every step; large buffers keep the
+/// old depth of 4.
+fn recycler_bucket_depth(size: u64) -> usize {
+    const MIN_PER_BUCKET: usize = 4;
+    const MAX_PER_BUCKET: usize = 1024;
+    const MAX_BUCKET_BYTES: u64 = 16 * 1024 * 1024;
+    ((MAX_BUCKET_BYTES / size.max(1)) as usize).clamp(MIN_PER_BUCKET, MAX_PER_BUCKET)
+}
+
 /// Residency tier for a Vulkan-allocated tensor. Today every buffer
 /// is [`Tier::OnDevice`]; P5 (tiered residency) will introduce
 /// [`Tier::OnHost`] for tensors spilled to a mmap-backed host file
@@ -1633,8 +1645,11 @@ impl VulkanBackend {
     /// though it can't all be pooled for reuse.
     fn take_or_alloc_device_buffer(&self, size: u64) -> fuel_ir::Result<(Buffer, Allocation)> {
         const MAX_BUCKETS: usize = 64;
-        const MAX_PER_BUCKET: usize = 4;
         const MAX_POOL_BYTES: u64 = 512 * 1024 * 1024; // 512 MB cap
+        // Buffers trimmed from the pool are destroyed AFTER the lock is released:
+        // a vkDestroyBuffer + free costs about a millisecond each, and doing it
+        // under the lock stalls every other allocating thread.
+        let mut trimmed: Vec<(Buffer, Allocation)> = Vec::new();
         let recycled = {
             let mut pool = self.buffer_pool.lock().unwrap();
             // O(log n) best-fit: first bucket in [size, size*2].
@@ -1653,16 +1668,23 @@ impl VulkanBackend {
             // 1. Bucket-count cap: drop smallest sizes until ≤ MAX_BUCKETS.
             while pool.len() > MAX_BUCKETS {
                 let smallest = *pool.keys().next().unwrap();
-                pool.remove(&smallest);
+                if let Some(v) = pool.remove(&smallest) {
+                    trimmed.extend(v);
+                }
             }
-            // 2. Per-bucket depth cap: for each bucket, keep at most
-            //    MAX_PER_BUCKET buffers. Extras are dropped (VMA frees).
-            //    Kept is the END of the Vec (most recent pushes, in case
-            //    sizes drift over time).
-            for vec in pool.values_mut() {
-                if vec.len() > MAX_PER_BUCKET {
-                    let drop_count = vec.len() - MAX_PER_BUCKET;
-                    vec.drain(0..drop_count);
+            // 2. Per-bucket depth cap, scaled by size: a decode step frees hundreds of
+            //    same-sized temporaries at once and allocates them again on the next
+            //    step, so a flat depth of 4 destroyed and recreated nearly all of
+            //    them every step (measured 7,140 misses vs 2,100 hits on the
+            //    2,880-byte bucket). Small buffers get a deep bucket; a bucket still
+            //    holds at most MAX_BUCKET_BYTES, and never fewer than 4 buffers.
+            //    Kept is the END of the Vec (most recent pushes, in case sizes
+            //    drift over time).
+            for (&sz, vec) in pool.iter_mut() {
+                let cap = recycler_bucket_depth(sz);
+                if vec.len() > cap {
+                    let drop_count = vec.len() - cap;
+                    trimmed.extend(vec.drain(0..drop_count));
                 }
             }
             // 3. Total-bytes backstop: if pool > MAX_POOL_BYTES, evict
@@ -1675,9 +1697,11 @@ impl VulkanBackend {
                 };
                 let vec = pool.remove(&smallest).unwrap();
                 total_bytes = total_bytes.saturating_sub(smallest * vec.len() as u64);
+                trimmed.extend(vec);
             }
             picked
         };
+        drop(trimmed);
         if let Some((b, a)) = recycled {
             Ok((b, a))
         } else {
@@ -14644,5 +14668,34 @@ mod coop_shape_gate_tests {
             known_a.is_matmul_coop_tile(),
             "control: identical shape with a decodable A must match"
         );
+    }
+}
+
+#[cfg(test)]
+mod recycler_depth_tests {
+    use super::recycler_bucket_depth;
+
+    #[test]
+    fn small_buffers_get_a_deep_bucket_large_ones_keep_four() {
+        // The 2,880-byte decode temporaries: hundreds are live per step.
+        assert_eq!(recycler_bucket_depth(2880), 1024);
+        assert_eq!(recycler_bucket_depth(1), 1024);
+        // Mid-size is bounded by bytes: 16 MiB / 1 MiB = 16.
+        assert_eq!(recycler_bucket_depth(1 << 20), 16);
+        // Large buffers keep the previous flat depth of 4.
+        assert_eq!(recycler_bucket_depth(64 << 20), 4);
+        assert_eq!(recycler_bucket_depth(u64::MAX), 4);
+        assert_eq!(recycler_bucket_depth(0), 1024);
+    }
+
+    #[test]
+    fn depth_is_monotone_non_increasing_in_size() {
+        let mut prev = usize::MAX;
+        for shift in 0..40 {
+            let d = recycler_bucket_depth(1u64 << shift);
+            assert!(d <= prev, "depth rose at 2^{shift}: {d} > {prev}");
+            assert!((4..=1024).contains(&d));
+            prev = d;
+        }
     }
 }

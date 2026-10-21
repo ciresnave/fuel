@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.50 - 2026-10-21
+
+### Changed
+
+- Vulkan decode host time: the buffer recycler's per-bucket depth now scales with buffer size (as many as fit in 16 MiB, between 4 and 1,024; it was a flat 4) and trimmed buffers are destroyed outside the pool lock, so a decode step's hundreds of same-sized temporaries are recycled instead of destroyed and recreated; and `upload_host_buffer_to_device` stages directly on Vulkan instead of realizing a transient graph per buffer. New phase timers `decode.token_host_compute` and `decode.token_upload`. Qwen3-0.6B Q4_K_M decode on Vulkan (RTX 4070, per-device preference of the unmerged #426 applied locally), alternating runs: step 59-62 ms -> 43-45 ms. CPU-fixture check unchanged (max logit difference 9.2e-5, 0 of 64 tokens differ). The pool can hold more, smaller buffers within its existing 512 MB cap; VRAM held was not re-measured.
+
 ## v0.20.49 - 2026-10-21
 
 ### Changed
