@@ -259,6 +259,14 @@ pub struct Pipelines {
     pub flash_attn_split_f32_layout: PipelineLayout,
     pub flash_attn_combine_f32_pipeline: ComputePipeline,
     pub flash_attn_combine_f32_layout: PipelineLayout,
+    pub flash_attn_split_bf16_pipeline: ComputePipeline,
+    pub flash_attn_split_bf16_layout: PipelineLayout,
+    pub flash_attn_combine_bf16_pipeline: ComputePipeline,
+    pub flash_attn_combine_bf16_layout: PipelineLayout,
+    pub flash_attn_split_f16_pipeline: ComputePipeline,
+    pub flash_attn_split_f16_layout: PipelineLayout,
+    pub flash_attn_combine_f16_pipeline: ComputePipeline,
+    pub flash_attn_combine_f16_layout: PipelineLayout,
     pub flash_attn_bf16_pipeline: ComputePipeline,
     pub flash_attn_bf16_layout: PipelineLayout,
     pub flash_attn_f16_pipeline: ComputePipeline,
@@ -773,6 +781,14 @@ impl Pipelines {
             registry.load_module(device, shaders::FLASH_ATTN_SPLIT_F32)?;
         let flash_attn_combine_f32_mod =
             registry.load_module(device, shaders::FLASH_ATTN_COMBINE_F32)?;
+        let flash_attn_split_bf16_mod =
+            registry.load_module(device, shaders::FLASH_ATTN_SPLIT_BF16)?;
+        let flash_attn_combine_bf16_mod =
+            registry.load_module(device, shaders::FLASH_ATTN_COMBINE_BF16)?;
+        let flash_attn_split_f16_mod =
+            registry.load_module(device, shaders::FLASH_ATTN_SPLIT_F16)?;
+        let flash_attn_combine_f16_mod =
+            registry.load_module(device, shaders::FLASH_ATTN_COMBINE_F16)?;
         let flash_attn_bf16_mod = registry.load_module(device, shaders::FLASH_ATTN_BF16)?;
         let flash_attn_f16_mod = registry.load_module(device, shaders::FLASH_ATTN_F16)?;
         let flash_attn_backward_q_f32_mod =
@@ -1000,6 +1016,10 @@ impl Pipelines {
         let flash_attn_f32_layout = PipelineLayout::new(device, &[&layout_5s1u])?;
         let flash_attn_split_f32_layout = PipelineLayout::new(device, &[&layout_5s1u])?;
         let flash_attn_combine_f32_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let flash_attn_split_bf16_layout = PipelineLayout::new(device, &[&layout_5s1u])?;
+        let flash_attn_combine_bf16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
+        let flash_attn_split_f16_layout = PipelineLayout::new(device, &[&layout_5s1u])?;
+        let flash_attn_combine_f16_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
         let flash_attn_bf16_layout = PipelineLayout::new(device, &[&layout_5s1u])?;
         let flash_attn_f16_layout = PipelineLayout::new(device, &[&layout_5s1u])?;
         let flash_attn_backward_q_f32_layout = PipelineLayout::new(device, &[&layout_6s1u])?;
@@ -1411,6 +1431,30 @@ impl Pipelines {
             device,
             &flash_attn_combine_f32_layout,
             &flash_attn_combine_f32_mod,
+            "main",
+        )?;
+        let flash_attn_split_bf16_pipeline = ComputePipeline::new(
+            device,
+            &flash_attn_split_bf16_layout,
+            &flash_attn_split_bf16_mod,
+            "main",
+        )?;
+        let flash_attn_combine_bf16_pipeline = ComputePipeline::new(
+            device,
+            &flash_attn_combine_bf16_layout,
+            &flash_attn_combine_bf16_mod,
+            "main",
+        )?;
+        let flash_attn_split_f16_pipeline = ComputePipeline::new(
+            device,
+            &flash_attn_split_f16_layout,
+            &flash_attn_split_f16_mod,
+            "main",
+        )?;
+        let flash_attn_combine_f16_pipeline = ComputePipeline::new(
+            device,
+            &flash_attn_combine_f16_layout,
+            &flash_attn_combine_f16_mod,
             "main",
         )?;
         let flash_attn_bf16_pipeline = ComputePipeline::new(
@@ -1964,6 +2008,14 @@ impl Pipelines {
             flash_attn_split_f32_layout,
             flash_attn_combine_f32_pipeline,
             flash_attn_combine_f32_layout,
+            flash_attn_split_bf16_pipeline,
+            flash_attn_split_bf16_layout,
+            flash_attn_combine_bf16_pipeline,
+            flash_attn_combine_bf16_layout,
+            flash_attn_split_f16_pipeline,
+            flash_attn_split_f16_layout,
+            flash_attn_combine_f16_pipeline,
+            flash_attn_combine_f16_layout,
             flash_attn_bf16_pipeline,
             flash_attn_bf16_layout,
             flash_attn_f16_pipeline,
