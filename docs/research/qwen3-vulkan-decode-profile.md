@@ -102,23 +102,52 @@ So the planner's price of a 12.6 MB weight copy is between about right and 2.4 t
 ### Item 21 step 2: the 253 matmuls
 
 - **How many are Q4_K: none.** All 253 are `OpKind::MatMul` on f32 operands. `lazy_quantized_qwen3.rs` keeps only Q4_0 tensors quantized and dequantizes every other GGML type to f32 at load ("Other GGML dtypes for Linear weights are dequantized to F32"); this Q4_K_M file's Q4_K and Q6_K tensors are all dequantized, which is also why the weights are 8 times their file size and the embedding table is 622 MB. There is no Q4_K matmul path in play on any backend.
-- **Why the matmuls run on the CPU: not established.** Ruled out: a missing Vulkan kernel (the Vulkan f32 matmul is registered, and the Vulkan elementwise ops in the same graph run on the GPU); a mis-priced transfer (table above: the estimate varies between processes, 8.9 to 18.6 ms for a 12.6 MB copy, and the stamps did not change); the planner not seeing the weights' residency at plan time (the plan is built after the const cache upload, and rebuilding the decode session with the same context, `QWEN3_REPLAN=1`, gave the identical 397 / 253 / 145 counts and the same sizes). Not examined: the Vulkan versus CPU matmul cost estimates for these shapes (the cost model's flops and bandwidth terms, and whatever the Judge cache holds on this box). That comparison is the next measurement.
+- **Why the matmuls run on the CPU: established (route B, below).** The planner never compares their costs at all: a filter removes the Vulkan candidate first.
 
-### Where the time could come out (estimates from the numbers above, nothing implemented)
+## Route B: why the planner picks the CPU, the fix, and before and after (ROADMAP item 21 step 3)
 
-- Stop reading weights back every step (keep a host copy of each immutable weight after its first read, or do not upload a weight whose consumers all run on the host): removes the 197 large copies, **2.21 to 2.25 s of the 4.0 to 4.3 s step (about 55%)**, leaving about 1.8 to 2.0 s.
-- Run the matmuls where the weights already are: removes the same copies and the 1.1 s of CPU matmul if the Vulkan kernel is fast for a one-row product; whether it is was not measured.
+### Root cause (found with a temporary candidate-set print in `compile_plan`, not committed)
 
-## What this points at instead (not started)
+For every one of these `MatMul` nodes the candidate set the planner enumerates, before any filtering, is two entries:
 
-1. The 397 `Copy/Vulkan` launches per step (62%).
-2. The 253 `MatMul/Cpu` launches per step (26%): Q4_K weights multiplied on the CPU. Whether a Vulkan quantized matmul exists for Q4_K, and why the route picker places these on the CPU, was not investigated here.
+| candidate | kernel source | `bit_stable_on_same_hardware` |
+|---|---|---|
+| `Vulkan@Vulkan { gpu_id: 1 }` | `vulkan-slang` | **false** |
+| `Cpu@Cpu` | `portable-cpu` | true |
 
-These are ROADMAP item 21.
+After `default_chain` the set is `{ Cpu }`. The step that removes the Vulkan candidate is `BitStablePreferenceFilter` (soft, `min_remaining = 1`): when any bit-stable candidate exists it drops every non-bit-stable one, **across devices, before cost ranking**. The Vulkan f32 matmul is honestly non-bit-stable (`docs/kernel-contracts/vulkan/matmul.fkc.md`: "scheduler-dependent FADD/subgroup order, non-associative f32", audited `none(reason)`), so it can never be compared with the CPU kernel on cost, transfer or throughput. The same filter explains `RmsNormLastDim`, `Rope`, `SoftmaxLastDim` and `SiluElementwise` on the CPU in the first profile. It is not a cost-model, transfer-pricing, residency or missing-kernel problem (all four were ruled out above), and the verification ledger cannot fix it for matmul because the claim is false, not unaudited. (`seed_cuda_ledger.rs` documents the same mechanism for CUDA kernels, where the claim is true and the ledger earns it.)
+
+### The change
+
+`BitStablePreferenceFilter` now drops a non-bit-stable candidate only when a bit-stable candidate exists **on the same device**. The preference chooses a kernel on a device; it no longer chooses the device. If nothing is bit-stable anywhere the filter still returns nothing (the chain soft-skips it, as before). A hard determinism requirement is untouched: `PrecisionRequirement::require_bit_stable` (`PrecisionFloorFilter`, strict reproducibility mode) still removes non-bit-stable candidates everywhere.
+
+**This is a default-behaviour change and a policy call.** With it, a GPU kernel declared non-bit-stable can win a placement on cost, so such a graph is no longer bit-identical from run to run in the last bits (for matmul: summation order across subgroups). Callers who need bit-reproducibility already have the strict mode; whether the default should stay "deterministic CPU unless the GPU kernel is bit-stable" is for the project owner to rule on.
+
+### Before and after (same harness, same box, `gpu-run.ps1`, Qwen3-0.6B Q4_K_M, 21-token prompt, 5 runs each, median with min to max)
+
+| | before | after |
+|---|---|---|
+| steady decode step | 4,271 ms (3,911 to 4,466) | **329 ms (313 to 337)** |
+| decode speed | 0.23 tokens/s | **3.04 tokens/s (13x)** |
+| prefill, 21 tokens | 34,187 ms (32,412 to 37,738) | 6,764 ms (6,253 to 7,251) |
+| first decode call (session build) | 10,471 ms (9,472 to 12,926) | 6,096 ms (5,928 to 6,527) |
+| copies per decode step | 542 (397 Vulkan to host, 2.39 GB) | **5** (4 host to Vulkan, 1,168 B; 1 Vulkan to host, the 607,744 B logits row) |
+| launches per decode step | 1,330 | 793 |
+| `MatMul` | 253 on the CPU | 253 on Vulkan |
+
+Every op that ran on the CPU now runs on Vulkan (the table of the traced step has no `/Cpu` compute op left). Host launch time of all launches is about 36 ms of the 329 ms step; the remaining 293 ms is time the host spends waiting (GPU execution plus the logits readback), which this instrument cannot split.
+
+### Correctness
+
+`QWEN3_VERIFY=1` runs the M0/M1 yardstick comparison on the Vulkan device: both fixture prompts, 32 greedy decode steps each, every step through `compare_step` at the f16-or-quantized tier (relative bound 2e-2) against the checked-in CPU reference. Result: **max absolute logit difference over the reference top-16 of 9.9e-5, 0 of 64 greedy tokens differ, no divergent step: PASS** (one run). That the GPU path is within tolerance of the CPU reference is shown; that it is bit-reproducible run to run is not claimed (and is not expected for the matmul).
+
+### What is still slow, and what is not claimed
+
+3 tokens/s is far below what a 0.6B model should reach on this card. A rough floor from bandwidth alone: the f32 weights are about 2.4 GB, so one step reads at least that, about 10 ms at a nominal 250 GB/s, against 293 ms of waiting. The remaining gap is unmeasured: the Vulkan backend has no timestamp queries, so per-kernel device time is unknown, and the one-row (M=1) matmul path was not examined. Also unchanged: the loader dequantizes every GGML type except Q4_0 to f32 (the 622 MB matrix and 8x weight size), and the item 20 rule (attention at least about 10% of the step) is not yet met at 4096 context by the bound in the section above (about 4 ms against 329 ms is 1.2%).
 
 ## Reproduce
 
 ```text
 pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release -p fuel-transformers --features dev-tools,vulkan --example qwen3_vulkan_profile -- 5 10
 ```
-Needs the Hugging Face cache (or network) for the GGUF and tokenizer. Takes about 15 minutes (prefill alone is about 34 s per run).
+Needs the Hugging Face cache (or network) for the GGUF and tokenizer. Takes about 15 minutes before the fix (prefill alone was about 34 s per run), about 5 minutes after. `QWEN3_VERIFY=1` first runs the CPU-fixture comparison.
