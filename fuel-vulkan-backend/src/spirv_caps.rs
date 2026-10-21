@@ -75,24 +75,32 @@ impl OptionalFeatureSupport {
     /// The first feature `req` needs that this device lacks (device-feature name),
     /// or `None` when every needed feature is present.
     pub fn first_missing(&self, req: &RequiredFeatures) -> Option<&'static str> {
-        if req.uniform_and_storage_buffer16_bit_access
-            && !self.uniform_and_storage_buffer16_bit_access
-        {
-            return Some("uniformAndStorageBuffer16BitAccess");
-        }
-        if req.shader_buffer_int64_atomics && !self.shader_buffer_int64_atomics {
-            return Some("shaderBufferInt64Atomics");
-        }
-        if req.shader_int16 && !self.shader_int16 {
-            return Some("shaderInt16");
-        }
-        if req.vulkan_memory_model && !self.vulkan_memory_model {
-            return Some("vulkanMemoryModel");
-        }
-        if req.vulkan_memory_model_device_scope && !self.vulkan_memory_model_device_scope {
-            return Some("vulkanMemoryModelDeviceScope");
-        }
-        None
+        [
+            (
+                req.uniform_and_storage_buffer16_bit_access,
+                self.uniform_and_storage_buffer16_bit_access,
+                "uniformAndStorageBuffer16BitAccess",
+            ),
+            (
+                req.shader_buffer_int64_atomics,
+                self.shader_buffer_int64_atomics,
+                "shaderBufferInt64Atomics",
+            ),
+            (req.shader_int16, self.shader_int16, "shaderInt16"),
+            (
+                req.vulkan_memory_model,
+                self.vulkan_memory_model,
+                "vulkanMemoryModel",
+            ),
+            (
+                req.vulkan_memory_model_device_scope,
+                self.vulkan_memory_model_device_scope,
+                "vulkanMemoryModelDeviceScope",
+            ),
+        ]
+        .into_iter()
+        .find(|(needed, present, _)| *needed && !*present)
+        .map(|(_, _, name)| name)
     }
 }
 
