@@ -1,6 +1,13 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.58 - 2026-10-21
+
+### Security
+
+- `zip` 8.6.0 -> 9.0.5 (RUSTSEC-2026-0367..0369, fixed in >=9.0.0); `zip::ZipArchive::file_names` now yields `Result`s, handled in `fuel-formats` `read_pth_tensor_info`.
+- Lock-only: `rustls` 0.23.45 -> 0.23.46 (RUSTSEC-2026-0346..0349), `rustls-webpki` 0.103.15 -> 0.103.16, `webpki-roots` and `webpki-root-certs` -> 1.0.10 (RUSTSEC-2026-0381..0383); `cargo audit`: no vulnerabilities (3 unmaintained warnings: `paste`, `ttf-parser`, `unsafe-libyaml`).
+
 ## v0.20.57 - 2026-10-21
 
 ### Changed
