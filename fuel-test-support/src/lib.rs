@@ -64,10 +64,12 @@
 //! rather than satisfied: a crate with no `cfg` at all cannot compile out**, so
 //! there is no gating to get wrong.
 
+pub mod close;
 pub mod gpu_run_lock;
 pub mod hardware;
 pub mod hub;
 
+pub use close::{all_close, assert_all_close};
 pub use gpu_run_lock::{GpuRunLock, UNGUARDED_VAR, require_gpu_run_lock};
 
 use std::fmt::Display;
