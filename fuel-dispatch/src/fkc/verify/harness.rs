@@ -3,7 +3,7 @@
 //!
 //! This is the FIRST harness that actually EARNS a ledger entry for a live
 //! CUDA kernel: baracuda's `rope_apply_<dt>_run` (see
-//! `docs/kernel-contracts/cuda/rope-apply.fkc.md`), the acceptance kernel
+//! `fuel-dispatch/kernel-contracts/cuda/rope-apply.fkc.md`), the acceptance kernel
 //! the whole FKC verification program exists to satisfy (a kernel baracuda
 //! SHIPS for Fuel but that was never wired into any dispatch path — see the
 //! contract's front-matter note). `#[cfg(feature = "cuda")]` throughout: it
@@ -76,8 +76,7 @@ use super::{
 /// The rope-apply contract source, embedded so the harness never touches
 /// the filesystem at verification time (mirrors `LEDGER_JSON` in
 /// `ledger.rs`).
-const ROPE_APPLY_CONTRACT: &str =
-    include_str!("../../../../docs/kernel-contracts/cuda/rope-apply.fkc.md");
+const ROPE_APPLY_CONTRACT: &str = include_str!("../../../kernel-contracts/cuda/rope-apply.fkc.md");
 
 // ===========================================================================
 // The four dispatch wrappers (KernelRef-shaped) — adapt `Storage`/`OpParams`

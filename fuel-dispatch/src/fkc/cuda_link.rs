@@ -40,7 +40,7 @@ macro_rules! cuda_ep {
 /// The CUDA cast (dtype-conversion) family's `symbol → production wrapper` map
 /// — the FULL family: 70 `(SRC, DST)` pairs, EVERY one resolving to the SAME
 /// dtype-agnostic wrapper [`crate::baracuda_dispatch::cast::cast_baracuda_wrapper`].
-/// Contract: `docs/kernel-contracts/cuda/cast.fkc.md`, authored per-destination
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/cast.fkc.md`, authored per-destination
 /// (`## cast_to_<dst>`) with a `src`-operand dtype fan (§3.4). Unlike the CPU
 /// cast family (per-target distinct wrappers) or the Vulkan cast family (three
 /// structural wrappers), the CUDA cast is a SINGLE `cast_baracuda_wrapper` that
@@ -350,7 +350,7 @@ pub static CUDA_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `binary` family (elementwise binary (add / sub / mul / div / maximum / minimum / pow / rem)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/binary.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/binary.fkc.md`.
 pub static CUDA_BINARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("add_f32", crate::baracuda_dispatch::binary::add_f32),
     cuda_ep!("add_f16", crate::baracuda_dispatch::binary::add_f16),
@@ -393,7 +393,7 @@ pub static CUDA_BINARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `reduce` family (axis reductions (sum / max / min / mean)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/reduce.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/reduce.fkc.md`.
 /// The CUDA comparison family's `symbol → production wrapper` map
 /// (6 ops × 4 float dtypes = 24). Mirrors [`crate::fkc::cpu_link::
 /// CPU_COMPARE_ENTRY_POINTS`], whose 24 entries were the positive control
@@ -455,7 +455,7 @@ pub static CUDA_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `norm` family (last-dim normalizations (RmsNorm / LayerNorm)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/norm.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/norm.fkc.md`.
 pub static CUDA_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("rms_f32", crate::baracuda_dispatch::norm::rms_f32),
     cuda_ep!("rms_f16", crate::baracuda_dispatch::norm::rms_f16),
@@ -468,7 +468,7 @@ pub static CUDA_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `softmax` family (last-dim softmax / log-softmax): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/softmax.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/softmax.fkc.md`.
 pub static CUDA_SOFTMAX_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "softmax_f32",
@@ -505,7 +505,7 @@ pub static CUDA_SOFTMAX_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `powi` family (integer-exponent power (x^n)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/powi.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/powi.fkc.md`.
 pub static CUDA_POWI_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("powi_f32", crate::baracuda_dispatch::powi::powi_f32),
     cuda_ep!("powi_f64", crate::baracuda_dispatch::powi::powi_f64),
@@ -514,7 +514,7 @@ pub static CUDA_POWI_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `powi_backward` family (integer-exponent power backward): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/powi_backward.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/powi_backward.fkc.md`.
 pub static CUDA_POWI_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "powi_backward_f32",
@@ -535,7 +535,7 @@ pub static CUDA_POWI_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `clamp` family (scalar-bounds clamp): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/clamp.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/clamp.fkc.md`.
 pub static CUDA_CLAMP_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("clamp_f32", crate::baracuda_dispatch::clamp::clamp_f32),
     cuda_ep!("clamp_f64", crate::baracuda_dispatch::clamp::clamp_f64),
@@ -544,7 +544,7 @@ pub static CUDA_CLAMP_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `flip` family (single-axis reverse (flip)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/flip.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/flip.fkc.md`.
 pub static CUDA_FLIP_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("flip_f32", crate::baracuda_dispatch::flip::flip_f32),
     cuda_ep!("flip_f16", crate::baracuda_dispatch::flip::flip_f16),
@@ -553,7 +553,7 @@ pub static CUDA_FLIP_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `roll` family (single-axis cyclic shift (roll)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/roll.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/roll.fkc.md`.
 pub static CUDA_ROLL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("roll_f32", crate::baracuda_dispatch::roll::roll_f32),
     cuda_ep!("roll_f16", crate::baracuda_dispatch::roll::roll_f16),
@@ -562,7 +562,7 @@ pub static CUDA_ROLL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `cumsum` family (single-axis inclusive prefix sum (cumsum)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/cumsum.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/cumsum.fkc.md`.
 pub static CUDA_CUMSUM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("cumsum_f32", crate::baracuda_dispatch::cumsum::cumsum_f32),
     cuda_ep!("cumsum_f16", crate::baracuda_dispatch::cumsum::cumsum_f16),
@@ -571,7 +571,7 @@ pub static CUDA_CUMSUM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `triangular` family (triangular masks (triu / tril)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/triangular.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/triangular.fkc.md`.
 pub static CUDA_TRIANGULAR_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("triu_f32", crate::baracuda_dispatch::triangular::triu_f32),
     cuda_ep!("triu_f64", crate::baracuda_dispatch::triangular::triu_f64),
@@ -588,7 +588,7 @@ pub static CUDA_TRIANGULAR_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `arg_reduce` family (arg reductions (argmax / argmin over a dim -> U32)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/arg_reduce.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/arg_reduce.fkc.md`.
 pub static CUDA_ARG_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "argmax_dim_u32_f32",
@@ -625,7 +625,7 @@ pub static CUDA_ARG_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `reduce_to` family (broadcast-reverse reductions (sum_to / max_to)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/reduce_to.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/reduce_to.fkc.md`.
 pub static CUDA_REDUCE_TO_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "sum_to_f32",
@@ -662,7 +662,7 @@ pub static CUDA_REDUCE_TO_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `rope` family (rotary position embedding (RoPE)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/rope.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/rope.fkc.md`.
 pub static CUDA_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("rope_f32", crate::baracuda_dispatch::attention::rope_f32),
     cuda_ep!("rope_f16", crate::baracuda_dispatch::attention::rope_f16),
@@ -671,7 +671,7 @@ pub static CUDA_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `unary` family (forward elementwise unary (21 ops x 4 dtypes + f32-only Sign)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/unary.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/unary.fkc.md`.
 pub static CUDA_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("neg_f32", crate::baracuda_dispatch::unary::neg_f32),
     cuda_ep!("neg_f16", crate::baracuda_dispatch::unary::neg_f16),
@@ -776,7 +776,7 @@ pub static CUDA_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `clamp_inplace` family (in-place scalar-bounds clamp): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/clamp_inplace.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/clamp_inplace.fkc.md`.
 pub static CUDA_CLAMP_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "clamp_inplace_f32",
@@ -797,7 +797,7 @@ pub static CUDA_CLAMP_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `powi_inplace` family (in-place integer-exponent power): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/powi_inplace.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/powi_inplace.fkc.md`.
 pub static CUDA_POWI_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "powi_inplace_f32",
@@ -818,7 +818,7 @@ pub static CUDA_POWI_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `inplace_unary` family (in-place unary activations + the 16-op unary expansion): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/inplace_unary.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/inplace_unary.fkc.md`.
 pub static CUDA_INPLACE_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "relu_inplace_f32",
@@ -1159,7 +1159,7 @@ pub static CUDA_INPLACE_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `write_slice` family (in-place rectangular slab assign (WriteSlice; byte-width umbrella)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/write_slice.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/write_slice.fkc.md`.
 pub static CUDA_WRITE_SLICE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "write_slice_f32",
@@ -1200,7 +1200,7 @@ pub static CUDA_WRITE_SLICE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `write_slice_rotating` family (sliding-window in-place slab assign (WriteSliceRotating; byte-width umbrella)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/write_slice_rotating.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/write_slice_rotating.fkc.md`.
 pub static CUDA_WRITE_SLICE_ROTATING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "write_slice_rotating_f32",
@@ -1241,7 +1241,7 @@ pub static CUDA_WRITE_SLICE_ROTATING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `write_slice_doff` family (device-resident-offset in-place slab assign (WriteSliceDoff; byte-width umbrella)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/write_slice_doff.fkc.md`. b1/b2/b4/b8 only (no b16 — the KV-decode dtype set).
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/write_slice_doff.fkc.md`. b1/b2/b4/b8 only (no b16 — the KV-decode dtype set).
 pub static CUDA_WRITE_SLICE_DOFF_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "write_slice_doff_f32",
@@ -1282,7 +1282,7 @@ pub static CUDA_WRITE_SLICE_DOFF_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `concat` family (N-ary concatenation (Concat; binding [T,T])): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/concat.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/concat.fkc.md`.
 pub static CUDA_CONCAT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("concat_f32", crate::baracuda_dispatch::concat::concat_f32),
     cuda_ep!("concat_f16", crate::baracuda_dispatch::concat::concat_f16),
@@ -1291,7 +1291,7 @@ pub static CUDA_CONCAT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `affine` family (affine y = mul*x + add (Affine)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/affine.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/affine.fkc.md`.
 pub static CUDA_AFFINE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("affine_f32", crate::baracuda_dispatch::affine::affine_f32),
     cuda_ep!("affine_f64", crate::baracuda_dispatch::affine::affine_f64),
@@ -1303,7 +1303,7 @@ pub static CUDA_AFFINE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `inplace_affine` family (in-place affine (InplaceAffine)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/inplace_affine.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/inplace_affine.fkc.md`.
 pub static CUDA_INPLACE_AFFINE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "affine_inplace_f32",
@@ -1324,7 +1324,7 @@ pub static CUDA_INPLACE_AFFINE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `pad` family (multi-dim padding (Pad)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/pad.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/pad.fkc.md`.
 pub static CUDA_PAD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("pad_f32", crate::baracuda_dispatch::pad::pad_f32),
     cuda_ep!("pad_f16", crate::baracuda_dispatch::pad::pad_f16),
@@ -1333,7 +1333,7 @@ pub static CUDA_PAD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `pad_backward` family (padding backward (PadBackward; Constant)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/pad_backward.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/pad_backward.fkc.md`.
 pub static CUDA_PAD_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "pad_backward_f32",
@@ -1354,7 +1354,7 @@ pub static CUDA_PAD_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `causal_conv1d` family (causal depthwise conv1d (CausalConv1d; 4-input key)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/causal_conv1d.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/causal_conv1d.fkc.md`.
 pub static CUDA_CAUSAL_CONV1D_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "causal_conv1d_f32",
@@ -1375,7 +1375,7 @@ pub static CUDA_CAUSAL_CONV1D_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `gemm_dense` family (dense FP matmul facade (gemm_dense at OpKind::MatMul)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/gemm_dense.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/gemm_dense.fkc.md`.
 pub static CUDA_GEMM_DENSE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!(
         "matmul_f32",
@@ -1396,7 +1396,7 @@ pub static CUDA_GEMM_DENSE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// CUDA `gemm_int` family (int8 matmul facade (gemm_int s8/u8 RRR at OpKind::MatMul)): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/gemm_int.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/gemm_int.fkc.md`.
 pub static CUDA_GEMM_INT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("gemm_i8", crate::baracuda_dispatch::gemm_int::gemm_s8_rrr),
     cuda_ep!("gemm_u8", crate::baracuda_dispatch::gemm_int::gemm_u8_rrr),
@@ -1404,7 +1404,7 @@ pub static CUDA_GEMM_INT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// CUDA `indexing` family (IndexSelect / Gather / MaskedFill data-dtype fan +
 /// ScatterAdd per-dtype): fanned `<op>_<dtype>` symbol -> production wrapper.
-/// Contract: `docs/kernel-contracts/cuda/indexing.fkc.md`. Unlike the CPU
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/indexing.fkc.md`. Unlike the CPU
 /// indexing family (a dtype-agnostic byte-copy umbrella), each CUDA symbol
 /// resolves to its OWN per-dtype baracuda wrapper (the binary/unary precedent).
 /// The `U32` index / `U8` mask slot is a FIXED single-dtype operand (not a fan
@@ -1457,7 +1457,7 @@ pub static CUDA_INDEXING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// CUDA `flash_decoding` family (FlashDecoding decode arm; `OpKind::FlashAttn`,
 /// `seq_q==1`, capacity-K): fanned `flash_decoding_<dtype>` symbol -> production
-/// wrapper. Contract: `docs/kernel-contracts/cuda/flash_decoding.fkc.md`. The
+/// wrapper. Contract: `fuel-dispatch/kernel-contracts/cuda/flash_decoding.fkc.md`. The
 /// NO-alibi decode arm keyed `[q, k, v, out] = [T; 4]` over `{F16, BF16}` —
 /// byte-for-byte the two DELETED hand-written `register_full(FlashAttn, …)` regs.
 /// Its cost is CONTRACT-PINNED via [`CUDA_COST_FNS`] (the §4.4 trampoline), NOT

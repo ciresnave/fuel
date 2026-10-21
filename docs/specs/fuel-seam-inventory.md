@@ -291,7 +291,7 @@ ScanPlaceholder -> u8(role: 0=carry, 1=elem) ++ u32(index)
 | **auto-registration** | `fkc/register.rs`, `parse.rs`, `lower.rs` | **LIVE**, ~58 families / 3 backends |
 | **version gate** | `fkc/validate.rs`, `dlpack/validate.rs` | **PRESENT and ENFORCED**, born-red tested |
 | the **verified ledger** | `fkc/verify/ledger.rs`, `.fkc-verified-ledger.json` | provenance of what has been checked |
-| the **inventory** | `docs/kernel-contracts/_inventory/` | per-family census |
+| the **inventory** | `fuel-dispatch/kernel-contracts/_inventory/` | per-family census |
 | cost compilation | `fkc/cost_compile.rs`, `cost_expr.rs` | evaluable cost expressions |
 | revision hashing | `fkc/revhash.rs` | |
 | per-backend link/invoke | `{cpu,cuda,vulkan}_link.rs`, `verify/invoker_*` | |

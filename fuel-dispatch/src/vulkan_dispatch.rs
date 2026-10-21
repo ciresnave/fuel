@@ -5040,7 +5040,7 @@ pub fn contiguize_vulkan(
 /// The authored Vulkan cast (dtype-conversion) kernel contract, embedded into
 /// the binary via `include_str!` (the PRODUCTION contract). Parsed + lowered by
 /// [`register_vulkan_cast_from_contract`].
-const VULKAN_CAST_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/cast.fkc.md");
+const VULKAN_CAST_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/cast.fkc.md");
 
 /// Register the Vulkan cast family (12 (SRC, DST) pairs → 3 production wrappers:
 /// `cast::cast_f32_half` for f32↔f16 / f32↔bf16, `cast::cast_f32_f64` for
@@ -5098,7 +5098,7 @@ fn register_vulkan_cast_from_contract(table: &mut KernelBindingTable) {
 /// clamp / powi), embedded via `include_str!` (the PRODUCTION contract). Parsed
 /// + lowered by [`register_vulkan_elementwise_from_contract`].
 const VULKAN_ELEMENTWISE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/elementwise.fkc.md");
+    include_str!("../kernel-contracts/vulkan/elementwise.fkc.md");
 
 /// Register the Vulkan elementwise family (94 (op, dtype) bindings) by IMPORTING
 /// its RE-AUTHORED FKC kernel contract — the SECOND Vulkan-backend FKC consumer
@@ -5151,8 +5151,7 @@ fn register_vulkan_elementwise_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan matmul kernel contract (6 per-combo GEMM/GEMV wrapper
 /// bindings), embedded via `include_str!` (the PRODUCTION contract). Parsed +
 /// lowered by [`register_vulkan_matmul_from_contract`].
-const VULKAN_MATMUL_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/matmul.fkc.md");
+const VULKAN_MATMUL_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/matmul.fkc.md");
 
 /// Register the Vulkan matmul family (6 (MatMul, [lhs,rhs,out]) bindings) by
 /// IMPORTING its RE-AUTHORED FKC kernel contract — the THIRD Vulkan-backend FKC
@@ -5212,7 +5211,7 @@ fn register_vulkan_matmul_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan conv2d kernel contract (3 per-(op, dtype) Conv2D
 /// bindings), embedded via `include_str!` (the PRODUCTION contract). Parsed +
 /// lowered by [`register_vulkan_conv_from_contract`].
-const VULKAN_CONV_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/conv.fkc.md");
+const VULKAN_CONV_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/conv.fkc.md");
 
 /// Register the Vulkan conv2d family (3 `(Conv2D, [x, weight, out])` bindings —
 /// f32 / bf16 / f16) by IMPORTING its RE-AUTHORED FKC kernel contract — the
@@ -5230,7 +5229,7 @@ const VULKAN_CONV_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vul
 /// whose wrapper (`conv2d::conv2d_f32` → `VulkanBackend::conv2d_*_bytes`) runs the
 /// WHOLE conv (im2col + GEMM internally). So the migration authors THREE faithful
 /// single-dtype-per-operand `op_kind: Conv2D` sections in the new production
-/// `docs/kernel-contracts/vulkan/conv.fkc.md`, each `entry_point` resolving through
+/// `fuel-dispatch/kernel-contracts/vulkan/conv.fkc.md`, each `entry_point` resolving through
 /// [`crate::fkc::VulkanLinkRegistry`] to the exact production wrapper.
 ///
 /// **No bias key.** The Vulkan conv wrappers BAIL on a 3-input (bias) call, so —
@@ -5274,8 +5273,7 @@ fn register_vulkan_conv_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan QMatMul kernel contract (ONE `(QMatMul, [F32, U32, F32])`
 /// binding), embedded via `include_str!` (the PRODUCTION contract). Parsed +
 /// lowered by [`register_vulkan_qmatmul_from_contract`].
-const VULKAN_QMATMUL_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/qmatmul.fkc.md");
+const VULKAN_QMATMUL_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/qmatmul.fkc.md");
 
 /// Register the Vulkan QMatMul binding (ONE `(QMatMul, [F32, U32, F32])` key) by
 /// IMPORTING its RE-AUTHORED FKC kernel contract — the FOURTEENTH Vulkan-backend
@@ -5290,7 +5288,7 @@ const VULKAN_QMATMUL_CONTRACT: &str =
 /// PRIMITIVE `OpKind::QMatMul` (not the fused op) at a key whose weight slot is the
 /// LOGICAL `U32` dispatch dtype (not the physical `U8` block stream). So the
 /// migration authors ONE faithful single-dtype-per-operand `op_kind: QMatMul`
-/// section in the new production `docs/kernel-contracts/vulkan/qmatmul.fkc.md`
+/// section in the new production `fuel-dispatch/kernel-contracts/vulkan/qmatmul.fkc.md`
 /// (the CPU quant-matmul primitive precedent), applying the maintainer-approved
 /// CPU linear-quant reconciliation:
 ///  - **weight U8 → U32**: `accept.dtypes` carries the LOGICAL dispatch dtype the
@@ -5348,8 +5346,7 @@ fn register_vulkan_qmatmul_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan select (IndexSelect / Gather / MaskedFill) kernel
 /// contract, embedded via `include_str!` (the PRODUCTION contract). Parsed +
 /// lowered by [`register_vulkan_select_from_contract`].
-const VULKAN_SELECT_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/select.fkc.md");
+const VULKAN_SELECT_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/select.fkc.md");
 
 /// Register the Vulkan select family (16 (op, dtype) bindings — IndexSelect (4),
 /// Gather (6), MaskedFill (6)) by IMPORTING its FKC kernel contract — the FIFTH
@@ -5399,8 +5396,7 @@ fn register_vulkan_select_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan scatter (IndexAdd / ScatterAdd) kernel contract, embedded
 /// via `include_str!` (the PRODUCTION contract). Parsed + lowered by
 /// [`register_vulkan_scatter_from_contract`].
-const VULKAN_SCATTER_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/scatter.fkc.md");
+const VULKAN_SCATTER_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/scatter.fkc.md");
 
 /// Register the Vulkan scatter family (8 (op, dtype) bindings — IndexAdd (4) +
 /// ScatterAdd (4)) by IMPORTING its FKC kernel contract — the SIXTH Vulkan-backend
@@ -5442,8 +5438,7 @@ fn register_vulkan_scatter_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan movement (Concat / CumSum) kernel contract, embedded via
 /// `include_str!` (the PRODUCTION contract). Parsed + lowered by
 /// [`register_vulkan_movement_from_contract`].
-const VULKAN_MOVEMENT_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/movement.fkc.md");
+const VULKAN_MOVEMENT_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/movement.fkc.md");
 
 /// Register the Vulkan movement family (8 (op, dtype) bindings — Concat (4) +
 /// CumSum (4)) by IMPORTING its FKC kernel contract — the SEVENTH Vulkan-backend
@@ -5485,7 +5480,7 @@ fn register_vulkan_movement_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan shape (Triu / Tril / Flip / Roll) kernel contract, embedded
 /// via `include_str!` (the PRODUCTION contract). Parsed + lowered by
 /// [`register_vulkan_shape_from_contract`].
-const VULKAN_SHAPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/shape.fkc.md");
+const VULKAN_SHAPE_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/shape.fkc.md");
 
 /// Register the Vulkan shape family (28 (op, dtype) bindings — Triu (7) + Tril (7)
 /// + Flip (7) + Roll (7)) by IMPORTING its FKC kernel contract — the EIGHTH
@@ -5529,8 +5524,7 @@ fn register_vulkan_shape_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan pad-copy (Pad / PadBackward / Copy) kernel contract,
 /// embedded via `include_str!` (the PRODUCTION contract). Parsed + lowered by
 /// [`register_vulkan_pad_copy_from_contract`].
-const VULKAN_PAD_COPY_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/pad-copy.fkc.md");
+const VULKAN_PAD_COPY_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/pad-copy.fkc.md");
 
 /// Register the Vulkan pad-copy family (21 (op, dtype) bindings — Pad (6) +
 /// PadBackward (6) + Copy (9)) by IMPORTING its FKC kernel contract — the NINTH
@@ -5571,7 +5565,7 @@ fn register_vulkan_pad_copy_from_contract(table: &mut KernelBindingTable) {
 /// contract, embedded via `include_str!` (the PRODUCTION contract). Parsed +
 /// lowered by [`register_vulkan_write_slice_from_contract`].
 const VULKAN_WRITE_SLICE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/write-slice.fkc.md");
+    include_str!("../kernel-contracts/vulkan/write-slice.fkc.md");
 
 /// Register the Vulkan write-slice family (18 (op, dtype) bindings — WriteSlice (9)
 /// + WriteSliceRotating (9)) by IMPORTING its FKC kernel contract — the TENTH
@@ -5613,7 +5607,7 @@ fn register_vulkan_write_slice_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored Vulkan rope kernel contract, embedded via `include_str!` (the
 /// PRODUCTION contract). Parsed + lowered by [`register_vulkan_rope_from_contract`].
-const VULKAN_ROPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/rope.fkc.md");
+const VULKAN_ROPE_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/rope.fkc.md");
 
 /// Register the Vulkan rope family (4 (Rope, [x, cos, sin, out]) per-dtype
 /// bindings) by IMPORTING its FKC kernel contract — the ELEVENTH Vulkan-backend
@@ -5654,8 +5648,7 @@ fn register_vulkan_rope_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan reduce-primitives kernel contract (production per-(op,
 /// dtype) bindings), embedded via `include_str!`. Parsed + lowered by
 /// [`register_vulkan_reduce_from_contract`].
-const VULKAN_REDUCE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/reduce-prims.fkc.md");
+const VULKAN_REDUCE_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/reduce-prims.fkc.md");
 
 /// Register the Vulkan reduce family (24 (op, dtype) bindings — SumReduce /
 /// MaxReduce / MinReduce / MeanReduce (16) + ArgMaxDim / ArgMinDim (8)) by
@@ -5699,7 +5692,7 @@ fn register_vulkan_reduce_from_contract(table: &mut KernelBindingTable) {
 /// The authored Vulkan normalization / softmax primitives kernel contract,
 /// embedded via `include_str!`. Parsed + lowered by
 /// [`register_vulkan_norm_from_contract`].
-const VULKAN_NORM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vulkan/norm.fkc.md");
+const VULKAN_NORM_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/norm.fkc.md");
 
 /// Register the Vulkan norm family (20 (op, dtype) bindings — SoftmaxLastDim (4) +
 /// SoftmaxLastDimBackward (4) + LayerNormLastDim (4) + LayerNormLastDimBackward (4)
@@ -5744,8 +5737,7 @@ fn register_vulkan_norm_from_contract(table: &mut KernelBindingTable) {
 /// f32/bf16/f16 + backward Q/K/V f32, each fanning a no-alibi + a with-alibi
 /// key ⇒ 12 bindings), embedded via `include_str!` (the PRODUCTION contract).
 /// Parsed + lowered by [`register_vulkan_attention_from_contract`].
-const VULKAN_ATTENTION_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/vulkan/attention.fkc.md");
+const VULKAN_ATTENTION_CONTRACT: &str = include_str!("../kernel-contracts/vulkan/attention.fkc.md");
 
 /// Register the Vulkan FlashAttention family (12 bindings — forward
 /// `OpKind::FlashAttn` at f32/bf16/f16 + backward `OpKind::FlashAttnBackward{Q,K,V}`
@@ -5764,7 +5756,7 @@ const VULKAN_ATTENTION_CONTRACT: &str =
 /// register the primitive `OpKind::FlashAttn*` bindings production wires (the same
 /// primitive-vs-fused split conv2d / matmul draw). So the migration authors SIX
 /// faithful single-dtype-per-operand `op_kind:` sections in the new production
-/// `docs/kernel-contracts/vulkan/attention.fkc.md`:
+/// `fuel-dispatch/kernel-contracts/vulkan/attention.fkc.md`:
 ///  - **Forward wrappers are DISTINCT per dtype** (`flash_attn::flash_attn_{f32,
 ///    bf16,f16}`), so — like conv2d's `conv2d_{f32,bf16,f16}` and the CPU attention
 ///    contract's per-dtype `flash_attn_*` sections — each dtype is its OWN
@@ -5878,7 +5870,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // ----- Binary + Unary f32 (V.2.A/B) — MIGRATED to FKC contract import.
     // The hand-written `register_with_caps_and_precision` regs (6 binary + 16
     // unary, all strided f32) are DELETED; the whole elementwise family now
-    // registers from `docs/kernel-contracts/vulkan/elementwise.fkc.md` via
+    // registers from `fuel-dispatch/kernel-contracts/vulkan/elementwise.fkc.md` via
     // `register_vulkan_elementwise_from_contract` (the SOLE path, called at the
     // END of this fn before the cost-fill pass). The top-level `strided`
     // `KernelCaps` binding that Rope / Concat / Flip / Roll / CumSum used to consume
@@ -5897,7 +5889,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // OpKind::{SoftmaxLastDim,SoftmaxLastDimBackward,LayerNormLastDim,
     // LayerNormLastDimBackward,RmsNormLastDim}, …)` regs (20 per-(op, dtype)
     // bindings, all contiguous) are DELETED; the whole norm family now registers
-    // from `docs/kernel-contracts/vulkan/norm.fkc.md` via
+    // from `fuel-dispatch/kernel-contracts/vulkan/norm.fkc.md` via
     // `register_vulkan_norm_from_contract` (called at the END of this fn, before the
     // cost-fill pass). Forward families key [T, T], backward families [T, T, T];
     // precision becomes the audited nondeterministic none(reason) seed (per-row
@@ -5933,7 +5925,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // ----- RoPE (f32/f16/f64/bf16) — MIGRATED to FKC contract import. The
     // hand-written `register_with_caps_and_precision(OpKind::Rope, …, strided, …)`
     // regs (4-slot [x, cos, sin, out] key, 4 per-dtype wrappers) are DELETED; the
-    // rope family now registers from `docs/kernel-contracts/vulkan/rope.fkc.md` via
+    // rope family now registers from `fuel-dispatch/kernel-contracts/vulkan/rope.fkc.md` via
     // `register_vulkan_rope_from_contract` (called at the END of this fn, before the
     // cost-fill pass). Stride-aware (strided_input=true); precision becomes the
     // conservative UNAUDITED author seed (the elementwise pointwise precedent; the
@@ -5949,7 +5941,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // contract import. The hand-written `register_with_precision(OpKind::
     // IndexSelect, …)` regs (4 per-dtype wrappers) are DELETED; the whole select
     // family (IndexSelect + Gather + MaskedFill) now registers from
-    // `docs/kernel-contracts/vulkan/select.fkc.md` via
+    // `fuel-dispatch/kernel-contracts/vulkan/select.fkc.md` via
     // `register_vulkan_select_from_contract` (called at the END of this fn, before
     // the cost-fill pass). Caps stay contiguous-only (strided_input=false). -----
 
@@ -5964,7 +5956,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // import. The hand-written per-(op, dtype) `register_with_precision(OpKind::
     // {SumReduce,…,ArgMinDim}, …)` regs (16 value + 8 arg, all contiguous) are
     // DELETED; the whole reduce family now registers from
-    // `docs/kernel-contracts/vulkan/reduce-prims.fkc.md` via
+    // `fuel-dispatch/kernel-contracts/vulkan/reduce-prims.fkc.md` via
     // `register_vulkan_reduce_from_contract` (called at the END of this fn, before
     // the cost-fill pass). Value reduces carry the audited nondeterministic
     // none(reason) seed (subgroup-tree FADD order); arg reduces are bitwise exact
@@ -5974,7 +5966,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // FKC contract import. The hand-written `register_with_precision(OpKind::
     // {IndexAdd,ScatterAdd}, …)` regs (4 per-dtype wrappers each, 4-slot
     // [base, U32, src, out] key) are DELETED; the whole scatter family now
-    // registers from `docs/kernel-contracts/vulkan/scatter.fkc.md` via
+    // registers from `fuel-dispatch/kernel-contracts/vulkan/scatter.fkc.md` via
     // `register_vulkan_scatter_from_contract` (called at the END of this fn,
     // before the cost-fill pass). Caps stay contiguous-only (strided_input=false);
     // precision becomes the contract's audited nondeterministic none(reason) seed
@@ -5988,7 +5980,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // now registered from the reduce-prims contract, alongside the f32 combos). -----
 
     // ----- Concat (f32/f16/bf16/f64) — MIGRATED to FKC contract import (deleted;
-    // now registered from `docs/kernel-contracts/vulkan/movement.fkc.md` via
+    // now registered from `fuel-dispatch/kernel-contracts/vulkan/movement.fkc.md` via
     // `register_vulkan_movement_from_contract`, alongside CumSum). Stride-aware
     // (strided_input=true) byte-level data movement. -----
 
@@ -5998,13 +5990,13 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // ----- Pad + PadBackward — MIGRATED to FKC contract import. The hand-written
     // per-dtype (6 dtypes) `register_with_precision(OpKind::{Pad,PadBackward}, …)`
     // regs are DELETED; the whole pad-copy family (Pad + PadBackward + Copy) now
-    // registers from `docs/kernel-contracts/vulkan/pad-copy.fkc.md` via
+    // registers from `fuel-dispatch/kernel-contracts/vulkan/pad-copy.fkc.md` via
     // `register_vulkan_pad_copy_from_contract` (called at the END of this fn,
     // before the cost-fill pass). Each op is ONE dtype-agnostic wrapper
     // (synthetic-base umbrella); const mode only; contiguous-only. -----
     {
         // ----- MaskedFill + Gather — MIGRATED to FKC contract import (deleted;
-        // now registered from `docs/kernel-contracts/vulkan/select.fkc.md` via
+        // now registered from `fuel-dispatch/kernel-contracts/vulkan/select.fkc.md` via
         // `register_vulkan_select_from_contract`, alongside IndexSelect). Both are
         // ONE dtype-agnostic wrapper across their 6 dtype keys (byte-width from the
         // output dtype) — a synthetic-base umbrella. Contiguous-only. -----
@@ -6024,7 +6016,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // matmul migration left in use for the Vulkan conv2d family are now ALSO
     // retired — conv2d migrated to its own FKC contract
     // (`register_vulkan_conv_from_contract`). See
-    // `docs/kernel-contracts/vulkan/matmul.fkc.md`.
+    // `fuel-dispatch/kernel-contracts/vulkan/matmul.fkc.md`.
 
     // ----- Affine / Clamp / PowI — MIGRATED to FKC contract import.
     // The hand-written Affine (f32/f16/f64 strided + bf16 contiguous-only),
@@ -6039,7 +6031,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // The hand-written `table.register_with_precision(OpKind::Cast, …)`
     // regs (f32↔f16, f32↔bf16, f32↔f64, and — further below — the six
     // F8E4M3↔{f32,f16,bf16} pairs) are DELETED. The whole family now
-    // registers from `docs/kernel-contracts/vulkan/cast.fkc.md` via
+    // registers from `fuel-dispatch/kernel-contracts/vulkan/cast.fkc.md` via
     // `register_vulkan_cast_from_contract`, called at the END of this fn
     // (before the cost-fill pass), the SOLE registration path.
     // The top-level `f16` / `bf16_d` bindings that the WriteSlice / Copy byte-width
@@ -6067,7 +6059,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // hand-written byte-width-keyed (9 dtypes → b1/b2/b4/b8) `register_with_precision(
     // OpKind::{WriteSlice,WriteSliceRotating}, …)` regs are DELETED; the whole
     // write-slice family now registers from
-    // `docs/kernel-contracts/vulkan/write-slice.fkc.md` via
+    // `fuel-dispatch/kernel-contracts/vulkan/write-slice.fkc.md` via
     // `register_vulkan_write_slice_from_contract` (called at the END of this fn,
     // before the cost-fill pass). Each op's 9 dtype keys share 4 byte-width wrappers
     // (the cast family's shared-wrapper precedent); contiguous-only. -----
@@ -6091,14 +6083,14 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // hand-written per-dtype (7 dtypes) `register_with_precision(OpKind::
     // {Triu,Tril}, …)` + `register_with_caps_and_precision(OpKind::{Flip,Roll},
     // …, strided, …)` regs are DELETED; the whole shape family now registers from
-    // `docs/kernel-contracts/vulkan/shape.fkc.md` via
+    // `fuel-dispatch/kernel-contracts/vulkan/shape.fkc.md` via
     // `register_vulkan_shape_from_contract` (called at the END of this fn, before
     // the cost-fill pass). Each op is ONE dtype-agnostic wrapper (synthetic-base
     // umbrella). Caps split by op: Triu/Tril contiguous, Flip/Roll strided. -----
 
     // ----- CumSum (inclusive prefix sum along one axis) — MIGRATED to FKC
     // contract import (deleted; now registered from
-    // `docs/kernel-contracts/vulkan/movement.fkc.md` via
+    // `fuel-dispatch/kernel-contracts/vulkan/movement.fkc.md` via
     // `register_vulkan_movement_from_contract`, alongside Concat). Stride-aware
     // (strided_input=true); precision becomes the conservative UNAUDITED author
     // seed (the elementwise pointwise precedent; the retired
@@ -6108,7 +6100,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // MIGRATED to FKC contract import. The hand-written
     // `table.register_with_precision(OpKind::QMatMul, &[F32, U32, F32], …)` reg is
     // DELETED; the single binding now registers from
-    // `docs/kernel-contracts/vulkan/qmatmul.fkc.md` via
+    // `fuel-dispatch/kernel-contracts/vulkan/qmatmul.fkc.md` via
     // `register_vulkan_qmatmul_from_contract` (called at the END of this fn, before
     // the cost-fill pass). ONE wrapper `qmatmul_vk` route-picks Q4_0 (fused
     // gemv/tiled) / Q4_K_M / Q8_0 (dequant-then-matmul_f32) by
@@ -6126,7 +6118,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // contract import. The hand-written `table.register_with_precision(
     // OpKind::Conv2D, …)` regs (f32 here + the bf16/f16 coop combos further
     // below) are DELETED; the whole family now registers from
-    // `docs/kernel-contracts/vulkan/conv.fkc.md` via
+    // `fuel-dispatch/kernel-contracts/vulkan/conv.fkc.md` via
     // `register_vulkan_conv_from_contract` (called at the END of this fn, before
     // the cost-fill pass). Caps stay contiguous-only (`requires_contiguous` ⇒
     // strided_input=false); no bias key (the wrappers bail on a 3-input call);
@@ -6140,7 +6132,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // FlashAttnBackwardK,FlashAttnBackwardV}, …)` regs (naive single-pass SDPA;
     // both the no-alibi [q,k,v,(do,)out] and with-alibi [q,k,v,(do,)alibi,out]
     // binding shapes) are DELETED; the whole FlashAttention family now registers
-    // from `docs/kernel-contracts/vulkan/attention.fkc.md` via
+    // from `fuel-dispatch/kernel-contracts/vulkan/attention.fkc.md` via
     // `register_vulkan_attention_from_contract` (called at the END of this fn,
     // before the cost-fill pass). Forward is THREE distinct per-dtype wrappers
     // (per-dtype sections, the conv2d + CPU-attention precedent); backward is
@@ -6155,7 +6147,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 
     // ----- Conv2D bf16 + f16 (V.3.I extended) — im2col + cooperative-matrix
     // GEMM — MIGRATED to FKC contract import (deleted; now registered from
-    // `docs/kernel-contracts/vulkan/conv.fkc.md` via
+    // `fuel-dispatch/kernel-contracts/vulkan/conv.fkc.md` via
     // `register_vulkan_conv_from_contract`, alongside the f32 combo above). -----
 
     // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — MIGRATED to FKC contract
@@ -6171,7 +6163,7 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // Contiguize step. Auto-Contiguize handles non-contiguous
     // sources upstream of this kernel. -----
     // Op::Copy (D2H) — MIGRATED to FKC contract import (deleted; now registered
-    // from `docs/kernel-contracts/vulkan/pad-copy.fkc.md` via
+    // from `fuel-dispatch/kernel-contracts/vulkan/pad-copy.fkc.md` via
     // `register_vulkan_pad_copy_from_contract`, alongside Pad + PadBackward). ONE
     // dtype-agnostic wrapper (`copy_to_cpu_vulkan`) across 9 dtype keys
     // (synthetic-base umbrella); contiguous-only. -----
@@ -6376,7 +6368,7 @@ mod cast_contract_tests {
 
     /// FIRST VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
     /// registers the whole `OpKind::Cast` family (12 (SRC, DST) pairs) FROM ITS
-    /// KERNEL CONTRACT (`docs/kernel-contracts/vulkan/cast.fkc.md`) via
+    /// KERNEL CONTRACT (`fuel-dispatch/kernel-contracts/vulkan/cast.fkc.md`) via
     /// `register_vulkan_cast_from_contract` — the sole registration path, now
     /// that the hand-written `table.register_with_precision(OpKind::Cast, …)`
     /// calls (half/f64 + F8E4M3) are DELETED.
@@ -6469,7 +6461,7 @@ mod elementwise_contract_tests {
     /// SECOND VULKAN-BACKEND FKC CONSUMER (born-red gate) + the FIRST
     /// caps-through-import proof. `register_vulkan_kernels` registers the whole
     /// elementwise family (94 (op, dtype) bindings) FROM ITS RE-AUTHORED KERNEL
-    /// CONTRACT (`docs/kernel-contracts/vulkan/elementwise.fkc.md`) via
+    /// CONTRACT (`fuel-dispatch/kernel-contracts/vulkan/elementwise.fkc.md`) via
     /// `register_vulkan_elementwise_from_contract` -- the sole registration path,
     /// now that the hand-written per-(op,dtype) unary(16)/binary(6)/affine/clamp/
     /// powi regs are DELETED.
@@ -7111,7 +7103,7 @@ mod matmul_contract_tests {
     /// THIRD VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
     /// registers the whole Vulkan matmul family (6 per-combo `(MatMul, [lhs,rhs,out])`
     /// bindings) FROM ITS RE-AUTHORED KERNEL CONTRACT
-    /// (`docs/kernel-contracts/vulkan/matmul.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/vulkan/matmul.fkc.md`) via
     /// `register_vulkan_matmul_from_contract` — the sole registration path, now
     /// that the hand-written `table.register_with_precision(OpKind::MatMul, …)`
     /// regs (the f32 GEMM + the five mixed-precision / tensor-core combos) are
@@ -7218,7 +7210,7 @@ mod conv_contract_tests {
     /// FOURTH VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
     /// registers the whole Vulkan conv2d family (3 per-(op, dtype) `(Conv2D,
     /// [x, weight, out])` bindings) FROM ITS RE-AUTHORED KERNEL CONTRACT
-    /// (`docs/kernel-contracts/vulkan/conv.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/vulkan/conv.fkc.md`) via
     /// `register_vulkan_conv_from_contract` — the sole registration path, now that
     /// the hand-written `table.register_with_precision(OpKind::Conv2D, …)` regs
     /// (f32 / bf16 / f16) are DELETED.
@@ -7320,7 +7312,7 @@ mod select_contract_tests {
     /// wrappers), Gather (6 dtype keys → the ONE `gather::gather` synthetic-base
     /// umbrella wrapper), MaskedFill (6 dtype keys → the ONE
     /// `masked_fill::masked_fill` umbrella wrapper) — FROM ITS FKC KERNEL CONTRACT
-    /// (`docs/kernel-contracts/vulkan/select.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/vulkan/select.fkc.md`) via
     /// `register_vulkan_select_from_contract`, the sole registration path now that
     /// the hand-written `register_with_precision(OpKind::{IndexSelect,Gather,
     /// MaskedFill}, …)` regs are DELETED.
@@ -7494,7 +7486,7 @@ mod scatter_contract_tests {
     /// SIXTH VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
     /// registers the whole Vulkan **scatter** family — IndexAdd (4 per-dtype) +
     /// ScatterAdd (4 per-dtype), 4-slot key `[base, U32, src, out]` — FROM ITS FKC
-    /// KERNEL CONTRACT (`docs/kernel-contracts/vulkan/scatter.fkc.md`) via
+    /// KERNEL CONTRACT (`fuel-dispatch/kernel-contracts/vulkan/scatter.fkc.md`) via
     /// `register_vulkan_scatter_from_contract`, the sole path now that the
     /// hand-written `register_with_precision(OpKind::{IndexAdd,ScatterAdd}, …)` regs
     /// are DELETED. Each section fans `base` + `src` over the SAME `[F32,F64,BF16,F16]`
@@ -7606,7 +7598,7 @@ mod movement_contract_tests {
     /// SEVENTH VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
     /// registers the whole Vulkan **movement** family — Concat (4 per-dtype) +
     /// CumSum (4 per-dtype), key `[T, T]` — FROM ITS FKC KERNEL CONTRACT
-    /// (`docs/kernel-contracts/vulkan/movement.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/vulkan/movement.fkc.md`) via
     /// `register_vulkan_movement_from_contract`, the sole path now that the
     /// hand-written `register_with_caps_and_precision(OpKind::{Concat,CumSum}, …,
     /// strided, …)` regs are DELETED.
@@ -7690,7 +7682,7 @@ mod shape_contract_tests {
     /// EIGHTH VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
     /// registers the whole Vulkan **shape** family — Triu (7 dtypes) + Tril (7) +
     /// Flip (7) + Roll (7), key `[T, T]` — FROM ITS FKC KERNEL CONTRACT
-    /// (`docs/kernel-contracts/vulkan/shape.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/vulkan/shape.fkc.md`) via
     /// `register_vulkan_shape_from_contract`, the sole path now that the
     /// hand-written `register_with_precision(OpKind::{Triu,Tril}, …)` +
     /// `register_with_caps_and_precision(OpKind::{Flip,Roll}, …, strided, …)` regs
@@ -7774,7 +7766,7 @@ mod pad_copy_contract_tests {
     /// NINTH VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
     /// registers the whole Vulkan **pad-copy** family — Pad (6 dtypes) +
     /// PadBackward (6) + Copy (9) — FROM ITS FKC KERNEL CONTRACT
-    /// (`docs/kernel-contracts/vulkan/pad-copy.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/vulkan/pad-copy.fkc.md`) via
     /// `register_vulkan_pad_copy_from_contract`, the sole path now that the
     /// hand-written `register_with_precision(OpKind::{Pad,PadBackward,Copy}, …)`
     /// regs are DELETED. Each op is ONE dtype-agnostic wrapper across its dtype keys
@@ -7863,7 +7855,7 @@ mod write_slice_contract_tests {
     /// TENTH VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
     /// registers the whole Vulkan **write-slice** family — WriteSlice (9 dtypes) +
     /// WriteSliceRotating (9), key `[T, T]` — FROM ITS FKC KERNEL CONTRACT
-    /// (`docs/kernel-contracts/vulkan/write-slice.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/vulkan/write-slice.fkc.md`) via
     /// `register_vulkan_write_slice_from_contract`, the sole path now that the
     /// hand-written `register_with_precision(OpKind::{WriteSlice,WriteSliceRotating},
     /// …)` regs are DELETED. Each op is BYTE-WIDTH-keyed: 9 dtype keys resolve to 4
@@ -7975,7 +7967,7 @@ mod rope_contract_tests {
     /// ELEVENTH VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
     /// registers the whole Vulkan **rope** family — RoPE (4 per-dtype), 4-slot key
     /// `[x, cos, sin, out]` — FROM ITS FKC KERNEL CONTRACT
-    /// (`docs/kernel-contracts/vulkan/rope.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/vulkan/rope.fkc.md`) via
     /// `register_vulkan_rope_from_contract`, the sole path now that the hand-written
     /// `register_with_caps_and_precision(OpKind::Rope, …, strided, …)` regs are
     /// DELETED. One section fans `x` + `cos` + `sin` over the SAME `[F32,F16,F64,BF16]`
@@ -8046,7 +8038,7 @@ mod reduce_contract_tests {
     /// registers the whole Vulkan **reduce** family — SumReduce / MaxReduce /
     /// MinReduce / MeanReduce (4 per-dtype each = 16, key `[T, T]`) + ArgMaxDim /
     /// ArgMinDim (4 per-dtype each = 8, key `[T, U32]`) — FROM ITS FKC KERNEL
-    /// CONTRACT (`docs/kernel-contracts/vulkan/reduce.fkc.md`) via
+    /// CONTRACT (`fuel-dispatch/kernel-contracts/vulkan/reduce.fkc.md`) via
     /// `register_vulkan_reduce_from_contract`, the sole path now that the
     /// hand-written `register_with_precision(OpKind::{SumReduce,…,ArgMinDim}, …)`
     /// regs are DELETED. Each OpKind is its own section fanned over the dtype list to
@@ -8177,7 +8169,7 @@ mod norm_contract_tests {
     /// registers the whole Vulkan **norm** family — SoftmaxLastDim (4, key `[T, T]`),
     /// SoftmaxLastDimBackward (4, key `[y, g, dx]`), LayerNormLastDim (4, `[T, T]`),
     /// LayerNormLastDimBackward (4, `[x, g, dx]`), RmsNormLastDim (4, `[T, T]`) —
-    /// FROM ITS FKC KERNEL CONTRACT (`docs/kernel-contracts/vulkan/norm.fkc.md`) via
+    /// FROM ITS FKC KERNEL CONTRACT (`fuel-dispatch/kernel-contracts/vulkan/norm.fkc.md`) via
     /// `register_vulkan_norm_from_contract`, the sole path now that the hand-written
     /// `register_with_precision(OpKind::{SoftmaxLastDim,…,RmsNormLastDim}, …)` regs
     /// are DELETED. Each OpKind is its own section fanned over `[F32, F16, BF16, F64]`
@@ -8298,7 +8290,7 @@ mod qmatmul_contract_tests {
     /// Vulkan)` — F32 activation × U32-typed GGML block-quant weight → F32 output, the
     /// one wrapper `qmatmul::qmatmul_vk` route-picking Q4_0 / Q4_K_M / Q8_0 internally
     /// by `OpParams::QMatMul.quant_type`) FROM ITS RE-AUTHORED FKC KERNEL CONTRACT
-    /// (`docs/kernel-contracts/vulkan/qmatmul.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/vulkan/qmatmul.fkc.md`) via
     /// `register_vulkan_qmatmul_from_contract` — the sole registration path now that
     /// the hand-written `table.register_with_precision(OpKind::QMatMul, …)` reg is
     /// DELETED.
@@ -8309,7 +8301,7 @@ mod qmatmul_contract_tests {
     /// `OpKind::QMatMul` (not the fused op) keyed with the LOGICAL U32 weight dtype
     /// (not the physical U8 block stream). So the migration authors ONE faithful
     /// single-dtype-per-operand `op_kind: QMatMul` section in the new production
-    /// `docs/kernel-contracts/vulkan/qmatmul.fkc.md` (weight `U32`, `fdx.quant`
+    /// `fuel-dispatch/kernel-contracts/vulkan/qmatmul.fkc.md` (weight `U32`, `fdx.quant`
     /// GGML_BLOCK keeping byte-honesty — the CPU linear-quant U8→U32 precedent), and
     /// flips the two corpus fused sections to `registrable: false` describe-only
     /// cross-referencing it (the matmul_mixed_precision precedent).
@@ -8375,7 +8367,7 @@ mod attention_contract_tests {
     /// family (12 `KernelRef`s: forward `OpKind::FlashAttn` at f32/bf16/f16 +
     /// backward `OpKind::FlashAttnBackward{Q,K,V}` at f32, each with a
     /// no-alibi AND a with-alibi binding shape) FROM ITS AUTHORED FKC KERNEL
-    /// CONTRACT (`docs/kernel-contracts/vulkan/attention.fkc.md`) via
+    /// CONTRACT (`fuel-dispatch/kernel-contracts/vulkan/attention.fkc.md`) via
     /// `register_vulkan_attention_from_contract` — the sole registration path
     /// now that the hand-written `table.register_with_precision(OpKind::{FlashAttn,
     /// FlashAttnBackwardQ,FlashAttnBackwardK,FlashAttnBackwardV}, …)` regs are

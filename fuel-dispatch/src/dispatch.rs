@@ -5691,7 +5691,7 @@ fn copy_from_cpu_wrapper(
 /// path used in the `fkc::register` test module); `register_cpu_binary_from_contract`
 /// parses + lowers it and binds the family FROM THE CONTRACT.
 const CPU_ELEMENTWISE_BINARY_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
+    include_str!("../kernel-contracts/cpu/elementwise-binary.fkc.md");
 
 /// Register the CPU elementwise-binary family (8 ops × 4 dtypes = 32
 /// bindings) by IMPORTING its FKC kernel contract — the FIRST production
@@ -5700,7 +5700,7 @@ const CPU_ELEMENTWISE_BINARY_CONTRACT: &str =
 /// (deleting it was the point — a build that lost the importer would silently
 /// lose the family).
 ///
-/// The authored contract `docs/kernel-contracts/cpu/elementwise-binary.fkc.md`
+/// The authored contract `fuel-dispatch/kernel-contracts/cpu/elementwise-binary.fkc.md`
 /// is parsed + lowered and each `entry_point` symbol resolved through the
 /// production [`crate::fkc::CpuLinkRegistry`] to the exact same wrapper
 /// fn-pointers the CPU backend exposes (`add_elementwise_f32_cpu_wrapper`, …;
@@ -5747,7 +5747,7 @@ fn register_cpu_binary_from_contract(table: &mut KernelBindingTable) {
 /// binary (the PRODUCTION `include_str!`). `register_cpu_affine_clamp_powi_from_contract`
 /// parses + lowers it and binds the family FROM THE CONTRACT.
 const CPU_AFFINE_CLAMP_POWI_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/affine-clamp-powi.fkc.md");
+    include_str!("../kernel-contracts/cpu/affine-clamp-powi.fkc.md");
 
 /// Register the CPU out-of-place scalar-param family (affine/clamp/powi × 4
 /// dtypes + powi_backward × 4 = 16 bindings) by IMPORTING its FKC kernel
@@ -5795,7 +5795,7 @@ fn register_cpu_affine_clamp_powi_from_contract(table: &mut KernelBindingTable) 
 /// (the PRODUCTION `include_str!`). `register_cpu_unary_from_contract` parses +
 /// lowers it and binds the family FROM THE CONTRACT.
 const CPU_ELEMENTWISE_UNARY_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/elementwise-unary.fkc.md");
+    include_str!("../kernel-contracts/cpu/elementwise-unary.fkc.md");
 
 /// Register the CPU elementwise-unary family (22 ops × 4 dtypes = 88 bindings)
 /// by IMPORTING its FKC kernel contract — the third production FKC consumer,
@@ -5844,7 +5844,7 @@ fn register_cpu_unary_from_contract(table: &mut KernelBindingTable) {
 /// (the PRODUCTION `include_str!`). `register_cpu_compare_where_from_contract`
 /// parses + lowers it and binds the family FROM THE CONTRACT.
 const CPU_COMPARE_WHERE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/compare-where.fkc.md");
+    include_str!("../kernel-contracts/cpu/compare-where.fkc.md");
 
 /// Register the CPU compare (6 ops × 4 dtypes = 24) + where (1 op × 4 dtypes =
 /// 4) family — 28 bindings — by IMPORTING its FKC kernel contract, the fourth
@@ -5894,7 +5894,7 @@ fn register_cpu_compare_where_from_contract(table: &mut KernelBindingTable) {
 /// The authored CPU reduce kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_reduce_from_contract` parses +
 /// lowers it and binds the family FROM THE CONTRACT.
-const CPU_REDUCE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/reduce.fkc.md");
+const CPU_REDUCE_CONTRACT: &str = include_str!("../kernel-contracts/cpu/reduce.fkc.md");
 
 /// Register the CPU per-axis reduce family (Sum/Mean/Max/Min × 4 dtypes = 16
 /// bindings) by IMPORTING its FKC kernel contract, the fifth production FKC
@@ -5944,8 +5944,7 @@ fn register_cpu_reduce_from_contract(table: &mut KernelBindingTable) {
 /// The authored CPU reduce-to kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_reduce_to_from_contract` parses +
 /// lowers it and binds the family FROM THE CONTRACT.
-const CPU_REDUCE_TO_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/reduce-to.fkc.md");
+const CPU_REDUCE_TO_CONTRACT: &str = include_str!("../kernel-contracts/cpu/reduce-to.fkc.md");
 
 /// Register the CPU broadcast-target reduce-to family (ReduceSumTo /
 /// ReduceMaxTo × 4 dtypes = 8, key `[T, T]`; ReduceMaxToBackward × 4 dtypes = 4,
@@ -5997,7 +5996,7 @@ fn register_cpu_reduce_to_from_contract(table: &mut KernelBindingTable) {
 /// The authored CPU norm (forward) kernel contract, embedded into the binary
 /// (the PRODUCTION `include_str!`). `register_cpu_norm_from_contract` parses +
 /// lowers it and binds the family FROM THE CONTRACT.
-const CPU_NORM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/norm.fkc.md");
+const CPU_NORM_CONTRACT: &str = include_str!("../kernel-contracts/cpu/norm.fkc.md");
 
 /// Register the CPU last-dim NORM (forward) family (Softmax / LogSoftmax /
 /// RmsNorm / LayerNorm × 4 dtypes = 16 bindings, key `[T, T]`) by IMPORTING its
@@ -6053,7 +6052,7 @@ fn register_cpu_norm_from_contract(table: &mut KernelBindingTable) {
 /// (the PRODUCTION `include_str!`). `register_cpu_norm_backward_from_contract`
 /// parses + lowers it and binds the family FROM THE CONTRACT.
 const CPU_NORM_BACKWARD_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/norm-backward.fkc.md");
+    include_str!("../kernel-contracts/cpu/norm-backward.fkc.md");
 
 /// Register the CPU last-dim NORM-BACKWARD family (Softmax / LogSoftmax /
 /// RmsNorm / LayerNorm backward × 4 dtypes = 16 bindings, key `[T, T, T]`) by
@@ -6108,7 +6107,7 @@ fn register_cpu_norm_backward_from_contract(table: &mut KernelBindingTable) {
 /// The authored CPU RoPE kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_rope_from_contract` parses +
 /// lowers it and binds the family FROM THE CONTRACT.
-const CPU_ROPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/rope.fkc.md");
+const CPU_ROPE_CONTRACT: &str = include_str!("../kernel-contracts/cpu/rope.fkc.md");
 
 /// Register the CPU RoPE family (rotary position embedding; 1 op × 4 dtypes =
 /// 4 bindings, key `[T, T, T, T]`) by IMPORTING its FKC kernel contract, the
@@ -6162,7 +6161,7 @@ fn register_cpu_rope_from_contract(table: &mut KernelBindingTable) {
 /// The authored CPU SSM / Mamba kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_ssm_from_contract` parses + lowers
 /// it and binds the MIGRATED subset of the family FROM THE CONTRACT.
-const CPU_SSM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/ssm.fkc.md");
+const CPU_SSM_CONTRACT: &str = include_str!("../kernel-contracts/cpu/ssm.fkc.md");
 
 /// Register the ENTIRE CPU SSM / Mamba family —
 /// FusedSoftmaxCrossEntropy (key `[T, I64, F32]`) + CausalConv1d (key
@@ -6222,7 +6221,7 @@ fn register_cpu_ssm_from_contract(table: &mut KernelBindingTable) {
 /// (the PRODUCTION `include_str!`). `register_cpu_conv_from_contract` parses +
 /// lowers it and binds the MIGRATED (with-bias) subset of the family FROM THE
 /// CONTRACT.
-const CPU_CONV_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/conv.fkc.md");
+const CPU_CONV_CONTRACT: &str = include_str!("../kernel-contracts/cpu/conv.fkc.md");
 
 /// Register the CPU 2D-convolution family FULLY — Conv2D + ConvTranspose2D at
 /// BOTH the no-bias key `[T, T, T]` (x, weight + out) and the with-bias key
@@ -6283,7 +6282,7 @@ fn register_cpu_conv_from_contract(table: &mut KernelBindingTable) {
 /// PRODUCTION `include_str!`). `register_cpu_padding_from_contract` parses +
 /// lowers it and binds the FULL family (mode-unified forward `Pad` +
 /// `PadBackward`) FROM THE CONTRACT.
-const CPU_PADDING_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/padding.fkc.md");
+const CPU_PADDING_CONTRACT: &str = include_str!("../kernel-contracts/cpu/padding.fkc.md");
 
 /// Register the FULL CPU padding family — mode-unified forward `Pad` × 6 dtypes
 /// = 6 + `PadBackward` × 4 dtypes = 4 bindings (all key `[T, T]`) — by IMPORTING
@@ -6339,8 +6338,7 @@ fn register_cpu_padding_from_contract(table: &mut KernelBindingTable) {
 /// The authored CPU **shape-ops** kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_shape_ops_from_contract` parses +
 /// lowers it and binds the MIGRATED subset of the family FROM THE CONTRACT.
-const CPU_SHAPE_OPS_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/shape-ops.fkc.md");
+const CPU_SHAPE_OPS_CONTRACT: &str = include_str!("../kernel-contracts/cpu/shape-ops.fkc.md");
 
 /// Register the MIGRATED CPU shape-ops subset — Flip + Roll + Concat +
 /// MaskedFill + WriteSlice + WriteSliceRotating (dtype-agnostic byte kernels,
@@ -6401,7 +6399,7 @@ fn register_cpu_shape_ops_from_contract(table: &mut KernelBindingTable) {
 /// The authored CPU **matmul** kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_matmul_from_contract` parses +
 /// lowers it and binds the FULL portable family FROM THE CONTRACT.
-const CPU_MATMUL_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/matmul.fkc.md");
+const CPU_MATMUL_CONTRACT: &str = include_str!("../kernel-contracts/cpu/matmul.fkc.md");
 
 /// Register the CPU **matmul** family FULLY — bare batched `MatMul` (6 dtypes,
 /// key `[T, T, T]`) + fused `FusedLinear` (matmul + bias-add, 4 dtypes, key
@@ -6467,8 +6465,7 @@ fn register_cpu_matmul_from_contract(table: &mut KernelBindingTable) {
 /// PRODUCTION `include_str!`). `register_cpu_attention_from_contract` parses +
 /// lowers it and binds the MIGRATED (`KernelBindingTable`) subset FROM THE
 /// CONTRACT.
-const CPU_ATTENTION_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/attention.fkc.md");
+const CPU_ATTENTION_CONTRACT: &str = include_str!("../kernel-contracts/cpu/attention.fkc.md");
 
 /// Register the CPU **attention** family's `KernelBindingTable` path FROM its FKC
 /// kernel contract, the fifteenth production FKC consumer: forward `FlashAttn`
@@ -6545,7 +6542,7 @@ fn register_cpu_attention_from_contract(table: &mut KernelBindingTable) {
 /// binary (the PRODUCTION `include_str!`). `register_cpu_inplace_from_contract`
 /// parses + lowers it and binds the WHOLE family FROM THE CONTRACT.
 const CPU_INPLACE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md");
+    include_str!("../kernel-contracts/cpu/inplace-unary-affine.fkc.md");
 
 /// Register the CPU **in-place scalar-param** family's `KernelBindingTable` path
 /// FROM its FKC kernel contract, the sixteenth production FKC consumer: 21
@@ -6605,7 +6602,7 @@ fn register_cpu_inplace_from_contract(table: &mut KernelBindingTable) {
 /// The authored CPU **cast** kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_cast_from_contract` parses + lowers
 /// it and binds the FULL directed-pair matrix FROM THE CONTRACT.
-const CPU_CAST_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/cast.fkc.md");
+const CPU_CAST_CONTRACT: &str = include_str!("../kernel-contracts/cpu/cast.fkc.md");
 
 /// Register the CPU **cast** family FULLY — the COMPLETE directed-pair matrix,
 /// every ordered pair of the 11 real numeric dtypes
@@ -6656,7 +6653,7 @@ fn register_cpu_cast_from_contract(table: &mut KernelBindingTable) {
 /// into the binary (the PRODUCTION `include_str!`).
 /// `register_cpu_indexing_from_contract` parses + lowers it and binds the FULL
 /// family (IndexSelect + Gather + IndexAdd + ScatterAdd) FROM THE CONTRACT.
-const CPU_INDEXING_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/indexing.fkc.md");
+const CPU_INDEXING_CONTRACT: &str = include_str!("../kernel-contracts/cpu/indexing.fkc.md");
 
 /// Register the FULL CPU indexing family — IndexSelect (9 dtypes, key
 /// `[T, U32, T]`) + Gather (9 dtypes, key `[T, U32, T]`) + IndexAdd (4 dtypes,
@@ -6732,22 +6729,22 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // shorthand for "uniform-dtype across N inputs + output."
     let unary = |t: DType| [t, t]; // (in, out)
     // (MatMul's (lhs, rhs, out) key shape is now built by the FKC importer from
-    // docs/kernel-contracts/cpu/matmul.fkc.md — see
+    // fuel-dispatch/kernel-contracts/cpu/matmul.fkc.md — see
     // register_cpu_matmul_from_contract; the hand-written `binary` closure was
     // removed with its regs.)
     let u8_dt = DType::U8;
     // (Rope's (x, cos, sin, out) key shape is now built by the FKC importer
-    // from docs/kernel-contracts/cpu/rope.fkc.md — see
+    // from fuel-dispatch/kernel-contracts/cpu/rope.fkc.md — see
     // register_cpu_rope_from_contract; the hand-written `rope_dts` closure was
     // removed with its regs.)
     // (Conv2D/ConvTranspose2D are now FULLY built by the FKC importer from
-    // docs/kernel-contracts/cpu/conv.fkc.md — see register_cpu_conv_from_contract.
+    // fuel-dispatch/kernel-contracts/cpu/conv.fkc.md — see register_cpu_conv_from_contract.
     // The contract marks `bias` as `optional: true`, so the importer's key-builder
     // now emits BOTH the no-bias (x, w, out) and with-bias (x, w, bias, out) keys
     // per (op, dtype); the hand-written `conv2d_with_bias` / `conv2d_no_bias`
     // closures + their regs were all removed.)
     // (FusedLinear's (lhs, rhs, bias, out) key shape is now built by the FKC
-    // importer from docs/kernel-contracts/cpu/matmul.fkc.md — see
+    // importer from fuel-dispatch/kernel-contracts/cpu/matmul.fkc.md — see
     // register_cpu_matmul_from_contract; the hand-written `fused_linear` closure
     // was removed with its regs.)
     // FlashAttn / FlashAttnBackward{Q,K,V} / PagedAttn key-shape closures were
@@ -6755,7 +6752,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // optional-operand fan builds both alibi keys from the contract).
     // (IndexSelect/Gather's (data, indices, out) = [T, U32, T] and IndexAdd/
     // ScatterAdd's (base, indices, src, out) = [T, U32, T, T] key shapes are now
-    // built by the FKC importer from docs/kernel-contracts/cpu/indexing.fkc.md —
+    // built by the FKC importer from fuel-dispatch/kernel-contracts/cpu/indexing.fkc.md —
     // see register_cpu_indexing_from_contract; the hand-written `index_select` /
     // `gather_dts` / `index_add_dts` / `scatter_add` closures were removed with
     // their regs.)
@@ -6765,7 +6762,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     //
     // This family is the FIRST production FKC-contract consumer: it is
     // IMPORTED from its kernel contract
-    // (docs/kernel-contracts/cpu/elementwise-binary.fkc.md), resolving every
+    // (fuel-dispatch/kernel-contracts/cpu/elementwise-binary.fkc.md), resolving every
     // `entry_point` symbol through the production `CpuLinkRegistry` to the
     // exact same wrapper fn-pointers the CPU backend exposes. The hand-written
     // `table.register(...)` calls this family used to carry are DELETED — FKC
@@ -6777,7 +6774,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // Out-of-place scalar-param family (affine/clamp/powi × 4 dtypes +
     // powi_backward × 4 = 16 bindings). Second production FKC-contract
-    // consumer: IMPORTED from docs/kernel-contracts/cpu/affine-clamp-powi.fkc.md
+    // consumer: IMPORTED from fuel-dispatch/kernel-contracts/cpu/affine-clamp-powi.fkc.md
     // via the same `CpuLinkRegistry`. The hand-written `table.register(...)`
     // calls (Affine / ClampElementwise / PowIElementwise / PowIElementwiseBackward)
     // are DELETED — this is the sole registration path. Placed BEFORE the
@@ -6790,7 +6787,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // recip/abs/tanh/exp/log/sin/cos/sigmoid/silu/step/gelu_tanh/floor/ceil/round/
     // sign/erf/gelu/rsqrt × F32/F64/BF16/F16). Third production FKC-contract
     // consumer and the FIRST user of the §3.4 multi-dtype fan-out: IMPORTED from
-    // docs/kernel-contracts/cpu/elementwise-unary.fkc.md via the same
+    // fuel-dispatch/kernel-contracts/cpu/elementwise-unary.fkc.md via the same
     // `CpuLinkRegistry`. Each per-op section declares a BASE entry_point that the
     // importer expands to `<base>_<dtype>`. The hand-written `table.register(...)`
     // calls (the F32/F64/BF16/F16 unary blocks + the rounding/sign/erf/gelu/
@@ -6802,7 +6799,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // Compare (6 ops × 4 dtypes = 24, key [T, T, U8]) + where (1 op × 4 dtypes
     // = 4, key [U8, T, T, T]) = 28 bindings. Fourth production FKC-contract
-    // consumer: IMPORTED from docs/kernel-contracts/cpu/compare-where.fkc.md via
+    // consumer: IMPORTED from fuel-dispatch/kernel-contracts/cpu/compare-where.fkc.md via
     // the same `CpuLinkRegistry`. The 24 compare thunks resolve their declared
     // `_u8`-suffixed symbols AS-IS; the single `where_kernel` section rides the
     // §3.4 multi-dtype fan-out (BASE `…::where` → `where_{f32,f64,bf16,f16}`)
@@ -6814,7 +6811,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // Per-axis reduce (Sum/Mean/Max/Min × 4 dtypes = 16 bindings, key [T, T]).
     // Fifth production FKC-contract consumer: IMPORTED from
-    // docs/kernel-contracts/cpu/reduce.fkc.md via the same `CpuLinkRegistry`.
+    // fuel-dispatch/kernel-contracts/cpu/reduce.fkc.md via the same `CpuLinkRegistry`.
     // Each per-(op,dtype) section carries a SPECIFIC single-dtype entry_point
     // (`sum_reduce_f32`, …) resolved AS-IS (no fan-out). The hand-written
     // `table.register(...)` calls (the F32/F64 + BF16/F16 reduce blocks) are
@@ -6828,7 +6825,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // Broadcast-target reduce-to (ReduceSumTo / ReduceMaxTo × 4 dtypes, key
     // [T, T]; ReduceMaxToBackward × 4 dtypes, key [T, T, T] = 12 bindings).
     // Sixth production FKC-contract consumer: IMPORTED from
-    // docs/kernel-contracts/cpu/reduce-to.fkc.md via the same `CpuLinkRegistry`.
+    // fuel-dispatch/kernel-contracts/cpu/reduce-to.fkc.md via the same `CpuLinkRegistry`.
     // Each per-(op,dtype) section carries a SPECIFIC single-dtype entry_point
     // (`reduce_sum_to_f32`, …) resolved AS-IS (no fan-out). The hand-written
     // `table.register(...)` calls (the ReduceSumTo/ReduceMaxTo forward block +
@@ -6840,7 +6837,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // Last-dim NORM forward (Softmax / LogSoftmax / RmsNorm / LayerNorm × 4
     // dtypes = 16 bindings, key [T, T]). Seventh production FKC-contract
-    // consumer: IMPORTED from docs/kernel-contracts/cpu/norm.fkc.md via the same
+    // consumer: IMPORTED from fuel-dispatch/kernel-contracts/cpu/norm.fkc.md via the same
     // `CpuLinkRegistry`. Each per-(op,dtype) section carries a SPECIFIC
     // single-dtype entry_point (`softmax_last_dim_f32`, `rms_norm_last_dim_f32`,
     // …) resolved AS-IS (no fan-out). The RMS/LayerNorm kernels are the BARE
@@ -6857,7 +6854,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // Last-dim NORM BACKWARD (Softmax / LogSoftmax / RmsNorm / LayerNorm backward
     // × 4 dtypes = 16 bindings, key [T, T, T]). Eighth production FKC-contract
     // consumer and the BACKWARD sibling of the norm-forward importer above:
-    // IMPORTED from docs/kernel-contracts/cpu/norm-backward.fkc.md via the same
+    // IMPORTED from fuel-dispatch/kernel-contracts/cpu/norm-backward.fkc.md via the same
     // `CpuLinkRegistry`. Each per-(op,dtype) section carries a SPECIFIC
     // single-dtype entry_point (`softmax_last_dim_backward_f32`,
     // `rms_norm_last_dim_backward_f32`, …) resolved AS-IS (no fan-out). The BARE
@@ -6873,7 +6870,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // RoPE (rotary position embedding; 1 op × 4 dtypes = 4 bindings, key
     // [T, T, T, T]). Ninth production FKC-contract consumer: IMPORTED from
-    // docs/kernel-contracts/cpu/rope.fkc.md via the same `CpuLinkRegistry`.
+    // fuel-dispatch/kernel-contracts/cpu/rope.fkc.md via the same `CpuLinkRegistry`.
     // Each per-dtype section carries a SPECIFIC single-dtype entry_point
     // (`rope_f32`, …) resolved AS-IS (no fan-out). RoPE takes THREE inputs
     // (x + the precomputed cos/sin tables, all one dtype) → ONE passthrough(x)
@@ -6889,7 +6886,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // (key [T, I64, F32]) + CausalConv1d (key [T, T, T, T]) + SelectiveScan +
     // SsdChunkScan (key [T; 6]), 4 ops × 4 dtypes = 16 bindings. Tenth
     // production FKC-contract consumer: IMPORTED from
-    // docs/kernel-contracts/cpu/ssm.fkc.md via the same `CpuLinkRegistry`. Each
+    // fuel-dispatch/kernel-contracts/cpu/ssm.fkc.md via the same `CpuLinkRegistry`. Each
     // per-(op,dtype) section carries a SPECIFIC single-dtype entry_point
     // (`fused_softmax_cross_entropy_f32`, `selective_scan_f32`, …) resolved AS-IS
     // (no fan-out). The two SCAN ops return a `return.bundle` multi-output
@@ -6930,7 +6927,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // ConvTranspose2D at BOTH the no-bias key [T, T, T] (x, weight, out) AND the
     // with-bias key [T, T, T, T] (x, weight, bias + passthrough(x) output), 2 ops
     // × 4 dtypes × 2 operand-counts = 16 bindings. Eleventh production
-    // FKC-contract consumer: IMPORTED from docs/kernel-contracts/cpu/conv.fkc.md
+    // FKC-contract consumer: IMPORTED from fuel-dispatch/kernel-contracts/cpu/conv.fkc.md
     // via the same `CpuLinkRegistry`. Each per-(op,dtype) section carries a
     // SPECIFIC single-dtype entry_point (`conv2d_f32`, `conv_transpose2d_f32`, …)
     // resolved AS-IS (no dtype fan-out); every geometry knob rides in
@@ -6947,7 +6944,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // CPU padding family (FULL) — mode-unified forward Pad × 6 dtypes = 6 +
     // PadBackward × 4 dtypes = 4 bindings (all key [T, T]). Twelfth production
-    // FKC-contract consumer: IMPORTED from docs/kernel-contracts/cpu/padding.fkc.md
+    // FKC-contract consumer: IMPORTED from fuel-dispatch/kernel-contracts/cpu/padding.fkc.md
     // via the same `CpuLinkRegistry`. The ONE mode-unified `## pad` forward section
     // declares a BASE entry_point (`pad_cpu`) + the 6 wired dtypes (U8/U32/BF16/
     // F16/F32/F64), so the fan resolves `pad_cpu_<dtype>` (all → the one
@@ -6967,7 +6964,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // fanned per production dtype: Flip/Roll/MaskedFill/WriteSlice/
     // WriteSliceRotating 6 dtypes, Concat 9) + the four per-dtype CumSum kernels.
     // Thirteenth production FKC-contract consumer: IMPORTED from
-    // docs/kernel-contracts/cpu/shape-ops.fkc.md via the same `CpuLinkRegistry`.
+    // fuel-dispatch/kernel-contracts/cpu/shape-ops.fkc.md via the same `CpuLinkRegistry`.
     // Flip/Roll/Concat/MaskedFill/WriteSlice/WriteSliceRotating sections declare a
     // BASE entry_point + a dtypes list trimmed to the wired set, so the fan
     // resolves `<base>_<dtype>` (all → the one dtype-agnostic wrapper); CumSum's
@@ -6987,7 +6984,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // batched MatMul (6 dtypes F32/F64/BF16/F16/I8/U8, key [T, T, T]) + fused
     // FusedLinear (matmul + bias-add, 4 dtypes F32/F64/BF16/F16, key
     // [T, T, T, T]) = 10 bindings. Fourteenth production FKC-contract consumer:
-    // IMPORTED from docs/kernel-contracts/cpu/matmul.fkc.md via the same
+    // IMPORTED from fuel-dispatch/kernel-contracts/cpu/matmul.fkc.md via the same
     // `CpuLinkRegistry`. Each per-(op,dtype) section carries a SPECIFIC
     // single-dtype entry_point (`matmul_f32`, `fused_linear_f32`, …) resolved
     // AS-IS (no fan-out); the batch geometry (lhs_batch_dims/rhs_batch_dims/
@@ -7009,7 +7006,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // dtypes) + FlashAttnBackward{Q,K,V} (3 selectors × 4 dtypes) + PagedAttn (4
     // dtypes), each alibi-optional section fanning into BOTH the no-alibi and
     // with-alibi keys = 40 bindings — is now registered FROM
-    // docs/kernel-contracts/cpu/attention.fkc.md by
+    // fuel-dispatch/kernel-contracts/cpu/attention.fkc.md by
     // register_cpu_attention_from_contract. The contract marks `alibi_slopes`
     // as `optional: true`, so the importer's key-builder fans each (op, dtype)
     // section into both operand-count keys; FKC is the SOLE path for the migrated
@@ -7027,7 +7024,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // unary ops (each per-op section fanning [F32,F64,BF16,F16] = 84) +
     // InplaceAffine / ClampInplace / PowIInplace (per-dtype single sections, 4 each
     // = 12) = 96 bindings, all keyed [T, T] — is now registered FROM
-    // docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md by
+    // fuel-dispatch/kernel-contracts/cpu/inplace-unary-affine.fkc.md by
     // register_cpu_inplace_from_contract. FKC is the SOLE path for the whole
     // family; all hand-written <Op>Inplace / InplaceAffine / ClampInplace /
     // PowIInplace regs were DELETED. The `unary_inplace` chassis section is
@@ -7043,7 +7040,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // Cast — the COMPLETE directed-pair matrix: every ordered pair of the 11
     // real numeric dtypes {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64} with
     // identity excluded = 11 × 10 = 110 bindings (all key `[SRC, DST]`) — is now
-    // registered FROM docs/kernel-contracts/cpu/cast.fkc.md by
+    // registered FROM fuel-dispatch/kernel-contracts/cpu/cast.fkc.md by
     // register_cpu_cast_from_contract. Each per-pair section declares a
     // single-dtype `src` input + a `fixed(DST)` output (no dtype fan), so the
     // importer keys `[SRC, DST]` and resolves the SPECIFIC `cast_<src>_to_<dst>`
@@ -7064,7 +7061,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // wrapper) + IndexAdd + ScatterAdd (per-dtype typed accumulation: 4 dtypes
     // each, key [T, U32, T, T], `<op>_<dt>` resolved AS-IS). Eighteenth
     // production FKC consumer: IMPORTED from
-    // docs/kernel-contracts/cpu/indexing.fkc.md via the same `CpuLinkRegistry`.
+    // fuel-dispatch/kernel-contracts/cpu/indexing.fkc.md via the same `CpuLinkRegistry`.
     // The `indices` slot is a FIXED U32 operand in every section (no independent
     // index-dtype axis), so there is no multi-axis fan-out deferral — the whole
     // family migrates. The contract's index_select/gather dtype list is trimmed
@@ -7112,7 +7109,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // The in-place scalar-param family — InplaceAffine / ClampInplace /
     // PowIInplace (each key [T, T], scalars in OpParams::{Affine, Clamp, PowI}) —
-    // is now registered FROM docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md
+    // is now registered FROM fuel-dispatch/kernel-contracts/cpu/inplace-unary-affine.fkc.md
     // by register_cpu_inplace_from_contract near the top of this fn (alongside the
     // 21 in-place unary ops). The affine sections' op_kind was corrected from the
     // out-of-place `Affine` to `InplaceAffine`; all hand-written in-place scalar
@@ -7121,7 +7118,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // The ENTIRE CPU SSM / Mamba family — FusedSoftmaxCrossEntropy (key
     // [T, I64, F32]), CausalConv1d (key [T, T, T, T]), and the two SCAN ops
     // SelectiveScan / SsdChunkScan (key [T; 6] — 5 inputs + the ONE bundled
-    // output slot) — is now registered from docs/kernel-contracts/cpu/ssm.fkc.md
+    // output slot) — is now registered from fuel-dispatch/kernel-contracts/cpu/ssm.fkc.md
     // by register_cpu_ssm_from_contract near the top of this fn. The scans'
     // `return.bundle` multi-output is now key-buildable by the importer (it
     // appends the bundle's primary-slot dtype to the key tail), so their
@@ -7153,7 +7150,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // The 21 in-place unary activations (Relu/Silu/GeluTanh/Tanh/Sigmoid/Neg/Abs/
     // Sqr/Sqrt/Rsqrt/Recip/Exp/Log/Sin/Cos/Sign/Floor/Ceil/Round/Erf/Gelu ×
     // F32/F64/BF16/F16 = 84 bindings, each key [T, T]) are now registered FROM
-    // docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md by
+    // fuel-dispatch/kernel-contracts/cpu/inplace-unary-affine.fkc.md by
     // register_cpu_inplace_from_contract near the top of this fn: each per-op
     // section declares a BASE entry_point `<op>_inplace` + enumerates
     // [F32,F64,BF16,F16], so the importer's §3.4 dtype fan resolves
@@ -8270,14 +8267,14 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// binary (the PRODUCTION `include_str!`). `register_cpu_linear_quant_fused_from_contract`
 /// parses + lowers it and registers the MIGRATED subset FROM THE CONTRACT.
 const FUSED_LINEAR_QUANT_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/fused/linear-quant.fkc.md");
+    include_str!("../kernel-contracts/fused/linear-quant.fkc.md");
 
 /// Register the linear / quant-matmul FUSED family — `FUSED_LINEAR` (4 dtypes,
 /// key `[T, T, T, T]`) + `QMATMUL` (1 impl, key `[F32, U32, F32]`) +
 /// `INPLACE_AFFINE` (4 dtypes, key `[T, T]`) + `FUSED_SOFTMAX_CROSS_ENTROPY`
 /// (4 dtypes, key `[T, I64, F32]`) = **13 CPU `BackendImpl`s** — into the
 /// [`crate::fused::FusedKernelRegistry`] by IMPORTING its `audited: true` FKC
-/// contract (`docs/kernel-contracts/fused/linear-quant.fkc.md`), resolved
+/// contract (`fuel-dispatch/kernel-contracts/fused/linear-quant.fkc.md`), resolved
 /// through the production [`crate::fkc::CpuLinkRegistry`] (chaining
 /// [`crate::fkc::CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`]). FKC is unconditional
 /// core infrastructure, so this is the ONE registration path for these four
@@ -8324,7 +8321,7 @@ fn register_cpu_linear_quant_fused_from_contract(r: &mut crate::fused::FusedKern
 /// (the PRODUCTION `include_str!`). `register_cpu_norm_softmax_fused_from_contract`
 /// parses + lowers it and registers the FULL bundle FROM THE CONTRACT.
 const FUSED_NORM_SOFTMAX_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/fused/norm-softmax.fkc.md");
+    include_str!("../kernel-contracts/fused/norm-softmax.fkc.md");
 
 /// Register the norm / softmax FUSED family — all EIGHT `fused_op` sections
 /// (`SOFTMAX_LAST_DIM` / `RMS_NORM_LAST_DIM` / `LAYER_NORM_LAST_DIM`, key `[T, T]`;
@@ -8332,7 +8329,7 @@ const FUSED_NORM_SOFTMAX_CONTRACT: &str =
 /// `RMS_NORM_LAST_DIM_BACKWARD` / `REDUCE_MAX_TO_BACKWARD` / `POWI_BACKWARD`, key
 /// `[T, T, T]`), each dtype-fanned over `{F32, F64, BF16, F16}` = **32 CPU
 /// `BackendImpl`s** — into the [`crate::fused::FusedKernelRegistry`] by IMPORTING
-/// its `audited: true` FKC contract (`docs/kernel-contracts/fused/norm-softmax.fkc.md`),
+/// its `audited: true` FKC contract (`fuel-dispatch/kernel-contracts/fused/norm-softmax.fkc.md`),
 /// resolved through the production [`crate::fkc::CpuLinkRegistry`] (chaining
 /// [`crate::fkc::CPU_FUSED_NORM_ENTRY_POINTS`], the seam-proven 32-row table).
 /// FKC is unconditional core infrastructure, so this is the ONE registration
@@ -8369,13 +8366,12 @@ fn register_cpu_norm_softmax_fused_from_contract(r: &mut crate::fused::FusedKern
 /// The authored conv / RoPE / SSM FUSED kernel bundle, embedded into the binary
 /// (the PRODUCTION `include_str!`). `register_cpu_conv_rope_fused_from_contract`
 /// parses + lowers it and registers the FULL bundle FROM THE CONTRACT.
-const FUSED_CONV_ROPE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/fused/conv-rope.fkc.md");
+const FUSED_CONV_ROPE_CONTRACT: &str = include_str!("../kernel-contracts/fused/conv-rope.fkc.md");
 
 /// Register the conv / RoPE / SSM FUSED family — all SIX `fused_op` sections,
 /// each dtype-fanned over `{F32, F64, BF16, F16}` = **32 CPU `BackendImpl`s** —
 /// into the [`crate::fused::FusedKernelRegistry`] by IMPORTING its `audited: true`
-/// FKC contract (`docs/kernel-contracts/fused/conv-rope.fkc.md`), resolved
+/// FKC contract (`fuel-dispatch/kernel-contracts/fused/conv-rope.fkc.md`), resolved
 /// through the production [`crate::fkc::CpuLinkRegistry`] (chaining
 /// [`crate::fkc::CPU_FUSED_CONV_ROPE_ENTRY_POINTS`], 24 rows). FKC is
 /// unconditional core infrastructure, so this is the ONE registration path for
@@ -9082,7 +9078,7 @@ mod tests {
     /// PRODUCTION-migrated into the `FusedKernelRegistry` FROM its FKC contract.
     ///
     /// `register_default_fused_kernels` now imports
-    /// `docs/kernel-contracts/fused/linear-quant.fkc.md` through the production
+    /// `fuel-dispatch/kernel-contracts/fused/linear-quant.fkc.md` through the production
     /// `CpuLinkRegistry` (chaining `CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`) INSTEAD
     /// of the hand-written `register_fused!(FUSED_LINEAR / QMATMUL / INPLACE_AFFINE
     /// / FUSED_SOFTMAX_CROSS_ENTROPY, …)` entries (deleted). Each migrated
@@ -9258,7 +9254,7 @@ mod tests {
     /// PRODUCTION-migrated into the `FusedKernelRegistry` FROM its FKC contract.
     ///
     /// `register_default_fused_kernels` now imports
-    /// `docs/kernel-contracts/fused/norm-softmax.fkc.md` through the production
+    /// `fuel-dispatch/kernel-contracts/fused/norm-softmax.fkc.md` through the production
     /// `CpuLinkRegistry` (chaining `CPU_FUSED_NORM_ENTRY_POINTS`) INSTEAD of the
     /// hand-written `register_fused!(SOFTMAX / RMS_NORM / LAYER_NORM_LAST_DIM
     /// (+backward) / REDUCE_MAX_TO_BACKWARD / POWI_BACKWARD, …)` entries (deleted).
@@ -9432,7 +9428,7 @@ mod tests {
     /// PRODUCTION-migrated into the `FusedKernelRegistry` FROM its FKC contract.
     ///
     /// `register_default_fused_kernels` now imports
-    /// `docs/kernel-contracts/fused/conv-rope.fkc.md` through the production
+    /// `fuel-dispatch/kernel-contracts/fused/conv-rope.fkc.md` through the production
     /// `CpuLinkRegistry` (chaining `CPU_FUSED_CONV_ROPE_ENTRY_POINTS`) INSTEAD of
     /// the hand-written `register_fused!(ROPE / CONV2D / CONV_TRANSPOSE2D /
     /// CAUSAL_CONV1D / SELECTIVE_SCAN / SSD_CHUNK_SCAN, …)` entries (deleted). Each
@@ -10235,7 +10231,7 @@ mod tests {
     /// FIRST PRODUCTION FKC CONSUMER (born-red gate). `global_bindings()`
     /// registers the CPU elementwise-binary family (8 ops × 4 dtypes = 32
     /// bindings) FROM ITS KERNEL CONTRACT
-    /// (`docs/kernel-contracts/cpu/elementwise-binary.fkc.md`) — the sole
+    /// (`fuel-dispatch/kernel-contracts/cpu/elementwise-binary.fkc.md`) — the sole
     /// registration path, now that the hand-written `table.register(...)`
     /// calls for this family are DELETED.
     ///
@@ -10369,7 +10365,7 @@ mod tests {
     /// FKC born-red gate for the CPU affine / clamp / powi family.
     /// `global_bindings()` registers the out-of-place scalar-param family
     /// (affine/clamp/powi × 4 dtypes + powi_backward × 4 = 16 bindings) FROM
-    /// ITS KERNEL CONTRACT (`docs/kernel-contracts/cpu/affine-clamp-powi.fkc.md`)
+    /// ITS KERNEL CONTRACT (`fuel-dispatch/kernel-contracts/cpu/affine-clamp-powi.fkc.md`)
     /// — the sole registration path, now that the hand-written
     /// `table.register(...)` calls are DELETED. Asserts each (op, dtype, Cpu)
     /// key resolves to the EXACT production wrapper fn-pointer, is
@@ -10492,7 +10488,7 @@ mod tests {
     /// FKC born-red gate for the CPU elementwise-unary family.
     /// `global_bindings()` registers the elementwise-unary family (22 ops × 4
     /// dtypes = 88 bindings) FROM ITS KERNEL CONTRACT
-    /// (`docs/kernel-contracts/cpu/elementwise-unary.fkc.md`) via the §3.4
+    /// (`fuel-dispatch/kernel-contracts/cpu/elementwise-unary.fkc.md`) via the §3.4
     /// multi-dtype fan-out (each per-op section declares a BASE `entry_point`
     /// that the importer expands to `<base>_<dtype>`) — the sole registration
     /// path, now that the hand-written `table.register(...)` calls are DELETED.
@@ -10746,7 +10742,7 @@ mod tests {
 
     /// FKC production consumer (born-red gate). `global_bindings()` registers
     /// the CPU compare + where family FROM ITS KERNEL CONTRACT
-    /// (`docs/kernel-contracts/cpu/compare-where.fkc.md`) — the sole path now
+    /// (`fuel-dispatch/kernel-contracts/cpu/compare-where.fkc.md`) — the sole path now
     /// that the hand-written `table.register(...)` calls for this family are
     /// DELETED.
     ///
@@ -10906,7 +10902,7 @@ mod tests {
 
     /// FKC production consumer (born-red gate). `global_bindings()` registers
     /// the CPU per-axis reduce family (Sum/Mean/Max/Min × F32/F64/BF16/F16 = 16)
-    /// FROM ITS KERNEL CONTRACT (`docs/kernel-contracts/cpu/reduce.fkc.md`) — the
+    /// FROM ITS KERNEL CONTRACT (`fuel-dispatch/kernel-contracts/cpu/reduce.fkc.md`) — the
     /// sole path now that the hand-written `table.register(...)` calls for this
     /// family are DELETED.
     ///
@@ -11364,7 +11360,7 @@ mod tests {
     /// CausalConv1d (key `[T, T, T, T]` — x, weight, bias + passthrough(x)
     /// output), and the two SCAN ops SelectiveScan / SsdChunkScan (key `[T; 6]`
     /// — 5 inputs + the ONE bundled output slot), 4 ops × 4 dtypes = 16
-    /// bindings — is IMPORTED from `docs/kernel-contracts/cpu/ssm.fkc.md`.
+    /// bindings — is IMPORTED from `fuel-dispatch/kernel-contracts/cpu/ssm.fkc.md`.
     ///
     /// The scans' `[T; 6]` keys are now contract-sourced too: their sections
     /// return a `return.bundle` multi-output (Option C, one buffer
@@ -11469,7 +11465,7 @@ mod tests {
     /// The whole family — BOTH the no-bias keys (`[T, T, T]` — x, weight + out)
     /// AND the with-bias keys (`[T, T, T, T]` — x, weight, bias + passthrough(x)
     /// output) of Conv2D and ConvTranspose2D, 2 ops × 4 dtypes × 2 operand-counts
-    /// = 16 bindings — is IMPORTED from `docs/kernel-contracts/cpu/conv.fkc.md`.
+    /// = 16 bindings — is IMPORTED from `fuel-dispatch/kernel-contracts/cpu/conv.fkc.md`.
     ///
     /// The no-bias keys are now contract-sourced too: the conv contract declares
     /// `bias` as `optional: true`, and the importer's key-builder
@@ -11556,7 +11552,7 @@ mod tests {
     /// FKC-contract registration. The four `PadBackward` per-dtype kernels
     /// (key `[T, T]` — grad_out + `passthrough(grad_out)` grad_in, T ∈
     /// {F32,F64,BF16,F16}) are IMPORTED from
-    /// `docs/kernel-contracts/cpu/padding.fkc.md` — the `pad_backward_<dt>`
+    /// `fuel-dispatch/kernel-contracts/cpu/padding.fkc.md` — the `pad_backward_<dt>`
     /// single-dtype sections, each resolved AS-IS (no dtype fan-out) through the
     /// production `CpuLinkRegistry` (chaining `CPU_PADDING_ENTRY_POINTS`).
     ///
@@ -11677,7 +11673,7 @@ mod tests {
 
     /// Gate for the CPU **shape-ops** family's migratable subset moved to
     /// FKC-contract registration. IMPORTED from
-    /// `docs/kernel-contracts/cpu/shape-ops.fkc.md` via the production
+    /// `fuel-dispatch/kernel-contracts/cpu/shape-ops.fkc.md` via the production
     /// `CpuLinkRegistry` (chaining `CPU_SHAPE_OPS_ENTRY_POINTS`):
     /// - **Flip** / **Roll** — dtype-agnostic byte reorder, key `[T, T]`, one
     ///   `flip_cpu_wrapper` / `roll_cpu_wrapper` per dtype (fan over the 6
@@ -11840,7 +11836,7 @@ mod tests {
 
     /// Gate for the CPU **indexing / gather / scatter** family moved to
     /// FKC-contract registration. IMPORTED from
-    /// `docs/kernel-contracts/cpu/indexing.fkc.md` via the production
+    /// `fuel-dispatch/kernel-contracts/cpu/indexing.fkc.md` via the production
     /// `CpuLinkRegistry` (chaining `CPU_INDEXING_ENTRY_POINTS`):
     /// - **IndexSelect** / **Gather** — dtype-agnostic byte copy, key
     ///   `[T, U32, T]` (`source`, fixed-U32 `indices`, `passthrough(source)`
@@ -11972,7 +11968,7 @@ mod tests {
     }
 
     /// Gate for the CPU **matmul** family moved to FKC-contract registration.
-    /// IMPORTED from `docs/kernel-contracts/cpu/matmul.fkc.md` via the production
+    /// IMPORTED from `fuel-dispatch/kernel-contracts/cpu/matmul.fkc.md` via the production
     /// `CpuLinkRegistry` (chaining `CPU_MATMUL_ENTRY_POINTS`):
     /// - **MatMul** — bare batched matmul (`OpKind::MatMul`), key `[T, T, T]`
     ///   (lhs, rhs + `passthrough(lhs)` output). Each per-dtype section
@@ -12091,7 +12087,7 @@ mod tests {
     /// to FKC-contract registration. FlashAttn (forward) + the three
     /// FlashAttnBackward{Q,K,V} selectors + PagedAttn — 5 ops × 4 dtypes ×
     /// {no-alibi, with-alibi} = 40 bindings — are IMPORTED from
-    /// `docs/kernel-contracts/cpu/attention.fkc.md` (the `op_kind:` sections).
+    /// `fuel-dispatch/kernel-contracts/cpu/attention.fkc.md` (the `op_kind:` sections).
     /// Each section declares `alibi_slopes` as an `optional: true` LAST input, so
     /// the importer's optional-operand fan registers BOTH the no-alibi key
     /// (`[q,k,v(,do),out]` / `[q,kc,vc,bt,cl,out]`) and the with-alibi key
@@ -12233,7 +12229,7 @@ mod tests {
     }
 
     /// The CPU **in-place scalar-param** family is registered FROM its FKC
-    /// contract (`docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md`) via
+    /// contract (`fuel-dispatch/kernel-contracts/cpu/inplace-unary-affine.fkc.md`) via
     /// `register_cpu_inplace_from_contract`, NOT the deleted hand-written
     /// `table.register(<Op>Inplace / InplaceAffine / ClampInplace / PowIInplace,
     /// &unary(dt), …)` regs. 21 in-place unary ops (each fanning `[F32,F64,BF16,
@@ -12553,7 +12549,7 @@ mod tests {
     /// The FULL directed-pair matrix — every ordered pair of the 11 real numeric
     /// dtypes {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64}, identity excluded =
     /// 11 × 10 = 110 pairs — is IMPORTED from
-    /// `docs/kernel-contracts/cpu/cast.fkc.md` (see
+    /// `fuel-dispatch/kernel-contracts/cpu/cast.fkc.md` (see
     /// `register_cpu_cast_from_contract`). Each per-pair section declares a
     /// single-dtype `src` input + `fixed(DST)` output, so it does NOT dtype-fan —
     /// the importer keys `[SRC, DST]` (byte-for-byte the deleted hand-written

@@ -164,7 +164,7 @@ fn assert_derived_set_matches_production(baseline: &HashMap<Key, Coverage>) {
 ///   * `CudaLinkRegistry` / `VulkanLinkRegistry` are `#[cfg(feature = …)]`,
 ///     so a default-feature run cannot resolve their entry points at all.
 fn live_cpu_contracts() -> Vec<(String, String)> {
-    let root = repo_root().join("docs").join("kernel-contracts");
+    let root = repo_root().join("fuel-dispatch").join("kernel-contracts");
     let mut v: Vec<(String, String)> = live_contract_paths()
         .into_iter()
         .filter(|p| p.starts_with("cpu/"))

@@ -1068,7 +1068,7 @@ mod tests {
     /// Finding 5.4 deliverable (Task 3.6 coverage gap): the extractor must
     /// actually PULL the right names out of a real `ReturnBlock`, not merely
     /// avoid panicking. Mirrors the real corpus shape
-    /// (`docs/kernel-contracts/fused/conv-rope.fkc.md`'s `SELECTIVE_SCAN`
+    /// (`fuel-dispatch/kernel-contracts/fused/conv-rope.fkc.md`'s `SELECTIVE_SCAN`
     /// bundle: `y` / `last_state`). Bare `y` is a YAML-1.1 "Norway problem"
     /// candidate (`y`/`yes`/`on` historically coerce to bool `true`), but the
     /// slot names live inside a `serde_yaml_ng::Value` (untyped) tree here, and
@@ -1497,10 +1497,8 @@ mod tests {
     #[test]
     fn corpus_prose_pins_param_index_tables_matching_key_ints() {
         use fuel_graph::registry::Reduction;
-        const CONV_ROPE: &str =
-            include_str!("../../../docs/kernel-contracts/fused/conv-rope.fkc.md");
-        const LINEAR_QUANT: &str =
-            include_str!("../../../docs/kernel-contracts/fused/linear-quant.fkc.md");
+        const CONV_ROPE: &str = include_str!("../../kernel-contracts/fused/conv-rope.fkc.md");
+        const LINEAR_QUANT: &str = include_str!("../../kernel-contracts/fused/linear-quant.fkc.md");
 
         fn table_row<'a>(doc: &'a str, doc_name: &str, variant: &str) -> &'a str {
             let marker = format!("| `{variant}` |");

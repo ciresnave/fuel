@@ -4993,7 +4993,7 @@ fn vulkan_dispatch_gather_bf16_dim1() {
 // `lookup_alternatives` returned nothing and `[0]` panicked "index out of
 // bounds: the len is 0" — which reads as a missing kernel registration, and is
 // not one: the kernel is registered under `(MaskedFill, [T, BOOL, T], Vulkan)`
-// (see `docs/kernel-contracts/vulkan/select.fkc.md`). The mask BYTES (0/1) are
+// (see `fuel-dispatch/kernel-contracts/vulkan/select.fkc.md`). The mask BYTES (0/1) are
 // unchanged; `Bool` is one byte per element.
 
 #[test]
