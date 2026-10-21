@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.54 - 2026-10-21
+
+### Changed
+
+- Vulkan buffer recycler: the 512 MB total cap is now enforced when a buffer is freed (`VulkanBuffer::drop`, destruction outside the pool lock), not only at the next allocation, so a mass free can no longer park more than the cap. ROADMAP row 28.
+
 ## v0.20.53 - 2026-10-21
 
 ### Changed
