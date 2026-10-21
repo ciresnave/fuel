@@ -249,7 +249,7 @@ mod tests {
         }
     }
 
-    /// Every module needing a feature must be loaded through `load_gated` in
+    /// Every module needing a feature must be loaded through `Gate` in
     /// `Pipelines::new` (its pipeline field is an `Option`); a new such shader with a
     /// plain `load_module` would fail device creation on a device lacking the feature.
     #[test]
@@ -259,11 +259,12 @@ mod tests {
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
-        let gated_calls = src.matches("load_gated(&registry,device,shaders::").count();
+        let gated_calls = src.matches("gate.pipeline(shaders::").count()
+            + src.matches("gate.module(shaders::").count();
         assert_eq!(
             gated_calls,
             count_requiring(RequiredFeatures::any),
-            "modules needing an optional feature vs load_gated call sites in Pipelines::new"
+            "modules needing an optional feature vs Gate call sites in Pipelines::new"
         );
     }
 

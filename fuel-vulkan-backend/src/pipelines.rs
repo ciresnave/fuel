@@ -25,25 +25,39 @@ fn embedded_shader_sources() -> &'static [ShaderSource] {
         .as_slice()
 }
 
-/// Load `name` as a shader module unless it needs an optional device feature the
-/// device lacks. A skipped module is recorded in `unavailable` and yields `None`; the
-/// check reads the module's own `OpCapability` words, so no hand-kept table can drift.
-fn load_gated(
-    registry: &ShaderRegistry,
-    device: &Device,
-    name: &'static str,
+/// Loads shader modules, skipping any that need an optional device feature the device
+/// lacks. The check reads the module's own `OpCapability` words, so no hand-kept table
+/// can drift; a skipped kernel is recorded in `unavailable`.
+struct Gate<'a> {
+    registry: &'a ShaderRegistry,
+    device: &'a Device,
     support: OptionalFeatureSupport,
-    unavailable: &mut Vec<KernelUnavailable>,
-) -> Result<Option<ShaderModule>> {
-    let bytes = registry.load(name)?;
-    if let Some(missing_feature) = support.first_missing(&required_features(&bytes)) {
-        unavailable.push(KernelUnavailable {
-            kernel: name,
-            missing_feature,
-        });
-        return Ok(None);
+    unavailable: Vec<KernelUnavailable>,
+}
+
+impl Gate<'_> {
+    fn module(&mut self, name: &'static str) -> Result<Option<ShaderModule>> {
+        let bytes = self.registry.load(name)?;
+        if let Some(missing_feature) = self.support.first_missing(&required_features(&bytes)) {
+            self.unavailable.push(KernelUnavailable {
+                kernel: name,
+                missing_feature,
+            });
+            return Ok(None);
+        }
+        Ok(Some(ShaderModule::from_spirv_bytes(self.device, &bytes)?))
     }
-    Ok(Some(ShaderModule::from_spirv_bytes(device, &bytes)?))
+
+    fn pipeline(
+        &mut self,
+        name: &'static str,
+        layout: &PipelineLayout,
+    ) -> Result<Option<ComputePipeline>> {
+        match self.module(name)? {
+            Some(m) => Ok(Some(ComputePipeline::new(self.device, layout, &m, "main")?)),
+            None => Ok(None),
+        }
+    }
 }
 
 /// Construct Fuel's Vulkan shader registry — the embedded byte
@@ -635,9 +649,8 @@ impl Pipelines {
     pub fn new(
         device: &Device,
         coop_shape_ok: bool,
-        support: crate::OptionalFeatureSupport,
+        support: OptionalFeatureSupport,
     ) -> Result<Self> {
-        let mut unavailable: Vec<KernelUnavailable> = Vec::new();
         // Layout: 2 storage buffers (binding 0,1) + 1 uniform (binding 2).
         let layout_2s1u = DescriptorSetLayout::new(
             device,
@@ -702,70 +715,27 @@ impl Pipelines {
         // ShaderModule. No intermediate SPIR-V word vectors needed.
         use fuel_vulkan_kernels as shaders;
         let registry = shader_registry();
-        let unary_mod = registry.load_module(device, shaders::UNARY)?;
-        let unary_f16_mod = load_gated(
-            &registry,
+        let mut gate = Gate {
+            registry: &registry,
             device,
-            shaders::UNARY_F16,
             support,
-            &mut unavailable,
-        )?;
+            unavailable: Vec::new(),
+        };
+        let unary_mod = registry.load_module(device, shaders::UNARY)?;
         let unary_f64_mod = registry.load_module(device, shaders::UNARY_F64)?;
         let unary_bf16_mod = registry.load_module(device, shaders::UNARY_BF16)?;
         let binary_mod = registry.load_module(device, shaders::BINARY)?;
-        let binary_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::BINARY_F16,
-            support,
-            &mut unavailable,
-        )?;
         let binary_f64_mod = registry.load_module(device, shaders::BINARY_F64)?;
         let binary_bf16_mod = registry.load_module(device, shaders::BINARY_BF16)?;
         let affine_mod = registry.load_module(device, shaders::AFFINE)?;
         let affine_f64_mod = registry.load_module(device, shaders::AFFINE_F64)?;
-        let affine_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::AFFINE_F16,
-            support,
-            &mut unavailable,
-        )?;
         let affine_bf16_mod = registry.load_module(device, shaders::AFFINE_BF16)?;
         let clamp_mod = registry.load_module(device, shaders::CLAMP)?;
         let powi_mod = registry.load_module(device, shaders::POWI)?;
-        let cast_f32_to_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::CAST_F32_TO_F16,
-            support,
-            &mut unavailable,
-        )?;
-        let cast_f16_to_f32_mod = load_gated(
-            &registry,
-            device,
-            shaders::CAST_F16_TO_F32,
-            support,
-            &mut unavailable,
-        )?;
         let cast_f32_to_bf16_mod = registry.load_module(device, shaders::CAST_F32_TO_BF16)?;
         let cast_bf16_to_f32_mod = registry.load_module(device, shaders::CAST_BF16_TO_F32)?;
         let cast_f32_to_f8e4m3_mod = registry.load_module(device, shaders::CAST_F32_TO_F8E4M3)?;
         let cast_f8e4m3_to_f32_mod = registry.load_module(device, shaders::CAST_F8E4M3_TO_F32)?;
-        let cast_f16_to_f8e4m3_mod = load_gated(
-            &registry,
-            device,
-            shaders::CAST_F16_TO_F8E4M3,
-            support,
-            &mut unavailable,
-        )?;
-        let cast_f8e4m3_to_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::CAST_F8E4M3_TO_F16,
-            support,
-            &mut unavailable,
-        )?;
         let cast_bf16_to_f8e4m3_mod = registry.load_module(device, shaders::CAST_BF16_TO_F8E4M3)?;
         let cast_f8e4m3_to_bf16_mod = registry.load_module(device, shaders::CAST_F8E4M3_TO_BF16)?;
         let write_slice_b1_mod = registry.load_module(device, shaders::WRITE_SLICE_B1)?;
@@ -795,38 +765,10 @@ impl Pipelines {
             registry.load_module(device, shaders::PAD_BACKWARD_REFLECT_F32)?;
         let pad_backward_replicate_f32_mod =
             registry.load_module(device, shaders::PAD_BACKWARD_REPLICATE_F32)?;
-        let pad_backward_reflect_f64_mod = load_gated(
-            &registry,
-            device,
-            shaders::PAD_BACKWARD_REFLECT_F64,
-            support,
-            &mut unavailable,
-        )?;
-        let pad_backward_replicate_f64_mod = load_gated(
-            &registry,
-            device,
-            shaders::PAD_BACKWARD_REPLICATE_F64,
-            support,
-            &mut unavailable,
-        )?;
         let pad_backward_reflect_bf16_mod =
             registry.load_module(device, shaders::PAD_BACKWARD_REFLECT_BF16)?;
         let pad_backward_replicate_bf16_mod =
             registry.load_module(device, shaders::PAD_BACKWARD_REPLICATE_BF16)?;
-        let pad_backward_reflect_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::PAD_BACKWARD_REFLECT_F16,
-            support,
-            &mut unavailable,
-        )?;
-        let pad_backward_replicate_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::PAD_BACKWARD_REPLICATE_F16,
-            support,
-            &mut unavailable,
-        )?;
         let masked_fill_b1_mod = registry.load_module(device, shaders::MASKED_FILL_B1)?;
         let masked_fill_b2_mod = registry.load_module(device, shaders::MASKED_FILL_B2)?;
         let masked_fill_b4_mod = registry.load_module(device, shaders::MASKED_FILL_B4)?;
@@ -836,13 +778,6 @@ impl Pipelines {
         let gather_b4_mod = registry.load_module(device, shaders::GATHER_B4)?;
         let gather_b8_mod = registry.load_module(device, shaders::GATHER_B8)?;
         let write_slice_b8_mod = registry.load_module(device, shaders::WRITE_SLICE_B8)?;
-        let strided_copy_signed_b2_mod = load_gated(
-            &registry,
-            device,
-            shaders::STRIDED_COPY_SIGNED_B2,
-            support,
-            &mut unavailable,
-        )?;
         let strided_copy_signed_b4_mod =
             registry.load_module(device, shaders::STRIDED_COPY_SIGNED_B4)?;
         let strided_copy_signed_b8_mod =
@@ -853,40 +788,12 @@ impl Pipelines {
         let tril_b2_mod = registry.load_module(device, shaders::TRIL_B2)?;
         let tril_b4_mod = registry.load_module(device, shaders::TRIL_B4)?;
         let tril_b8_mod = registry.load_module(device, shaders::TRIL_B8)?;
-        let flip_b2_mod = load_gated(
-            &registry,
-            device,
-            shaders::FLIP_B2,
-            support,
-            &mut unavailable,
-        )?;
         let flip_b4_mod = registry.load_module(device, shaders::FLIP_B4)?;
         let flip_b8_mod = registry.load_module(device, shaders::FLIP_B8)?;
-        let roll_b2_mod = load_gated(
-            &registry,
-            device,
-            shaders::ROLL_B2,
-            support,
-            &mut unavailable,
-        )?;
         let roll_b4_mod = registry.load_module(device, shaders::ROLL_B4)?;
         let roll_b8_mod = registry.load_module(device, shaders::ROLL_B8)?;
         let cumsum_f32_mod = registry.load_module(device, shaders::CUMSUM_F32)?;
         let cumsum_f64_mod = registry.load_module(device, shaders::CUMSUM_F64)?;
-        let cumsum_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::CUMSUM_F16,
-            support,
-            &mut unavailable,
-        )?;
-        let cumsum_bf16_mod = load_gated(
-            &registry,
-            device,
-            shaders::CUMSUM_BF16,
-            support,
-            &mut unavailable,
-        )?;
         let matmul_mod = registry.load_module(device, shaders::MATMUL)?;
         let matmul_tiled_mod = registry.load_module(device, shaders::MATMUL_TILED_GLSL)?;
         let matvec_mod = registry.load_module(device, shaders::MATVEC_GLSL)?;
@@ -895,63 +802,25 @@ impl Pipelines {
         let matmul_tiled_bf16_b_mod =
             registry.load_module(device, shaders::MATMUL_TILED_BF16_B_GLSL)?;
         let matmul_coop_mod = if coop_shape_ok {
-            load_gated(
-                &registry,
-                device,
-                shaders::MATMUL_COOP,
-                support,
-                &mut unavailable,
-            )?
+            gate.module(shaders::MATMUL_COOP)?
         } else {
             None
         };
         let matmul_coop_bf16_bf16_mod = if coop_shape_ok {
-            load_gated(
-                &registry,
-                device,
-                shaders::MATMUL_COOP_BF16_BF16,
-                support,
-                &mut unavailable,
-            )?
+            gate.module(shaders::MATMUL_COOP_BF16_BF16)?
         } else {
             None
         };
         let matmul_coop_f16_f16_mod = if coop_shape_ok {
-            load_gated(
-                &registry,
-                device,
-                shaders::MATMUL_COOP_F16_F16,
-                support,
-                &mut unavailable,
-            )?
+            gate.module(shaders::MATMUL_COOP_F16_F16)?
         } else {
             None
         };
         let matmul_coop_bf16_bf16_bf16_mod = if coop_shape_ok {
-            load_gated(
-                &registry,
-                device,
-                shaders::MATMUL_COOP_BF16_BF16_BF16,
-                support,
-                &mut unavailable,
-            )?
+            gate.module(shaders::MATMUL_COOP_BF16_BF16_BF16)?
         } else {
             None
         };
-        let matmul_small_bf16_bf16_f32_mod = load_gated(
-            &registry,
-            device,
-            shaders::MATMUL_SMALL_BF16_BF16_F32,
-            support,
-            &mut unavailable,
-        )?;
-        let matmul_small_bf16_bf16_bf16_mod = load_gated(
-            &registry,
-            device,
-            shaders::MATMUL_SMALL_BF16_BF16_BF16,
-            support,
-            &mut unavailable,
-        )?;
         let matmul_small_f16_f16_f32_mod =
             registry.load_module(device, shaders::MATMUL_SMALL_F16_F16_F32)?;
         let matmul_small_f16_f16_f16_mod =
@@ -961,31 +830,10 @@ impl Pipelines {
             registry.load_module(device, shaders::FLASH_ATTN_SPLIT_F32)?;
         let flash_attn_combine_f32_mod =
             registry.load_module(device, shaders::FLASH_ATTN_COMBINE_F32)?;
-        let flash_attn_split_bf16_mod = load_gated(
-            &registry,
-            device,
-            shaders::FLASH_ATTN_SPLIT_BF16,
-            support,
-            &mut unavailable,
-        )?;
-        let flash_attn_combine_bf16_mod = load_gated(
-            &registry,
-            device,
-            shaders::FLASH_ATTN_COMBINE_BF16,
-            support,
-            &mut unavailable,
-        )?;
         let flash_attn_split_f16_mod =
             registry.load_module(device, shaders::FLASH_ATTN_SPLIT_F16)?;
         let flash_attn_combine_f16_mod =
             registry.load_module(device, shaders::FLASH_ATTN_COMBINE_F16)?;
-        let flash_attn_bf16_mod = load_gated(
-            &registry,
-            device,
-            shaders::FLASH_ATTN_BF16,
-            support,
-            &mut unavailable,
-        )?;
         let flash_attn_f16_mod = registry.load_module(device, shaders::FLASH_ATTN_F16)?;
         let flash_attn_backward_q_f32_mod =
             registry.load_module(device, shaders::FLASH_ATTN_BACKWARD_Q_F32)?;
@@ -994,34 +842,14 @@ impl Pipelines {
         let flash_attn_backward_v_f32_mod =
             registry.load_module(device, shaders::FLASH_ATTN_BACKWARD_V_F32)?;
         let matmul_coop_f16_f16_f16_mod = if coop_shape_ok {
-            load_gated(
-                &registry,
-                device,
-                shaders::MATMUL_COOP_F16_F16_F16,
-                support,
-                &mut unavailable,
-            )?
+            gate.module(shaders::MATMUL_COOP_F16_F16_F16)?
         } else {
             None
         };
         let softmax_mod = registry.load_module(device, shaders::SOFTMAX)?;
-        let softmax_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::SOFTMAX_F16,
-            support,
-            &mut unavailable,
-        )?;
         let softmax_bf16_mod = registry.load_module(device, shaders::SOFTMAX_BF16)?;
         let softmax_f64_mod = registry.load_module(device, shaders::SOFTMAX_F64)?;
         let reduce_mod = registry.load_module(device, shaders::REDUCE)?;
-        let reduce_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::REDUCE_F16,
-            support,
-            &mut unavailable,
-        )?;
         let reduce_bf16_mod = registry.load_module(device, shaders::REDUCE_BF16)?;
         let reduce_f64_mod = registry.load_module(device, shaders::REDUCE_F64)?;
         let cast_f32_to_f64_mod = registry.load_module(device, shaders::CAST_F32_TO_F64)?;
@@ -1030,28 +858,7 @@ impl Pipelines {
         let arg_reduce_last_dim_f32_mod =
             registry.load_module(device, shaders::ARG_REDUCE_LAST_DIM_F32)?;
         let scatter_add_f32_mod = registry.load_module(device, shaders::SCATTER_ADD_F32)?;
-        let scatter_add_f64_mod = load_gated(
-            &registry,
-            device,
-            shaders::SCATTER_ADD_F64,
-            support,
-            &mut unavailable,
-        )?;
         let scatter_add_bf16_mod = registry.load_module(device, shaders::SCATTER_ADD_BF16)?;
-        let scatter_add_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::SCATTER_ADD_F16,
-            support,
-            &mut unavailable,
-        )?;
-        let arg_reduce_last_dim_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::ARG_REDUCE_LAST_DIM_F16,
-            support,
-            &mut unavailable,
-        )?;
         let arg_reduce_last_dim_bf16_mod =
             registry.load_module(device, shaders::ARG_REDUCE_LAST_DIM_BF16)?;
         let arg_reduce_last_dim_f64_mod =
@@ -1062,47 +869,12 @@ impl Pipelines {
             registry.load_module(device, shaders::ARG_REDUCE_ANY_DIM_F64)?;
         let arg_reduce_any_dim_bf16_mod =
             registry.load_module(device, shaders::ARG_REDUCE_ANY_DIM_BF16)?;
-        let arg_reduce_any_dim_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::ARG_REDUCE_ANY_DIM_F16,
-            support,
-            &mut unavailable,
-        )?;
         let index_add_f32_mod = registry.load_module(device, shaders::INDEX_ADD_F32)?;
-        let index_add_f64_mod = load_gated(
-            &registry,
-            device,
-            shaders::INDEX_ADD_F64,
-            support,
-            &mut unavailable,
-        )?;
         let index_add_bf16_mod = registry.load_module(device, shaders::INDEX_ADD_BF16)?;
-        let index_add_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::INDEX_ADD_F16,
-            support,
-            &mut unavailable,
-        )?;
-        let reduce_last_dim_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::REDUCE_LAST_DIM_F16,
-            support,
-            &mut unavailable,
-        )?;
         let reduce_last_dim_bf16_mod =
             registry.load_module(device, shaders::REDUCE_LAST_DIM_BF16)?;
         let reduce_last_dim_f64_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM_F64)?;
         let rms_norm_last_dim_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM)?;
-        let rms_norm_last_dim_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::RMS_NORM_LAST_DIM_F16,
-            support,
-            &mut unavailable,
-        )?;
         let rms_norm_last_dim_bf16_mod =
             registry.load_module(device, shaders::RMS_NORM_LAST_DIM_BF16)?;
         let rms_norm_last_dim_f64_mod =
@@ -1111,127 +883,36 @@ impl Pipelines {
             registry.load_module(device, shaders::RMS_NORM_LAST_DIM_BACKWARD)?;
         let softmax_last_dim_backward_mod =
             registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD)?;
-        let softmax_last_dim_backward_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::SOFTMAX_LAST_DIM_BACKWARD_F16,
-            support,
-            &mut unavailable,
-        )?;
         let softmax_last_dim_backward_bf16_mod =
             registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD_BF16)?;
         let softmax_last_dim_backward_f64_mod =
             registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD_F64)?;
         let layer_norm_last_dim_backward_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD)?;
-        let layer_norm_last_dim_backward_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::LAYER_NORM_LAST_DIM_BACKWARD_F16,
-            support,
-            &mut unavailable,
-        )?;
         let layer_norm_last_dim_backward_bf16_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD_BF16)?;
         let layer_norm_last_dim_backward_f64_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD_F64)?;
         let layer_norm_last_dim_mod = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM)?;
-        let layer_norm_last_dim_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::LAYER_NORM_LAST_DIM_F16,
-            support,
-            &mut unavailable,
-        )?;
         let layer_norm_last_dim_bf16_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BF16)?;
         let layer_norm_last_dim_f64_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_F64)?;
         let strided_copy_mod = registry.load_module(device, shaders::STRIDED_COPY)?;
         let index_select_mod = registry.load_module(device, shaders::INDEX_SELECT)?;
-        let index_select_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::INDEX_SELECT_F16,
-            support,
-            &mut unavailable,
-        )?;
         let index_select_bf16_mod = registry.load_module(device, shaders::INDEX_SELECT_BF16)?;
         let index_select_f64_mod = registry.load_module(device, shaders::INDEX_SELECT_F64)?;
         let add_assign_scaled_mod = registry.load_module(device, shaders::ADD_ASSIGN_SCALED)?;
         let rope_mod = registry.load_module(device, shaders::ROPE)?;
-        let rope_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::ROPE_F16,
-            support,
-            &mut unavailable,
-        )?;
         let rope_bf16_mod = registry.load_module(device, shaders::ROPE_BF16)?;
         let rope_f64_mod = registry.load_module(device, shaders::ROPE_F64)?;
         let concat_along_dim_mod = registry.load_module(device, shaders::CONCAT_ALONG_DIM)?;
-        let concat_along_dim_f16_mod = load_gated(
-            &registry,
-            device,
-            shaders::CONCAT_ALONG_DIM_F16,
-            support,
-            &mut unavailable,
-        )?;
         let concat_along_dim_bf16_mod =
             registry.load_module(device, shaders::CONCAT_ALONG_DIM_BF16)?;
         let concat_along_dim_f64_mod =
             registry.load_module(device, shaders::CONCAT_ALONG_DIM_F64)?;
         let conv2d_im2col_mod = registry.load_module(device, shaders::CONV2D_IM2COL)?;
-        let conv2d_im2col_bf16_mod = load_gated(
-            &registry,
-            device,
-            shaders::CONV2D_IM2COL_BF16,
-            support,
-            &mut unavailable,
-        )?;
         let flash_attention_mod = registry.load_module(device, shaders::FLASH_ATTENTION)?;
-        let dequant_q4_0_mod = load_gated(
-            &registry,
-            device,
-            shaders::DEQUANT_Q4_0,
-            support,
-            &mut unavailable,
-        )?;
-        let dequant_q4_km_mod = load_gated(
-            &registry,
-            device,
-            shaders::DEQUANT_Q4_KM,
-            support,
-            &mut unavailable,
-        )?;
-        let dequant_q8_0_mod = load_gated(
-            &registry,
-            device,
-            shaders::DEQUANT_Q8_0,
-            support,
-            &mut unavailable,
-        )?;
-        let qmatvec_q4_0_mod = load_gated(
-            &registry,
-            device,
-            shaders::QMATVEC_Q4_0,
-            support,
-            &mut unavailable,
-        )?;
-        let matmul_q4_0_tiled_mod = load_gated(
-            &registry,
-            device,
-            shaders::MATMUL_Q4_0_TILED,
-            support,
-            &mut unavailable,
-        )?;
-        let quantize_q8_0_mod = load_gated(
-            &registry,
-            device,
-            shaders::QUANTIZE_Q8_0,
-            support,
-            &mut unavailable,
-        )?;
 
         // No push constants — params go through uniform buffers.
         let unary_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -1440,19 +1121,13 @@ impl Pipelines {
         let quantize_q8_0_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
 
         let unary_pipeline = ComputePipeline::new(device, &unary_layout, &unary_mod, "main")?;
-        let unary_f16_pipeline = match &unary_f16_mod {
-            Some(m) => Some(ComputePipeline::new(device, &unary_f16_layout, m, "main")?),
-            None => None,
-        };
+        let unary_f16_pipeline = gate.pipeline(shaders::UNARY_F16, &unary_f16_layout)?;
         let unary_f64_pipeline =
             ComputePipeline::new(device, &unary_f64_layout, &unary_f64_mod, "main")?;
         let unary_bf16_pipeline =
             ComputePipeline::new(device, &unary_bf16_layout, &unary_bf16_mod, "main")?;
         let binary_pipeline = ComputePipeline::new(device, &binary_layout, &binary_mod, "main")?;
-        let binary_f16_pipeline = match &binary_f16_mod {
-            Some(m) => Some(ComputePipeline::new(device, &binary_f16_layout, m, "main")?),
-            None => None,
-        };
+        let binary_f16_pipeline = gate.pipeline(shaders::BINARY_F16, &binary_f16_layout)?;
         let binary_f64_pipeline =
             ComputePipeline::new(device, &binary_f64_layout, &binary_f64_mod, "main")?;
         let binary_bf16_pipeline =
@@ -1460,32 +1135,15 @@ impl Pipelines {
         let affine_pipeline = ComputePipeline::new(device, &affine_layout, &affine_mod, "main")?;
         let affine_f64_pipeline =
             ComputePipeline::new(device, &affine_f64_layout, &affine_f64_mod, "main")?;
-        let affine_f16_pipeline = match &affine_f16_mod {
-            Some(m) => Some(ComputePipeline::new(device, &affine_f16_layout, m, "main")?),
-            None => None,
-        };
+        let affine_f16_pipeline = gate.pipeline(shaders::AFFINE_F16, &affine_f16_layout)?;
         let affine_bf16_pipeline =
             ComputePipeline::new(device, &affine_bf16_layout, &affine_bf16_mod, "main")?;
         let clamp_pipeline = ComputePipeline::new(device, &clamp_layout, &clamp_mod, "main")?;
         let powi_pipeline = ComputePipeline::new(device, &powi_layout, &powi_mod, "main")?;
-        let cast_f32_to_f16_pipeline = match &cast_f32_to_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &cast_f32_to_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let cast_f16_to_f32_pipeline = match &cast_f16_to_f32_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &cast_f16_to_f32_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let cast_f32_to_f16_pipeline =
+            gate.pipeline(shaders::CAST_F32_TO_F16, &cast_f32_to_f16_layout)?;
+        let cast_f16_to_f32_pipeline =
+            gate.pipeline(shaders::CAST_F16_TO_F32, &cast_f16_to_f32_layout)?;
         let cast_f32_to_bf16_pipeline = ComputePipeline::new(
             device,
             &cast_f32_to_bf16_layout,
@@ -1510,24 +1168,10 @@ impl Pipelines {
             &cast_f8e4m3_to_f32_mod,
             "main",
         )?;
-        let cast_f16_to_f8e4m3_pipeline = match &cast_f16_to_f8e4m3_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &cast_f16_to_f8e4m3_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let cast_f8e4m3_to_f16_pipeline = match &cast_f8e4m3_to_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &cast_f8e4m3_to_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let cast_f16_to_f8e4m3_pipeline =
+            gate.pipeline(shaders::CAST_F16_TO_F8E4M3, &cast_f16_to_f8e4m3_layout)?;
+        let cast_f8e4m3_to_f16_pipeline =
+            gate.pipeline(shaders::CAST_F8E4M3_TO_F16, &cast_f8e4m3_to_f16_layout)?;
         let cast_bf16_to_f8e4m3_pipeline = ComputePipeline::new(
             device,
             &cast_bf16_to_f8e4m3_layout,
@@ -1622,24 +1266,14 @@ impl Pipelines {
             &pad_backward_replicate_f32_mod,
             "main",
         )?;
-        let pad_backward_reflect_f64_pipeline = match &pad_backward_reflect_f64_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &pad_backward_reflect_f64_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let pad_backward_replicate_f64_pipeline = match &pad_backward_replicate_f64_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &pad_backward_replicate_f64_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let pad_backward_reflect_f64_pipeline = gate.pipeline(
+            shaders::PAD_BACKWARD_REFLECT_F64,
+            &pad_backward_reflect_f64_layout,
+        )?;
+        let pad_backward_replicate_f64_pipeline = gate.pipeline(
+            shaders::PAD_BACKWARD_REPLICATE_F64,
+            &pad_backward_replicate_f64_layout,
+        )?;
         let pad_backward_reflect_bf16_pipeline = ComputePipeline::new(
             device,
             &pad_backward_reflect_bf16_layout,
@@ -1652,24 +1286,14 @@ impl Pipelines {
             &pad_backward_replicate_bf16_mod,
             "main",
         )?;
-        let pad_backward_reflect_f16_pipeline = match &pad_backward_reflect_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &pad_backward_reflect_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let pad_backward_replicate_f16_pipeline = match &pad_backward_replicate_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &pad_backward_replicate_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let pad_backward_reflect_f16_pipeline = gate.pipeline(
+            shaders::PAD_BACKWARD_REFLECT_F16,
+            &pad_backward_reflect_f16_layout,
+        )?;
+        let pad_backward_replicate_f16_pipeline = gate.pipeline(
+            shaders::PAD_BACKWARD_REPLICATE_F16,
+            &pad_backward_replicate_f16_layout,
+        )?;
         let masked_fill_b1_pipeline =
             ComputePipeline::new(device, &masked_fill_b1_layout, &masked_fill_b1_mod, "main")?;
         let masked_fill_b2_pipeline =
@@ -1688,15 +1312,10 @@ impl Pipelines {
             ComputePipeline::new(device, &gather_b8_layout, &gather_b8_mod, "main")?;
         let write_slice_b8_pipeline =
             ComputePipeline::new(device, &write_slice_b8_layout, &write_slice_b8_mod, "main")?;
-        let strided_copy_signed_b2_pipeline = match &strided_copy_signed_b2_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &strided_copy_signed_b2_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let strided_copy_signed_b2_pipeline = gate.pipeline(
+            shaders::STRIDED_COPY_SIGNED_B2,
+            &strided_copy_signed_b2_layout,
+        )?;
         let strided_copy_signed_b4_pipeline = ComputePipeline::new(
             device,
             &strided_copy_signed_b4_layout,
@@ -1715,35 +1334,18 @@ impl Pipelines {
         let tril_b2_pipeline = ComputePipeline::new(device, &tril_b2_layout, &tril_b2_mod, "main")?;
         let tril_b4_pipeline = ComputePipeline::new(device, &tril_b4_layout, &tril_b4_mod, "main")?;
         let tril_b8_pipeline = ComputePipeline::new(device, &tril_b8_layout, &tril_b8_mod, "main")?;
-        let flip_b2_pipeline = match &flip_b2_mod {
-            Some(m) => Some(ComputePipeline::new(device, &flip_b2_layout, m, "main")?),
-            None => None,
-        };
+        let flip_b2_pipeline = gate.pipeline(shaders::FLIP_B2, &flip_b2_layout)?;
         let flip_b4_pipeline = ComputePipeline::new(device, &flip_b4_layout, &flip_b4_mod, "main")?;
         let flip_b8_pipeline = ComputePipeline::new(device, &flip_b8_layout, &flip_b8_mod, "main")?;
-        let roll_b2_pipeline = match &roll_b2_mod {
-            Some(m) => Some(ComputePipeline::new(device, &roll_b2_layout, m, "main")?),
-            None => None,
-        };
+        let roll_b2_pipeline = gate.pipeline(shaders::ROLL_B2, &roll_b2_layout)?;
         let roll_b4_pipeline = ComputePipeline::new(device, &roll_b4_layout, &roll_b4_mod, "main")?;
         let roll_b8_pipeline = ComputePipeline::new(device, &roll_b8_layout, &roll_b8_mod, "main")?;
         let cumsum_f32_pipeline =
             ComputePipeline::new(device, &cumsum_f32_layout, &cumsum_f32_mod, "main")?;
         let cumsum_f64_pipeline =
             ComputePipeline::new(device, &cumsum_f64_layout, &cumsum_f64_mod, "main")?;
-        let cumsum_f16_pipeline = match &cumsum_f16_mod {
-            Some(m) => Some(ComputePipeline::new(device, &cumsum_f16_layout, m, "main")?),
-            None => None,
-        };
-        let cumsum_bf16_pipeline = match &cumsum_bf16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &cumsum_bf16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let cumsum_f16_pipeline = gate.pipeline(shaders::CUMSUM_F16, &cumsum_f16_layout)?;
+        let cumsum_bf16_pipeline = gate.pipeline(shaders::CUMSUM_BF16, &cumsum_bf16_layout)?;
         let matmul_pipeline = ComputePipeline::new(device, &matmul_layout, &matmul_mod, "main")?;
         let matmul_tiled_pipeline =
             ComputePipeline::new(device, &matmul_tiled_layout, &matmul_tiled_mod, "main")?;
@@ -1779,24 +1381,14 @@ impl Pipelines {
             (Some(m), Some(l)) => Some(ComputePipeline::new(device, l, m, "main")?),
             _ => None,
         };
-        let matmul_small_bf16_bf16_f32_pipeline = match &matmul_small_bf16_bf16_f32_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &matmul_small_bf16_bf16_f32_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let matmul_small_bf16_bf16_bf16_pipeline = match &matmul_small_bf16_bf16_bf16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &matmul_small_bf16_bf16_bf16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let matmul_small_bf16_bf16_f32_pipeline = gate.pipeline(
+            shaders::MATMUL_SMALL_BF16_BF16_F32,
+            &matmul_small_bf16_bf16_f32_layout,
+        )?;
+        let matmul_small_bf16_bf16_bf16_pipeline = gate.pipeline(
+            shaders::MATMUL_SMALL_BF16_BF16_BF16,
+            &matmul_small_bf16_bf16_bf16_layout,
+        )?;
         let matmul_small_f16_f16_f32_pipeline = ComputePipeline::new(
             device,
             &matmul_small_f16_f16_f32_layout,
@@ -1823,24 +1415,14 @@ impl Pipelines {
             &flash_attn_combine_f32_mod,
             "main",
         )?;
-        let flash_attn_split_bf16_pipeline = match &flash_attn_split_bf16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &flash_attn_split_bf16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let flash_attn_combine_bf16_pipeline = match &flash_attn_combine_bf16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &flash_attn_combine_bf16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let flash_attn_split_bf16_pipeline = gate.pipeline(
+            shaders::FLASH_ATTN_SPLIT_BF16,
+            &flash_attn_split_bf16_layout,
+        )?;
+        let flash_attn_combine_bf16_pipeline = gate.pipeline(
+            shaders::FLASH_ATTN_COMBINE_BF16,
+            &flash_attn_combine_bf16_layout,
+        )?;
         let flash_attn_split_f16_pipeline = ComputePipeline::new(
             device,
             &flash_attn_split_f16_layout,
@@ -1853,15 +1435,8 @@ impl Pipelines {
             &flash_attn_combine_f16_mod,
             "main",
         )?;
-        let flash_attn_bf16_pipeline = match &flash_attn_bf16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &flash_attn_bf16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let flash_attn_bf16_pipeline =
+            gate.pipeline(shaders::FLASH_ATTN_BF16, &flash_attn_bf16_layout)?;
         let flash_attn_f16_pipeline =
             ComputePipeline::new(device, &flash_attn_f16_layout, &flash_attn_f16_mod, "main")?;
         let flash_attn_backward_q_f32_pipeline = ComputePipeline::new(
@@ -1890,24 +1465,13 @@ impl Pipelines {
             _ => None,
         };
         let softmax_pipeline = ComputePipeline::new(device, &softmax_layout, &softmax_mod, "main")?;
-        let softmax_f16_pipeline = match &softmax_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &softmax_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let softmax_f16_pipeline = gate.pipeline(shaders::SOFTMAX_F16, &softmax_f16_layout)?;
         let softmax_bf16_pipeline =
             ComputePipeline::new(device, &softmax_bf16_layout, &softmax_bf16_mod, "main")?;
         let softmax_f64_pipeline =
             ComputePipeline::new(device, &softmax_f64_layout, &softmax_f64_mod, "main")?;
         let reduce_pipeline = ComputePipeline::new(device, &reduce_layout, &reduce_mod, "main")?;
-        let reduce_f16_pipeline = match &reduce_f16_mod {
-            Some(m) => Some(ComputePipeline::new(device, &reduce_f16_layout, m, "main")?),
-            None => None,
-        };
+        let reduce_f16_pipeline = gate.pipeline(shaders::REDUCE_F16, &reduce_f16_layout)?;
         let reduce_bf16_pipeline =
             ComputePipeline::new(device, &reduce_bf16_layout, &reduce_bf16_mod, "main")?;
         let reduce_f64_pipeline =
@@ -1942,39 +1506,20 @@ impl Pipelines {
             &scatter_add_f32_mod,
             "main",
         )?;
-        let scatter_add_f64_pipeline = match &scatter_add_f64_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &scatter_add_f64_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let scatter_add_f64_pipeline =
+            gate.pipeline(shaders::SCATTER_ADD_F64, &scatter_add_f64_layout)?;
         let scatter_add_bf16_pipeline = ComputePipeline::new(
             device,
             &scatter_add_bf16_layout,
             &scatter_add_bf16_mod,
             "main",
         )?;
-        let scatter_add_f16_pipeline = match &scatter_add_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &scatter_add_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let arg_reduce_last_dim_f16_pipeline = match &arg_reduce_last_dim_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &arg_reduce_last_dim_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let scatter_add_f16_pipeline =
+            gate.pipeline(shaders::SCATTER_ADD_F16, &scatter_add_f16_layout)?;
+        let arg_reduce_last_dim_f16_pipeline = gate.pipeline(
+            shaders::ARG_REDUCE_LAST_DIM_F16,
+            &arg_reduce_last_dim_f16_layout,
+        )?;
         let arg_reduce_last_dim_bf16_pipeline = ComputePipeline::new(
             device,
             &arg_reduce_last_dim_bf16_layout,
@@ -2005,46 +1550,20 @@ impl Pipelines {
             &arg_reduce_any_dim_bf16_mod,
             "main",
         )?;
-        let arg_reduce_any_dim_f16_pipeline = match &arg_reduce_any_dim_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &arg_reduce_any_dim_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let arg_reduce_any_dim_f16_pipeline = gate.pipeline(
+            shaders::ARG_REDUCE_ANY_DIM_F16,
+            &arg_reduce_any_dim_f16_layout,
+        )?;
         let index_add_f32_pipeline =
             ComputePipeline::new(device, &index_add_f32_layout, &index_add_f32_mod, "main")?;
-        let index_add_f64_pipeline = match &index_add_f64_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &index_add_f64_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let index_add_f64_pipeline =
+            gate.pipeline(shaders::INDEX_ADD_F64, &index_add_f64_layout)?;
         let index_add_bf16_pipeline =
             ComputePipeline::new(device, &index_add_bf16_layout, &index_add_bf16_mod, "main")?;
-        let index_add_f16_pipeline = match &index_add_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &index_add_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let reduce_last_dim_f16_pipeline = match &reduce_last_dim_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &reduce_last_dim_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let index_add_f16_pipeline =
+            gate.pipeline(shaders::INDEX_ADD_F16, &index_add_f16_layout)?;
+        let reduce_last_dim_f16_pipeline =
+            gate.pipeline(shaders::REDUCE_LAST_DIM_F16, &reduce_last_dim_f16_layout)?;
         let reduce_last_dim_bf16_pipeline = ComputePipeline::new(
             device,
             &reduce_last_dim_bf16_layout,
@@ -2063,15 +1582,10 @@ impl Pipelines {
             &rms_norm_last_dim_mod,
             "main",
         )?;
-        let rms_norm_last_dim_f16_pipeline = match &rms_norm_last_dim_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &rms_norm_last_dim_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let rms_norm_last_dim_f16_pipeline = gate.pipeline(
+            shaders::RMS_NORM_LAST_DIM_F16,
+            &rms_norm_last_dim_f16_layout,
+        )?;
         let rms_norm_last_dim_bf16_pipeline = ComputePipeline::new(
             device,
             &rms_norm_last_dim_bf16_layout,
@@ -2096,15 +1610,10 @@ impl Pipelines {
             &softmax_last_dim_backward_mod,
             "main",
         )?;
-        let softmax_last_dim_backward_f16_pipeline = match &softmax_last_dim_backward_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &softmax_last_dim_backward_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let softmax_last_dim_backward_f16_pipeline = gate.pipeline(
+            shaders::SOFTMAX_LAST_DIM_BACKWARD_F16,
+            &softmax_last_dim_backward_f16_layout,
+        )?;
         let softmax_last_dim_backward_bf16_pipeline = ComputePipeline::new(
             device,
             &softmax_last_dim_backward_bf16_layout,
@@ -2123,16 +1632,10 @@ impl Pipelines {
             &layer_norm_last_dim_backward_mod,
             "main",
         )?;
-        let layer_norm_last_dim_backward_f16_pipeline = match &layer_norm_last_dim_backward_f16_mod
-        {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &layer_norm_last_dim_backward_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let layer_norm_last_dim_backward_f16_pipeline = gate.pipeline(
+            shaders::LAYER_NORM_LAST_DIM_BACKWARD_F16,
+            &layer_norm_last_dim_backward_f16_layout,
+        )?;
         let layer_norm_last_dim_backward_bf16_pipeline = ComputePipeline::new(
             device,
             &layer_norm_last_dim_backward_bf16_layout,
@@ -2151,15 +1654,10 @@ impl Pipelines {
             &layer_norm_last_dim_mod,
             "main",
         )?;
-        let layer_norm_last_dim_f16_pipeline = match &layer_norm_last_dim_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &layer_norm_last_dim_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let layer_norm_last_dim_f16_pipeline = gate.pipeline(
+            shaders::LAYER_NORM_LAST_DIM_F16,
+            &layer_norm_last_dim_f16_layout,
+        )?;
         let layer_norm_last_dim_bf16_pipeline = ComputePipeline::new(
             device,
             &layer_norm_last_dim_bf16_layout,
@@ -2176,15 +1674,8 @@ impl Pipelines {
             ComputePipeline::new(device, &strided_copy_layout, &strided_copy_mod, "main")?;
         let index_select_pipeline =
             ComputePipeline::new(device, &index_select_layout, &index_select_mod, "main")?;
-        let index_select_f16_pipeline = match &index_select_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &index_select_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let index_select_f16_pipeline =
+            gate.pipeline(shaders::INDEX_SELECT_F16, &index_select_f16_layout)?;
         let index_select_bf16_pipeline = ComputePipeline::new(
             device,
             &index_select_bf16_layout,
@@ -2204,10 +1695,7 @@ impl Pipelines {
             "main",
         )?;
         let rope_pipeline = ComputePipeline::new(device, &rope_layout, &rope_mod, "main")?;
-        let rope_f16_pipeline = match &rope_f16_mod {
-            Some(m) => Some(ComputePipeline::new(device, &rope_f16_layout, m, "main")?),
-            None => None,
-        };
+        let rope_f16_pipeline = gate.pipeline(shaders::ROPE_F16, &rope_f16_layout)?;
         let rope_bf16_pipeline =
             ComputePipeline::new(device, &rope_bf16_layout, &rope_bf16_mod, "main")?;
         let rope_f64_pipeline =
@@ -2218,15 +1706,8 @@ impl Pipelines {
             &concat_along_dim_mod,
             "main",
         )?;
-        let concat_along_dim_f16_pipeline = match &concat_along_dim_f16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &concat_along_dim_f16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let concat_along_dim_f16_pipeline =
+            gate.pipeline(shaders::CONCAT_ALONG_DIM_F16, &concat_along_dim_f16_layout)?;
         let concat_along_dim_bf16_pipeline = ComputePipeline::new(
             device,
             &concat_along_dim_bf16_layout,
@@ -2241,78 +1722,26 @@ impl Pipelines {
         )?;
         let conv2d_im2col_pipeline =
             ComputePipeline::new(device, &conv2d_im2col_layout, &conv2d_im2col_mod, "main")?;
-        let conv2d_im2col_bf16_pipeline = match &conv2d_im2col_bf16_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &conv2d_im2col_bf16_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let conv2d_im2col_bf16_pipeline =
+            gate.pipeline(shaders::CONV2D_IM2COL_BF16, &conv2d_im2col_bf16_layout)?;
         let flash_attention_pipeline = ComputePipeline::new(
             device,
             &flash_attention_layout,
             &flash_attention_mod,
             "main",
         )?;
-        let dequant_q4_0_pipeline = match &dequant_q4_0_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &dequant_q4_0_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let dequant_q4_km_pipeline = match &dequant_q4_km_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &dequant_q4_km_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let dequant_q8_0_pipeline = match &dequant_q8_0_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &dequant_q8_0_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let qmatvec_q4_0_pipeline = match &qmatvec_q4_0_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &qmatvec_q4_0_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let matmul_q4_0_tiled_pipeline = match &matmul_q4_0_tiled_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &matmul_q4_0_tiled_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
-        let quantize_q8_0_pipeline = match &quantize_q8_0_mod {
-            Some(m) => Some(ComputePipeline::new(
-                device,
-                &quantize_q8_0_layout,
-                m,
-                "main",
-            )?),
-            None => None,
-        };
+        let dequant_q4_0_pipeline = gate.pipeline(shaders::DEQUANT_Q4_0, &dequant_q4_0_layout)?;
+        let dequant_q4_km_pipeline =
+            gate.pipeline(shaders::DEQUANT_Q4_KM, &dequant_q4_km_layout)?;
+        let dequant_q8_0_pipeline = gate.pipeline(shaders::DEQUANT_Q8_0, &dequant_q8_0_layout)?;
+        let qmatvec_q4_0_pipeline = gate.pipeline(shaders::QMATVEC_Q4_0, &qmatvec_q4_0_layout)?;
+        let matmul_q4_0_tiled_pipeline =
+            gate.pipeline(shaders::MATMUL_Q4_0_TILED, &matmul_q4_0_tiled_layout)?;
+        let quantize_q8_0_pipeline =
+            gate.pipeline(shaders::QUANTIZE_Q8_0, &quantize_q8_0_layout)?;
 
         Ok(Self {
-            unavailable,
+            unavailable: gate.unavailable,
             layout_2s1u,
             layout_3s1u,
             layout_4s1u,
