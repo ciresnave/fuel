@@ -742,6 +742,30 @@ enum WorkItemKind {
 
 /// One unit of work emitted by the compiler thread to the executor
 /// thread.
+/// Phase name of a work item's kind, for the executor's host-phase accounting
+/// (`op_profile::PhaseTimer`). One name per variant so the table splits the
+/// per-item executor time by what the item is.
+fn work_item_kind_name(kind: &WorkItemKind) -> &'static str {
+    match kind {
+        WorkItemKind::ConstAdopt => "item.ConstAdopt",
+        WorkItemKind::ViewOf { .. } => "item.ViewOf",
+        WorkItemKind::ContiguizeOf { .. } => "item.ContiguizeOf",
+        WorkItemKind::Kernel => "item.Kernel",
+        WorkItemKind::Iota { .. } => "item.Iota",
+        WorkItemKind::ReleaseMarker => "item.ReleaseMarker",
+        WorkItemKind::WriteSlice { .. } => "item.WriteSlice",
+        WorkItemKind::WriteSliceRotating { .. } => "item.WriteSliceRotating",
+        WorkItemKind::WriteSliceDoff { .. } => "item.WriteSliceDoff",
+        WorkItemKind::Copy { .. } => "item.Copy",
+        WorkItemKind::Move { .. } => "item.Move",
+        WorkItemKind::Alloc { .. } => "item.Alloc",
+        WorkItemKind::ZeroFill => "item.ZeroFill",
+        WorkItemKind::InplaceKernel { .. } => "item.InplaceKernel",
+        WorkItemKind::SlotView { .. } => "item.SlotView",
+        WorkItemKind::SlotOwn { .. } => "item.SlotOwn",
+    }
+}
+
 /// Work items that touch no device: adopting an input-cache entry (`Op::Const`),
 /// and the metadata-only view items. Their `target_backend` is a placeholder
 /// (a `Const` is always stamped `Cpu`; a view inherits its producer's or
@@ -1717,7 +1741,7 @@ impl PipelinedExecutor {
                 }
             }
             let t_exec =
-                crate::compiled::op_profile::PhaseTimer::start("realize.execute_work_item");
+                crate::compiled::op_profile::PhaseTimer::start(work_item_kind_name(&item.kind));
             let handle = execute_work_item(
                 &item,
                 &mut cache,
@@ -6455,6 +6479,7 @@ fn execute_work_item(
             // Contiguize today; offset honoring on the byte buffer is
             // a separate concern from stride support.
             let kernel_handles_strided = compiled.caps.strided_input;
+            let t_gather = crate::compiled::op_profile::PhaseTimer::start("kernel.gather_inputs");
             for in_id in &item.inputs {
                 let in_arc = cache.get(in_id).cloned().ok_or_else(|| {
                     Error::Msg(format!(
@@ -6507,6 +6532,7 @@ fn execute_work_item(
                     kernel_layouts.push(fuel_ir::Layout::contiguous(in_layout.shape().clone()));
                 }
             }
+            drop(t_gather);
             kernel_layouts.push(item.output_layout.clone());
 
             // Allocate output on the target backend. For GPU backends
@@ -6553,6 +6579,7 @@ fn execute_work_item(
                 }
                 _ => None,
             };
+            let t_alloc = crate::compiled::op_profile::PhaseTimer::start("kernel.alloc_output");
             let mut output_arcs = if let Some(arc) = reuse_arc {
                 vec![arc]
             } else {
@@ -6659,8 +6686,11 @@ fn execute_work_item(
                 };
                 vec![Arc::new(RwLock::new(output))]
             };
+            drop(t_alloc);
 
             // A4b-1: defer the wait — return the handle to the realize loop.
+            let t_launch =
+                crate::compiled::op_profile::PhaseTimer::start("kernel.execute_compiled");
             let handle = execute_compiled_with_wait_hint(
                 compiled,
                 &input_arcs,
@@ -6668,6 +6698,7 @@ fn execute_work_item(
                 &kernel_layouts,
                 will_be_waited,
             )?;
+            drop(t_launch);
 
             let arc = output_arcs.into_iter().next().expect("one output");
 
@@ -7509,12 +7540,10 @@ fn auto_contiguize(arc: &Arc<RwLock<Storage>>, layout: &Layout) -> Result<Arc<Rw
         }
         #[cfg(feature = "vulkan")]
         fuel_memory::BackendStorage::Vulkan(v) => {
-            // V.1.B stopgap: D2H → CPU contiguize_cpu → H2D. Mirrors
-            // the pre-alpha.29 CUDA fallback. V.3.2 of the Vulkan
-            // catch-up writes a native Slang contiguize kernel (with
-            // signed-stride support that strided_copy.slang currently
-            // lacks) and replaces this arm with a direct
-            // VulkanStorageBytes → VulkanStorageBytes path.
+            // Native `strided_copy_signed_*` kernel when it applies (2/4/8-byte
+            // elements; see `contiguize_vulkan`). Otherwise the V.1.B host round trip:
+            // D2H → CPU contiguize_cpu → H2D, which forces a flush and a wait
+            // per call.
             let backend = v.backend().ok_or_else(|| {
                 Error::Msg(
                     "auto_contiguize: Vulkan input has no backend handle. \
@@ -7526,6 +7555,16 @@ fn auto_contiguize(arc: &Arc<RwLock<Storage>>, layout: &Layout) -> Result<Arc<Rw
                 )
                 .bt()
             })?;
+            if let Some(native) = crate::vulkan_dispatch::contiguize_vulkan(v, layout, dtype_size)?
+            {
+                return Ok(Arc::new(RwLock::new(Storage::new(
+                    fuel_memory::BackendStorage::Vulkan(native),
+                    dtype,
+                ))));
+            }
+            let _t = crate::compiled::op_profile::PhaseTimer::start(
+                "auto_contiguize.vulkan_host_roundtrip",
+            );
             let host_bytes = backend.download_bytes(v)?;
             let host_cpu = fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&host_bytes);
             let contig_cpu =

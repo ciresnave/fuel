@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.44 - 2026-10-21
+
+### Changed
+
+- `fuel-dispatch`: `auto_contiguize` on Vulkan storage now materializes the layout with the existing `strided_copy_signed_*` kernels (`vulkan_dispatch::contiguize_vulkan`, 2/4/8-byte elements) instead of downloading to the host, walking it on the CPU and uploading, which also forced a flush and a wait on the open batch each time (123 round trips and about 150 ms of a Qwen3-0.6B decode step). The host round trip remains as the fallback for other element widths, empty tensors, offsets past 32 bits and storages without a backend handle. Measured on Qwen3-0.6B Q4_K_M decode on Vulkan (RTX 4070, 5 runs, with the not-yet-merged per-device bit-stable preference of PR #426 applied locally): step 253 ms to 122 ms (2.1x; 4.0 to 8.2 tokens/s); CPU-fixture check unchanged (max logit difference 9.9e-5, 0 of 64 greedy tokens differ). New example `contiguize_vulkan_check` compares the kernel path with the CPU reference byte for byte (21 of 21 layout/width cases identical).
+
+### Added
+
+- Executor host-phase names per work-item kind (`item.<Kind>`) and inside kernel items (`kernel.gather_inputs`, `kernel.alloc_output`, `kernel.execute_compiled`) for `op_profile::PhaseTimer`. ROADMAP item 23 updated.
+
 ## v0.20.43 - 2026-10-21
 
 ### Changed

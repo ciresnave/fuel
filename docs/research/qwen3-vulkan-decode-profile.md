@@ -161,7 +161,31 @@ After the GPU table the open question was the roughly 185 ms of every step that 
 
 **Correctness:** `QWEN3_VERIFY=1` against the CPU fixture after the change: max logit difference 9.9e-5 (identical to before), 0 of 64 greedy tokens differ, PASS (one run). This change only moves when the Vulkan batches are submitted and waited. Not tested: graphs that genuinely mix CUDA and Vulkan (the chunk logic exists for them; neutral items never touched a device, so they cannot be what separated two real chunks, but this was not run).
 
-**What remains in the 251 ms, not attributed further:** `execute_work_item` 165 ms over 1,959 items, 84 us each, of which about 36 ms is kernel launch (`op_profile`, 793 launches); the other roughly 130 ms is per-item executor work across all 1,959 items, including about 1,170 items that launch nothing (const adoption, views). Splitting `execute_work_item` by item kind is the next measurement.
+**What remained in the 251 ms** was attributed in the next section: it was not the roughly 1,170 work items that launch nothing (const adoption and views cost about 1 ms of host time in total) but the host round trip of Vulkan auto-contiguize.
+
+## Where the rest of the per-item time went: Vulkan contiguize (ROADMAP item 23, continued)
+
+`execute_work_item` split by work-item kind (`PhaseTimer` names `item.<Kind>` and, inside a kernel item, `kernel.gather_inputs`, `kernel.alloc_output`, `kernel.execute_compiled`), same setup as above (per-device bit-stable preference of #426 applied locally, not in this PR; 5 runs x 10 steps, median over runs of the per-step average). Step 253 ms (234 to 260), before this change:
+
+| phase | ms per step | entries per step |
+|---|---:|---:|
+| `item.Kernel` | 123 | 805 |
+| of which `kernel.gather_inputs` | 86 | 805 |
+| of which `kernel.execute_compiled` (the launch) | 25 | 805 |
+| of which `kernel.alloc_output` | 8 | 805 |
+| `item.ContiguizeOf` | 43 | 156 |
+| `item.ViewOf` + `item.ConstAdopt` | 1.0 | 526 + 408 |
+| `drain_inflight_vulkan` (host waits on the GPU) | 77 | 93 |
+
+The 1,170 or so items that launch nothing were not the cost (about 1 ms). The cost was `gather_inputs` and `ContiguizeOf`, i.e. `auto_contiguize`: for a Vulkan input whose layout is not contiguous (transposed or permuted views of activations, 123 of them per step) it did **download, CPU `contiguize_cpu`, upload** (the "V.1.B stopgap" in the code), which also forces a flush and a wait on the open batch each time. A separate 3-run measurement with a timer on exactly that path (the box was in a slower stretch, step 298 ms) put it at 152 ms over 123 round trips, about 1.2 ms each, which is where `gather_inputs` plus `ContiguizeOf` went.
+
+**Change.** `vulkan_dispatch::contiguize_vulkan` materializes the layout with the existing `strided_copy_signed_*` kernels (2, 4 and 8-byte elements): no download, no CPU walk, no upload, no forced flush; the dispatch joins the open batch. `auto_contiguize` uses it first and keeps the host round trip as the fallback (other element widths, an empty tensor, an offset past 32 bits, no backend handle).
+
+**Correctness of the kernel path:** `contiguize_vulkan_check` compares it with `contiguize_cpu` byte for byte on 7 layouts (contiguous, transpose, 3-D permute, narrow with a start offset, broadcast, flip = negative stride, flip plus transpose) at each of widths 2, 4 and 8: 21 of 21 identical; widths 1 and 16 correctly decline (23 checks, 0 failures). **Model-level:** `QWEN3_VERIFY=1` against the CPU fixture: max logit difference 9.9e-5 (identical to before this change), 0 of 64 greedy tokens differ, PASS (one run).
+
+**After:** step **122 ms (119 to 129)**, from 253 ms: **2.1x, 4.0 to 8.2 tokens/s**. Prefill 5,994 ms and first decode call 5,545 ms (these vary a lot between runs on this box; no before/after claim). `item.Kernel` 31 ms (`gather_inputs` 4, launch 18, alloc 7), `item.ContiguizeOf` 2.8 ms, `drain_inflight_vulkan` 65 ms (93), evictions 9.5 ms (61), eager submits 4.9 ms (63). With #426 and #428 the decode step has gone from 4,271 ms (0.23 tokens/s) at the start of this investigation to 122 ms (8.2 tokens/s), 35x; #426 is the part not yet merged.
+
+**What is left in the 122 ms:** the host waiting on the GPU (65 ms in the drain, the GPU being busy about 86 ms per step in the earlier table, which was measured before this change), kernel launches 18 ms, per-token data 10 ms, evictions 9.5 ms, output allocation 7 ms. Nothing here has been tried yet: submitting batches earlier so recording overlaps execution, the M = 1 matmul kernel (95% of GPU time), reading fewer bytes (quantized loader).
 
 ## What this points at instead (not started)
 
