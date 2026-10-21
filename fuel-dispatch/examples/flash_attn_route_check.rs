@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Live-GPU check that the f32 Vulkan flash-attention dispatch takes the
 //! split-KV route for a decode shape (ROADMAP 17, H12 wiring), as an example
 //! rather than an `#[ignore]` test (the ignore total sits at its ceiling).
@@ -19,37 +20,48 @@ use fuel_dispatch::{
 };
 use fuel_ir::{DType, Layout, Shape, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
-use fuel_vulkan_backend::VulkanBackend;
+use fuel_vulkan_backend::{VulkanBackend, VulkanStorageBytes};
 
-fn cpu_ref(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
+#[derive(Clone, Copy)]
+struct Dims {
+    b: usize,
     hq: usize,
     hkv: usize,
+    sq: usize,
     sk: usize,
     d: usize,
     scale: f32,
-) -> Vec<f32> {
-    let mut out = vec![0f32; hq * d];
-    for h in 0..hq {
-        let kv = h / (hq / hkv);
-        let s: Vec<f64> = (0..sk)
-            .map(|j| {
-                (0..d)
-                    .map(|x| q[h * d + x] as f64 * k[(kv * sk + j) * d + x] as f64)
-                    .sum::<f64>()
-                    * scale as f64
-            })
-            .collect();
-        let m = s.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let e: Vec<f64> = s.iter().map(|x| (x - m).exp()).collect();
-        let l: f64 = e.iter().sum();
-        for x in 0..d {
-            let acc: f64 = (0..sk)
-                .map(|j| e[j] * v[(kv * sk + j) * d + x] as f64)
+}
+
+struct Inputs {
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+}
+
+fn synth(n: usize, a: f32, c: f32) -> Vec<f32> {
+    (0..n).map(|i| ((i as f32 + a) * c).sin() * 0.5).collect()
+}
+
+fn cpu_ref(x: &Inputs, s: Dims) -> Vec<f32> {
+    let mut out = vec![0f32; s.hq * s.d];
+    for h in 0..s.hq {
+        let kv = h / (s.hq / s.hkv);
+        let dot = |j: usize| -> f64 {
+            let qk: f64 = (0..s.d)
+                .map(|t| x.q[h * s.d + t] as f64 * x.k[(kv * s.sk + j) * s.d + t] as f64)
                 .sum();
-            out[h * d + x] = (acc / l) as f32;
+            qk * s.scale as f64
+        };
+        let scores: Vec<f64> = (0..s.sk).map(dot).collect();
+        let m = scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let e: Vec<f64> = scores.iter().map(|v| (v - m).exp()).collect();
+        let l: f64 = e.iter().sum();
+        for t in 0..s.d {
+            let acc: f64 = (0..s.sk)
+                .map(|j| e[j] * x.v[(kv * s.sk + j) * s.d + t] as f64)
+                .sum();
+            out[h * s.d + t] = (acc / l) as f32;
         }
     }
     out
@@ -62,117 +74,118 @@ fn max_abs(a: &[f32], b: &[f32]) -> f32 {
         .fold(0.0, f32::max)
 }
 
-fn main() {
-    let backend = Arc::new(VulkanBackend::new().expect("vulkan backend"));
-    let (b, hq, hkv, sq, sk, d) = (1usize, 8usize, 2usize, 1usize, 3000usize, 64usize);
-    let scale = 1.0 / (d as f32).sqrt();
-    let synth = |n: usize, a: f32, c: f32| -> Vec<f32> {
-        (0..n).map(|i| ((i as f32 + a) * c).sin() * 0.5).collect()
-    };
-    let (q, k, v) = (
-        synth(hq * d, 0.0, 0.013),
-        synth(hkv * sk * d, 1.0, 0.0071),
-        synth(hkv * sk * d, 2.0, 0.0053),
-    );
-    let want = cpu_ref(&q, &k, &v, hq, hkv, sk, d, scale);
+fn bit_equal(a: &[f32], b: &[f32]) -> bool {
+    a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
 
+fn download(backend: &Arc<VulkanBackend>, s: &VulkanStorageBytes) -> Vec<f32> {
+    bytemuck::cast_slice::<u8, f32>(&backend.download_bytes(s).expect("d2h")).to_vec()
+}
+
+/// The registered dispatch kernel, the production route.
+fn via_dispatch(backend: &Arc<VulkanBackend>, x: &Inputs, s: Dims) -> Vec<f32> {
     let up = |h: &[f32]| {
         backend
             .upload_bytes_handle(bytemuck::cast_slice(h))
             .expect("upload")
     };
-    let (qb, kb, vb) = (up(&q), up(&k), up(&v));
-
-    // 1. Through the registered dispatch kernel.
-    let mut table = KernelBindingTable::new();
-    register_vulkan_kernels(&mut table);
-    let kernel =
-        table.lookup_alternatives(OpKind::FlashAttn, &[DType::F32; 4], BackendId::Vulkan)[0].kernel;
     let st = |bytes| {
         Arc::new(RwLock::new(Storage::new(
             BackendStorage::Vulkan(bytes),
             DType::F32,
         )))
     };
-    let out_arc = st(backend.alloc_bytes_handle(hq * d * 4).expect("alloc"));
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let kernel =
+        table.lookup_alternatives(OpKind::FlashAttn, &[DType::F32; 4], BackendId::Vulkan)[0].kernel;
+    let out = st(backend.alloc_bytes_handle(s.hq * s.d * 4).expect("alloc"));
+    let (q_dims, kv_dims) = ([s.b, s.hq, s.sq, s.d], [s.b, s.hkv, s.sk, s.d]);
     let layouts = [
-        Layout::contiguous(Shape::from_dims(&[b, hq, sq, d])),
-        Layout::contiguous(Shape::from_dims(&[b, hkv, sk, d])),
-        Layout::contiguous(Shape::from_dims(&[b, hkv, sk, d])),
-        Layout::contiguous(Shape::from_dims(&[b, hq, sq, d])),
+        Layout::contiguous(Shape::from_dims(&q_dims)),
+        Layout::contiguous(Shape::from_dims(&kv_dims)),
+        Layout::contiguous(Shape::from_dims(&kv_dims)),
+        Layout::contiguous(Shape::from_dims(&q_dims)),
     ];
+    let params = OpParams::FlashAttn {
+        b: s.b,
+        hq: s.hq,
+        hkv: s.hkv,
+        sq: s.sq,
+        sk: s.sk,
+        d: s.d,
+        k_len: s.sk,
+        softmax_scale: s.scale,
+        causal: false,
+        window_size_left: None,
+        window_size_right: None,
+        softcap: None,
+    };
     kernel(
-        &[st(up(&q)), st(up(&k)), st(up(&v))],
-        &mut [Arc::clone(&out_arc)],
+        &[st(up(&x.q)), st(up(&x.k)), st(up(&x.v))],
+        &mut [Arc::clone(&out)],
         &layouts,
-        &OpParams::FlashAttn {
-            b,
-            hq,
-            hkv,
-            sq,
-            sk,
-            d,
-            k_len: sk,
-            softmax_scale: scale,
-            causal: false,
-            window_size_left: None,
-            window_size_right: None,
-            softcap: None,
-        },
+        &params,
     )
     .expect("dispatch");
-    let got: Vec<f32> = match &out_arc.read().unwrap().inner {
-        BackendStorage::Vulkan(o) => {
-            bytemuck::cast_slice::<u8, f32>(&backend.download_bytes(o).unwrap()).to_vec()
-        }
-        _ => unreachable!(),
-    };
+    match &out.read().unwrap().inner {
+        BackendStorage::Vulkan(o) => download(backend, o),
+        _ => unreachable!("output was allocated on Vulkan"),
+    }
+}
 
-    // 2. Direct split and 3. direct unsplit.
-    let mut o_split = backend.alloc_bytes_handle(hq * d * 4).unwrap();
-    backend
-        .flash_attn_f32_split_bytes(
-            &qb,
-            &kb,
-            &vb,
-            None,
-            &mut o_split,
-            b,
-            hq,
-            hkv,
-            sq,
-            sk,
-            d,
-            scale,
-            false,
-            8,
-        )
-        .unwrap();
-    let split: Vec<f32> =
-        bytemuck::cast_slice::<u8, f32>(&backend.download_bytes(&o_split).unwrap()).to_vec();
-    let mut o_un = backend.alloc_bytes_handle(hq * d * 4).unwrap();
-    backend
-        .flash_attn_f32_bytes(
-            &qb, &kb, &vb, None, &mut o_un, b, hq, hkv, sq, sk, d, scale, false,
-        )
-        .unwrap();
-    let unsplit: Vec<f32> =
-        bytemuck::cast_slice::<u8, f32>(&backend.download_bytes(&o_un).unwrap()).to_vec();
+/// A backend wrapper called directly: `Some(n)` = split-KV with `n` splits,
+/// `None` = the unsplit kernel.
+fn direct(backend: &Arc<VulkanBackend>, x: &Inputs, s: Dims, splits: Option<usize>) -> Vec<f32> {
+    let up = |h: &[f32]| {
+        backend
+            .upload_bytes_handle(bytemuck::cast_slice(h))
+            .expect("upload")
+    };
+    let (q, k, v) = (up(&x.q), up(&x.k), up(&x.v));
+    let mut out = backend.alloc_bytes_handle(s.hq * s.d * 4).expect("alloc");
+    let r = match splits {
+        Some(n) => backend.flash_attn_f32_split_bytes(
+            &q, &k, &v, None, &mut out, s.b, s.hq, s.hkv, s.sq, s.sk, s.d, s.scale, false, n,
+        ),
+        None => backend.flash_attn_f32_bytes(
+            &q, &k, &v, None, &mut out, s.b, s.hq, s.hkv, s.sq, s.sk, s.d, s.scale, false,
+        ),
+    };
+    r.expect("direct wrapper");
+    download(backend, &out)
+}
+
+fn main() {
+    let backend = Arc::new(VulkanBackend::new().expect("vulkan backend"));
+    let (hq, hkv, sk, d) = (8usize, 2usize, 3000usize, 64usize);
+    let s = Dims {
+        b: 1,
+        hq,
+        hkv,
+        sq: 1,
+        sk,
+        d,
+        scale: 1.0 / (d as f32).sqrt(),
+    };
+    let x = Inputs {
+        q: synth(hq * d, 0.0, 0.013),
+        k: synth(hkv * sk * d, 1.0, 0.0071),
+        v: synth(hkv * sk * d, 2.0, 0.0053),
+    };
+    let got = via_dispatch(&backend, &x, s);
+    let want = cpu_ref(&x, s);
+    let split = direct(&backend, &x, s, Some(8));
+    let unsplit = direct(&backend, &x, s, None);
 
     let (e_cpu, e_un) = (max_abs(&got, &want), max_abs(&got, &unsplit));
-    let identical_to_split = got
-        .iter()
-        .zip(&split)
-        .all(|(a, b)| a.to_bits() == b.to_bits());
-    let identical_to_unsplit = got
-        .iter()
-        .zip(&unsplit)
-        .all(|(a, b)| a.to_bits() == b.to_bits());
+    let same_split = bit_equal(&got, &split);
     println!("dispatch vs cpu f64: max abs {e_cpu:e}");
-    println!("dispatch bit-identical to direct split(8): {identical_to_split}");
+    println!("dispatch bit-identical to direct split(8): {same_split}");
     println!(
-        "dispatch bit-identical to unsplit: {identical_to_unsplit}; max abs vs unsplit {e_un:e}"
+        "dispatch bit-identical to unsplit: {}; max abs vs unsplit {e_un:e}",
+        bit_equal(&got, &unsplit)
     );
     assert!(e_cpu < 1e-4 && e_un < 1e-4, "numeric bound");
-    assert!(identical_to_split, "dispatch did not take the split route");
+    assert!(same_split, "dispatch did not take the split route");
 }
