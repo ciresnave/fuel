@@ -296,6 +296,14 @@ pub(crate) struct Recorder {
     batch_descs: Vec<DescriptorSet>,
     /// Number of dispatches recorded in the current batch.
     pub(crate) batch_count: usize,
+    /// Data buffers the OPEN batch's recorded commands may read that the executor has
+    /// evicted (freed): retained here so they outlive the batch. Moved into the
+    /// `SubmittedBatch` at submit (freed post-fence), cleared after a blocking flush.
+    open_retained: Vec<Arc<crate::VulkanBuffer>>,
+    /// Batch epoch shared with the buffer recycler: bumped after every submission
+    /// (async or blocking), so the recycler can tell a buffer freed in the open
+    /// batch (unsafe to hand out again before a batch boundary) from one freed earlier.
+    epoch: Arc<std::sync::atomic::AtomicU64>,
     /// VkBuffer handles written by dispatches since the last barrier.
     /// Used for dependency-aware barrier placement: a barrier is only
     /// inserted when a dispatch READS a buffer in this set.
@@ -321,13 +329,16 @@ impl Recorder {
         device: &Device,
         queue_family: u32,
         timing_cfg: Option<(f64, u64, Arc<GpuTimeStats>)>,
+        epoch: Arc<std::sync::atomic::AtomicU64>,
     ) -> Result<Self> {
         Ok(Self {
+            epoch,
             pool: CommandPool::new(device, queue_family)?,
             batch_cb: None,
             batch_transients: Vec::new(),
             batch_descs: Vec::new(),
             batch_count: 0,
+            open_retained: Vec::new(),
             dirty_buffers: std::collections::HashSet::new(),
             timing_cfg,
             timing_on: false,
@@ -564,6 +575,8 @@ impl Recorder {
         // Submit with a fence and wait.
         let fence = Fence::new(device)?;
         queue.submit(&[&cmd], Some(&fence))?;
+        self.epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         fence.wait(u64::MAX)?;
         if let Some(t) = self.batch_timing.take() {
             t.finish();
@@ -573,12 +586,22 @@ impl Recorder {
         self.batch_transients.clear();
         self.batch_descs.clear();
         self.batch_count = 0;
+        self.open_retained.clear();
         self.dirty_buffers.clear();
 
         // Recycle the command pool to release CB backing memory.
         drop(cmd);
         self.pool = CommandPool::new(device, queue_family)?;
         Ok(())
+    }
+
+    /// Keep `buf` alive until the open batch has been submitted and its fence has
+    /// signalled (the batch's recorded commands may read it). A no-op when the
+    /// batch holds no commands.
+    pub fn retain_in_open_batch(&mut self, buf: Arc<crate::VulkanBuffer>) {
+        if self.batch_count > 0 {
+            self.open_retained.push(buf);
+        }
     }
 
     /// Step E A4b-2: end the current batch CB recording and SUBMIT it with a
@@ -622,6 +645,8 @@ impl Recorder {
         // Submit with a fence but DO NOT wait — the async split.
         let fence = Fence::new(device)?;
         queue.submit(&[&cmd], Some(&fence))?;
+        self.epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
 
         // Move (not drop) everything the in-flight CB references into the
         // returned batch. Swap the pool for a fresh one so the next batch
@@ -640,7 +665,7 @@ impl Recorder {
             // Step E A2.1: starts empty — the executor pushes evicted data buffers
             // onto it via `retain_buffer` only when it defers an eviction onto this
             // in-flight batch (deferred-deletion). Freed POST-fence on `Drop`.
-            retained_data: Vec::new(),
+            retained_data: std::mem::take(&mut self.open_retained),
             timing: self.batch_timing.take(),
         };
 

@@ -276,6 +276,24 @@ About 1.35x on the step, about 22 tokens/s. A first, non-alternating comparison 
 
 **Not tried:** batching the four uploads into one submission. Measured inside `upload_bytes`: the copy submission is 0.3 to 0.5 ms of the upload, the rest was the pool trim, so batching would save about 1 ms and was not kept.
 
+## False backend switches, deferred eviction and epoch-gated buffer reuse (ROADMAP item 23, continued)
+
+After the allocation fixes the step was 43-52 ms and `realize.evict_destroyed_input` was 5.8 ms (61 per step). Timing its parts showed the cost was not the eviction itself: `eager_submit_all_vulkan` scans the whole storage cache for Vulkan backends (2.2 ms per step over 123 calls) and submits (about 90 us per real `vkQueueSubmit`, which also creates a fence and a command pool). A temporary log of every chunk switch showed where the submits came from: **910 `Vulkan -> Cpu` switches in two steps, every one at an `item.ContiguizeOf`.** `ContiguizeOf` is stamped with a `Cpu` placeholder `target_backend` (it runs on its input's backend), so each of its 156 appearances per step looked like a backend switch, armed `multi_backend`, and submitted the open batch. ROADMAP item 23's earlier neutral-item fix (#428) covered `ConstAdopt`/`ViewOf`/`SlotView` only.
+
+**Changes.** (1) `ContiguizeOf` is backend-neutral for chunking. (2) A Vulkan kernel item arms the async path (`multi_backend`) itself, so a pure-Vulkan realize keeps deferred eviction instead of the blocking per-eviction flush. (3) A deferred eviction retains the evicted buffer on the OPEN batch (`VulkanBackend::retain_in_open_batch`, freed post-fence once the batch is submitted) and on every in-flight batch, and no longer submits; the open batch is submitted once it holds 48 dispatches (`EVICT_SUBMIT_MIN_DISPATCHES`). (4) **Buffer reuse is epoch-gated.** The recycler stamps each parked buffer with the batch epoch it was freed in (bumped at every submission); a buffer freed in the open batch is not handed out again until a batch boundary. Larger batches exposed this: with (1)-(3) alone the decode was wrong (max logit difference 30.08, 18 of 64 tokens differ) and the Khronos validation layer reported `SYNC-HAZARD-WRITE-AFTER-READ` on output buffers (binding 2) previously read by another dispatch in the same batch. The recorder tracks write-then-read inside a batch but not write-after-read, and a freed-then-reallocated buffer is exactly that. Before this change a batch ended at every eviction, and the next batch's opening barrier (item 23's inter-batch barrier) hid it; the hazard was latent for any realize whose frees and allocations land in one batch.
+
+**Evidence the hazard fix is the cause.** Same binary, submit threshold swept: 1, 4 correct; 12, 24, 48 wrong (identical wrong logits, deterministic) before the epoch gate; all thresholds correct after it, and validation reports 0 `SYNC-HAZARD` (the 11 known SPIR-V errors remain). A sabotage test (`a_buffer_freed_in_the_open_batch_is_not_reusable_until_a_batch_boundary`, `<` changed to `<=`) reddens.
+
+**Measured** (Qwen3-0.6B Q4_K_M, RTX 4070, #426's per-device preference applied locally and not in this PR; step median per binary run of 3x10 steps; the box was shared and loaded, 60-66% CPU from other lanes, so only runs inside a quiet window are quoted):
+
+| submit threshold (dispatches) | step |
+|---|---|
+| 16 / 32 / 48 / 200 / never | 40 / 38 / **35** / 40 (min 35, one slow outlier) / 46 ms |
+
+Alternating base (main) and new binaries, three pairs, quiet-window medians: **base 54, 52, 43-52 ms; new 36, 32-35, 30-31 ms**, about 1.5x, about 30 tokens/s. Other runs in the same sessions were 3-5x slower for both binaries (every host phase scaled together, so host CPU contention, not this change). `QWEN3_VERIFY=1`: max logit difference 9.2e-5, 0 of 64 tokens differ, PASS, at every threshold after the epoch gate (one run each).
+
+**Cost / not tested:** buffer reuse now waits for the next batch boundary, so the pool holds more buffers at once (pool VRAM not re-measured on a decode; `recycler_pool_probe` covers the worst case of the cap). `cargo test -p fuel-dispatch -p fuel-vulkan-backend --features fuel-dispatch/vulkan` passes (816 lib tests, 0 failed). Not tested: CUDA+Vulkan mixed graphs (the multi-backend deferred path now also runs for them, with the open-batch retain), more than one Vulkan device, models other than Qwen3-0.6B. The pure-Vulkan realize used to take the blocking single-device eviction path; it now takes the deferred one, so any other single-device Vulkan graph changes path.
+
 ## What this points at instead (not started)
 
 1. The 397 `Copy/Vulkan` launches per step (62%).

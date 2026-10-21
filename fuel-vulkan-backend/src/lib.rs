@@ -71,21 +71,31 @@ pub struct VulkanBuffer {
     /// Keyed by byte_size → stack of buffers of that exact size. The
     /// BTreeMap enables O(log n) best-fit lookup (smallest size ≥
     /// requested) without a linear scan.
-    #[expect(
-        clippy::type_complexity,
-        reason = "size-keyed buffer-recycling pool (BTreeMap of free (Buffer, Allocation) stacks); a type alias would add indirection for a field used in one place"
-    )]
-    recycle_pool: Option<
-        std::sync::Arc<
-            std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation)>>>,
-        >,
-    >,
+    recycle_pool: Option<std::sync::Arc<RecyclePool>>,
 }
 
 impl VulkanBuffer {
     pub fn buffer(&self) -> &Buffer {
         self.buffer.as_ref().unwrap()
     }
+}
+
+/// The buffer recycler's storage, shared by the backend and every [`VulkanBuffer`].
+///
+/// Each parked buffer carries the batch epoch it was freed in. A buffer freed while
+/// the open batch still holds commands that read it must not be handed out again
+/// inside that same batch: the new owner's write would race the earlier read (the
+/// recorder only tracks write-then-read inside a batch). The epoch is bumped at every
+/// submission, and the next batch starts with a memory barrier, so a buffer freed in
+/// an earlier epoch is safe to reuse.
+pub(crate) struct RecyclePool {
+    /// Byte size -> stack of free `(buffer, allocation, epoch freed in)`; oldest first.
+    #[expect(
+        clippy::type_complexity,
+        reason = "size-keyed free-buffer stacks; a type alias would add indirection for a field used in one place"
+    )]
+    map: std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation, u64)>>>,
+    epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Drop for VulkanBuffer {
@@ -95,8 +105,9 @@ impl Drop for VulkanBuffer {
         if let (Some(b), Some(a)) = (buf, alloc) {
             if let Some(pool) = &self.recycle_pool {
                 // Return to pool for reuse.
-                if let Ok(mut p) = pool.lock() {
-                    p.entry(self.byte_size).or_default().push((b, a));
+                let freed_in = pool.epoch.load(std::sync::atomic::Ordering::Acquire);
+                if let Ok(mut p) = pool.map.lock() {
+                    p.entry(self.byte_size).or_default().push((b, a, freed_in));
                     return;
                 }
             }
@@ -105,6 +116,15 @@ impl Drop for VulkanBuffer {
             drop(b);
         }
     }
+}
+
+/// Index of the most recently freed entry of `entries` (ordered by the epoch they were
+/// freed in, oldest first) that was freed in an epoch BEFORE `current`, i.e. before a
+/// batch boundary: the only entries safe to hand out again (see [`RecyclePool`]).
+fn reusable_index<E>(entries: &[E], epoch_of: impl Fn(&E) -> u64, current: u64) -> Option<usize> {
+    entries
+        .partition_point(|e| epoch_of(e) < current)
+        .checked_sub(1)
 }
 
 /// How many buffers of `size` bytes the recycler keeps per bucket: as many as fit in
@@ -442,13 +462,7 @@ pub struct VulkanBackend {
     /// are reused by alloc_device before allocating fresh from VMA.
     /// BTreeMap<byte_size, stack-of-free-buffers-of-that-size>. Enables
     /// O(log n) best-fit lookup via `range(size..).next()`.
-    #[expect(
-        clippy::type_complexity,
-        reason = "size-keyed buffer pool (Arc<Mutex<BTreeMap<size, free-buffer stacks>>>); a type alias would add indirection for a field used in one place"
-    )]
-    buffer_pool: std::sync::Arc<
-        std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation)>>>,
-    >,
+    buffer_pool: std::sync::Arc<RecyclePool>,
     /// Memory-type index used for D2H download staging: the first
     /// `HOST_VISIBLE | HOST_COHERENT | HOST_CACHED` type compatible
     /// with `TRANSFER_DST` staging buffers, probed at init. CPU reads
@@ -853,8 +867,16 @@ impl VulkanBackend {
                 (period, mask, std::sync::Arc::clone(&gpu_time))
             })
         };
-        let recorder =
-            Mutex::new(Recorder::new(&device, queue_family, timing_cfg).map_err(vk_err)?);
+        let batch_epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let recorder = Mutex::new(
+            Recorder::new(
+                &device,
+                queue_family,
+                timing_cfg,
+                std::sync::Arc::clone(&batch_epoch),
+            )
+            .map_err(vk_err)?,
+        );
         // BDA-capable allocator: every block carries
         // VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, so a STORAGE_BUFFER created with
         // SHADER_DEVICE_ADDRESS usage yields a valid GPU address (FDX §3.3.1).
@@ -915,8 +937,10 @@ impl VulkanBackend {
             );
         }
 
-        let buffer_pool =
-            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let buffer_pool = std::sync::Arc::new(RecyclePool {
+            map: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            epoch: batch_epoch,
+        });
         Ok(Self {
             device,
             physical,
@@ -1649,21 +1673,26 @@ impl VulkanBackend {
         // Buffers trimmed from the pool are destroyed AFTER the lock is released:
         // a vkDestroyBuffer + free costs about a millisecond each, and doing it
         // under the lock stalls every other allocating thread.
-        let mut trimmed: Vec<(Buffer, Allocation)> = Vec::new();
+        let mut trimmed: Vec<(Buffer, Allocation, u64)> = Vec::new();
         let recycled = {
-            let mut pool = self.buffer_pool.lock().unwrap();
-            // O(log n) best-fit: first bucket in [size, size*2].
-            let found_size = pool
+            let epoch = self
+                .buffer_pool
+                .epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            let mut pool = self.buffer_pool.map.lock().unwrap();
+            // Best fit: the first bucket in [size, size*2] holding a buffer freed in an
+            // EARLIER batch epoch (see `RecyclePool`); entries are pushed in epoch order,
+            // so the eligible ones are a prefix of each bucket.
+            let found = pool
                 .range(size..=size.saturating_mul(2))
-                .next()
-                .map(|(&k, _)| k);
-            let picked = found_size.and_then(|k| {
+                .find_map(|(&k, v)| reusable_index(v, |e| e.2, epoch).map(|idx| (k, idx)));
+            let picked = found.map(|(k, idx)| {
                 let vec = pool.get_mut(&k).unwrap();
-                let item = vec.pop();
+                let (b, a, _) = vec.remove(idx);
                 if vec.is_empty() {
                     pool.remove(&k);
                 }
-                item
+                (b, a)
             });
             // 1. Bucket-count cap: drop smallest sizes until ≤ MAX_BUCKETS.
             while pool.len() > MAX_BUCKETS {
@@ -1730,6 +1759,7 @@ impl VulkanBackend {
     /// growing linearly (the reclaim-leak signature).
     pub fn recycler_pooled_bytes(&self) -> u64 {
         self.buffer_pool
+            .map
             .lock()
             .unwrap()
             .iter()
@@ -1922,6 +1952,21 @@ impl VulkanBackend {
             .map_err(vk_err)?;
         self.pipelines.retire_pools_post_drain();
         Ok(())
+    }
+
+    /// Keep `buf` alive until the open batch is submitted and its fence signals
+    /// (deferred deletion of an evicted data buffer the open batch may read, with
+    /// no submit and no wait). A no-op when the open batch is empty.
+    pub fn retain_in_open_batch(&self, buf: std::sync::Arc<VulkanBuffer>) {
+        self.recorder
+            .lock()
+            .expect("recorder poisoned")
+            .retain_in_open_batch(buf);
+    }
+
+    /// Dispatches recorded in the open (unsubmitted) batch.
+    pub fn open_batch_len(&self) -> usize {
+        self.recorder.lock().expect("recorder poisoned").batch_count
     }
 
     /// Step E A4b-2: the ASYNC half of [`force_flush`] — submit the current
@@ -14686,6 +14731,22 @@ mod recycler_depth_tests {
         assert_eq!(recycler_bucket_depth(64 << 20), 4);
         assert_eq!(recycler_bucket_depth(u64::MAX), 4);
         assert_eq!(recycler_bucket_depth(0), 1024);
+    }
+
+    #[test]
+    fn a_buffer_freed_in_the_open_batch_is_not_reusable_until_a_batch_boundary() {
+        use super::reusable_index;
+        let freed_in = |e: &(char, u64)| e.1;
+        // Freed in epochs 3, 3, 4; the open batch is epoch 4.
+        let v = [('a', 3u64), ('b', 3), ('c', 4)];
+        // Epoch 4: `c` was freed in the open batch (a later write would race the
+        // earlier read), so the newest reusable entry is `b` (index 1).
+        assert_eq!(reusable_index(&v, freed_in, 4), Some(1));
+        // After a submission (epoch 5) every entry is reusable: newest is `c`.
+        assert_eq!(reusable_index(&v, freed_in, 5), Some(2));
+        // Everything freed in the current epoch: nothing reusable.
+        assert_eq!(reusable_index(&[('x', 7u64), ('y', 7)], freed_in, 7), None);
+        assert_eq!(reusable_index::<(char, u64)>(&[], freed_in, 7), None);
     }
 
     #[test]
