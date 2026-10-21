@@ -18,7 +18,7 @@
 //! enqueues work is charged its enqueue cost, not its device time; the rest of a
 //! step's wall time (the part no launch accounts for) is reported as `other`.
 
-use fuel_dispatch::compiled::op_profile;
+use fuel_dispatch::compiled::{op_profile, op_profile::LaunchRow};
 use fuel_ir::DType;
 use fuel_tensor::inference_context::{DecodeSession, InferenceContext, KvCache};
 use fuel_transformers::dev_tools::qwen3_yardstick::{PROMPTS, load_model};
@@ -47,6 +47,8 @@ struct Run {
     steps: Vec<Duration>,
     /// `(op, backend) -> (launches, host time)` summed over the steady steps.
     ops: BTreeMap<(String, String), (u64, Duration)>,
+    /// Every launch of one extra (unprofiled-by-the-table) decode step, in order.
+    trace: Vec<LaunchRow>,
 }
 
 fn main() {
@@ -59,6 +61,20 @@ fn main() {
     let (runs, steady) = (arg(1, 5), arg(2, 10));
     let (model, tokenizer, cfg) = load_model().expect("load_model");
     let dev = fuel_tensor::vulkan_backend::new_device().expect("vulkan device");
+    // What the planner believes a Vulkan<->host copy costs (the numbers it
+    // prices placement with), to set beside the measured copy times.
+    {
+        use fuel_ir::DeviceLocation;
+        let topo = fuel_dispatch::topology::SystemTopology::current();
+        let vk = DeviceLocation::Vulkan { gpu_id: 0 };
+        for bytes in [4u64, 4096, 4 << 20, 12_582_912, 622_329_856] {
+            println!(
+                "planner estimate {bytes:>10} B: Vulkan->Cpu {:>10.3} ms, Cpu->Vulkan {:>10.3} ms",
+                topo.estimate_transfer_ns(vk, DeviceLocation::Cpu, bytes) as f64 / 1e6,
+                topo.estimate_transfer_ns(DeviceLocation::Cpu, vk, bytes) as f64 / 1e6,
+            );
+        }
+    }
     let formatted = format!(
         "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
         PROMPTS[0]
@@ -68,7 +84,7 @@ fn main() {
         .expect("encode")
         .get_ids()
         .to_vec();
-    let max_seq_len = prompt_tokens.len() + steady + 2;
+    let max_seq_len = prompt_tokens.len() + steady + 4;
 
     let run_once = || -> Run {
         let mut cache = KvCache::with_capacity(
@@ -82,20 +98,23 @@ fn main() {
         .expect("KvCache::with_capacity");
         let mut ctx = InferenceContext::new(dev.clone());
         let mut session: Option<DecodeSession> = None;
-        let mut step = |tokens: &[u32]| {
+        let mut step = |tokens: &[u32], reset: bool| {
+            if reset {
+                session = None;
+            }
             let t = Instant::now();
             let logits = model
                 .forward_with_kv_context_persistent(tokens, &mut cache, &mut ctx, &mut session)
                 .expect("forward");
             (argmax(&logits), t.elapsed())
         };
-        let (mut next, prefill) = step(&prompt_tokens);
-        let (n, first_decode) = step(&[next]);
+        let (mut next, prefill) = step(&prompt_tokens, false);
+        let (n, first_decode) = step(&[next], false);
         next = n;
         op_profile::set_enabled(true);
         let mut steps = Vec::new();
         for _ in 0..steady {
-            let (n, dt) = step(&[next]);
+            let (n, dt) = step(&[next], false);
             next = n;
             steps.push(dt);
         }
@@ -104,17 +123,31 @@ fn main() {
             .into_iter()
             .map(|(op, be, n, d)| ((op, be), (n, d)))
             .collect();
+        // QWEN3_REPLAN=1: drop the decode session and rebuild it (re-plan) with
+        // the same context, so the planner sees whatever residency the first
+        // session left behind; the traced step below is then the re-planned one.
+        if std::env::var_os("QWEN3_REPLAN").is_some() {
+            let (n, _) = step(&[next], true);
+            next = n;
+        }
+        op_profile::set_trace(true);
+        let (_, _) = step(&[next], false);
+        op_profile::set_trace(false);
+        let trace = op_profile::take_trace();
+        let _ = op_profile::take();
         Run {
             prefill,
             first_decode,
             steps,
             ops,
+            trace,
         }
     };
 
     let _ = run_once(); // warm-up, discarded (and clears nothing it needs)
     let all: Vec<Run> = (0..runs).map(|_| run_once()).collect();
 
+    copy_anatomy(&all.last().expect("at least one run").trace);
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     let mut prefill: Vec<f64> = all.iter().map(|r| ms(r.prefill)).collect();
     let mut first: Vec<f64> = all.iter().map(|r| ms(r.first_decode)).collect();
@@ -192,4 +225,91 @@ fn main() {
         step_all - accounted,
         (step_all - accounted) / step_all * 100.0
     );
+}
+
+fn bucket(bytes: usize) -> &'static str {
+    match bytes {
+        0..=64 => "<=64 B",
+        65..=4096 => "<=4 KB",
+        4097..=65_536 => "<=64 KB",
+        65_537..=1_048_576 => "<=1 MB",
+        1_048_577..=16_777_216 => "<=16 MB",
+        _ => ">16 MB",
+    }
+}
+
+fn med(v: &mut [f64]) -> f64 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v[v.len() / 2]
+}
+
+/// Direction, size and trigger of every `Copy` launch in one traced decode step.
+fn copy_anatomy(trace: &[LaunchRow]) {
+    let ms = |d: Duration| d.as_secs_f64() * 1e3;
+    let copies: Vec<&LaunchRow> = trace.iter().filter(|r| r.op == "Copy").collect();
+    println!(
+        "\ncopy anatomy, ONE traced decode step: {} launches, {} are Copy",
+        trace.len(),
+        copies.len()
+    );
+    let mut dir: BTreeMap<String, (u64, f64, usize)> = BTreeMap::new();
+    for c in &copies {
+        let e = dir
+            .entry(format!("{}->{} (kernel {})", c.src, c.dst, c.backend))
+            .or_default();
+        e.0 += 1;
+        e.1 += ms(c.dt);
+        e.2 += c.bytes;
+    }
+    println!("  by direction:");
+    for (k, (n, t, b)) in &dir {
+        println!("    {k:<34} {n:>4} copies  {t:>9.1} ms  {b:>12} bytes");
+    }
+    let mut sizes: BTreeMap<(String, &'static str), Vec<f64>> = BTreeMap::new();
+    for c in &copies {
+        sizes
+            .entry((format!("{}->{}", c.src, c.dst), bucket(c.bytes)))
+            .or_default()
+            .push(ms(c.dt));
+    }
+    println!("  by direction and size (per-copy ms: median / max):");
+    for ((d, b), v) in &mut sizes {
+        let max = v.iter().cloned().fold(0.0, f64::max);
+        println!(
+            "    {d:<14} {b:<9} {:>4} copies  total {:>8.1} ms  median {:>7.2}  max {max:>7.2}",
+            v.len(),
+            v.iter().sum::<f64>(),
+            med(v)
+        );
+    }
+    // What launched just before each Copy (the nearest earlier non-Copy launch).
+    let mut prev: BTreeMap<String, (u64, f64)> = BTreeMap::new();
+    let mut last_non_copy = "(start)".to_string();
+    for r in trace {
+        if r.op == "Copy" {
+            let e = prev.entry(last_non_copy.clone()).or_default();
+            e.0 += 1;
+            e.1 += ms(r.dt);
+        } else {
+            last_non_copy = format!("{}/{}", r.op, r.backend);
+        }
+    }
+    println!("  copies by the nearest earlier non-Copy launch:");
+    let mut p: Vec<_> = prev.into_iter().collect();
+    p.sort_by(|a, b| b.1.1.partial_cmp(&a.1.1).unwrap());
+    for (k, (n, t)) in p.iter().take(12) {
+        println!("    after {k:<28} {n:>4} copies  {t:>9.1} ms");
+    }
+    println!("  first 70 launches in order (op/backend src>dst bytes ms):");
+    for r in trace.iter().take(70) {
+        println!(
+            "    {:<20} {:<7} {}>{} {:>9} B {:>8.3} ms",
+            r.op,
+            r.backend,
+            r.src,
+            r.dst,
+            r.bytes,
+            ms(r.dt)
+        );
+    }
 }
