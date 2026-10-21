@@ -27,9 +27,28 @@ impl Default for BitStablePreferenceFilter {
 
 impl AlternativeFilter for BitStablePreferenceFilter {
     fn filter(&self, alts: &[Candidate], _ctx: &FilterContext) -> Vec<usize> {
+        // Devices that have at least one bit-stable candidate of their own.
+        let stable_devices: Vec<_> = alts
+            .iter()
+            .filter(|c| c.precision.bit_stable_on_same_hardware)
+            .map(|c| c.device)
+            .collect();
+        if stable_devices.is_empty() {
+            // Nothing bit-stable anywhere: nothing to prefer (the chain
+            // soft-skips an empty result).
+            return Vec::new();
+        }
+        // The preference chooses a KERNEL on a device; it must not choose a
+        // DEVICE. A candidate is dropped only when a bit-stable candidate
+        // exists on its own device, so a device whose kernels are honestly
+        // non-bit-stable (e.g. a GPU matmul with unpinned subgroup order) is
+        // still ranked against the others by cost.
         alts.iter()
             .enumerate()
-            .filter_map(|(i, c)| c.precision.bit_stable_on_same_hardware.then_some(i))
+            .filter_map(|(i, c)| {
+                (c.precision.bit_stable_on_same_hardware || !stable_devices.contains(&c.device))
+                    .then_some(i)
+            })
             .collect()
     }
 
