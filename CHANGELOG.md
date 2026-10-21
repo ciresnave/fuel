@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.52 - 2026-10-21
+
+### Changed
+
+- New example `recycler_pool_probe` and the measured worst-case VRAM of the Vulkan buffer recycler after the depth change: with 64 distinct sizes (2 KiB to 24 MiB) freed at once the pool parks 1,260 MiB until the next allocation, then trims to 511 MiB (the unchanged 512 MB cap). Documentation and example only.
+
 ## v0.20.50 - 2026-10-21
 
 ### Changed
