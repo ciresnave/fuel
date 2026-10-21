@@ -13,7 +13,7 @@ The Vulkan attention forward that runs today is `fuel-kernels-source/kernels/fla
 - pass 2 merges the partials of a row in fixed split order: `M = max m`, `L = sum l*exp(m-M)`, `out = sum o*exp(m-M) / L`. Deterministic for a given `splits`; it reorders float adds, so it is not bit-identical to the unsplit kernel;
 - masking, causal, ALiBi, GQA and the all-masked-row-is-zero rule follow the unsplit kernel.
 
-**Not wired:** nothing selects the split kernel yet (no planner/Judge route, no FKC contract, f32 only, no bf16/f16 variant). This change is the kernel, its wrapper, the test and these numbers.
+**Wiring (0.20.34):** the f32 Vulkan `FlashAttn` dispatch (`vulkan_dispatch::flash_attn_f32`) now calls the split kernel with 8 splits when `decode_splits(b, hq, sq, sk)` says so: `sq == 1`, `b*hq <= 16`, `2048 <= sk <= 4096`. Those thresholds are read off the table below (one device, f32; the 32/64-head cells gained ~1.2x and are left on the unsplit kernel so the bit-pattern change is confined to where the win is clear). It is a fixed prior: no planner/Judge variant yet, no FKC contract, no bf16/f16 variant, so a real bf16/f16 decode does not reach it. `fuel-dispatch/examples/flash_attn_route_check.rs` (live GPU, `b=1 hq=8 hkv=2 sq=1 sk=3000 d=64`) shows the route: the dispatch output is bit-identical to a direct `flash_attn_f32_split_bytes(.., 8)` call, differs from the unsplit kernel in the last bits (max abs 5.6e-9), and is 4.6e-9 from an f64 CPU reference. That proves which kernel ran, not any speedup at model level.
 
 ## Correctness
 
