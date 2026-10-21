@@ -20,26 +20,26 @@ repository = "https://github.com/ciresnave/fuel"
 # The surface `fuel-core` used to carry is re-exported from the crates that own it
 # (GAP-348, fuel-core dissolution). Each dependency below is here because
 # src/lib.rs names it.
-fuel-tensor = { path = "../fuel-tensor", version = "0.20.38" }
-fuel-ir = { path = "../fuel-ir", version = "0.20.38" }
-fuel-hardware = { path = "../fuel-hardware", version = "0.20.38" }
-fuel-backend-contract = { path = "../fuel-backend-contract", version = "0.20.38" }
-fuel-cpu-backend = { path = "../fuel-cpu-backend", version = "0.20.38" }
+fuel-tensor = { path = "../fuel-tensor", version = "0.20.40" }
+fuel-ir = { path = "../fuel-ir", version = "0.20.40" }
+fuel-hardware = { path = "../fuel-hardware", version = "0.20.40" }
+fuel-backend-contract = { path = "../fuel-backend-contract", version = "0.20.40" }
+fuel-cpu-backend = { path = "../fuel-cpu-backend", version = "0.20.40" }
 # `fuel::topology` and `fuel::telemetry` (telemetry feature) come from here.
-fuel-dispatch = { path = "../fuel-dispatch", version = "0.20.38" }
+fuel-dispatch = { path = "../fuel-dispatch", version = "0.20.40" }
 # `fuel::kv_block_pool`.
-fuel-kv-pool = { path = "../fuel-kv-pool", version = "0.20.38" }
+fuel-kv-pool = { path = "../fuel-kv-pool", version = "0.20.40" }
 # `fuel::hf_config`, `fuel::safetensors`, `fuel::quantized`.
-fuel-loaders = { path = "../fuel-loaders", version = "0.20.38" }
+fuel-loaders = { path = "../fuel-loaders", version = "0.20.40" }
 # The model zoo (`pub use fuel_transformers::models::*`).
-fuel-transformers = { path = "../fuel-transformers", version = "0.20.38" }
+fuel-transformers = { path = "../fuel-transformers", version = "0.20.40" }
 
 # Features forward to EVERY dependency that declares them, and to no dependency
 # that does not (see fuel/tests/feature_forwarding.rs, which derives this rule
 # from the manifests rather than hardcoding the split). `fuel-tensor` owns all
-# ten backend features; fuel-transformers carries accelerate/cuda/cudnn/mkl/metal
-# (a strict subset), so those five forward to BOTH; telemetry/nccl/aocl/onemkl/
-# vulkan forward to fuel-tensor only. `telemetry` also forwards to
+# ten backend features; fuel-transformers carries accelerate/cuda/cudnn/mkl/metal/
+# vulkan (a strict subset), so those six forward to BOTH; telemetry/nccl/aocl/
+# onemkl forward to fuel-tensor only. `telemetry` also forwards to
 # `fuel-dispatch/telemetry` for the `fuel::telemetry` re-export.
 [features]
 default = []
@@ -52,4 +52,4 @@ aocl = ["fuel-tensor/aocl"]
 onemkl = ["fuel-tensor/onemkl"]
 accelerate = ["fuel-tensor/accelerate", "fuel-transformers/accelerate"]
 metal = ["fuel-tensor/metal", "fuel-transformers/metal"]
-vulkan = ["fuel-tensor/vulkan"]
+vulkan = ["fuel-tensor/vulkan", "fuel-transformers/vulkan"]

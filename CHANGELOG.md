@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.40 - 2026-10-21
+
+### Added
+
+- `fuel-dispatch`: `compiled::op_profile`, an opt-in (off by default, one relaxed atomic load per launch) per-`(OpKind, backend)` accounting of HOST wall time of kernel launches. It charges enqueue cost for kernels that only enqueue (Vulkan, CUDA), so it is not a device timeline. `fuel-transformers` gains a `vulkan` feature (forwarded by the `fuel` facade, as `fuel/tests/feature_forwarding.rs` requires) and the example `qwen3_vulkan_profile`. Measured with them: a Qwen3-0.6B Q4_K_M decode step on the Vulkan backend is 4,271 ms, 62% `Copy/Vulkan` and 26% CPU `MatMul`; attention is negligible at that context. ROADMAP items 20 (conditional, not worth starting on this evidence) and 21 (the copies and CPU matmuls) record it; details in `docs/research/qwen3-vulkan-decode-profile.md`.
+
 ## v0.20.38 - 2026-10-21
 
 ### Changed
