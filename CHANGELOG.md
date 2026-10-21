@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.57 - 2026-10-21
+
+### Changed
+
+- Vulkan: `Pipelines::new` (1,457 lines, cyclomatic complexity ~594) is now driven by one `pipelines!` table in `fuel-vulkan-backend/src/pipelines.rs`: a row is `pipeline_field, layout_field, SHADER, descriptor_layout, kind;` with kind `required`, `gated` or `coop`, built by `Build` methods, so adding a kernel is one row. The 176 `Pipelines` field names, types and drop order are unchanged (no call-site edits); the file shrank from 2,125 to about 550 lines. The `spirv_caps` source scan now counts the `gated`/`coop` rows (49, as before). ROADMAP row 30.
+
 ## v0.20.55 - 2026-10-21
 
 ### Changed
