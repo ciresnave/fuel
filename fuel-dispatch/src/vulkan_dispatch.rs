@@ -4247,7 +4247,13 @@ pub mod flash_attn {
             .bt()
         })?;
         let out = vulkan_output(&mut out_guard)?;
-        backend.flash_attn_f32_bytes(q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, causal)
+        match decode_splits(b, hq, sq, sk) {
+            Some(splits) => backend.flash_attn_f32_split_bytes(
+                q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, causal, splits,
+            ),
+            None => backend
+                .flash_attn_f32_bytes(q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, causal),
+        }
     }
 
     /// FlashAttention forward, bf16. Inputs / outputs / alibi all
@@ -6251,6 +6257,53 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 // The whole file is `#![cfg(feature = "vulkan")]`, so this module is compiled
 // only under `--features vulkan` — no device is touched (registration is pure
 // binding-table population; `register_vulkan_kernels` never probes hardware).
+
+/// Split-KV heuristic for the f32 Vulkan flash-attention route (ROADMAP 17,
+/// H12). `Some(splits)` only for a decode step (`sq == 1`) whose
+/// `b * hq` workgroups leave the GPU underfilled and whose key range is long
+/// enough to pay for the second dispatch. Thresholds come from
+/// `docs/research/split-kv-decode-measurement.md` (RTX 4070 Laptop, D=128):
+/// 1.3-1.9x at `b*hq <= 8`, `Sk >= 2048`; about 1.2x at 32-64 heads (not
+/// taken: the merge reorders float adds, so the split path is only used
+/// where it clearly wins); no gain at `Sk = 1024`. One device, one dtype:
+/// a prior, not a tuned value.
+fn decode_splits(b: usize, hq: usize, sq: usize, sk: usize) -> Option<usize> {
+    const MAX_ROWS: usize = 16;
+    const MIN_SK: usize = 2048;
+    const SPLITS: usize = 8;
+    if sq == 1 && b * hq <= MAX_ROWS && (MIN_SK..=4096).contains(&sk) {
+        Some(SPLITS)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod decode_splits_tests {
+    use super::decode_splits;
+
+    #[test]
+    fn splits_only_underfilled_long_decode() {
+        // Measured wins: few heads, long cache, decode.
+        assert_eq!(decode_splits(1, 8, 1, 4096), Some(8));
+        assert_eq!(decode_splits(1, 8, 1, 2048), Some(8));
+        // Sabotage siblings: each condition alone must flip the answer.
+        assert_eq!(decode_splits(1, 8, 2, 4096), None, "prefill");
+        assert_eq!(decode_splits(1, 8, 1, 1024), None, "short cache");
+        assert_eq!(decode_splits(1, 32, 1, 4096), None, "heads fill the GPU");
+        assert_eq!(decode_splits(4, 8, 1, 4096), None, "batch fills the GPU");
+        assert_eq!(decode_splits(1, 8, 1, 4097), None, "beyond the kernel cap");
+    }
+
+    #[test]
+    fn chosen_splits_satisfy_the_wrapper_chunk_limit() {
+        for sk in 1..=4200 {
+            if let Some(n) = decode_splits(1, 8, 1, sk) {
+                assert!(sk.div_ceil(n) <= 1024 && (1..=64).contains(&n), "sk={sk}");
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod cast_contract_tests {
