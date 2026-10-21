@@ -27,7 +27,7 @@ pub use mapped_meter::{
 /// by [`VulkanBackend::submit_pending`]; the executor wraps it in its
 /// `Completion` handle and waits it (via [`VulkanBackend::wait_submitted`]) at a
 /// deferred sync point, then drops it (freeing the GPU resources post-fence).
-pub use recorder::SubmittedBatch;
+pub use recorder::{BATCH_TOTAL, GpuTimeStats, SubmittedBatch};
 
 use fuel_ir::{DType, Layout};
 use pipelines::Pipelines;
@@ -394,6 +394,9 @@ pub struct VulkanBackend {
     /// for diagnosing whether submission overhead is the bottleneck
     /// and for feeding future backend cost estimates to a scheduler.
     pub op_stats: OpStats,
+    /// GPU-side per-op time from timestamp queries (opt-in, see
+    /// [`Self::set_gpu_timing`]).
+    gpu_time: std::sync::Arc<GpuTimeStats>,
 }
 
 impl VulkanBackend {
@@ -409,6 +412,31 @@ impl VulkanBackend {
     /// (e.g. skip model-load stats; just measure generation).
     pub fn reset_op_stats(&self) {
         self.op_stats.reset();
+    }
+
+    /// Turn GPU timestamp recording on or off for batches recorded from now on.
+    /// Returns `false` (and changes nothing) when the compute queue family has
+    /// no timestamp support. Costs two query-pool commands per dispatch and one
+    /// query pool per batch while on; off by default.
+    pub fn set_gpu_timing(&self, on: bool) -> bool {
+        self.recorder
+            .lock()
+            .expect("recorder poisoned")
+            .set_timing(on)
+    }
+
+    /// GPU time per op name accumulated since the last [`Self::reset_gpu_time`]:
+    /// `(op, dispatches, total nanoseconds)`, longest first, plus a
+    /// [`BATCH_TOTAL`] row. A batch is read when it is waited on, so call this
+    /// after a synchronising read. See [`GpuTimeStats`] for what the numbers
+    /// mean when dispatches overlap.
+    pub fn gpu_time_snapshot(&self) -> Vec<(&'static str, u64, u64)> {
+        self.gpu_time.snapshot()
+    }
+
+    /// Zero the GPU-time counters.
+    pub fn reset_gpu_time(&self) {
+        self.gpu_time.reset();
     }
 }
 
@@ -679,7 +707,26 @@ impl VulkanBackend {
         let queue = device.get_queue(queue_family, 0);
 
         let pipelines = Pipelines::new(&device, has_required_coop_shape).map_err(vk_err)?;
-        let recorder = Mutex::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
+        // GPU timestamp support: a non-zero period and valid bits on the compute
+        // queue family. Opt-in per backend via `set_gpu_timing`.
+        let gpu_time = std::sync::Arc::new(GpuTimeStats::default());
+        let timing_cfg = {
+            let period = physical.properties().timestamp_period() as f64;
+            let valid_bits = physical
+                .queue_family_properties()
+                .get(queue_family as usize)
+                .map_or(0, |q| q.timestamp_valid_bits());
+            (period > 0.0 && valid_bits > 0).then(|| {
+                let mask = if valid_bits >= 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << valid_bits) - 1
+                };
+                (period, mask, std::sync::Arc::clone(&gpu_time))
+            })
+        };
+        let recorder =
+            Mutex::new(Recorder::new(&device, queue_family, timing_cfg).map_err(vk_err)?);
         // BDA-capable allocator: every block carries
         // VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, so a STORAGE_BUFFER created with
         // SHADER_DEVICE_ADDRESS usage yields a valid GPU address (FDX §3.3.1).
@@ -753,6 +800,7 @@ impl VulkanBackend {
             allocator,
             recorder,
             op_stats: OpStats::default(),
+            gpu_time,
             buffer_pool,
             download_mem_type,
             download_pool,
@@ -1694,6 +1742,7 @@ impl VulkanBackend {
             .expect("recorder poisoned")
             .record_batch_dispatch(
                 &self.device,
+                op_name,
                 pipeline,
                 pipe_layout,
                 desc,
