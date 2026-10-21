@@ -233,7 +233,7 @@ After the contiguize fix the step was 122 ms and `drain_inflight_vulkan` was 65 
 | `drain_inflight_vulkan` per step | 65 ms, 93 entries | 22.6 ms, 2 entries |
 | GPU time per step | unchanged by this change | 36.7 ms (with the old matvec) |
 
-Stacked with the column-parallel matvec of #430 (a local build, neither in this PR): step **62 ms (57 to 64), about 16 tokens/s**, GPU busy 16.4 ms per step, drain 8.5 ms. With #426, #428, #429 and #430 the step has gone from 4,271 ms to 62 ms, 69x; #426 and #430 were not merged when this was measured.
+Stacked with the column-parallel matvec of #430 (a local build before #430 merged): step **62 ms (57 to 64), about 16 tokens/s**, GPU busy 16.4 ms per step, drain 8.5 ms. A confirmation run of this PR's tree after rebasing onto main with #430 merged (with #426's filter still applied locally): step **67 ms (61 to 76)**, GPU 19.1 ms per step, drain 9.2 ms, CPU-fixture check max logit difference 9.2e-5, 0 of 64 greedy tokens differ; the two runs differ by the box's run-to-run noise. With #426, #428, #429 and #430 the step has gone from 4,271 ms to 62 ms, 69x; #426 and #430 were not merged when this was measured.
 
 **Correctness:** `QWEN3_VERIFY=1` against the CPU fixture: max logit difference 9.9e-5 (identical to before this change; 9.2e-5 with #430's kernel), 0 of 64 greedy tokens differ, PASS, in both configurations (one run each). That run crosses about 63 batch boundaries per decode step for 64 steps on each of two prompts.
 
