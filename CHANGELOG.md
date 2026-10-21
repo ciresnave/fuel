@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.35 - 2026-10-21
+
+### Changed
+
+- `fuel-examples` marian-mt: every pin in `examples/marian-mt/python/requirements.txt` moved to the latest PyPI release (certifi 2026.10.19 as in Dependabot #418, plus 20 more; urllib3 was already current). The old file was not installable as written (uv reported `transformers==5.13.1` incompatible with the other pins); the new one installs and `convert_slow_tokenizer.py` runs on Python 3.12.13 and writes working `tokenizer-marian-base-{fr,en}.json` (encode/decode round trip checked). Supersedes #418.
+
 ## v0.20.34 - 2026-10-20
 
 ### Changed
