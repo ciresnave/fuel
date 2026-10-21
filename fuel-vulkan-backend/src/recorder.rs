@@ -18,7 +18,7 @@
 //!   until the fence signals
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use vulkane::raw::bindings::*;
 use vulkane::safe::*;
@@ -57,6 +57,74 @@ impl OpStats {
 
     pub fn reset(&self) {
         self.inner.lock().expect("op_stats poisoned").clear();
+    }
+}
+
+/// GPU-side per-op time, accumulated from timestamp queries (opt-in, see
+/// [`crate::VulkanBackend::set_gpu_timing`]).
+///
+/// A batch writes one timestamp at its start and one after every dispatch
+/// (`BOTTOM_OF_PIPE`, i.e. when everything recorded before it has finished), so
+/// the difference between consecutive timestamps is the time between one
+/// dispatch retiring and the next retiring: its own execution plus any wait on a
+/// barrier or an earlier dispatch. That is a serialised view; dispatches that
+/// overlap on the GPU (no barrier between them) are charged to whichever retires
+/// last. The sum over a batch is the batch's GPU time, recorded under
+/// [`BATCH_TOTAL`].
+#[derive(Default)]
+pub struct GpuTimeStats {
+    inner: Mutex<HashMap<&'static str, (u64, u64)>>,
+}
+
+/// Key under which [`GpuTimeStats`] records each batch's first-to-last time.
+pub const BATCH_TOTAL: &str = "(batch total)";
+
+impl GpuTimeStats {
+    fn add(&self, name: &'static str, ns: u64) {
+        let mut map = self.inner.lock().expect("gpu_time poisoned");
+        let e = map.entry(name).or_insert((0, 0));
+        e.0 += 1;
+        e.1 += ns;
+    }
+
+    /// `(op, dispatches, total ns)`, longest first.
+    pub fn snapshot(&self) -> Vec<(&'static str, u64, u64)> {
+        let map = self.inner.lock().expect("gpu_time poisoned");
+        let mut v: Vec<_> = map.iter().map(|(k, (n, ns))| (*k, *n, *ns)).collect();
+        v.sort_by_key(|row| std::cmp::Reverse(row.2));
+        v
+    }
+
+    pub fn reset(&self) {
+        self.inner.lock().expect("gpu_time poisoned").clear();
+    }
+}
+
+/// Timestamp queries recorded into one batch, read once its fence has signalled.
+pub(crate) struct BatchTiming {
+    pool: QueryPool,
+    names: Vec<&'static str>,
+    period_ns: f64,
+    mask: u64,
+    stats: Arc<GpuTimeStats>,
+}
+
+impl BatchTiming {
+    /// Read the batch's timestamps and add them to the stats. Call only after the
+    /// batch's fence has signalled. A failed read loses this batch's numbers; it
+    /// never fails the realize.
+    pub(crate) fn finish(self) {
+        let used = self.names.len() as u32 + 1;
+        let Ok(ticks) = self.pool.get_results_u64(0, used) else {
+            tracing::warn!("vulkan gpu timing: timestamp read failed; batch not accounted");
+            return;
+        };
+        let ns = |a: u64, b: u64| ((b.wrapping_sub(a) & self.mask) as f64 * self.period_ns) as u64;
+        for (k, name) in self.names.iter().enumerate() {
+            self.stats.add(name, ns(ticks[k], ticks[k + 1]));
+        }
+        self.stats
+            .add(BATCH_TOTAL, ns(ticks[0], ticks[self.names.len()]));
     }
 }
 
@@ -122,6 +190,9 @@ pub struct SubmittedBatch {
     // deferred an eviction onto (the common case); the cost when used is one
     // `Arc::clone` per evicted buffer (no GPU work, no host block).
     retained_data: Vec<std::sync::Arc<crate::VulkanBuffer>>,
+    /// Timestamp queries of this batch (only when GPU timing was on while it was
+    /// recorded); read in [`Self::wait`] once the fence has signalled.
+    timing: Option<BatchTiming>,
 }
 
 impl SubmittedBatch {
@@ -159,6 +230,11 @@ impl SubmittedBatch {
         // retry in Drop would just re-hit the same error), so we don't want Drop
         // to wait again either way.
         self.consumed = true;
+        if r.is_ok()
+            && let Some(t) = self.timing.take()
+        {
+            t.finish();
+        }
         r
     }
 }
@@ -224,7 +300,16 @@ pub(crate) struct Recorder {
     /// Used for dependency-aware barrier placement: a barrier is only
     /// inserted when a dispatch READS a buffer in this set.
     dirty_buffers: std::collections::HashSet<u64>,
+    /// GPU timing config (`None` = unsupported on this queue family).
+    timing_cfg: Option<(f64, u64, Arc<GpuTimeStats>)>,
+    /// Whether new batches record timestamps.
+    timing_on: bool,
+    /// Timestamp queries of the batch being recorded (if timing was on at its start).
+    batch_timing: Option<BatchTiming>,
 }
+
+/// Queries in a timing pool: the batch start, then one per dispatch.
+const TIMING_QUERIES: u32 = BATCH_LIMIT as u32 + 2;
 
 /// Max dispatches per batch CB. Keeps each GPU submission well
 /// under the WDDM TDR timeout (~2s). At ~0.5ms GPU time per
@@ -232,7 +317,11 @@ pub(crate) struct Recorder {
 const BATCH_LIMIT: usize = 500;
 
 impl Recorder {
-    pub fn new(device: &Device, queue_family: u32) -> Result<Self> {
+    pub fn new(
+        device: &Device,
+        queue_family: u32,
+        timing_cfg: Option<(f64, u64, Arc<GpuTimeStats>)>,
+    ) -> Result<Self> {
         Ok(Self {
             pool: CommandPool::new(device, queue_family)?,
             batch_cb: None,
@@ -240,7 +329,61 @@ impl Recorder {
             batch_descs: Vec::new(),
             batch_count: 0,
             dirty_buffers: std::collections::HashSet::new(),
+            timing_cfg,
+            timing_on: false,
+            batch_timing: None,
         })
+    }
+
+    /// Turn timestamp recording on or off for NEW batches. `false` if the queue
+    /// family has no timestamp support (nothing changes then).
+    pub fn set_timing(&mut self, on: bool) -> bool {
+        if on && self.timing_cfg.is_none() {
+            return false;
+        }
+        self.timing_on = on;
+        true
+    }
+
+    /// Start timestamp recording for the batch whose CB was just begun.
+    fn begin_batch_timing(&mut self, device: &Device, cmd: VkCommandBuffer) -> Result<()> {
+        let Some((period_ns, mask, stats)) = self.timing_cfg.as_ref().filter(|_| self.timing_on)
+        else {
+            return Ok(());
+        };
+        let pool = QueryPool::timestamps(device, TIMING_QUERIES)?;
+        let dt = device.dispatch();
+        unsafe {
+            if let (Some(reset), Some(write)) = (dt.vkCmdResetQueryPool, dt.vkCmdWriteTimestamp) {
+                reset(cmd, pool.raw(), 0, TIMING_QUERIES);
+                write(cmd, 0x1 /* TOP_OF_PIPE */, pool.raw(), 0);
+            } else {
+                return Ok(());
+            }
+        }
+        self.batch_timing = Some(BatchTiming {
+            pool,
+            names: Vec::new(),
+            period_ns: *period_ns,
+            mask: *mask,
+            stats: Arc::clone(stats),
+        });
+        Ok(())
+    }
+
+    /// Write the timestamp that closes dispatch `name` in the current batch.
+    fn end_dispatch_timing(&mut self, device: &Device, cmd: VkCommandBuffer, name: &'static str) {
+        let Some(bt) = self.batch_timing.as_mut() else {
+            return;
+        };
+        let dt = device.dispatch();
+        if let Some(write) = dt.vkCmdWriteTimestamp {
+            let index = bt.names.len() as u32 + 1;
+            unsafe {
+                write(cmd, 0x2000 /* BOTTOM_OF_PIPE */, bt.pool.raw(), index)
+            };
+            bt.names.push(name);
+        }
     }
 
     /// Record a compute dispatch into the current batch CB.
@@ -251,6 +394,7 @@ impl Recorder {
     pub fn record_batch_dispatch(
         &mut self,
         device: &Device,
+        op_name: &'static str,
         pipeline: &ComputePipeline,
         pipe_layout: &PipelineLayout,
         desc: DescriptorSet,
@@ -275,7 +419,9 @@ impl Recorder {
                     return Err(Error::Vk(r));
                 }
             }
+            let cmd_raw = cmd.raw();
             self.batch_cb = Some(cmd);
+            self.begin_batch_timing(device, cmd_raw)?;
         }
         let cmd_handle = self.batch_cb.as_ref().unwrap().raw();
         let dt = device.dispatch();
@@ -339,6 +485,7 @@ impl Recorder {
                 dispatch_fn(cmd_handle, groups.0, groups.1, groups.2);
             }
         }
+        self.end_dispatch_timing(device, cmd_handle, op_name);
 
         self.batch_transients.extend(transient_buffers);
         self.batch_descs.push(desc);
@@ -378,6 +525,9 @@ impl Recorder {
         let fence = Fence::new(device)?;
         queue.submit(&[&cmd], Some(&fence))?;
         fence.wait(u64::MAX)?;
+        if let Some(t) = self.batch_timing.take() {
+            t.finish();
+        }
 
         // Drop transient resources now that the GPU is done.
         self.batch_transients.clear();
@@ -451,6 +601,7 @@ impl Recorder {
             // onto it via `retain_buffer` only when it defers an eviction onto this
             // in-flight batch (deferred-deletion). Freed POST-fence on `Drop`.
             retained_data: Vec::new(),
+            timing: self.batch_timing.take(),
         };
 
         // Reset counters/dirty exactly as flush_batch does (the moved Vecs are

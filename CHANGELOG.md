@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.42 - 2026-10-21
+
+### Added
+
+- `fuel-vulkan-backend`: opt-in GPU timing from Vulkan timestamp queries: `VulkanBackend::set_gpu_timing(bool)` (returns `false` if the compute queue family has no timestamp support), `gpu_time_snapshot()` (`(op, dispatches, ns)`, longest first, plus a `BATCH_TOTAL` row) and `reset_gpu_time()`. Off by default; when on, each batch records one timestamp at its start and one after every dispatch plus one query pool per batch. The per-dispatch figure is a serialised view (overlapping dispatches are charged to whichever retires last). Examples: `gpu_time_probe` (cross-check against the host clock) and a per-op GPU table in `qwen3_vulkan_profile`. Measured with them: of a 306 to 334 ms Qwen3-0.6B Q4_K_M decode step on Vulkan the GPU is busy about 86.5 ms and 95% of that is the M = 1 matmul (the measurement used the per-device bit-stable preference of the not-yet-merged PR #426). ROADMAP items 22 and 23 added. `Recorder::record_batch_dispatch` takes the op name.
+
 ## v0.20.41 - 2026-10-21
 
 ### Added

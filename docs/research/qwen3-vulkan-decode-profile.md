@@ -109,6 +109,44 @@ So the planner's price of a 12.6 MB weight copy is between about right and 2.4 t
 - Stop reading weights back every step (keep a host copy of each immutable weight after its first read, or do not upload a weight whose consumers all run on the host): removes the 197 large copies, **2.21 to 2.25 s of the 4.0 to 4.3 s step (about 55%)**, leaving about 1.8 to 2.0 s.
 - Run the matmuls where the weights already are: removes the same copies and the 1.1 s of CPU matmul if the Vulkan kernel is fast for a one-row product; whether it is was not measured.
 
+## GPU time per op (Vulkan timestamp queries; ROADMAP items 22 and 23)
+
+`VulkanBackend::set_gpu_timing(true)` makes each batch write one timestamp at its start and one after every dispatch (`BOTTOM_OF_PIPE`), read when the batch is waited on; `gpu_time_snapshot()` returns GPU nanoseconds per op name. The difference of consecutive timestamps is the time between one dispatch retiring and the next retiring, so it is a **serialised view**: dispatches that overlap (no barrier between them) are charged to whichever retires last. The sum over a batch is recorded as `(batch total)`.
+
+**Cross-check against the host clock** (`gpu_time_probe`: n decode-attention dispatches, `h_q = 8`, `Sk = 4096`, in one batch, drained by a readback; median of 5 repeats after 2 warm-ups):
+
+| n | host wall | GPU (batch total) | GPU / wall | GPU per dispatch |
+|---:|---:|---:|---:|---:|
+| 1 | 1.01 ms | 0.57 ms | 0.56 | 572 us |
+| 10 | 1.97 ms | 1.41 ms | 0.71 | 141 us |
+| 50 | 6.70 ms | 5.19 ms | 0.78 | 104 us |
+| 200 | 24.17 ms | 19.66 ms | 0.81 | 98 us |
+| 400 | 47.27 ms | 39.91 ms | 0.84 | 100 us |
+
+The GPU figure never exceeds the wall time and converges towards it as the fixed submit, wait and readback cost amortises; the remaining 16% at n = 400 (about 18 us per dispatch) is the host recording each dispatch (the batch is submitted only after all of it is recorded, so record time and GPU time add rather than overlap). That is agreement between two clocks on the sum, not a check of any single kernel's number.
+
+**Qwen3-0.6B decode step, per-op GPU time** (Q4_K_M GGUF, 21-token prompt, RTX 4070 Laptop, `gpu-run.ps1`, 1 warm-up + 5 runs x 10 timestamp-on steps; median over runs, min to max). Measured with the per-device bit-stable preference of PR #426 applied locally, **not in this PR**: without it these ops run on the CPU and there is almost no GPU work to time (see "Route B" once #426 lands).
+
+| op (kernel name) | ms per step | min to max | share of GPU time | dispatches per step |
+|---|---:|---|---:|---:|
+| **`matvec`** (the M = 1 matmul) | **82.58** | 79.73 to 94.38 | **95.4%** | 253 |
+| `binary_mul_f32` | 1.10 | 1.05 to 1.14 | 1.3% | 141 |
+| `rms_norm_last_dim_f32_bytes` | 1.05 | 0.98 to 1.09 | 1.2% | 113 |
+| `binary_add_f32` | 0.65 | 0.61 to 0.67 | 0.8% | 84 |
+| `write_slice_b4` | 0.47 | 0.43 to 0.52 | 0.5% | 56 |
+| `rope_f32_bytes` | 0.29 | 0.28 to 0.33 | 0.3% | 56 |
+| `unary_silu_f32` | 0.26 | 0.26 to 0.28 | 0.3% | 28 |
+| `softmax_last_dim_f32_bytes` | 0.21 | 0.19 to 0.23 | 0.2% | 28 |
+| `affine_f32_bytes` | 0.14 | 0.14 to 0.17 | 0.2% | 28 |
+| `index_select_f32_bytes` | 0.005 | | 0.0% | 1 |
+| **GPU time, first to last timestamp of each batch** | **86.54** | | | |
+
+The step wall time in the same run was 306 ms (293 to 318, timestamps off) and 334 ms with timestamps on. So:
+
+- **The GPU is busy for about 86 ms of a 306 to 334 ms step, roughly 26 to 28%.** The earlier reading in this note ("the remaining time is the host waiting for the GPU") was wrong: the GPU only accounts for a quarter of it. About 220 ms of each step is host time outside the GPU, and the per-launch host time (about 36 ms in `op_profile`) is only a sixth of that, so roughly 185 ms is executor work that is neither a kernel launch nor GPU execution (graph walk, rebinding, allocation, submission). Where exactly was not measured (ROADMAP item 23).
+- **On the GPU, 95% of the time is the M = 1 matmul.** 253 dispatches at 0.33 ms each. The weights it reads are about 2.38 GB per step (1.76 GB of layer weights plus the 0.62 GB vocabulary matrix), so it runs at roughly 29 GB/s, against a nominal 256 GB/s for this card: about 11% of the memory bandwidth, 2.38 GB / 82.6 ms. That figure is computed from the sizes above and the measured time, not read from a counter. Reading 8 times fewer bytes (a native quantized path, the quantized-loader row of PR #426) and a better one-row kernel are the two levers; neither was tried.
+- Attention (softmax 0.21 ms, plus the two attention matmuls inside `matvec`) stays negligible at this context length, as item 20 concluded.
+
 ## What this points at instead (not started)
 
 1. The 397 `Copy/Vulkan` launches per step (62%).
