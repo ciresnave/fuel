@@ -97,6 +97,47 @@ pub mod op_profile {
     use fuel_ir::probe::BackendId;
 
     static ENABLED: AtomicBool = AtomicBool::new(false);
+    static PHASES: Mutex<Option<HashMap<&'static str, (u64, Duration)>>> = Mutex::new(None);
+
+    /// Times a named phase of a realize from `start` until it is dropped, when
+    /// accounting is on (a no-op otherwise: one relaxed atomic load). Phases are
+    /// hierarchical by NAME only: an outer phase's time includes the inner ones
+    /// nested inside it, so rows of [`take_phases`] are not additive.
+    pub struct PhaseTimer(Option<(&'static str, std::time::Instant)>);
+
+    impl PhaseTimer {
+        pub fn start(name: &'static str) -> Self {
+            Self(enabled().then(|| (name, std::time::Instant::now())))
+        }
+    }
+
+    impl Drop for PhaseTimer {
+        fn drop(&mut self) {
+            if let Some((name, t0)) = self.0.take() {
+                let mut g = PHASES.lock().unwrap_or_else(|p| p.into_inner());
+                let e = g
+                    .get_or_insert_with(HashMap::new)
+                    .entry(name)
+                    .or_insert((0, Duration::ZERO));
+                e.0 += 1;
+                e.1 += t0.elapsed();
+            }
+        }
+    }
+
+    /// Drain the phase totals: `(phase, entries, total time)`, longest first.
+    pub fn take_phases() -> Vec<(&'static str, u64, Duration)> {
+        let mut g = PHASES.lock().unwrap_or_else(|p| p.into_inner());
+        let mut v: Vec<_> = g
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, (n, d))| (k, n, d))
+            .collect();
+        v.sort_by_key(|row| std::cmp::Reverse(row.2));
+        v
+    }
+
     static TRACE: AtomicBool = AtomicBool::new(false);
     static TRACE_ROWS: Mutex<Vec<LaunchRow>> = Mutex::new(Vec::new());
 

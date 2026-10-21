@@ -22,7 +22,9 @@ use fuel_dispatch::compiled::{op_profile, op_profile::LaunchRow};
 use fuel_ir::DType;
 use fuel_tensor::Device;
 use fuel_tensor::inference_context::{DecodeSession, InferenceContext, KvCache};
-use fuel_transformers::dev_tools::qwen3_yardstick::{PROMPTS, load_model};
+use fuel_transformers::dev_tools::qwen3_yardstick::{
+    CandidateLogits, DECODE_LEN, DtypeTier, PROMPTS, compare_step, load_fixture, load_model,
+};
 use fuel_transformers::models::lazy_quantized_qwen3::QuantizedQwen3Model;
 use fuel_transformers::models::lazy_qwen3::Qwen3Config;
 use std::collections::BTreeMap;
@@ -50,6 +52,8 @@ struct Run {
     steps: Vec<Duration>,
     /// `(op, backend) -> (launches, host time)` summed over the steady steps.
     ops: BTreeMap<(String, String), (u64, Duration)>,
+    /// Named host phases of the steady steps: `(phase, entries, total time)`.
+    phases: Vec<(&'static str, u64, Duration)>,
     /// Every launch of one extra (unprofiled-by-the-table) decode step, in order.
     trace: Vec<LaunchRow>,
     /// GPU time per op name over `gpu_steps` further decode steps recorded with
@@ -137,6 +141,7 @@ fn one_run(
         .into_iter()
         .map(|(op, be, n, d)| ((op, be), (n, d)))
         .collect();
+    let phases = op_profile::take_phases();
     // QWEN3_REPLAN=1: drop the decode session and rebuild it (re-plan) with the
     // same context, so the planner sees whatever residency the first session
     // left behind; the traced step below is then the re-planned one.
@@ -154,6 +159,7 @@ fn one_run(
         first_decode,
         steps,
         ops,
+        phases,
         trace,
         gpu,
         gpu_steps,
@@ -308,6 +314,117 @@ fn print_gpu_table(all: &[Run]) {
     );
 }
 
+/// Host phases per decode step: entries per step, and the per-step time as the
+/// median over runs with its spread. Phases nest by name (an outer phase includes
+/// the inner ones), so the rows are NOT additive; `compiler_thread` runs on
+/// another thread, concurrently.
+fn print_phase_table(all: &[Run], step_all: f64) {
+    let mut keys: Vec<&'static str> = all
+        .iter()
+        .flat_map(|r| r.phases.iter().map(|p| p.0))
+        .collect();
+    keys.sort();
+    keys.dedup();
+    let mut rows: Vec<(f64, &str, f64, f64, f64)> = Vec::new();
+    for k in keys {
+        let mut per: Vec<f64> = all
+            .iter()
+            .map(|r| {
+                let d: Duration = r.phases.iter().filter(|p| p.0 == k).map(|p| p.2).sum();
+                ms(d) / r.steps.len() as f64
+            })
+            .collect();
+        let n: u64 = all[0]
+            .phases
+            .iter()
+            .filter(|p| p.0 == k)
+            .map(|p| p.1)
+            .sum::<u64>()
+            / all[0].steps.len() as u64;
+        let (lo, hi) = spread(&per);
+        rows.push((median(&mut per), k, lo, hi, n as f64));
+    }
+    rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    println!(
+        "\nhost phases per decode step (median over runs; min-max; share of step wall; entries/step; nested phases overlap, rows are not additive):"
+    );
+    for (m, name, lo, hi, n) in &rows {
+        println!(
+            "  {name:<40} {m:>9.2} ms  ({lo:.2}-{hi:.2})  {:>5.1}%  {n:>6.0}",
+            m / step_all * 100.0
+        );
+    }
+}
+
+/// Greedy-decodes the fixture prompts on `dev` through the persistent-KV path and
+/// compares every step with the checked-in CPU reference fixture (the M0/M1
+/// yardstick comparison, `compare_step` with the f16-or-quantized tier). Prints
+/// the max logit difference over the reference top-K, the mismatched greedy
+/// tokens, and the first divergent step, then returns whether all steps passed.
+fn verify_against_cpu_fixture(
+    model: &QuantizedQwen3Model,
+    tokenizer: &tokenizers::Tokenizer,
+    cfg: &Qwen3Config,
+    dev: &Device,
+) -> bool {
+    let fixture = load_fixture();
+    let (mut max_diff, mut steps_total, mut mismatched) = (0f32, 0usize, 0usize);
+    let mut first_divergent: Option<(usize, usize)> = None;
+    for (pi, reference) in fixture.runs.iter().enumerate() {
+        let formatted = format!(
+            "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+            reference.prompt
+        );
+        let prompt = tokenizer
+            .encode(formatted, true)
+            .expect("encode")
+            .get_ids()
+            .to_vec();
+        let mut cache = KvCache::with_capacity(
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim,
+            prompt.len() + DECODE_LEN,
+            DType::F32,
+            dev,
+        )
+        .expect("KvCache::with_capacity");
+        let mut ctx = InferenceContext::new(dev.clone());
+        let mut session: Option<DecodeSession> = None;
+        let mut input: Vec<u32> = prompt;
+        let mut excused = 0usize;
+        for (si, ref_step) in reference.steps.iter().enumerate() {
+            let logits = model
+                .forward_with_kv_context_persistent(&input, &mut cache, &mut ctx, &mut session)
+                .expect("forward");
+            let token = argmax(&logits);
+            for &(id, r) in &ref_step.top_logits {
+                max_diff = max_diff.max((logits[id as usize] - r).abs());
+            }
+            if token != ref_step.token {
+                mismatched += 1;
+            }
+            let ok = compare_step(
+                si,
+                token,
+                &CandidateLogits::Full(&logits),
+                ref_step,
+                DtypeTier::F16OrQuantized.relative_bound(),
+                &mut excused,
+            );
+            if ok.is_err() && first_divergent.is_none() {
+                first_divergent = Some((pi, si));
+            }
+            steps_total += 1;
+            input = vec![token];
+        }
+    }
+    println!(
+        "verify vs CPU fixture: max_abs_logit_diff {max_diff}, mismatched greedy tokens {mismatched}/{steps_total}, first divergent (prompt, step) {first_divergent:?}"
+    );
+    first_divergent.is_none()
+}
+
 fn main() {
     let arg = |i: usize, d: usize| {
         std::env::args()
@@ -319,6 +436,13 @@ fn main() {
     let (model, tokenizer, cfg) = load_model().expect("load_model");
     let dev = fuel_tensor::vulkan_backend::new_device().expect("vulkan device");
     planner_estimates();
+    if std::env::var_os("QWEN3_VERIFY").is_some() {
+        let ok = verify_against_cpu_fixture(&model, &tokenizer, &cfg, &dev);
+        println!("verify: {}", if ok { "PASS" } else { "FAIL" });
+        if !ok {
+            std::process::exit(1);
+        }
+    }
     let formatted = format!(
         "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
         PROMPTS[0]
@@ -338,6 +462,7 @@ fn main() {
     let step_all = print_step_summary(&all, prompt_tokens.len(), steady);
     print_op_table(&all, step_all);
     print_gpu_table(&all);
+    print_phase_table(&all, step_all);
 }
 
 fn bucket(bytes: usize) -> &'static str {
