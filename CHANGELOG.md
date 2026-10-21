@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.37 - 2026-10-21
+
+### Added
+
+- Docs only: ROADMAP item 19 records that CI never lints the Metal crates (`fuel-metal-kernels` 10 and `fuel-metal-backend` 2 clippy errors under `--target aarch64-apple-darwin`, measured locally) and the two steps to fix that. No row started.
+
 ## v0.20.36 - 2026-10-21
 
 ### Fixed
