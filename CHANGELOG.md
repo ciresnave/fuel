@@ -5,7 +5,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Fixed
 
-- Vulkan device creation now enables the features the committed SPIR-V already declares: `uniformAndStorageBuffer16BitAccess`, `shaderBufferInt64Atomics`, `shaderInt16`, and on the cooperative-matrix path `vulkanMemoryModel` with `vulkanMemoryModelDeviceScope`. The Khronos validation layer reported 131 errors on a Qwen3 decode; it now reports 11 (one run). CPU-fixture check unchanged (max logit difference 9.2e-5, 0 of 64 tokens differ). A device that lacks one of these features now fails device creation. Remaining: shared memory above 32,768 bytes in three flash-attention shaders and f64 `Exp` in `softmax_f64` (numerics, reported). New `scripts/spirv_audit.py` (static per-shader capability audit) and `docs/research/vulkan-spirv-validation.md`.
+- Vulkan device creation now probes and enables, only when the device reports them, the features the committed SPIR-V already declares: `uniformAndStorageBuffer16BitAccess`, `shaderBufferInt64Atomics`, `shaderInt16`, and on the cooperative-matrix path `vulkanMemoryModel` with `vulkanMemoryModelDeviceScope`. The Khronos validation layer reported 131 errors on a Qwen3 decode; it now reports 11 (one run). CPU-fixture check unchanged (max logit difference 9.2e-5, 0 of 64 tokens differ). A device lacking one is not given it (`VulkanBackend::declared_features_absent`, plus a warning); device creation does not fail. Remaining: shared memory above 32,768 bytes in three flash-attention shaders and f64 `Exp` in `softmax_f64` (numerics, reported). New `scripts/spirv_audit.py` (static per-shader capability audit) and `docs/research/vulkan-spirv-validation.md`.
 
 ## v0.20.46 - 2026-10-21
 

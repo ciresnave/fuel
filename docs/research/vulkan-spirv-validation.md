@@ -33,17 +33,26 @@ found by re-running, so the list above is what one decode run exercises, not eve
 
 ## What changed
 
-`fuel-vulkan-backend/src/lib.rs` device creation now also enables `uniformAndStorageBuffer16BitAccess`,
-`shaderBufferInt64Atomics` and `shaderInt16`, and `vulkanMemoryModel` with
-`vulkanMemoryModelDeviceScope` on the cooperative-matrix path only. Enabling a feature the
-SPIR-V already declares changes no instruction a kernel executes. Check: the CPU-fixture
-comparison (`QWEN3_VERIFY=1`) on this tree is max logit difference 9.2e-5 with 0 of 64 greedy
-tokens different, PASS, the same as before (9.9e-5 / 9.2e-5, one run each).
+`fuel-vulkan-backend/src/lib.rs` now probes the device (`probe_optional_features`, through
+`vkGetPhysicalDeviceFeatures2`; the 64-bit-atomics and memory-model structs are Vulkan 1.2 core,
+so an older device reports them absent) and enables each of `uniformAndStorageBuffer16BitAccess`,
+`shaderBufferInt64Atomics` and `shaderInt16` only if reported, and `vulkanMemoryModel` with
+`vulkanMemoryModelDeviceScope` only on the cooperative-matrix path and only if reported. Enabling
+a feature the SPIR-V already declares changes no instruction a kernel executes. Check: the
+CPU-fixture comparison (`QWEN3_VERIFY=1`) on the unconditional version of this change is max
+logit difference 9.2e-5 with 0 of 64 greedy tokens different, PASS, the same as before (9.9e-5 /
+9.2e-5, one run each); the probed version gave 11 layer errors, the same 11, on the RTX 4070.
 
-**Risk:** a device that does not support one of these features now fails `vkCreateDevice` with
-`VK_ERROR_FEATURE_NOT_PRESENT` (the same exposure the existing unconditional
-`shaderFloat64`/`shaderInt64` enables have). Run only on the RTX 4070 here; the AMD iGPU
-(`DeviceSelection` by name) was not run.
+**Probe output** (`cargo run -p fuel-vulkan-backend --example declared_features_probe`, through
+`gpu-run`): the RTX 4070 Laptop GPU and the AMD Radeon 610M iGPU both report all five features
+supported, `declared_features_absent` is empty, and both backends are created.
+
+**On absence** (not exercised: no device here lacks one): the feature is not enabled, the backend
+is still created, a `tracing::warn!` names the missing features, and they are listed in
+`VulkanBackend::declared_features_absent`. The shaders that declare them still load, because
+`Pipelines::new` builds every pipeline eagerly, so they run unvalidated on that device, exactly as
+before this change. Marking those kernels unavailable would mean making each affected pipeline
+optional and teaching the dispatcher to decline them; that is not done here.
 
 ## Left, and not fixed here
 
