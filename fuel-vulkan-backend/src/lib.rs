@@ -331,6 +331,63 @@ impl DownloadStaging {
     }
 }
 
+/// Optional device features the committed SPIR-V declares, as the device reports them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OptionalFeatureSupport {
+    pub uniform_and_storage_buffer16_bit_access: bool,
+    pub shader_buffer_int64_atomics: bool,
+    pub shader_int16: bool,
+    pub vulkan_memory_model: bool,
+    pub vulkan_memory_model_device_scope: bool,
+}
+
+/// Query [`OptionalFeatureSupport`] through `vkGetPhysicalDeviceFeatures2`. The
+/// 64-bit-atomics and memory-model structs are Vulkan 1.2 core, so a device whose
+/// effective API version is below 1.2, or a loader without the entry point, reports
+/// them as absent (the conservative answer).
+pub fn probe_optional_features(physical: &PhysicalDevice) -> OptionalFeatureSupport {
+    use vulkane::raw::PNextChainable;
+    use vulkane::raw::bindings::{
+        VkPhysicalDevice16BitStorageFeatures, VkPhysicalDeviceFeatures2,
+        VkPhysicalDeviceShaderAtomicInt64Features, VkPhysicalDeviceVulkanMemoryModelFeatures,
+        VkStructureType,
+    };
+    let shader_int16 = physical.supported_features().shaderInt16 != 0;
+    let mut out = OptionalFeatureSupport {
+        shader_int16,
+        ..Default::default()
+    };
+    let Some(get2) = physical.instance().vkGetPhysicalDeviceFeatures2 else {
+        return out;
+    };
+    let api = physical.effective_api_version();
+    if !(api.major() > 1 || api.minor() >= 2) {
+        return out;
+    }
+    let mut chain = PNextChain::new();
+    chain.push(VkPhysicalDevice16BitStorageFeatures::new_pnext());
+    chain.push(VkPhysicalDeviceShaderAtomicInt64Features::new_pnext());
+    chain.push(VkPhysicalDeviceVulkanMemoryModelFeatures::new_pnext());
+    let mut features2 = VkPhysicalDeviceFeatures2 {
+        sType: VkStructureType::STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        pNext: chain.head_mut(),
+        ..Default::default()
+    };
+    // Safety: the handle is valid; `features2` and `chain` outlive the call.
+    unsafe { get2(physical.raw(), &mut features2) };
+    if let Some(f) = chain.get::<VkPhysicalDevice16BitStorageFeatures>() {
+        out.uniform_and_storage_buffer16_bit_access = f.uniformAndStorageBuffer16BitAccess != 0;
+    }
+    if let Some(f) = chain.get::<VkPhysicalDeviceShaderAtomicInt64Features>() {
+        out.shader_buffer_int64_atomics = f.shaderBufferInt64Atomics != 0;
+    }
+    if let Some(f) = chain.get::<VkPhysicalDeviceVulkanMemoryModelFeatures>() {
+        out.vulkan_memory_model = f.vulkanMemoryModel != 0;
+        out.vulkan_memory_model_device_scope = f.vulkanMemoryModelDeviceScope != 0;
+    }
+    out
+}
+
 /// Vulkan compute backend with pre-compiled shader pipelines.
 pub struct VulkanBackend {
     pub device: Device,
@@ -345,6 +402,13 @@ pub struct VulkanBackend {
     /// `Device` handle constructed from this backend reports the
     /// same `gpu_id` the probe / Router pipeline would assign.
     pub gpu_id: usize,
+    /// Features the committed SPIR-V declares (beyond the always-on set) that this
+    /// device does not report: `uniformAndStorageBuffer16BitAccess`,
+    /// `shaderBufferInt64Atomics`, `shaderInt16`, and on the cooperative-matrix path
+    /// `vulkanMemoryModel` / `vulkanMemoryModelDeviceScope`. Empty on a device that
+    /// reports all of them. These features are not enabled when absent, so the
+    /// kernels that use them are not validated on such a device.
+    pub declared_features_absent: Vec<&'static str>,
     /// Shared VMA-style sub-allocator. Every buffer we create goes
     /// through this so the number of live `VkDeviceMemory` blocks
     /// stays O(GB-of-memory / 256MB), not O(number-of-buffers).
@@ -609,8 +673,49 @@ impl VulkanBackend {
             // Slang kernels address operands via `buffer_reference` and
             // negative-stride flips survive as raw pointer math.
             .with_buffer_device_address();
+        // The SPIR-V declares more capabilities than the always-on set above
+        // (the layer's 08740/06332/06278/06265 errors). Enable each only when
+        // the device reports it, so a device lacking one still gets a device.
+        let optional = probe_optional_features(&physical);
+        let mut declared_features_absent: Vec<&'static str> = Vec::new();
+        if optional.uniform_and_storage_buffer16_bit_access {
+            features_builder = features_builder.with_uniform_and_storage_buffer16_bit_access();
+        } else {
+            declared_features_absent.push("uniformAndStorageBuffer16BitAccess");
+        }
+        if optional.shader_buffer_int64_atomics {
+            features_builder = features_builder.with_shader_buffer_int64_atomics();
+        } else {
+            declared_features_absent.push("shaderBufferInt64Atomics");
+        }
+        if optional.shader_int16 {
+            features_builder = features_builder.with_shader_int16();
+        } else {
+            declared_features_absent.push("shaderInt16");
+        }
+        if has_coop_matrix && !optional.vulkan_memory_model {
+            declared_features_absent.push("vulkanMemoryModel");
+        }
+        if has_coop_matrix && !optional.vulkan_memory_model_device_scope {
+            declared_features_absent.push("vulkanMemoryModelDeviceScope");
+        }
+        if !declared_features_absent.is_empty() {
+            tracing::warn!(
+                missing = ?declared_features_absent,
+                "device lacks features that committed SPIR-V declares; the kernels that \
+                 use them run unvalidated on this device (the pre-existing behaviour)",
+            );
+        }
         if has_coop_matrix {
             features_builder = features_builder.with_cooperative_matrix();
+            // The matmul_coop* shaders declare VulkanMemoryModel (08740) and use
+            // Device scope (06265).
+            if optional.vulkan_memory_model {
+                features_builder = features_builder.with_vulkan_memory_model();
+                if optional.vulkan_memory_model_device_scope {
+                    features_builder = features_builder.with_vulkan_memory_model_device_scope();
+                }
+            }
         }
         let features = Some(features_builder);
         let extensions = if has_coop_matrix {
@@ -808,6 +913,7 @@ impl VulkanBackend {
             pipelines,
             device_name,
             gpu_id,
+            declared_features_absent,
             allocator,
             recorder,
             op_stats: OpStats::default(),
