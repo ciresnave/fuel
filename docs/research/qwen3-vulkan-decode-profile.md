@@ -89,20 +89,20 @@ So the fixed cost of a copy is about 0.2 ms (a submit, a fence wait and staging;
 
 ### What the planner believes a copy costs
 
-`SystemTopology::estimate_transfer_ns` (the numbers placement is priced with), against the measured copy times above:
+`SystemTopology::estimate_transfer_ns` (the numbers placement is priced with) comes from a transfer probe the topology runs lazily at startup, so it differs between processes. Two processes on the same box, same day, against the measured copy times above:
 
-| bytes | planner, device to host | measured, device to host |
+| bytes | planner, device to host (process A / process B) | measured, device to host |
 |---:|---:|---:|
-| 4 | 1.29 ms | 0.19 ms (probe) |
-| 12,582,912 | 8.94 ms | 7.3 to 8.5 ms (trace, median 7.3 to 7.6) |
-| 622,329,856 | 379 ms | 858 to 890 ms (trace) |
+| 4 | 1.29 / 1.60 ms | 0.19 ms (probe) |
+| 12,582,912 | 8.94 / 18.57 ms | 7.3 to 8.5 ms (trace, median 7.3 to 7.6) |
+| 622,329,856 | 379 / 841 ms | 858 to 890 ms (trace) |
 
-The planner prices a 12.6 MB weight copy about right (and a 4-byte copy about seven times too high, a 622 MB copy 2.3 times too low), so a mis-priced copy does not explain the CPU placement.
+So the planner's price of a 12.6 MB weight copy is between about right and 2.4 times too high depending on the process, and a 4-byte copy is 7 to 8 times too high; it is never too LOW for a weight copy except the 622 MB one in process A (2.3 times low). In neither process does an under-priced weight copy explain the CPU placement: in process B the planner believed each weight copy cost 18.6 ms and still stamped the matmuls to the CPU. (Process B is the run that produced the 3,707 ms step and the 2,353 ms of Vulkan-to-host copy time in the repeat check of the refactored example; the counts and sizes were again 542 / 397 / 2,390,761,728 B.)
 
 ### Item 21 step 2: the 253 matmuls
 
 - **How many are Q4_K: none.** All 253 are `OpKind::MatMul` on f32 operands. `lazy_quantized_qwen3.rs` keeps only Q4_0 tensors quantized and dequantizes every other GGML type to f32 at load ("Other GGML dtypes for Linear weights are dequantized to F32"); this Q4_K_M file's Q4_K and Q6_K tensors are all dequantized, which is also why the weights are 8 times their file size and the embedding table is 622 MB. There is no Q4_K matmul path in play on any backend.
-- **Why the matmuls run on the CPU: not established.** Ruled out: a missing Vulkan kernel (the Vulkan f32 matmul is registered, and the Vulkan elementwise ops in the same graph run on the GPU); a mis-priced transfer (table above); the planner not seeing the weights' residency at plan time (the plan is built after the const cache upload, and rebuilding the decode session with the same context, `QWEN3_REPLAN=1`, gave the identical 397 / 253 / 145 counts and the same sizes). Not examined: the Vulkan versus CPU matmul cost estimates for these shapes (the cost model's flops and bandwidth terms, and whatever the Judge cache holds on this box). That comparison is the next measurement.
+- **Why the matmuls run on the CPU: not established.** Ruled out: a missing Vulkan kernel (the Vulkan f32 matmul is registered, and the Vulkan elementwise ops in the same graph run on the GPU); a mis-priced transfer (table above: the estimate varies between processes, 8.9 to 18.6 ms for a 12.6 MB copy, and the stamps did not change); the planner not seeing the weights' residency at plan time (the plan is built after the const cache upload, and rebuilding the decode session with the same context, `QWEN3_REPLAN=1`, gave the identical 397 / 253 / 145 counts and the same sizes). Not examined: the Vulkan versus CPU matmul cost estimates for these shapes (the cost model's flops and bandwidth terms, and whatever the Judge cache holds on this box). That comparison is the next measurement.
 
 ### Where the time could come out (estimates from the numbers above, nothing implemented)
 
