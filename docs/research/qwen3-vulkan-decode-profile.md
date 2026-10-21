@@ -219,6 +219,40 @@ An earlier run of the same probe, before the warm-up, gave 6.60x for the LM head
 The slowest of the five per-run medians was 678 ms, most likely a run in the slow GPU mode of ROADMAP item 18 (not separately confirmed; the other per-run medians were not recorded individually), so the median and the minimum are the figures to read; the maximum is real and is not hidden. Against the 86.5 ms baseline the GPU table also gains a `strided_copy_signed` row (1.2 ms, 112 dispatches) that was previously host work (#429). `QWEN3_VERIFY=1` against the CPU fixture: max logit difference **9.2e-5** (9.9e-5 before: the reduction order changed), 0 of 64 greedy tokens differ, PASS (one run).
 
 **Not claimed:** run-to-run bit reproducibility of the new kernel (its K reduction order is fixed by construction, unlike the subgroup-add of the old one, but this was not tested, and the kernel contract still declares the matmul non-bit-stable); half-precision (`matvec_bf16_b`) and quantized weights, which this does not touch; any other GPU. The step is now 91 ms of which the GPU is busy about 21 ms: what is left is host time (recording, launch, waiting) and the batch being submitted only after it is recorded.
+## Overlapping recording with GPU execution (ROADMAP item 23, continued)
+
+After the contiguize fix the step was 122 ms and `drain_inflight_vulkan` was 65 ms of it (93 entries per step): the host waiting on the GPU. The executor submits the open Vulkan batch without waiting at each of the 61 evictions (and at chunk boundaries), which should let the GPU run it while the host records the next one. It did not, because of the executor's "Invariant E": before recording any new Vulkan op while batches were in flight, the host waited for all of them. The reason it gave: Vulkan only guarantees that batches BEGIN in submission order, so a later batch could read what an earlier one was still writing. The step therefore ran as record, submit, wait, record, submit, wait.
+
+**Change.** The Vulkan recorder now starts every batch with one compute/transfer to compute/transfer memory barrier (`Recorder::record_inter_batch_barrier`). A pipeline barrier's first synchronization scope includes every command earlier in submission order, across `vkQueueSubmit` calls, so each batch's reads see the earlier batches' writes and its writes wait for their reads. That makes the ordering structural, and the host wait before recording is removed from both executor loops. Waits remain where the host needs a result (D2H reads), before freeing a buffer, and at realize-end.
+
+**Measured** (per-device bit-stable preference of #426 applied locally, not in this PR; Qwen3-0.6B Q4_K_M, 5 runs x 10 steps, median over runs, min to max; same box, baseline is main with #429):
+
+| | before | after |
+|---|---|---|
+| steady decode step | 122 ms (119 to 129) | **71 ms (70 to 74)**, 1.7x |
+| `drain_inflight_vulkan` per step | 65 ms, 93 entries | 22.6 ms, 2 entries |
+| GPU time per step | unchanged by this change | 36.7 ms (with the old matvec) |
+
+Stacked with the column-parallel matvec of #430 (a local build, neither in this PR): step **62 ms (57 to 64), about 16 tokens/s**, GPU busy 16.4 ms per step, drain 8.5 ms. With #426, #428, #429 and #430 the step has gone from 4,271 ms to 62 ms, 69x; #426 and #430 were not merged when this was measured.
+
+**Correctness:** `QWEN3_VERIFY=1` against the CPU fixture: max logit difference 9.9e-5 (identical to before this change; 9.2e-5 with #430's kernel), 0 of 64 greedy tokens differ, PASS, in both configurations (one run each). That run crosses about 63 batch boundaries per decode step for 64 steps on each of two prompts.
+
+**Evidence for the ordering.** (1) The rule: a pipeline barrier's first synchronization scope includes the commands earlier in submission order, across `vkQueueSubmit` calls (the Vulkan specification's definition of the scope). (2) The fixture check above: about 63 batch boundaries per decode step, 64 steps on each of two prompts, no divergence. (3) **Khronos synchronization validation** (`VK_LAYER_KHRONOS_validation` from the installed SDK, `validate_sync = true`, core checks left on), with a control that must fail:
+
+| program | build | `SYNC-HAZARD` reports |
+|---|---|---|
+| `batch_order_probe` (a dependent chain across separate submissions) | with the barrier | **0** |
+| `batch_order_probe` | barrier call removed (control) | **10**, read-after-write: "`vkQueueSubmit()`: READ_AFTER_WRITE hazard ... reads VkBuffer ..., previously written by another vkCmdDispatch (from another VkCommandBuffer) ... No sufficient synchronization" |
+| the Qwen3 decode (`qwen3_vulkan_profile`, 1 run, 1 step) | with the barrier | **0** |
+| the Qwen3 decode | barrier call removed (control) | **20** (10 read-after-write, 10 write-after-read; the layer appears to cap each kind at 10) |
+
+The other 131 validation errors in both decode runs are the same pre-existing pipeline-creation errors in the committed SPIR-V (`VUID-VkShaderModuleCreateInfo-pCode-08740` 50, `VUID-RuntimeSpirv-uniformAndStorageBuffer16BitAccess-06332` 50, `VUID-RuntimeSpirv-None-06278` 20, `VUID-RuntimeSpirv-Workgroup-06530` 6, `...pCode-08737` 5), unrelated to ordering and not touched here; they are a separate finding. (My first attempt ran the layer with core checks disabled; that configuration printed nothing even for a known hazard, which is why the control matters, and is not used.)
+
+(4) On this NVIDIA driver the program also computes the right answer with the barrier removed (`batch_order_probe` passes either way: consecutive submissions did not overlap here), so a wrong number is not what shows the barrier is needed; the validation layer is. Inside ONE batch the GPU does run unsynchronized dispatches concurrently (with the in-batch barriers disabled a dependent chain came out 34x off).
+
+**Not tested:** more than one queue or device (the barrier orders one queue, the recorder uses one); graphs mixing CUDA and Vulkan; a driver that overlaps consecutive submissions (an attempt to run the probe on the AMD iGPU by name gave results identical to the NVIDIA run to three digits, so I do not trust that it ran on a different device and did not use it); a long run for hazards that show only as wrong numbers.
+
+**What is left at 71 ms:** the loop is 65 ms: kernel items 25 ms (launches 15, output allocation 6, input gathering 3), per-token data 9 ms, evictions 6.5 ms, eager submits 3.8 ms, and 22.6 ms waiting at the end for the GPU, which is busy 36.7 ms per step in this configuration (about 16 ms with #430), so the host recording is now the longer pole.
 
 ## What this points at instead (not started)
 
