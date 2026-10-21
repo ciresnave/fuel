@@ -272,7 +272,7 @@ With the host no longer waiting on the GPU, two host phases stood out in the pro
 
 About 1.35x on the step, about 22 tokens/s. A first, non-alternating comparison was unusable (the box was loaded by other work: the GPU batch time moved from 14 to 19 ms between runs), which is why the table is from alternating runs.
 
-**Correctness:** `QWEN3_VERIFY=1` against the CPU fixture: max logit difference 9.2e-5, 0 of 64 greedy tokens differ, PASS (one run, on the tree with both changes). **Cost:** the recycler can now hold up to its existing 512 MB cap in more, smaller buffers; VRAM held by the pool was not re-measured.
+**Correctness:** `QWEN3_VERIFY=1` against the CPU fixture: max logit difference 9.2e-5, 0 of 64 greedy tokens differ, PASS (one run, on the tree with both changes). **Cost:** the recycler can now hold up to its existing 512 MB cap in more, smaller buffers; worst case, measured with `recycler_pool_probe` (RTX 4070, 64 distinct sizes from 2 KiB to 24 MiB, as many buffers per size as the depth allows, 21,620 buffers, 1,260 MiB, all freed): 1,260 MiB parked until the next allocation, 511 MiB after it (the 512 MB cap is applied at allocation time, so it can be exceeded between a mass free and the next allocation). The pre-change depth was not run on the same probe.
 
 **Not tried:** batching the four uploads into one submission. Measured inside `upload_bytes`: the copy submission is 0.3 to 0.5 ms of the upload, the rest was the pool trim, so batching would save about 1 ms and was not kept.
 
