@@ -863,6 +863,39 @@ jobs:
           cargo metadata --no-deps --format-version 1 > "$RUNNER_TEMP/metadata.json"
           python3 scripts/check-dev-dep-publish-cycles.py "$RUNNER_TEMP/metadata.json"
 
+  # A published crate holds only its own directory. `include_str!("../../docs/x")` builds in the
+  # workspace and fails for every consumer, and `cargo package --no-verify` does not notice (it
+  # went unseen across fuel-dispatch 0.19.1 / 0.20.0 / 0.20.14). So: package everything without
+  # compiling, scan each tarball for includes that leave it, then build the EXTRACTED tarballs as
+  # one throwaway workspace. Details and the controls: scripts/verify-packaged-crates.py.
+  #
+  # NAMED HOLES (also printed by the build step): `DOCS_RS=1` makes baracuda-kernels-sys skip its
+  # nvcc build, so the CUDA/forge compile is NOT verified; WORKSPACE_EXCLUDES crates are not built
+  # (mkl/aocl need an SDK, metal needs macOS, cuda is the forge). The `fuel-model-*fixture` crates
+  # are `publish = false` and cannot be packaged.
+  package:
+    name: Packaged crates
+    runs-on: ubuntu-latest
+    env:
+      DOCS_RS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: Install protoc (fuel-onnx build script)
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # Known-bad controls first: a planted src/ include must fail the scan, so a broken checker
+      # cannot pass as a clean tree.
+      - name: Packaged-crate check controls
+        run: python3 scripts/verify-packaged-crates.py selftest
+      - name: Package every publishable crate (no compile)
+        run: cargo package --workspace --exclude fuel-model-fixture --exclude fuel-model-umbrella-fixture --locked --no-verify
+      - name: No include leaves a tarball
+        run: python3 scripts/verify-packaged-crates.py scan target/package
+      - name: Build every crate from its own tarball
+        run: python3 scripts/verify-packaged-crates.py build target/package Cargo.lock ${{ env.WORKSPACE_EXCLUDES }}
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
