@@ -224,6 +224,8 @@ pub struct Pipelines {
     /// one workgroup per output column.
     pub matvec_pipeline: ComputePipeline,
     pub matvec_layout: PipelineLayout,
+    pub matvec_cols_pipeline: ComputePipeline,
+    pub matvec_cols_layout: PipelineLayout,
 
     /// Mixed-precision gemv: f32 activations × bf16 weights → f32.
     /// Decode-phase path for bf16-on-device weights.
@@ -745,6 +747,7 @@ impl Pipelines {
         let matmul_mod = registry.load_module(device, shaders::MATMUL)?;
         let matmul_tiled_mod = registry.load_module(device, shaders::MATMUL_TILED_GLSL)?;
         let matvec_mod = registry.load_module(device, shaders::MATVEC_GLSL)?;
+        let matvec_cols_mod = registry.load_module(device, shaders::MATVEC_COLS_GLSL)?;
         let matvec_bf16_b_mod = registry.load_module(device, shaders::MATVEC_BF16_B_GLSL)?;
         let matmul_tiled_bf16_b_mod =
             registry.load_module(device, shaders::MATMUL_TILED_BF16_B_GLSL)?;
@@ -987,6 +990,7 @@ impl Pipelines {
         let matmul_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_tiled_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
+        let matvec_cols_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_bf16_b_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_tiled_bf16_b_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_coop_layout = if coop_shape_ok {
@@ -1366,6 +1370,8 @@ impl Pipelines {
         let matmul_tiled_pipeline =
             ComputePipeline::new(device, &matmul_tiled_layout, &matmul_tiled_mod, "main")?;
         let matvec_pipeline = ComputePipeline::new(device, &matvec_layout, &matvec_mod, "main")?;
+        let matvec_cols_pipeline =
+            ComputePipeline::new(device, &matvec_cols_layout, &matvec_cols_mod, "main")?;
         let matvec_bf16_b_pipeline =
             ComputePipeline::new(device, &matvec_bf16_b_layout, &matvec_bf16_b_mod, "main")?;
         let matmul_tiled_bf16_b_pipeline = ComputePipeline::new(
@@ -1982,6 +1988,8 @@ impl Pipelines {
             matmul_tiled_layout,
             matvec_pipeline,
             matvec_layout,
+            matvec_cols_pipeline,
+            matvec_cols_layout,
             matvec_bf16_b_pipeline,
             matvec_bf16_b_layout,
             matmul_tiled_bf16_b_pipeline,
