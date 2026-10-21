@@ -1677,28 +1677,16 @@ impl PipelinedExecutor {
                 }
                 current_chunk_backend = Some(item.target_backend);
             }
-            // Step E A4b-4 (Invariant E — same-device cross-chunk RAW safety):
-            // before RECORDING a new Vulkan op while in-flight Vulkan batches
-            // exist, wait them. Vulkan only guarantees batches BEGIN in submission
-            // order (they may overlap / complete out of order), so a later Vulkan
-            // op that reads a buffer an in-flight batch wrote would race without
-            // this. The in-flight batch was submitted at the prior chunk boundary
-            // and an intervening (CUDA) chunk has since run, so this fence is
-            // typically already signalled — the iGPU work overlapped, and we only
-            // re-sync as Vulkan work resumes. No-op when single-device
-            // (`multi_backend` false) or no batches are in flight.
-            if multi_backend
-                && !is_backend_neutral(&item.kind)
-                && item.target_backend == BackendId::Vulkan
-                && !inflight_vulkan.is_empty()
-            {
-                {
-                    let _pt = crate::compiled::op_profile::PhaseTimer::start(
-                        "realize.drain_inflight_vulkan",
-                    );
-                    drain_inflight_vulkan(&mut inflight_vulkan)?;
-                }
-            }
+            // Same-device cross-chunk RAW/WAR safety between Vulkan batches (the old
+            // "Invariant E": wait every in-flight Vulkan batch on the HOST before
+            // recording a new Vulkan op) is now structural: the Vulkan recorder
+            // starts every batch with a memory barrier whose first scope covers all
+            // earlier submissions on the queue (`Recorder::record_inter_batch_barrier`),
+            // so a later batch cannot read or overwrite what an earlier in-flight
+            // one is still using. The host therefore keeps recording while the
+            // GPU runs the batches already submitted; waits remain only where the
+            // host needs a result (D2H reads), before freeing a buffer, and at
+            // realize-end.
             // Step E A4b-3 + A4b-4: the cross-device residency boundary.
             if matches!(
                 item.kind,
@@ -2126,15 +2114,8 @@ impl PipelinedExecutor {
                 }
                 current_chunk_backend = Some(item.target_backend);
             }
-            // Step E A4b-4 (Invariant E): wait in-flight Vulkan before recording a
-            // new Vulkan op (same-device cross-chunk RAW safety). See realize_inner.
-            if multi_backend
-                && !is_backend_neutral(&item.kind)
-                && item.target_backend == BackendId::Vulkan
-                && !inflight_vulkan.is_empty()
-            {
-                drain_inflight_vulkan(&mut inflight_vulkan)?;
-            }
+            // Inter-batch Vulkan ordering is structural (see realize_inner): no host
+            // wait before recording a new Vulkan op.
             // Step E A4b-3 + A4b-4: cross-device residency boundary. See
             // realize_inner for the full rationale.
             if matches!(
