@@ -599,16 +599,20 @@ pub fn realize_one_prebuilt_cached_env<T: bytemuck::Pod + WithDType>(
         Some((s, l)) => (Some(s), Some(l)),
         None => (None, None),
     };
-    let (storage, _layout) = PipelinedExecutor::realize_with_optimized_picking_cached_env(
-        graph.clone(),
-        effective_target,
-        cache,
-        optimized,
-        order_cache,
-        selector,
-        lookup,
-        sym_env.clone(),
-    )?;
+    let (storage, _layout) = {
+        let _t = fuel_dispatch::compiled::op_profile::PhaseTimer::start("bridge.executor_total");
+        PipelinedExecutor::realize_with_optimized_picking_cached_env(
+            graph.clone(),
+            effective_target,
+            cache,
+            optimized,
+            order_cache,
+            selector,
+            lookup,
+            sym_env.clone(),
+        )?
+    };
+    let _t = fuel_dispatch::compiled::op_profile::PhaseTimer::start("bridge.extract_logits");
     extract_cpu_bytes_typed::<T>(&storage)
 }
 

@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.43 - 2026-10-21
+
+### Changed
+
+- `fuel-dispatch` executor: work items that touch no device (`Op::Const` adoption, metadata-only views, slot views) no longer take part in the chunk-boundary backend-switch logic. A `Const` is always stamped `Cpu`, so every weight sitting between two Vulkan kernels looked like a Vulkan-to-Cpu-to-Vulkan switch: the executor armed `multi_backend`, submitted the open Vulkan batch, and waited for it before the next Vulkan op, about 400 submit-and-wait round trips per decode step. Applies to both executor loops. Measured on Qwen3-0.6B Q4_K_M decode on Vulkan (RTX 4070, 5 runs, with the not-yet-merged per-device bit-stable preference of PR #426 applied locally): step 343 ms to 251 ms (27% less; 2.9 to 4.0 tokens/s); verified against the CPU fixture (max logit difference 9.9e-5, 0 of 64 greedy tokens differ). Graphs that genuinely mix CUDA and Vulkan were not run.
+
+### Added
+
+- `fuel-dispatch`: `compiled::op_profile::PhaseTimer` and `take_phases` (opt-in named host phases; off by default, one relaxed atomic load each), wired into the pipelined executor, the realize bridge and the persistent-decode rebind. `qwen3_vulkan_profile` prints a host-phase table and gains `QWEN3_VERIFY=1` (the M0/M1 CPU-fixture comparison on Vulkan). ROADMAP item 23 updated.
+
 ## v0.20.42 - 2026-10-21
 
 ### Added
