@@ -423,6 +423,29 @@ pub enum DeviceSelection {
     ByName(String),
 }
 
+/// Shape and scalar arguments shared by the attention forward wrappers.
+#[derive(Clone, Copy)]
+struct AttnDims {
+    b: usize,
+    hq: usize,
+    hkv: usize,
+    sq: usize,
+    sk: usize,
+    d: usize,
+    softmax_scale: f32,
+    causal: bool,
+}
+
+/// The two pipelines (split pass, combine pass) of one split-KV attention
+/// dtype, with the element width of Q/K/V/alibi/out in bytes. The partials in
+/// the scratch buffer are f32 for every dtype.
+struct SplitKernel<'a> {
+    name: &'static str,
+    elem: usize,
+    split: (&'a ComputePipeline, &'a PipelineLayout, &'static str),
+    combine: (&'a ComputePipeline, &'a PipelineLayout, &'static str),
+}
+
 impl VulkanBackend {
     /// Initialize with the default device selection: prefer discrete GPU.
     pub fn new() -> fuel_ir::Result<Self> {
@@ -6272,7 +6295,153 @@ impl VulkanBackend {
         causal: bool,
         splits: usize,
     ) -> fuel_ir::Result<()> {
-        let name = "flash_attn_f32_split_bytes";
+        let kernel = SplitKernel {
+            name: "flash_attn_f32_split_bytes",
+            elem: 4,
+            split: (
+                &self.pipelines.flash_attn_split_f32_pipeline,
+                &self.pipelines.flash_attn_split_f32_layout,
+                "flash_attn_split_f32",
+            ),
+            combine: (
+                &self.pipelines.flash_attn_combine_f32_pipeline,
+                &self.pipelines.flash_attn_combine_f32_layout,
+                "flash_attn_combine_f32",
+            ),
+        };
+        let dims = AttnDims {
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
+        };
+        self.flash_attn_split_bytes_impl(&kernel, q, k, v, alibi, out, dims, splits)
+    }
+
+    /// Split-KV FlashAttention forward, bf16: same contract as
+    /// [`Self::flash_attn_f32_split_bytes`] with bf16 Q/K/V/alibi/out. The partials
+    /// and the merge are f32; the output is narrowed once at the final store, as
+    /// in the unsplit bf16 kernel.
+    pub fn flash_attn_bf16_split_bytes(
+        &self,
+        q: &VulkanStorageBytes,
+        k: &VulkanStorageBytes,
+        v: &VulkanStorageBytes,
+        alibi: Option<&VulkanStorageBytes>,
+        out: &mut VulkanStorageBytes,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
+        softmax_scale: f32,
+        causal: bool,
+        splits: usize,
+    ) -> fuel_ir::Result<()> {
+        let kernel = SplitKernel {
+            name: "flash_attn_bf16_split_bytes",
+            elem: 2,
+            split: (
+                &self.pipelines.flash_attn_split_bf16_pipeline,
+                &self.pipelines.flash_attn_split_bf16_layout,
+                "flash_attn_split_bf16",
+            ),
+            combine: (
+                &self.pipelines.flash_attn_combine_bf16_pipeline,
+                &self.pipelines.flash_attn_combine_bf16_layout,
+                "flash_attn_combine_bf16",
+            ),
+        };
+        let dims = AttnDims {
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
+        };
+        self.flash_attn_split_bytes_impl(&kernel, q, k, v, alibi, out, dims, splits)
+    }
+
+    /// Split-KV FlashAttention forward, f16: same contract as
+    /// [`Self::flash_attn_f32_split_bytes`] with f16 Q/K/V/alibi/out. The partials
+    /// and the merge are f32; the output is narrowed once at the final store, as
+    /// in the unsplit f16 kernel.
+    pub fn flash_attn_f16_split_bytes(
+        &self,
+        q: &VulkanStorageBytes,
+        k: &VulkanStorageBytes,
+        v: &VulkanStorageBytes,
+        alibi: Option<&VulkanStorageBytes>,
+        out: &mut VulkanStorageBytes,
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
+        softmax_scale: f32,
+        causal: bool,
+        splits: usize,
+    ) -> fuel_ir::Result<()> {
+        let kernel = SplitKernel {
+            name: "flash_attn_f16_split_bytes",
+            elem: 2,
+            split: (
+                &self.pipelines.flash_attn_split_f16_pipeline,
+                &self.pipelines.flash_attn_split_f16_layout,
+                "flash_attn_split_f16",
+            ),
+            combine: (
+                &self.pipelines.flash_attn_combine_f16_pipeline,
+                &self.pipelines.flash_attn_combine_f16_layout,
+                "flash_attn_combine_f16",
+            ),
+        };
+        let dims = AttnDims {
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
+        };
+        self.flash_attn_split_bytes_impl(&kernel, q, k, v, alibi, out, dims, splits)
+    }
+
+    /// Shared body of the split-KV wrappers; see
+    /// [`Self::flash_attn_f32_split_bytes`] for the contract.
+    fn flash_attn_split_bytes_impl(
+        &self,
+        kernel: &SplitKernel<'_>,
+        q: &VulkanStorageBytes,
+        k: &VulkanStorageBytes,
+        v: &VulkanStorageBytes,
+        alibi: Option<&VulkanStorageBytes>,
+        out: &mut VulkanStorageBytes,
+        dims: AttnDims,
+        splits: usize,
+    ) -> fuel_ir::Result<()> {
+        let AttnDims {
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            softmax_scale,
+            causal,
+        } = dims;
+        let (name, elem) = (kernel.name, kernel.elem);
         if hkv == 0 || !hq.is_multiple_of(hkv) {
             fuel_ir::bail!("{name}: hq={hq} must be a positive multiple of hkv={hkv}");
         }
@@ -6287,7 +6456,7 @@ impl VulkanBackend {
             fuel_ir::bail!("{name}: chunk={chunk} (sk={sk}, splits={splits}) > 1024");
         }
         let rows = b * hq * sq;
-        let (need_q, need_k) = (rows * d * 4, b * hkv * sk * d * 4);
+        let (need_q, need_k) = (rows * d * elem, b * hkv * sk * d * elem);
         for (what, have, need) in [
             ("q", q.len_bytes(), need_q),
             ("k", k.len_bytes(), need_k),
@@ -6299,9 +6468,9 @@ impl VulkanBackend {
             }
         }
         if let Some(a) = alibi
-            && a.len_bytes() < hq * 4
+            && a.len_bytes() < hq * elem
         {
-            fuel_ir::bail!("{name}: alibi {} < {}", a.len_bytes(), hq * 4);
+            fuel_ir::bail!("{name}: alibi {} < {}", a.len_bytes(), hq * elem);
         }
         let host_evicted =
             |what: &str| fuel_ir::Error::Msg(format!("{name}: {what} is host-evicted"));
@@ -6408,9 +6577,9 @@ impl VulkanBackend {
             std::mem::size_of::<SplitParams>() as u64,
         );
         self.record_dispatch_batched(
-            "flash_attn_split_f32",
-            &self.pipelines.flash_attn_split_f32_pipeline,
-            &self.pipelines.flash_attn_split_f32_layout,
+            kernel.split.2,
+            kernel.split.0,
+            kernel.split.1,
             desc,
             (splits as u32, 1, rows as u32),
             vec![(pbuf, pmem)],
@@ -6458,9 +6627,9 @@ impl VulkanBackend {
             std::mem::size_of::<CombineParams>() as u64,
         );
         self.record_dispatch_batched(
-            "flash_attn_combine_f32",
-            &self.pipelines.flash_attn_combine_f32_pipeline,
-            &self.pipelines.flash_attn_combine_f32_layout,
+            kernel.combine.2,
+            kernel.combine.0,
+            kernel.combine.1,
             cdesc,
             (1, 1, rows as u32),
             vec![(cbuf, cmem)],

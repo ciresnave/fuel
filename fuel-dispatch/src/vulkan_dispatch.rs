@@ -4271,8 +4271,14 @@ pub mod flash_attn {
             params,
             DType::BF16,
             "flash_attn_bf16",
-            |backend, q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
-                backend.flash_attn_bf16_bytes(q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal)
+            |backend, q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal| match decode_splits(
+                b, hq, sq, sk,
+            ) {
+                Some(n) => backend.flash_attn_bf16_split_bytes(
+                    q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal, n,
+                ),
+                None => backend
+                    .flash_attn_bf16_bytes(q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal),
             },
         )
     }
@@ -4290,8 +4296,14 @@ pub mod flash_attn {
             params,
             DType::F16,
             "flash_attn_f16",
-            |backend, q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal| {
-                backend.flash_attn_f16_bytes(q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal)
+            |backend, q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal| match decode_splits(
+                b, hq, sq, sk,
+            ) {
+                Some(n) => backend.flash_attn_f16_split_bytes(
+                    q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal, n,
+                ),
+                None => backend
+                    .flash_attn_f16_bytes(q, k, v, a, out, b, hq, hkv, sq, sk, d, scale, causal),
             },
         )
     }
@@ -6258,15 +6270,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
 // only under `--features vulkan` — no device is touched (registration is pure
 // binding-table population; `register_vulkan_kernels` never probes hardware).
 
-/// Split-KV heuristic for the f32 Vulkan flash-attention route (ROADMAP 17,
-/// H12). `Some(splits)` only for a decode step (`sq == 1`) whose
+/// Split-KV heuristic for the Vulkan flash-attention routes (f32, bf16, f16;
+/// ROADMAP 17, H12). `Some(splits)` only for a decode step (`sq == 1`) whose
 /// `b * hq` workgroups leave the GPU underfilled and whose key range is long
 /// enough to pay for the second dispatch. Thresholds come from
-/// `docs/research/split-kv-decode-measurement.md` (RTX 4070 Laptop, D=128):
-/// 1.3-1.9x at `b*hq <= 8`, `Sk >= 2048`; about 1.2x at 32-64 heads (not
-/// taken: the merge reorders float adds, so the split path is only used
-/// where it clearly wins); no gain at `Sk = 1024`. One device, one dtype:
-/// a prior, not a tuned value.
+/// `docs/research/split-kv-decode-measurement.md` (RTX 4070 Laptop, D=128,
+/// one run per cell, about +-15% spread): f32 1.3-1.9x at `b*hq <= 8`,
+/// `Sk >= 2048`; bf16/f16 1.3-1.8x at `b*hq <= 16` for `Sk >= 2048`; about
+/// 1.15x at 32-64 heads (not taken: the merge reorders float adds, so the
+/// split path is only used where it clearly wins); no gain at `Sk = 1024`.
+/// One device: a prior, not a tuned value.
 fn decode_splits(b: usize, hq: usize, sq: usize, sk: usize) -> Option<usize> {
     const MAX_ROWS: usize = 16;
     const MIN_SK: usize = 2048;
