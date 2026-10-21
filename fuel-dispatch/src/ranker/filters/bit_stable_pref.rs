@@ -1,7 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Soft preference: when at least `min_remaining` bit-stable
-//! candidates exist, drop the non-bit-stable ones. Otherwise the
-//! pipeline skips this filter (preferences yield to availability).
+//! candidates exist, drop the non-bit-stable ones **that share a device
+//! with a bit-stable candidate**. Otherwise the pipeline skips this filter
+//! (preferences yield to availability).
+//!
+//! The preference selects a KERNEL on a device; it does not select a DEVICE.
+//! Before 0.20.42 it dropped every non-bit-stable candidate whenever any
+//! bit-stable one existed, on any device, so a GPU kernel that is honestly
+//! non-bit-stable (the Vulkan f32 matmul: subgroup / FADD order is not pinned)
+//! could never be compared on cost with the always-bit-stable CPU kernel, and a
+//! whole Qwen3 decode step ran on the CPU (4.3 s instead of 0.33 s;
+//! `docs/research/qwen3-vulkan-decode-profile.md`). A hard determinism
+//! requirement is still available through `PrecisionRequirement::require_bit_stable`
+//! (`PrecisionFloorFilter`, strict reproducibility mode), which this filter
+//! does not touch.
 //!
 //! Phase 1.3 of the picker-work arc. This filter is what makes
 //! the default picker behavior "bit-stable when there's a choice"
@@ -102,6 +114,14 @@ mod tests {
         }
     }
 
+    fn candidate_on(bit_stable: bool, backend: BackendId, device: DeviceLocation) -> Candidate {
+        Candidate {
+            backend,
+            device,
+            ..candidate(bit_stable)
+        }
+    }
+
     fn ctx<'a>() -> FilterContext<'a> {
         static LAYOUTS: std::sync::OnceLock<Vec<Layout>> = std::sync::OnceLock::new();
         let layouts = LAYOUTS.get_or_init(|| vec![Layout::contiguous(Shape::from(vec![4]))]);
@@ -118,6 +138,35 @@ mod tests {
             candidate(true),
         ];
         assert_eq!(f.filter(&alts, &ctx()), vec![1, 3]);
+    }
+
+    #[test]
+    fn non_bit_stable_candidate_on_another_device_is_kept() {
+        // The Qwen3-on-Vulkan shape: a non-bit-stable GPU kernel and a
+        // bit-stable CPU kernel. The preference must not pick the device.
+        let f = BitStablePreferenceFilter::default();
+        let gpu = DeviceLocation::Vulkan { gpu_id: 0 };
+        let alts = vec![
+            candidate_on(false, BackendId::Vulkan, gpu),
+            candidate_on(true, BackendId::Cpu, DeviceLocation::Cpu),
+        ];
+        assert_eq!(f.filter(&alts, &ctx()), vec![0, 1]);
+    }
+
+    #[test]
+    fn non_bit_stable_sibling_on_the_same_device_is_still_dropped() {
+        // Sabotage sibling of the test above: the same preference still
+        // removes a non-bit-stable kernel when a bit-stable one shares ITS
+        // device, so the cross-device test passes because of the device
+        // grouping, not because the filter stopped filtering.
+        let f = BitStablePreferenceFilter::default();
+        let gpu = DeviceLocation::Vulkan { gpu_id: 0 };
+        let alts = vec![
+            candidate_on(false, BackendId::Vulkan, gpu),
+            candidate_on(true, BackendId::Vulkan, gpu),
+            candidate_on(true, BackendId::Cpu, DeviceLocation::Cpu),
+        ];
+        assert_eq!(f.filter(&alts, &ctx()), vec![1, 2]);
     }
 
     #[test]

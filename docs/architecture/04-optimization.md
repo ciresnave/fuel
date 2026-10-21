@@ -316,6 +316,8 @@ The filter runs first; cost ranking ranks the survivors. This order matters: a f
 
 When the user hasn't specified a per-call precision floor and the tolerance budget is `Strict` (the default), the precision filter admits only alternatives with strict-equivalent precision (kernels with `bit_stable_on_same_hardware: true` or with bounded error guaranteed within IEEE-rounding tolerance). Most kernels qualify here; the filter is restrictive only under tighter user requirements.
 
+**Bit-stability is a preference among the kernels of one device, not a way to choose the device.** The default chain's soft bit-stable preference (`BitStablePreferenceFilter`) removes a non-bit-stable candidate only when a bit-stable candidate exists on the same device. A device whose kernel is honestly non-bit-stable (the Vulkan f32 matmul, whose subgroup summation order is not pinned) therefore still competes on cost with a bit-stable kernel on another device. Before this rule the preference applied across devices and sent a whole Qwen3 decode step to the CPU (`docs/research/qwen3-vulkan-decode-profile.md`). A requirement that results be bit-reproducible is expressed with `PrecisionRequirement::require_bit_stable` (strict reproducibility mode), which excludes non-bit-stable kernels everywhere and is unaffected.
+
 ## Tolerance budgets gate which rules fire
 
 The optimizer reads the tolerance specification (graph default → subgraph override → per-op override) when evaluating a candidate route. Routes that violate the tolerance budget along any path are pruned. See [07-tolerance](07-tolerance.md) for the full model; here, the architectural integration:

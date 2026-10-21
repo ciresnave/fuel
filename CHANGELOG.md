@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.42 - 2026-10-21
+
+### Changed
+
+- `fuel-dispatch`: `BitStablePreferenceFilter` (the soft default-chain preference for bit-stable kernels) now drops a non-bit-stable candidate only when a bit-stable candidate exists on the SAME device; before, it dropped it whenever any bit-stable candidate existed anywhere, which made a device with an honestly non-bit-stable kernel (the Vulkan f32 matmul) lose every placement to the CPU before cost was compared. **Behaviour change:** with a GPU build, kernels declared non-bit-stable can now win placement on cost, so their results are no longer bit-identical run to run (strict reproducibility mode, `PrecisionRequirement::require_bit_stable`, is unchanged and still excludes them). CPU-only and CUDA-with-audited-kernels builds place as before. Measured on Qwen3-0.6B Q4_K_M decode on Vulkan (RTX 4070, 5 runs): step 4,271 ms to 329 ms (0.23 to 3.04 tokens/s), copies per step 542 to 5, all 253 matmuls on Vulkan; verified against the CPU fixture (max logit difference 9.9e-5, 0 of 64 greedy tokens differ). `qwen3_vulkan_profile` gains `QWEN3_VERIFY=1`. ROADMAP item 21 updated, items 22 (quantized loader) and 23 (Vulkan device timing) added.
+
 ## v0.20.41 - 2026-10-21
 
 ### Added
