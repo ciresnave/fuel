@@ -438,7 +438,7 @@ pub fn import_bundle(
 /// directory walk + a small filename matcher over the pattern's last
 /// component rather than pulling in `glob`. The supported pattern shape is
 /// `<dir>/<filename-pattern>` where the filename pattern may contain `*`
-/// wildcards (e.g. `docs/kernel-contracts/cpu/*.fkc.md`); `**` is not
+/// wildcards (e.g. `fuel-dispatch/kernel-contracts/cpu/*.fkc.md`); `**` is not
 /// supported (a single directory level, matching the per-provider layout).
 pub fn import_glob(pattern: &str, link: &dyn LinkRegistry) -> Result<ImportedProvider, FkcError> {
     let mut paths = glob_files(pattern)?;
@@ -640,7 +640,7 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     const ELEMENTWISE_BINARY: &str =
-        include_str!("../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
+        include_str!("../../kernel-contracts/cpu/elementwise-binary.fkc.md");
 
     /// Every live CPU contract, read from disk.
     ///
@@ -657,8 +657,7 @@ mod tests {
         reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
     )]
     fn all_cpu_contracts() -> Vec<(String, String)> {
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel-contracts/cpu");
         let mut out = Vec::new();
         for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
             let path = e.expect("dir entry").path();
@@ -1141,7 +1140,7 @@ mod tests {
     /// The authored norm/softmax FUSED bundle — every section declares
     /// `fused_op:` (a `FusedOps::*` id), not `op_kind:`.
     const FUSED_NORM_SOFTMAX: &str =
-        include_str!("../../../docs/kernel-contracts/fused/norm-softmax.fkc.md");
+        include_str!("../../kernel-contracts/fused/norm-softmax.fkc.md");
 
     #[test]
     fn cpu_link_registry_binds_norm_softmax_fused_ops_to_live_kernels() {
@@ -1428,12 +1427,10 @@ determinism: same_hardware_bitwise
 "#;
 
     /// The three fused-op bundles whose cross-checks C-3 turns on.
-    const FUSED_ATTENTION: &str =
-        include_str!("../../../docs/kernel-contracts/fused/attention.fkc.md");
+    const FUSED_ATTENTION: &str = include_str!("../../kernel-contracts/fused/attention.fkc.md");
     const FUSED_LINEAR_QUANT: &str =
-        include_str!("../../../docs/kernel-contracts/fused/linear-quant.fkc.md");
-    const FUSED_CONV_ROPE: &str =
-        include_str!("../../../docs/kernel-contracts/fused/conv-rope.fkc.md");
+        include_str!("../../kernel-contracts/fused/linear-quant.fkc.md");
+    const FUSED_CONV_ROPE: &str = include_str!("../../kernel-contracts/fused/conv-rope.fkc.md");
 
     /// Replace `from` → `to` exactly once, asserting `from` occurs EXACTLY once
     /// in `src` — so a mutation test can never silently no-op (a 0-count replace

@@ -40,7 +40,7 @@
 //!
 //! Adds [`harness::run_fkc_verify_harness`] (`#[cfg(feature = "cuda")]`):
 //! the rope-apply CUDA acceptance harness. Imports
-//! `docs/kernel-contracts/cuda/rope-apply.fkc.md` (baracuda's
+//! `fuel-dispatch/kernel-contracts/cuda/rope-apply.fkc.md` (baracuda's
 //! `rope_apply_<dt>_run` — shipped, never wired into any dispatch path
 //! before this task) into a fresh, harness-local `KernelBindingTable`,
 //! drives `verify_bit_stability` through a real [`CudaInvoker`], and

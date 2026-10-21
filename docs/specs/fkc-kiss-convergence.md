@@ -245,7 +245,7 @@ this standard; it is one of the two legs that lets the standard freeze at all.**
 - Read: KISS `spec/umbrella.md` in full, `spec/contract.md` section structure + §2.3/§6.7/§6.8
   clauses, **`spec/conform.md` §6.1–§6.2 firsthand (added 2026-08-07)**, Fuel
   `docs/specs/kernel-contract-format.md` structure + §1/§11, and
-  `docs/kernel-contracts/README.md`. **Not** read in full: `spec/{classify,ops,grammar,
+  `fuel-dispatch/kernel-contracts/README.md`. **Not** read in full: `spec/{classify,ops,grammar,
   announce,synth,consume,emit}.md`.
 - **§3.2 is no longer second-hand and it UNDERSTATED the requirement.** KISS-Conform
   mandates bidirectional totality (both directions build-gating), a matrix that is

@@ -339,7 +339,7 @@ macro_rules! binary_kernel {
 /// FFI symbol: *"Any comparison involving NaN returns 0 per IEEE 754."*
 /// That is the convention Fuel's CPU comparisons already follow, so the
 /// backends agree without a Fuel-side adjustment — see
-/// `docs/kernel-contracts/cpu/compare-where.fkc.md`.
+/// `fuel-dispatch/kernel-contracts/cpu/compare-where.fkc.md`.
 ///
 /// `$dtype_size` is the INPUT element width; the output is always 1 byte.
 macro_rules! compare_kernel {

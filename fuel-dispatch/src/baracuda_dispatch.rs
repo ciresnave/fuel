@@ -3137,7 +3137,7 @@ pub mod unary {
 /// The authored CUDA (baracuda) cast kernel contract, embedded into the binary
 /// via `include_str!` (the PRODUCTION contract). Parsed + lowered by
 /// [`register_cuda_cast_from_contract`].
-const CUDA_CAST_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/cast.fkc.md");
+const CUDA_CAST_CONTRACT: &str = include_str!("../kernel-contracts/cuda/cast.fkc.md");
 
 /// Register the CUDA cast family (70 `(SRC, DST)` pairs → the ONE dtype-agnostic
 /// `cast::cast_baracuda_wrapper`) by IMPORTING its FKC kernel contract — the
@@ -3193,7 +3193,7 @@ fn register_cuda_cast_from_contract(table: &mut KernelBindingTable) {
 /// The authored CUDA (baracuda) FlashDecoding contract, embedded via
 /// `include_str!`. Imported by [`register_cuda_flash_decoding_from_contract`].
 const CUDA_FLASH_DECODING_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/flash_decoding.fkc.md");
+    include_str!("../kernel-contracts/cuda/flash_decoding.fkc.md");
 
 /// Register the CUDA FlashDecoding decode arm (`OpKind::FlashAttn`, `[f16;4]` /
 /// `[bf16;4]`, capacity-K) by IMPORTING its FKC kernel contract — the SOLE path,
@@ -3242,7 +3242,7 @@ fn register_cuda_flash_decoding_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) binary kernel contract (`include_str!`), imported by
 /// [`register_cuda_binary_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_BINARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/binary.fkc.md");
+const CUDA_BINARY_CONTRACT: &str = include_str!("../kernel-contracts/cuda/binary.fkc.md");
 
 /// The authored CUDA (baracuda) COMPARISON kernel contract (`include_str!`),
 /// imported by [`register_cuda_compare_from_contract`].
@@ -3252,7 +3252,7 @@ const CUDA_BINARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cud
 /// contract that is never `include_str!`d and imported here declares nothing
 /// into the binding table. `Op::PagedAttn`'s recipe stays unplaceable until
 /// all three layers exist.
-const CUDA_COMPARE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/compare.fkc.md");
+const CUDA_COMPARE_CONTRACT: &str = include_str!("../kernel-contracts/cuda/compare.fkc.md");
 
 /// Register the CUDA comparison family (6 ops x 4 float dtypes -> U8) FROM its
 /// FKC contract. This is what makes `GreaterEqualElementwise[F32,F32,U8]`
@@ -3293,7 +3293,7 @@ fn register_cuda_binary_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) reduce kernel contract (`include_str!`), imported by
 /// [`register_cuda_reduce_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_REDUCE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/reduce.fkc.md");
+const CUDA_REDUCE_CONTRACT: &str = include_str!("../kernel-contracts/cuda/reduce.fkc.md");
 
 /// Register the CUDA reduce family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3315,7 +3315,7 @@ fn register_cuda_reduce_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) norm kernel contract (`include_str!`), imported by
 /// [`register_cuda_norm_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_NORM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/norm.fkc.md");
+const CUDA_NORM_CONTRACT: &str = include_str!("../kernel-contracts/cuda/norm.fkc.md");
 
 /// Register the CUDA norm family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3337,7 +3337,7 @@ fn register_cuda_norm_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) softmax kernel contract (`include_str!`), imported by
 /// [`register_cuda_softmax_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_SOFTMAX_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/softmax.fkc.md");
+const CUDA_SOFTMAX_CONTRACT: &str = include_str!("../kernel-contracts/cuda/softmax.fkc.md");
 
 /// Register the CUDA softmax family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3359,7 +3359,7 @@ fn register_cuda_softmax_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) powi kernel contract (`include_str!`), imported by
 /// [`register_cuda_powi_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_POWI_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/powi.fkc.md");
+const CUDA_POWI_CONTRACT: &str = include_str!("../kernel-contracts/cuda/powi.fkc.md");
 
 /// Register the CUDA powi family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3382,7 +3382,7 @@ fn register_cuda_powi_from_contract(table: &mut KernelBindingTable) {
 /// The authored CUDA (baracuda) powi_backward kernel contract (`include_str!`), imported by
 /// [`register_cuda_powi_backward_from_contract`] - the SOLE registration path (hand-written regs DELETED).
 const CUDA_POWI_BACKWARD_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/powi_backward.fkc.md");
+    include_str!("../kernel-contracts/cuda/powi_backward.fkc.md");
 
 /// Register the CUDA powi_backward family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3402,7 +3402,7 @@ fn register_cuda_powi_backward_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) clamp kernel contract (`include_str!`), imported by
 /// [`register_cuda_clamp_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_CLAMP_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/clamp.fkc.md");
+const CUDA_CLAMP_CONTRACT: &str = include_str!("../kernel-contracts/cuda/clamp.fkc.md");
 
 /// Register the CUDA clamp family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3424,7 +3424,7 @@ fn register_cuda_clamp_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) flip kernel contract (`include_str!`), imported by
 /// [`register_cuda_flip_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_FLIP_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/flip.fkc.md");
+const CUDA_FLIP_CONTRACT: &str = include_str!("../kernel-contracts/cuda/flip.fkc.md");
 
 /// Register the CUDA flip family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3446,7 +3446,7 @@ fn register_cuda_flip_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) roll kernel contract (`include_str!`), imported by
 /// [`register_cuda_roll_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_ROLL_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/roll.fkc.md");
+const CUDA_ROLL_CONTRACT: &str = include_str!("../kernel-contracts/cuda/roll.fkc.md");
 
 /// Register the CUDA roll family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3468,7 +3468,7 @@ fn register_cuda_roll_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) cumsum kernel contract (`include_str!`), imported by
 /// [`register_cuda_cumsum_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_CUMSUM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/cumsum.fkc.md");
+const CUDA_CUMSUM_CONTRACT: &str = include_str!("../kernel-contracts/cuda/cumsum.fkc.md");
 
 /// Register the CUDA cumsum family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3490,8 +3490,7 @@ fn register_cuda_cumsum_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) triangular kernel contract (`include_str!`), imported by
 /// [`register_cuda_triangular_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_TRIANGULAR_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/triangular.fkc.md");
+const CUDA_TRIANGULAR_CONTRACT: &str = include_str!("../kernel-contracts/cuda/triangular.fkc.md");
 
 /// Register the CUDA triangular family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3516,8 +3515,7 @@ fn register_cuda_triangular_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) arg_reduce kernel contract (`include_str!`), imported by
 /// [`register_cuda_arg_reduce_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_ARG_REDUCE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/arg_reduce.fkc.md");
+const CUDA_ARG_REDUCE_CONTRACT: &str = include_str!("../kernel-contracts/cuda/arg_reduce.fkc.md");
 
 /// Register the CUDA arg_reduce family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3542,8 +3540,7 @@ fn register_cuda_arg_reduce_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) reduce_to kernel contract (`include_str!`), imported by
 /// [`register_cuda_reduce_to_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_REDUCE_TO_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/reduce_to.fkc.md");
+const CUDA_REDUCE_TO_CONTRACT: &str = include_str!("../kernel-contracts/cuda/reduce_to.fkc.md");
 
 /// Register the CUDA reduce_to family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3568,7 +3565,7 @@ fn register_cuda_reduce_to_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) rope kernel contract (`include_str!`), imported by
 /// [`register_cuda_rope_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_ROPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/rope.fkc.md");
+const CUDA_ROPE_CONTRACT: &str = include_str!("../kernel-contracts/cuda/rope.fkc.md");
 
 /// Register the CUDA rope family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3610,7 +3607,7 @@ fn register_cuda_rope_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) unary kernel contract (`include_str!`), imported by
 /// [`register_cuda_unary_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_UNARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/unary.fkc.md");
+const CUDA_UNARY_CONTRACT: &str = include_str!("../kernel-contracts/cuda/unary.fkc.md");
 
 /// Register the CUDA unary family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3637,7 +3634,7 @@ fn register_cuda_unary_from_contract(table: &mut KernelBindingTable) {
 /// The authored CUDA (baracuda) clamp_inplace kernel contract (`include_str!`), imported by
 /// [`register_cuda_clamp_inplace_from_contract`] - the SOLE registration path (hand-written regs DELETED).
 const CUDA_CLAMP_INPLACE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/clamp_inplace.fkc.md");
+    include_str!("../kernel-contracts/cuda/clamp_inplace.fkc.md");
 
 /// Register the CUDA clamp_inplace family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3658,7 +3655,7 @@ fn register_cuda_clamp_inplace_from_contract(table: &mut KernelBindingTable) {
 /// The authored CUDA (baracuda) powi_inplace kernel contract (`include_str!`), imported by
 /// [`register_cuda_powi_inplace_from_contract`] - the SOLE registration path (hand-written regs DELETED).
 const CUDA_POWI_INPLACE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/powi_inplace.fkc.md");
+    include_str!("../kernel-contracts/cuda/powi_inplace.fkc.md");
 
 /// Register the CUDA powi_inplace family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3684,7 +3681,7 @@ fn register_cuda_powi_inplace_from_contract(table: &mut KernelBindingTable) {
 /// The authored CUDA (baracuda) inplace_unary kernel contract (`include_str!`), imported by
 /// [`register_cuda_inplace_unary_from_contract`] - the SOLE registration path (hand-written regs DELETED).
 const CUDA_INPLACE_UNARY_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/inplace_unary.fkc.md");
+    include_str!("../kernel-contracts/cuda/inplace_unary.fkc.md");
 
 /// Register the CUDA inplace_unary family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3708,8 +3705,7 @@ fn register_cuda_inplace_unary_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) write_slice kernel contract (`include_str!`), imported by
 /// [`register_cuda_write_slice_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_WRITE_SLICE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/write_slice.fkc.md");
+const CUDA_WRITE_SLICE_CONTRACT: &str = include_str!("../kernel-contracts/cuda/write_slice.fkc.md");
 
 /// Register the CUDA write_slice family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3735,7 +3731,7 @@ fn register_cuda_write_slice_from_contract(table: &mut KernelBindingTable) {
 /// The authored CUDA (baracuda) write_slice_rotating kernel contract (`include_str!`), imported by
 /// [`register_cuda_write_slice_rotating_from_contract`] - the SOLE registration path (hand-written regs DELETED).
 const CUDA_WRITE_SLICE_ROTATING_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/write_slice_rotating.fkc.md");
+    include_str!("../kernel-contracts/cuda/write_slice_rotating.fkc.md");
 
 /// Register the CUDA write_slice_rotating family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3756,7 +3752,7 @@ fn register_cuda_write_slice_rotating_from_contract(table: &mut KernelBindingTab
 /// The authored CUDA (baracuda) write_slice_doff kernel contract (`include_str!`), imported by
 /// [`register_cuda_write_slice_doff_from_contract`] - the SOLE registration path.
 const CUDA_WRITE_SLICE_DOFF_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/write_slice_doff.fkc.md");
+    include_str!("../kernel-contracts/cuda/write_slice_doff.fkc.md");
 
 /// Register the CUDA write_slice_doff family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the b1/b2/b4/b8 production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3780,7 +3776,7 @@ fn register_cuda_write_slice_doff_from_contract(table: &mut KernelBindingTable) 
 
 /// The authored CUDA (baracuda) concat kernel contract (`include_str!`), imported by
 /// [`register_cuda_concat_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_CONCAT_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/concat.fkc.md");
+const CUDA_CONCAT_CONTRACT: &str = include_str!("../kernel-contracts/cuda/concat.fkc.md");
 
 /// Register the CUDA concat family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3802,7 +3798,7 @@ fn register_cuda_concat_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) affine kernel contract (`include_str!`), imported by
 /// [`register_cuda_affine_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_AFFINE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/affine.fkc.md");
+const CUDA_AFFINE_CONTRACT: &str = include_str!("../kernel-contracts/cuda/affine.fkc.md");
 
 /// Register the CUDA affine family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3825,7 +3821,7 @@ fn register_cuda_affine_from_contract(table: &mut KernelBindingTable) {
 /// The authored CUDA (baracuda) inplace_affine kernel contract (`include_str!`), imported by
 /// [`register_cuda_inplace_affine_from_contract`] - the SOLE registration path (hand-written regs DELETED).
 const CUDA_INPLACE_AFFINE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/inplace_affine.fkc.md");
+    include_str!("../kernel-contracts/cuda/inplace_affine.fkc.md");
 
 /// Register the CUDA inplace_affine family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3845,7 +3841,7 @@ fn register_cuda_inplace_affine_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) pad kernel contract (`include_str!`), imported by
 /// [`register_cuda_pad_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_PAD_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/pad.fkc.md");
+const CUDA_PAD_CONTRACT: &str = include_str!("../kernel-contracts/cuda/pad.fkc.md");
 
 /// Register the CUDA pad family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3866,7 +3862,7 @@ fn register_cuda_pad_from_contract(table: &mut KernelBindingTable) {
 /// The authored CUDA (baracuda) pad_backward kernel contract (`include_str!`), imported by
 /// [`register_cuda_pad_backward_from_contract`] - the SOLE registration path (hand-written regs DELETED).
 const CUDA_PAD_BACKWARD_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/pad_backward.fkc.md");
+    include_str!("../kernel-contracts/cuda/pad_backward.fkc.md");
 
 /// Register the CUDA pad_backward family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3892,7 +3888,7 @@ fn register_cuda_pad_backward_from_contract(table: &mut KernelBindingTable) {
 /// The authored CUDA (baracuda) causal_conv1d kernel contract (`include_str!`), imported by
 /// [`register_cuda_causal_conv1d_from_contract`] - the SOLE registration path (hand-written regs DELETED).
 const CUDA_CAUSAL_CONV1D_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/causal_conv1d.fkc.md");
+    include_str!("../kernel-contracts/cuda/causal_conv1d.fkc.md");
 
 /// Register the CUDA causal_conv1d family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3916,8 +3912,7 @@ fn register_cuda_causal_conv1d_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) gemm_dense kernel contract (`include_str!`), imported by
 /// [`register_cuda_gemm_dense_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_GEMM_DENSE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/gemm_dense.fkc.md");
+const CUDA_GEMM_DENSE_CONTRACT: &str = include_str!("../kernel-contracts/cuda/gemm_dense.fkc.md");
 
 /// Register the CUDA gemm_dense family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3942,8 +3937,7 @@ fn register_cuda_gemm_dense_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) gemm_int kernel contract (`include_str!`), imported by
 /// [`register_cuda_gemm_int_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_GEMM_INT_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/gemm_int.fkc.md");
+const CUDA_GEMM_INT_CONTRACT: &str = include_str!("../kernel-contracts/cuda/gemm_int.fkc.md");
 
 /// Register the CUDA gemm_int family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3968,8 +3962,7 @@ fn register_cuda_gemm_int_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) indexing kernel contract (`include_str!`), imported by
 /// [`register_cuda_indexing_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_INDEXING_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/indexing.fkc.md");
+const CUDA_INDEXING_CONTRACT: &str = include_str!("../kernel-contracts/cuda/indexing.fkc.md");
 
 /// Register the CUDA indexing family (IndexSelect / Gather / MaskedFill over
 /// `{F32, F64, I32}` = 9 keys + ScatterAdd over `{F32, F64}` = 2 keys = 11
@@ -4019,7 +4012,7 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // the LAST CUDA family to migrate off its hand-written regs (CUDA now
     // 31/31 contract-sourced). Baracuda `flash_decoding_{f16,bf16}` (alpha.72),
     // NO-alibi decode arm keyed [q, k, v, out] = [T;4] over {F16, BF16}, is now
-    // registered FROM `docs/kernel-contracts/cuda/flash_decoding.fkc.md` via
+    // registered FROM `fuel-dispatch/kernel-contracts/cuda/flash_decoding.fkc.md` via
     // register_cuda_flash_decoding_from_contract — the SOLE path. The two
     // hand-written `table.register_full(FlashAttn, [f16;4]/[bf16;4], …,
     // cost_flash_decoding_cuda)` regs are DELETED.
@@ -4050,7 +4043,7 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     register_cuda_flash_decoding_from_contract(table);
 
     // ----- IndexSelect / Gather / MaskedFill / ScatterAdd are now registered
-    // FROM the cuda indexing FKC contract (docs/kernel-contracts/cuda/indexing.fkc.md)
+    // FROM the cuda indexing FKC contract (fuel-dispatch/kernel-contracts/cuda/indexing.fkc.md)
     // via register_cuda_indexing_from_contract in the GROUP 5 block below — the
     // SOLE path. The hand-written table.register(IndexSelect/Gather/MaskedFill/
     // ScatterAdd, …) regs (keys [T,U32,T] / [T,U8,T] / [T,U32,T,T], plain
@@ -4070,7 +4063,7 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // synthetic-base umbrella; contiguous-only (default caps ⇒ strided_input
     // == false). The full per-destination numeric detail (RNE/saturate,
     // int↔float, F8E4M3 decode/saturate) is contracted in
-    // `docs/kernel-contracts/cuda/cast.fkc.md`. -----
+    // `fuel-dispatch/kernel-contracts/cuda/cast.fkc.md`. -----
     register_cuda_cast_from_contract(table);
 
     // ----- GROUP 1 CUDA FKC families (per-(op,dtype) strided): each
@@ -4145,7 +4138,7 @@ mod cast_contract_tests {
 
     /// FIRST CUDA-BACKEND FKC CONSUMER (born-red gate). `register_baracuda_cuda_kernels`
     /// registers the whole `OpKind::Cast` family (70 `(SRC, DST)` pairs) FROM ITS
-    /// KERNEL CONTRACT (`docs/kernel-contracts/cuda/cast.fkc.md`) via
+    /// KERNEL CONTRACT (`fuel-dispatch/kernel-contracts/cuda/cast.fkc.md`) via
     /// `register_cuda_cast_from_contract` — the sole registration path, now that the
     /// hand-written `table.register(OpKind::Cast, &[src, dst], …)` calls (the 8×8
     /// double-loop + the F8E4M3 legs) are DELETED.
@@ -4230,7 +4223,7 @@ mod cast_contract_tests {
     /// GROUP 1 (born-red gate). Every trivial per-(op,dtype) STRIDED CUDA family
     /// (binary / reduce / norm / softmax / powi / powi_backward / clamp / flip /
     /// roll / cumsum / triangular / arg_reduce / reduce_to / rope) is registered
-    /// FROM its FKC contract (`docs/kernel-contracts/cuda/<fam>.fkc.md`) via the
+    /// FROM its FKC contract (`fuel-dispatch/kernel-contracts/cuda/<fam>.fkc.md`) via the
     /// `register_cuda_<fam>_from_contract` importers - the SOLE path (hand-written
     /// `register_with_caps(..., strided)` regs DELETED). For each `(op, dtypes,
     /// Cuda)` key this asserts the EXACT production wrapper is bound,
@@ -6632,7 +6625,7 @@ mod cast_contract_tests {
     /// INDEXING (born-red gate). The LAST clean CUDA family — IndexSelect /
     /// Gather / MaskedFill over `{F32, F64, I32}` (9 keys) + ScatterAdd over
     /// `{F32, F64}` (2 keys) = 11 bindings — is registered FROM its FKC contract
-    /// (`docs/kernel-contracts/cuda/indexing.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/cuda/indexing.fkc.md`) via
     /// `register_cuda_indexing_from_contract` — the SOLE path, now that the
     /// hand-written `table.register(IndexSelect/Gather/MaskedFill/ScatterAdd, …)`
     /// regs are DELETED.
@@ -6745,7 +6738,7 @@ mod cast_contract_tests {
     /// TASK-F born-red gate (the §4.4 cost-fn trampoline consumer). The
     /// FlashDecoding decode arm (`OpKind::FlashAttn`, `[f16;4]` / `[bf16;4]`,
     /// Cuda) is now registered FROM its FKC contract
-    /// (`docs/kernel-contracts/cuda/flash_decoding.fkc.md`) via
+    /// (`fuel-dispatch/kernel-contracts/cuda/flash_decoding.fkc.md`) via
     /// `register_cuda_flash_decoding_from_contract` — the SOLE path (the two
     /// hand-written `register_full(FlashAttn, …)` regs DELETED). CUDA is now
     /// 31/31 contract-sourced.

@@ -153,7 +153,7 @@ fn parse_pinned_channel(text: &str) -> Option<String> {
 /// Overwriting them with a rendered clause would destroy information to
 /// make a generator's life easier. The clause is APPENDED.
 pub(crate) fn run_gap_228_flip() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel-contracts/cpu");
     let ledger = VerificationLedger::embedded();
     let unaudited_notes = PrecisionGuarantee::UNAUDITED.notes;
     let clause = evidence_clause();
@@ -395,7 +395,7 @@ pub(crate) fn run_gap_228_flip() {
 
 #[cfg(feature = "dev-tools")]
 pub(crate) fn run_gap_228_sections_report() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel-contracts/cpu");
     let ledger = VerificationLedger::embedded();
     let unaudited_notes = PrecisionGuarantee::UNAUDITED.notes;
 
@@ -557,8 +557,7 @@ components = [\"rustfmt\"]
     /// registrable sections** are the **60 ENTRIES** of GAP-226's residue.
     #[test]
     fn every_unflipped_cpu_section_declares_no_ulp_bound() {
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel-contracts/cpu");
         let mut unflipped = 0usize;
         let mut describe_only = 0usize;
         let mut declares_a_bound: Vec<String> = Vec::new();

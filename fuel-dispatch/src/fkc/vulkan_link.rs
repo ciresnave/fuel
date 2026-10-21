@@ -34,7 +34,7 @@ macro_rules! vk_ep {
 
 /// The Vulkan cast (dtype-conversion) family's `symbol → production wrapper`
 /// map — the FULL family: 12 (SRC, DST) pairs resolving to 3 production
-/// wrappers. Contract: `docs/kernel-contracts/vulkan/cast.fkc.md`. Each per-pair
+/// wrappers. Contract: `fuel-dispatch/kernel-contracts/vulkan/cast.fkc.md`. Each per-pair
 /// section (`## cast_f32_to_f16`, …) declares a SPECIFIC single-dtype `src`
 /// input + a `fixed(DST)` output, so none of them dtype-fan — the importer
 /// resolves that symbol AS-IS and keys `[SRC, DST]` (input dtype + the output's
@@ -108,7 +108,7 @@ pub static VULKAN_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The Vulkan elementwise family's `symbol → production wrapper` map — the
 /// FULL family: 94 (op, dtype) keys resolving to the per-(op, dtype) wrappers in
 /// [`crate::vulkan_dispatch`]. Contract:
-/// `docs/kernel-contracts/vulkan/elementwise.fkc.md`, re-authored per-op (the
+/// `fuel-dispatch/kernel-contracts/vulkan/elementwise.fkc.md`, re-authored per-op (the
 /// CPU inplace precedent). The strided unary / affine sections declare a BASE
 /// `entry_point` (`…::<op>` / `…::affine`) + `dtypes: [F32, F16, F64]`, so the
 /// importer fans them into `<base>_{f32,f16,f64}` — the symbols below. The
@@ -252,7 +252,7 @@ pub static VULKAN_ELEMENTWISE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The Vulkan matmul family's `symbol → production wrapper` map — the FULL
 /// family: 6 per-combo `(MatMul, [lhs,rhs,out])` wrapper bindings. Contract:
-/// `docs/kernel-contracts/vulkan/matmul.fkc.md`, re-authored per-combo (the cast
+/// `fuel-dispatch/kernel-contracts/vulkan/matmul.fkc.md`, re-authored per-combo (the cast
 /// family's per-pair precedent). Each section declares a single dtype per operand
 /// + a `fixed(OUT)` / `passthrough(lhs)` output, so none of them dtype-fan — the
 ///
@@ -301,7 +301,7 @@ pub static VULKAN_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The Vulkan conv2d family's `symbol → production wrapper` map — the FULL
 /// family: 3 per-(op, dtype) `(Conv2D, [x, weight, out])` wrapper bindings.
-/// Contract: `docs/kernel-contracts/vulkan/conv.fkc.md`, re-authored per-(op,
+/// Contract: `fuel-dispatch/kernel-contracts/vulkan/conv.fkc.md`, re-authored per-(op,
 /// dtype) (the matmul family's per-combo precedent). Each section declares a
 /// single dtype per operand + a `passthrough(x)` output, so none of them
 /// dtype-fan — the importer keys `[x, weight, out]` (inputs-then-output),
@@ -329,7 +329,7 @@ pub static VULKAN_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The Vulkan **select** family's `symbol → production wrapper` map — the FULL
 /// family: 16 (op, dtype) keys across IndexSelect (4), Gather (6), MaskedFill
-/// (6). Contract: `docs/kernel-contracts/vulkan/select.fkc.md`, authored per-op
+/// (6). Contract: `fuel-dispatch/kernel-contracts/vulkan/select.fkc.md`, authored per-op
 /// (the conv/matmul per-combo precedent, with dtype fan-out §3.4). Each section
 /// declares a BASE `entry_point` fanned over its dtype list, so the importer
 /// resolves `<base>_<suffix>` and keys `[data, index, out]` (data dtype + fixed
@@ -399,7 +399,7 @@ pub static VULKAN_SELECT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The Vulkan **scatter** family's `symbol → production wrapper` map — the FULL
 /// family: 8 (op, dtype) keys across IndexAdd (4) + ScatterAdd (4). Contract:
-/// `docs/kernel-contracts/vulkan/scatter.fkc.md`, authored per-op with dtype
+/// `fuel-dispatch/kernel-contracts/vulkan/scatter.fkc.md`, authored per-op with dtype
 /// fan-out (§3.4). Each section declares a BASE `entry_point` fanned over
 /// `[F32, F64, BF16, F16]` (the `base` + `src` operands SHARE that list ⇒ they
 /// fan together), so the importer resolves `<base>_<suffix>` and keys the 4-slot
@@ -450,7 +450,7 @@ pub static VULKAN_SCATTER_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The Vulkan **movement** family's `symbol → production wrapper` map — the FULL
 /// family: 8 (op, dtype) keys across Concat (4) + CumSum (4). Contract:
-/// `docs/kernel-contracts/vulkan/movement.fkc.md`, authored per-op with dtype
+/// `fuel-dispatch/kernel-contracts/vulkan/movement.fkc.md`, authored per-op with dtype
 /// fan-out (§3.4). Each section declares a BASE `entry_point` fanned over its dtype
 /// list, resolving `<base>_<suffix>` to each distinct per-dtype wrapper and keying
 /// `[T, T]` (`passthrough(input)` output), byte-for-byte the deleted hand-written
@@ -476,7 +476,7 @@ pub static VULKAN_MOVEMENT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The Vulkan **shape** family's `symbol → production wrapper` map — the FULL
 /// family: 28 (op, dtype) keys across Triu (7) + Tril (7) + Flip (7) + Roll (7)
 /// over `[F32, F16, BF16, F64, I32, U32, I64]`. Contract:
-/// `docs/kernel-contracts/vulkan/shape.fkc.md`, authored per-op with dtype fan-out
+/// `fuel-dispatch/kernel-contracts/vulkan/shape.fkc.md`, authored per-op with dtype fan-out
 /// (§3.4). Each op is ONE dtype-agnostic wrapper (`triangular::triu` /
 /// `triangular::tril` / `flip::flip` / `roll::roll`) that picks its byte-width from
 /// the dtype — so every fanned `<base>_<suffix>` symbol maps to the SAME `KernelRef`
@@ -524,7 +524,7 @@ pub static VULKAN_SHAPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The Vulkan **pad-copy** family's `symbol → production wrapper` map — the FULL
 /// family: 21 (op, dtype) keys across Pad (6) + PadBackward (6) + Copy (9).
-/// Contract: `docs/kernel-contracts/vulkan/pad-copy.fkc.md`, authored per-op with
+/// Contract: `fuel-dispatch/kernel-contracts/vulkan/pad-copy.fkc.md`, authored per-op with
 /// dtype fan-out (§3.4). Each op is ONE dtype-agnostic wrapper (`pad::pad_const` /
 /// `pad::pad_backward` / `copy_to_cpu_vulkan`) that picks its byte-width from the
 /// dtype — so every fanned `<base>_<suffix>` symbol maps to the SAME `KernelRef`
@@ -576,7 +576,7 @@ pub static VULKAN_PAD_COPY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The Vulkan **write-slice** family's `symbol → production wrapper` map — the
 /// FULL family: 18 (op, dtype) keys across WriteSlice (9) + WriteSliceRotating (9).
-/// Contract: `docs/kernel-contracts/vulkan/write-slice.fkc.md`, authored per-op
+/// Contract: `fuel-dispatch/kernel-contracts/vulkan/write-slice.fkc.md`, authored per-op
 /// with dtype fan-out (§3.4). BYTE-WIDTH-keyed: each op's 9 dtype symbols collapse
 /// to FOUR wrappers by element size (`b1/b2/b4/b8`) — the cast family's "several
 /// sections share one wrapper" precedent. The link registry maps each fanned
@@ -664,7 +664,7 @@ pub static VULKAN_WRITE_SLICE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The Vulkan **rope** family's `symbol → production wrapper` map — the FULL
 /// family: 4 (Rope, [x, cos, sin, out]) per-dtype bindings. Contract:
-/// `docs/kernel-contracts/vulkan/rope.fkc.md`, authored with dtype fan-out (§3.4):
+/// `fuel-dispatch/kernel-contracts/vulkan/rope.fkc.md`, authored with dtype fan-out (§3.4):
 /// the single section declares a BASE `entry_point` fanned over `[F32, F16, F64,
 /// BF16]` (the `x` + `cos` + `sin` operands SHARE that list ⇒ they fan together),
 /// resolving `rope_<suffix>` to each distinct per-dtype wrapper and keying the
@@ -683,7 +683,7 @@ pub static VULKAN_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The Vulkan **reduce** family's `symbol → production wrapper` map — the FULL
 /// family: 24 (op, dtype) keys across SumReduce / MaxReduce / MinReduce /
 /// MeanReduce (16, key `[T, T]`) + ArgMaxDim / ArgMinDim (8, key `[T, U32]`).
-/// Contract: `docs/kernel-contracts/vulkan/reduce-prims.fkc.md`, authored per-op
+/// Contract: `fuel-dispatch/kernel-contracts/vulkan/reduce-prims.fkc.md`, authored per-op
 /// with dtype fan-out (§3.4) — the production per-(op, dtype) binding model that
 /// supersedes the aspirational `vulkan/reduce.fkc.md` op-id-selector corpus. Each
 /// section fans a BASE `entry_point` over `[F32, F16, BF16, F64]` to the DISTINCT
@@ -751,7 +751,7 @@ pub static VULKAN_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The Vulkan **norm** family's `symbol → production wrapper` map — the FULL
 /// family: 20 (op, dtype) keys across SoftmaxLastDim (4) + SoftmaxLastDimBackward
 /// (4) + LayerNormLastDim (4) + LayerNormLastDimBackward (4) + RmsNormLastDim (4).
-/// Contract: `docs/kernel-contracts/vulkan/norm.fkc.md`, authored per-op with dtype
+/// Contract: `fuel-dispatch/kernel-contracts/vulkan/norm.fkc.md`, authored per-op with dtype
 /// fan-out (§3.4). Each section fans a BASE `entry_point` over `[F32, F16, BF16,
 /// F64]` to the DISTINCT per-dtype wrapper (`softmax::*`, `norm::*`), keying forward
 /// families `[T, T]` and backward families `[T, T, T]` (`[y,g,dx]` / `[x,g,dx]`,
@@ -848,7 +848,7 @@ pub static VULKAN_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The Vulkan **QMatMul** family's `symbol → production wrapper` map — the FULL
 /// family: ONE `(QMatMul, [F32, U32, F32])` binding. Contract:
-/// `docs/kernel-contracts/vulkan/qmatmul.fkc.md`, authored as a single primitive
+/// `fuel-dispatch/kernel-contracts/vulkan/qmatmul.fkc.md`, authored as a single primitive
 /// `op_kind: QMatMul` section (the CPU quant-matmul primitive precedent + the
 /// linear-quant U8→U32 logical-weight reconciliation). The section declares a
 /// single dtype per operand (`activations` F32, `weight` U32) + a `fixed(F32)`
@@ -875,7 +875,7 @@ pub static VULKAN_QMATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[vk_ep!(
 /// (`flash_attn::flash_attn_{f32,bf16,f16}`) + the three backward selectors
 /// `OpKind::FlashAttnBackward{Q,K,V}` at f32-only wrappers
 /// (`flash_attn::flash_attn_backward_{q,k,v}_f32`). Contract:
-/// `docs/kernel-contracts/vulkan/attention.fkc.md`, authored per-(op, dtype)
+/// `fuel-dispatch/kernel-contracts/vulkan/attention.fkc.md`, authored per-(op, dtype)
 /// (the conv2d + CPU-attention per-dtype-section precedent).
 ///
 /// Because the forward wrappers are DISTINCT per dtype, each section is

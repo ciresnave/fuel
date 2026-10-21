@@ -225,7 +225,7 @@ mod tests {
     }
 
     const ELEMENTWISE_BINARY: &str =
-        include_str!("../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
+        include_str!("../../kernel-contracts/cpu/elementwise-binary.fkc.md");
 
     fn add_f32() -> FkcKernel {
         let file = parse_file(ELEMENTWISE_BINARY).expect("parses");

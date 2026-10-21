@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.59 - 2026-10-21
+
+### Fixed
+
+- `fuel-dispatch` did not build from its published crate: 86 `include_str!` sites in `src/` embedded `docs/kernel-contracts/**`, a path outside the crate that a packaged tarball does not contain. The contract corpus now lives at `fuel-dispatch/kernel-contracts/` (one copy; `docs/kernel-contracts/README.md` is a pointer), and every `include_str!`, the 7 runtime `CARGO_MANIFEST_DIR` reads, the source-scan tests and the live docs follow it. Still outside their crate and test-only (not a consumer build break, but `cargo test` from a tarball fails): `fuel-dispatch` `fkc::validate` reads `fuel-ir/src/dlpack/codes.rs`; `fuel-tensor` and `fuel-cpu-backend` read `fuel-dispatch/fixtures/kiss-corpus`; `fuel` reads sibling manifests. Tracked for follow-up PRs.
+
 ## v0.20.58 - 2026-10-21
 
 ### Security

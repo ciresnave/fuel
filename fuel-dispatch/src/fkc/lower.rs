@@ -1246,13 +1246,12 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     const ELEMENTWISE_BINARY: &str =
-        include_str!("../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
-    const QUANT_MATMUL: &str =
-        include_str!("../../../docs/kernel-contracts/cpu/quant-matmul.fkc.md");
+        include_str!("../../kernel-contracts/cpu/elementwise-binary.fkc.md");
+    const QUANT_MATMUL: &str = include_str!("../../kernel-contracts/cpu/quant-matmul.fkc.md");
     /// A real FUSED contract bundle whose `fused_op: SOFTMAX_LAST_DIM` etc.
     /// must now resolve through the SCREAMING_SNAKE constant table (Task 1).
     const FUSED_NORM_SOFTMAX: &str =
-        include_str!("../../../docs/kernel-contracts/fused/norm-softmax.fkc.md");
+        include_str!("../../kernel-contracts/fused/norm-softmax.fkc.md");
 
     // ---- KISS-CLASSIFY §6.1 reserved vocabulary: reserved != unknown ----
 
@@ -1496,7 +1495,7 @@ mod tests {
         // cost AST), then run that AST through the cost trampoline for a
         // 2×(3×4×5) batched matmul → 2·2·3·4·5 = 240 flops. This is what FKC
         // import previously dropped in favor of the `unknown_cost` sentinel.
-        const MATMUL: &str = include_str!("../../../docs/kernel-contracts/cpu/matmul.fkc.md");
+        const MATMUL: &str = include_str!("../../kernel-contracts/cpu/matmul.fkc.md");
         let file = parse_file(MATMUL).expect("matmul contract parses");
         let resolved =
             lower_file(&file, &StubLink, &mut Vec::new()).expect("matmul contract lowers");
