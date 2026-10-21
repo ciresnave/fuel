@@ -249,22 +249,21 @@ mod tests {
         }
     }
 
-    /// Every module needing a feature must be loaded through `Gate` in
-    /// `Pipelines::new` (its pipeline field is an `Option`); a new such shader with a
-    /// plain `load_module` would fail device creation on a device lacking the feature.
+    /// Every module needing a feature must be a `gated` or `coop` row of the `pipelines!`
+    /// table (its pipeline field is an `Option`); a new such shader as a `required` row
+    /// would fail device creation on a device lacking the feature.
     #[test]
     fn every_module_needing_a_feature_is_loaded_through_the_gate() {
-        // rustfmt wraps long calls, so compare with all whitespace removed.
+        // rustfmt may wrap table rows, so compare with all whitespace removed.
         let src: String = include_str!("pipelines.rs")
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
-        let gated_calls = src.matches("gate.pipeline(shaders::").count()
-            + src.matches("gate.module(shaders::").count();
+        let gated_rows = src.matches(",gated;").count() + src.matches(",coop;").count();
         assert_eq!(
-            gated_calls,
+            gated_rows,
             count_requiring(RequiredFeatures::any),
-            "modules needing an optional feature vs Gate call sites in Pipelines::new"
+            "modules needing an optional feature vs gated/coop rows of the pipelines! table"
         );
     }
 
