@@ -7,9 +7,12 @@
 //! cuts the key range into chunks that run as separate workgroups and merges
 //! them in fixed order.
 //!
-//! * `check` compares both kernels against an f64 CPU reference (max abs
-//!   error), including causal and ALiBi cases, and exits non-zero on a miss.
-//! * `latency` prints per-call wall time (record + submit + wait + readback)
+//! * `check [f32|bf16|f16]` compares both kernels against an f64 CPU reference
+//!   (f32: max abs error; bf16/f16: error relative to the output's own half
+//!   precision, with the reference computed from the dtype-rounded inputs),
+//!   including causal and ALiBi cases, and exits non-zero on a miss. No dtype
+//!   argument checks all three.
+//! * `latency [f32|bf16|f16]` (default f32) prints per-call wall time (record + submit + wait + readback)
 //!   for the unsplit kernel and several split counts. Variants are interleaved
 //!   round-robin so a slow stretch of the (bimodal) GPU hits all of them alike.
 //!   It asserts nothing about speed.
@@ -21,40 +24,119 @@
 //! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release \
 //!     -p fuel-vulkan-backend --example flash_attn_split_probe -- check
 //! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release \
+//!     -p fuel-vulkan-backend --example flash_attn_split_probe -- check bf16
+//! pwsh scripts/gpu-run.ps1 -Project fuel -- cargo run -j 4 --release \
 //!     -p fuel-vulkan-backend --example flash_attn_split_probe -- latency
 //! ```
 
 use fuel_vulkan_backend::{DeviceSelection, VulkanBackend, VulkanStorageBytes};
+use half::{bf16, f16};
 use std::time::Instant;
+
+/// Element type of Q/K/V/alibi/out.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Dtype {
+    F32,
+    Bf16,
+    F16,
+}
+
+impl Dtype {
+    fn parse(a: Option<&str>) -> Option<Self> {
+        match a {
+            Some("f32") => Some(Self::F32),
+            Some("bf16") => Some(Self::Bf16),
+            Some("f16") => Some(Self::F16),
+            _ => None,
+        }
+    }
+
+    fn elem(self) -> usize {
+        if self == Self::F32 { 4 } else { 2 }
+    }
+
+    /// Round-trip through the dtype, so a reference sees what the GPU sees.
+    fn round(self, x: f32) -> f32 {
+        match self {
+            Self::F32 => x,
+            Self::Bf16 => bf16::from_f32(x).to_f32(),
+            Self::F16 => f16::from_f32(x).to_f32(),
+        }
+    }
+
+    /// Half-ulp relative bound of a correctly rounded output (with 1% slack).
+    fn rel_tol(self) -> f32 {
+        match self {
+            Self::F32 => 0.0,
+            Self::Bf16 => 1.01 * 2f32.powi(-8),
+            Self::F16 => 1.01 * 2f32.powi(-11),
+        }
+    }
+
+    fn bytes_of(self, v: &[f32]) -> Vec<u8> {
+        match self {
+            Self::F32 => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            Self::Bf16 => v
+                .iter()
+                .flat_map(|x| bf16::from_f32(*x).to_le_bytes())
+                .collect(),
+            Self::F16 => v
+                .iter()
+                .flat_map(|x| f16::from_f32(*x).to_le_bytes())
+                .collect(),
+        }
+    }
+
+    fn floats_of(self, b: &[u8]) -> Vec<f32> {
+        match self {
+            Self::F32 => b
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
+                .collect(),
+            Self::Bf16 => b
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| bf16::from_le_bytes(*c).to_f32())
+                .collect(),
+            Self::F16 => b
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| f16::from_le_bytes(*c).to_f32())
+                .collect(),
+        }
+    }
+}
 
 fn backend() -> VulkanBackend {
     VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)
         .expect("a Vulkan device (PreferDiscrete)")
 }
 
-/// The only argument is a fixed subcommand name matched against two literals;
-/// it is never used as a path, command or query.
+/// The arguments are a fixed subcommand name and a dtype name, each matched
+/// against literals; neither is used as a path, command or query.
 fn main() {
+    let arg2 = std::env::args().nth(2);
     match std::env::args().nth(1).as_deref() {
-        Some("check") => check(),
-        Some("latency") => latency(),
-        _ => {
-            eprintln!("usage: flash_attn_split_probe <check|latency>");
-            std::process::exit(2);
+        Some("check") => match arg2.as_deref() {
+            None => [Dtype::F32, Dtype::Bf16, Dtype::F16]
+                .into_iter()
+                .for_each(check),
+            a => check(Dtype::parse(a).unwrap_or_else(usage)),
+        },
+        Some("latency") => {
+            latency(Dtype::parse(arg2.as_deref().or(Some("f32"))).unwrap_or_else(usage))
         }
+        _ => usage(),
     }
 }
 
-fn bytes_of(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|x| x.to_le_bytes()).collect()
-}
-
-fn floats_of(b: &[u8]) -> Vec<f32> {
-    b.as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| f32::from_le_bytes(*c))
-        .collect()
+fn usage<T>() -> T {
+    eprintln!("usage: flash_attn_split_probe <check|latency> [f32|bf16|f16]");
+    std::process::exit(2);
 }
 
 fn fill(n: usize, seed: u32) -> Vec<f32> {
@@ -95,12 +177,15 @@ struct Inputs {
 }
 
 impl Inputs {
-    fn new(c: &Case) -> Self {
+    /// Values are rounded to `dt` up front, so the f64 reference computes from
+    /// exactly the numbers the GPU reads.
+    fn new(c: &Case, dt: Dtype) -> Self {
+        let r = |v: Vec<f32>| v.into_iter().map(|x| dt.round(x)).collect::<Vec<f32>>();
         Self {
-            q: fill(c.hq * c.sq * c.d, 1),
-            k: fill(c.hkv * c.sk * c.d, 2),
-            v: fill(c.hkv * c.sk * c.d, 3),
-            alibi: fill(c.hq, 4).iter().map(|x| x * 0.02).collect(),
+            q: r(fill(c.hq * c.sq * c.d, 1)),
+            k: r(fill(c.hkv * c.sk * c.d, 2)),
+            v: r(fill(c.hkv * c.sk * c.d, 3)),
+            alibi: r(fill(c.hq, 4).iter().map(|x| x * 0.02).collect()),
         }
     }
 }
@@ -152,6 +237,7 @@ fn reference(inp: &Inputs, c: &Case) -> Vec<f32> {
 
 /// Device buffers for a [`Case`].
 struct Gpu {
+    dt: Dtype,
     q: VulkanStorageBytes,
     k: VulkanStorageBytes,
     v: VulkanStorageBytes,
@@ -160,14 +246,15 @@ struct Gpu {
 }
 
 impl Gpu {
-    fn upload(be: &VulkanBackend, c: &Case, inp: &Inputs) -> Self {
-        let up = |x: &[f32]| be.upload_bytes(&bytes_of(x)).unwrap();
+    fn upload(be: &VulkanBackend, c: &Case, inp: &Inputs, dt: Dtype) -> Self {
+        let up = |x: &[f32]| be.upload_bytes(&dt.bytes_of(x)).unwrap();
         Self {
+            dt,
             q: up(&inp.q),
             k: up(&inp.k),
             v: up(&inp.v),
             alibi: up(&inp.alibi),
-            out: be.alloc_bytes(c.hq * c.sq * c.d * 4).unwrap(),
+            out: be.alloc_bytes(c.hq * c.sq * c.d * dt.elem()).unwrap(),
         }
     }
 
@@ -175,45 +262,33 @@ impl Gpu {
     fn run(&mut self, be: &VulkanBackend, c: &Case, splits: usize) {
         let alibi = c.alibi.then_some(&self.alibi);
         let (b, scale) = (1, c.scale());
-        if splits == 0 {
-            be.flash_attn_f32_bytes(
-                &self.q,
-                &self.k,
-                &self.v,
-                alibi,
-                &mut self.out,
-                b,
-                c.hq,
-                c.hkv,
-                c.sq,
-                c.sk,
-                c.d,
-                scale,
-                c.causal,
-            )
-        } else {
-            be.flash_attn_f32_split_bytes(
-                &self.q,
-                &self.k,
-                &self.v,
-                alibi,
-                &mut self.out,
-                b,
-                c.hq,
-                c.hkv,
-                c.sq,
-                c.sk,
-                c.d,
-                scale,
-                c.causal,
-                splits,
-            )
+        let (q, k, v, out) = (&self.q, &self.k, &self.v, &mut self.out);
+        let (hq, hkv, sq, sk, d, cz) = (c.hq, c.hkv, c.sq, c.sk, c.d, c.causal);
+        match (self.dt, splits) {
+            (Dtype::F32, 0) => {
+                be.flash_attn_f32_bytes(q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, cz)
+            }
+            (Dtype::Bf16, 0) => {
+                be.flash_attn_bf16_bytes(q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, cz)
+            }
+            (Dtype::F16, 0) => {
+                be.flash_attn_f16_bytes(q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, cz)
+            }
+            (Dtype::F32, n) => be.flash_attn_f32_split_bytes(
+                q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, cz, n,
+            ),
+            (Dtype::Bf16, n) => be.flash_attn_bf16_split_bytes(
+                q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, cz, n,
+            ),
+            (Dtype::F16, n) => be.flash_attn_f16_split_bytes(
+                q, k, v, alibi, out, b, hq, hkv, sq, sk, d, scale, cz, n,
+            ),
         }
         .unwrap();
     }
 
     fn read(&self, be: &VulkanBackend) -> Vec<f32> {
-        floats_of(&be.download_bytes(&self.out).unwrap())
+        self.dt.floats_of(&be.download_bytes(&self.out).unwrap())
     }
 }
 
@@ -280,30 +355,60 @@ fn check_cases() -> Vec<Case> {
     ]
 }
 
-/// Run both kernels on `c` and assert each is within 1e-4 of the f64 reference.
-fn check_case(be: &VulkanBackend, c: &Case) {
-    let inp = Inputs::new(c);
-    let want = reference(&inp, c);
-    let mut gpu = Gpu::upload(be, c, &inp);
-    gpu.run(be, c, 0);
-    let e_unsplit = max_abs_err(&gpu.read(be), &want);
-    gpu.run(be, c, c.splits);
-    let e_split = max_abs_err(&gpu.read(be), &want);
-    println!(
-        "hq={} hkv={} sq={} sk={} d={} causal={} alibi={} splits={}: max|err| unsplit={e_unsplit:.2e} split={e_split:.2e}",
-        c.hq, c.hkv, c.sq, c.sk, c.d, c.causal, c.alibi, c.splits
-    );
-    assert!(
-        e_unsplit < 1e-4,
-        "unsplit kernel off its reference: {e_unsplit}"
-    );
-    assert!(e_split < 1e-4, "split kernel off the reference: {e_split}");
+/// Worst `|got - want| - rel * |want|` over the output (<= the absolute slack
+/// means every element is within the relative bound).
+fn excess(got: &[f32], want: &[f32], rel: f32) -> f32 {
+    got.iter()
+        .zip(want)
+        .map(|(a, b)| (a - b).abs() - rel * b.abs())
+        .fold(f32::NEG_INFINITY, f32::max)
 }
 
-fn check() {
+/// Run both kernels on `c` and assert each is within the dtype's bound of the
+/// f64 reference: 1e-4 absolute for f32; for bf16/f16 a half-ulp relative
+/// bound (+1% slack) plus 2e-6 absolute for the f32 accumulation noise.
+fn check_case(be: &VulkanBackend, c: &Case, dt: Dtype) {
+    let inp = Inputs::new(c, dt);
+    let want = reference(&inp, c);
+    let mut gpu = Gpu::upload(be, c, &inp, dt);
+    gpu.run(be, c, 0);
+    let unsplit = gpu.read(be);
+    gpu.run(be, c, c.splits);
+    let split = gpu.read(be);
+    let (slack, rel) = if dt == Dtype::F32 {
+        (1e-4, 0.0)
+    } else {
+        (2e-6, dt.rel_tol())
+    };
+    let (x_un, x_sp) = (excess(&unsplit, &want, rel), excess(&split, &want, rel));
+    println!(
+        "{dt:?} hq={} hkv={} sq={} sk={} d={} causal={} alibi={} splits={}: max|err| unsplit={:.2e} split={:.2e}; split-vs-unsplit max|diff|={:.2e}; excess over bound unsplit={x_un:.2e} split={x_sp:.2e}",
+        c.hq,
+        c.hkv,
+        c.sq,
+        c.sk,
+        c.d,
+        c.causal,
+        c.alibi,
+        c.splits,
+        max_abs_err(&unsplit, &want),
+        max_abs_err(&split, &want),
+        max_abs_err(&split, &unsplit),
+    );
+    assert!(
+        x_un <= slack,
+        "unsplit {dt:?} off its reference by {x_un:e} past the bound"
+    );
+    assert!(
+        x_sp <= slack,
+        "split {dt:?} off the reference by {x_sp:e} past the bound"
+    );
+}
+
+fn check(dt: Dtype) {
     let be = backend();
     for c in check_cases() {
-        check_case(&be, &c);
+        check_case(&be, &c, dt);
     }
 }
 
@@ -346,14 +451,15 @@ fn median_times(be: &VulkanBackend, c: &Case, gpu: &mut Gpu, usable: &[usize]) -
         .collect()
 }
 
-fn latency() {
+fn latency(dt: Dtype) {
     let be = backend();
+    println!("dtype {dt:?}");
     print!("{:>4} {:>4} {:>6}", "hq", "hkv", "sk");
     for s in VARIANTS {
         print!(" {:>9}", variant_name(s));
     }
     println!("   (median us per call incl. readback)");
-    for &(hq, hkv) in &[(8usize, 8usize), (32, 8), (64, 8)] {
+    for &(hq, hkv) in &[(8usize, 8usize), (16, 8), (32, 8), (64, 8)] {
         for &sk in &[1024usize, 2048, 4096] {
             let c = Case {
                 hq,
@@ -361,7 +467,7 @@ fn latency() {
                 sk,
                 ..CASE_DEFAULT
             };
-            let mut gpu = Gpu::upload(&be, &c, &Inputs::new(&c));
+            let mut gpu = Gpu::upload(&be, &c, &Inputs::new(&c, dt), dt);
             let usable: Vec<usize> = VARIANTS
                 .into_iter()
                 .filter(|&s| s == 0 || sk.div_ceil(s) <= 1024)

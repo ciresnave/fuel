@@ -344,6 +344,22 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
         include_bytes!("../spv/flash_attn_combine_f32.spv"),
     ),
     (
+        "flash_attn_split_bf16",
+        include_bytes!("../spv/flash_attn_split_bf16.spv"),
+    ),
+    (
+        "flash_attn_combine_bf16",
+        include_bytes!("../spv/flash_attn_combine_bf16.spv"),
+    ),
+    (
+        "flash_attn_split_f16",
+        include_bytes!("../spv/flash_attn_split_f16.spv"),
+    ),
+    (
+        "flash_attn_combine_f16",
+        include_bytes!("../spv/flash_attn_combine_f16.spv"),
+    ),
+    (
         "flash_attn_bf16",
         include_bytes!("../spv/flash_attn_bf16.spv"),
     ),
@@ -739,6 +755,16 @@ pub const FLASH_ATTN_F32: &str = "flash_attn_f32";
 pub const FLASH_ATTN_SPLIT_F32: &str = "flash_attn_split_f32";
 /// Fixed-order merge of the split-KV partials into the attention output (f32).
 pub const FLASH_ATTN_COMBINE_F32: &str = "flash_attn_combine_f32";
+/// Split-KV partial pass of the single-pass attention forward (bf16); partials stay
+/// f32. Pairs with [`FLASH_ATTN_COMBINE_BF16`]. ROADMAP item 17, H12.
+pub const FLASH_ATTN_SPLIT_BF16: &str = "flash_attn_split_bf16";
+/// Fixed-order merge of the split-KV partials into a bf16 attention output.
+pub const FLASH_ATTN_COMBINE_BF16: &str = "flash_attn_combine_bf16";
+/// Split-KV partial pass of the single-pass attention forward (f16); partials stay
+/// f32. Pairs with [`FLASH_ATTN_COMBINE_F16`]. ROADMAP item 17, H12.
+pub const FLASH_ATTN_SPLIT_F16: &str = "flash_attn_split_f16";
+/// Fixed-order merge of the split-KV partials into a f16 attention output.
+pub const FLASH_ATTN_COMBINE_F16: &str = "flash_attn_combine_f16";
 /// FlashAttention forward, bf16. Same algorithm as the f32 variant;
 /// bf16 inputs/outputs with f32 accumulators (math at f32, narrow on
 /// output store — matches CPU's `flash_attn_bf16` reference).

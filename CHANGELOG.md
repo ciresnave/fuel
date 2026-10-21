@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.38 - 2026-10-21
+
+### Changed
+
+- `fuel-vulkan-backend` / `fuel-dispatch`: bf16 and f16 split-KV decode attention (ROADMAP item 17, H12), completing the f32 path of 0.20.32/0.20.34. New shaders `flash_attn_{split,combine}_{bf16,f16}` and `VulkanBackend::flash_attn_{bf16,f16}_split_bytes`; the `FlashAttn` bf16/f16 dispatch uses the same `decode_splits` rule as f32 (`sq == 1`, `b*hq <= 16`, `2048 <= sk <= 4096`, 8 splits). Partials stay f32 and the output is narrowed once at the store. Results in that region are NOT bit-identical to the unsplit half kernels (a few outputs differ by one half-ulp; max abs 4.8e-7 bf16, 6.0e-8 f16 in the route check). `flash_attn_split_probe check|latency` takes a dtype; `flash_attn_route_check` covers all three. Per-call speedup measured (1.3-2.2x at `h_q <= 16`, `Sk >= 2048`, one run, includes readback); model-level speed and whether a real Vulkan decode reaches this route are NOT measured.
+
 ## v0.20.37 - 2026-10-21
 
 ### Added
