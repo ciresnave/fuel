@@ -601,6 +601,13 @@ impl VulkanBackend {
         let mut features_builder = DeviceFeatures::new()
             .with_shader_float16()
             .with_storage_buffer16_bit_access()
+            // The f16 kernels also declare UniformAndStorageBuffer16BitAccess and the
+            // f64 scatter/index-add kernels use 64-bit buffer atomics; both were
+            // declared by the SPIR-V but never enabled (validation layer 08740/06332/06278).
+            .with_uniform_and_storage_buffer16_bit_access()
+            .with_shader_buffer_int64_atomics()
+            // Int16 capability (16-bit integer ops in the f16/b2 kernels): 08740.
+            .with_shader_int16()
             .with_shader_float64()
             .with_shader_int64()
             // Buffer device address (Vulkan 1.2 core; universally supported on
@@ -610,7 +617,12 @@ impl VulkanBackend {
             // negative-stride flips survive as raw pointer math.
             .with_buffer_device_address();
         if has_coop_matrix {
-            features_builder = features_builder.with_cooperative_matrix();
+            // The matmul_coop* shaders declare VulkanMemoryModel (08740) and use
+            // Device scope (06265); only the cooperative-matrix path uses them, and its devices support the model.
+            features_builder = features_builder
+                .with_cooperative_matrix()
+                .with_vulkan_memory_model()
+                .with_vulkan_memory_model_device_scope();
         }
         let features = Some(features_builder);
         let extensions = if has_coop_matrix {
