@@ -50,7 +50,8 @@ FLOAT_32_ONLY = set(GLSL450_NAMES)
 def parse(path):
     data = path.read_bytes()
     words = struct.unpack("<%dI" % (len(data) // 4), data)
-    assert words[0] == 0x07230203, f"{path.name}: not SPIR-V"
+    if words[0] != 0x07230203:
+        raise ValueError(f"{path.name}: not SPIR-V")
     i = 5
     caps, types, consts, variables, ext_sets = [], {}, {}, [], {}
     atomics_64, glsl_f64 = [], []
