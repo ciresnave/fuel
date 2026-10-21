@@ -1,6 +1,15 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.53 - 2026-10-21
+
+### Changed
+
+- Vulkan realize: `ContiguizeOf` work items are backend-neutral for chunking (their `Cpu` target is a placeholder, which made every use look like a Vulkan-to-Cpu switch and forced a batch submit); a Vulkan kernel item arms the async path itself, so a pure-Vulkan realize now uses deferred eviction (the evicted buffer is retained on the open batch via `VulkanBackend::retain_in_open_batch`, with no submit) instead of the blocking per-eviction flush, and submits the open batch once it holds 48 dispatches. Single-device Vulkan graphs therefore take the deferred path.
+- Fixed a latent write-after-read in the Vulkan buffer recycler that larger batches expose: a buffer freed inside the open batch could be handed out again and written in the same batch while an earlier dispatch still read it. Parked buffers now carry the batch epoch they were freed in (bumped at every submission) and are reused only after a batch boundary.
+- Qwen3-0.6B Q4_K_M decode on Vulkan (RTX 4070, per-device preference of the unmerged #426 applied locally), alternating runs in a quiet window: step 43-54 ms -> 30-36 ms. CPU-fixture check unchanged (max logit difference 9.2e-5, 0 of 64 tokens differ); Khronos synchronization validation reports 0 hazards. Not tested: CUDA+Vulkan mixed graphs, more than one Vulkan device.
+- ROADMAP row 28: enforce the recycler cap at free time.
+
 ## v0.20.52 - 2026-10-21
 
 ### Changed

@@ -766,8 +766,11 @@ fn work_item_kind_name(kind: &WorkItemKind) -> &'static str {
     }
 }
 
-/// Work items that touch no device: adopting an input-cache entry (`Op::Const`),
-/// and the metadata-only view items. Their `target_backend` is a placeholder
+/// Work items that choose no backend of their own: adopting an input-cache entry
+/// (`Op::Const`), the metadata-only view items, and `ContiguizeOf` (it runs on its
+/// input's backend; its `target_backend` is a `Cpu` placeholder, which made every
+/// Qwen3 decode step look like ~900 Vulkan -> Cpu -> Vulkan switches and forced a
+/// batch submit at each one). Their `target_backend` is a placeholder
 /// (a `Const` is always stamped `Cpu`; a view inherits its producer's or
 /// defaults to `Cpu`), so letting them take part in the chunk-boundary logic made
 /// every weight `Const` that sits between two Vulkan kernels look like a
@@ -778,7 +781,10 @@ fn work_item_kind_name(kind: &WorkItemKind) -> &'static str {
 fn is_backend_neutral(kind: &WorkItemKind) -> bool {
     matches!(
         kind,
-        WorkItemKind::ConstAdopt | WorkItemKind::ViewOf { .. } | WorkItemKind::SlotView { .. }
+        WorkItemKind::ConstAdopt
+            | WorkItemKind::ViewOf { .. }
+            | WorkItemKind::SlotView { .. }
+            | WorkItemKind::ContiguizeOf { .. }
     )
 }
 
@@ -1677,6 +1683,13 @@ impl PipelinedExecutor {
                 }
                 current_chunk_backend = Some(item.target_backend);
             }
+            // Vulkan realizes run the async path (deferred eviction, size-based eager
+            // submit) even on a single device: ordering between batches is structural
+            // (inter-batch barrier + epoch-gated buffer reuse), not a host wait.
+            if item.target_backend == BackendId::Vulkan && matches!(item.kind, WorkItemKind::Kernel)
+            {
+                multi_backend = true;
+            }
             // Same-device cross-chunk RAW/WAR safety between Vulkan batches (the old
             // "Invariant E": wait every in-flight Vulkan batch on the HOST before
             // recording a new Vulkan op) is now structural: the Vulkan recorder
@@ -2113,6 +2126,13 @@ impl PipelinedExecutor {
                     }
                 }
                 current_chunk_backend = Some(item.target_backend);
+            }
+            // Vulkan realizes run the async path (deferred eviction, size-based eager
+            // submit) even on a single device: ordering between batches is structural
+            // (inter-batch barrier + epoch-gated buffer reuse), not a host wait.
+            if item.target_backend == BackendId::Vulkan && matches!(item.kind, WorkItemKind::Kernel)
+            {
+                multi_backend = true;
             }
             // Inter-batch Vulkan ordering is structural (see realize_inner): no host
             // wait before recording a new Vulkan op.
@@ -7383,16 +7403,22 @@ fn force_flush_vulkan(_arc: &Arc<RwLock<Storage>>) -> Result<()> {
 /// [`force_flush_vulkan`] instead (byte-identical to pre-A2.1; see its doc for
 /// why the deferred path is unsafe without the cross-batch RAW guard). No-op for a
 /// non-Vulkan storage, an empty open + no in-flight batches, or a non-Vulkan build.
+/// Open-batch size (dispatches) at which a deferred eviction submits the batch so the
+/// GPU runs it while the host keeps recording.
+#[cfg(feature = "vulkan")]
+const EVICT_SUBMIT_MIN_DISPATCHES: usize = 48;
+
 #[cfg(feature = "vulkan")]
 fn defer_evicted_vulkan_buffer(
     cache: &StorageCache,
     destroyed: NodeId,
     inflight: &mut Vec<VulkanCompletion>,
 ) -> Result<()> {
-    // Pull the evicted buffer's device Arc out of the cache BEFORE it is removed.
-    // Non-Vulkan storage, a host-evicted (no device buffer) Vulkan storage, or an
-    // absent entry → nothing to retain (no Vulkan reader can hold a device buffer).
-    let buf = {
+    // Pull the evicted buffer's device Arc (and its backend) out of the cache BEFORE
+    // it is removed. Non-Vulkan storage, a host-evicted (no device buffer) Vulkan
+    // storage, or an absent entry → nothing to retain (no Vulkan reader can hold a
+    // device buffer).
+    let (buf, backend) = {
         let Some(arc) = cache.get(&destroyed) else {
             return Ok(());
         };
@@ -7400,24 +7426,31 @@ fn defer_evicted_vulkan_buffer(
             .read()
             .map_err(|_| poisoned("storage lock during deferred-eviction retain"))?;
         match &guard.inner {
-            fuel_memory::BackendStorage::Vulkan(v) => v.device_buffer_arc(),
-            _ => None,
+            fuel_memory::BackendStorage::Vulkan(v) => (v.device_buffer_arc(), v.backend().cloned()),
+            _ => (None, None),
         }
     };
     let Some(buf) = buf else { return Ok(()) };
 
-    // The OPEN-batch case: eager-submit (no wait) so the recorded-but-unsubmitted
-    // commands that may read `destroyed` become a fenced in-flight batch on
-    // `inflight`. This NEVER waits — it only flushes the open batch to the GPU.
-    eager_submit_all_vulkan(cache, inflight)?;
-
-    // Retain a clone of the evicted buffer in EVERY in-flight batch (now including
-    // the just-submitted open batch). Each frees it POST-fence on `Drop` — the
-    // buffer outlives the GPU's last read with no host block. Conservative over
-    // all batches (no cheap buffer→batch map); over-retention only lengthens the
-    // lifetime, never a UAF, and all batches drain by realize-end.
+    // The OPEN batch may hold recorded-but-unsubmitted commands that read `destroyed`:
+    // retain the buffer on the open batch itself (freed post-fence once that batch is
+    // submitted and waited). This neither submits nor waits — it used to eager-submit
+    // here, i.e. one queue submit per eviction (61 per Qwen3 decode step).
+    if let Some(backend) = &backend {
+        backend.retain_in_open_batch(buf.clone());
+    }
+    // Retain a clone of the evicted buffer in EVERY in-flight batch. Each frees it
+    // POST-fence on `Drop` — the buffer outlives the GPU's last read with no host
+    // block. Conservative over all batches (no cheap buffer→batch map); over-retention
+    // only lengthens the lifetime, never a UAF, and all batches drain by realize-end.
     for vc in inflight.iter_mut() {
         vc.retain_data(buf.clone());
+    }
+    // Keep the GPU fed: submit the open batch once it has grown by a chunk.
+    if let Some(backend) = backend
+        && backend.open_batch_len() >= EVICT_SUBMIT_MIN_DISPATCHES
+    {
+        eager_submit_all_vulkan(cache, inflight)?;
     }
     // Step E A2.1 — throughput-observability. Count a DEFERRED retain that
     // actually replaced a host block: an evicted Vulkan buffer retained onto ≥1
@@ -7636,12 +7669,13 @@ mod backend_neutral_tests {
         assert!(is_backend_neutral(&WorkItemKind::ConstAdopt));
         assert!(is_backend_neutral(&WorkItemKind::ViewOf { input: n }));
         assert!(is_backend_neutral(&WorkItemKind::SlotView { producer: n }));
-        // Sabotage siblings: anything that runs a kernel or moves bytes is NOT,
-        // so a real backend switch still arms the chunk-boundary logic.
+        // Contiguize runs on its input's backend; its own `target_backend` is a
+        // placeholder, so it must not count as a backend switch.
+        assert!(is_backend_neutral(&WorkItemKind::ContiguizeOf { input: n }));
+        // Sabotage siblings: anything that runs a kernel of its own or moves bytes
+        // across devices is NOT, so a real backend switch still arms the
+        // chunk-boundary logic.
         assert!(!is_backend_neutral(&WorkItemKind::Kernel));
-        assert!(!is_backend_neutral(&WorkItemKind::ContiguizeOf {
-            input: n
-        }));
         assert!(!is_backend_neutral(&WorkItemKind::Copy {
             target_location: DeviceLocation::Cpu
         }));
