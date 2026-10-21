@@ -371,6 +371,45 @@ impl Recorder {
         Ok(())
     }
 
+    /// Order this batch after everything submitted before it on the queue.
+    ///
+    /// A pipeline barrier's first synchronization scope includes every command
+    /// that is EARLIER IN SUBMISSION ORDER, across `vkQueueSubmit` calls, not just
+    /// the commands of its own command buffer. So one compute/transfer to
+    /// compute/transfer memory barrier at the start of each batch gives the
+    /// guarantee batches otherwise lack (they may overlap and complete out of
+    /// order): this batch's reads see the earlier batches' writes and its writes
+    /// wait for their reads. It is what lets the executor submit a batch and keep
+    /// recording without waiting for it first. Costs one barrier per batch.
+    fn record_inter_batch_barrier(device: &Device, cmd: VkCommandBuffer) {
+        let dt = device.dispatch();
+        let Some(barrier_fn) = dt.vkCmdPipelineBarrier else {
+            return;
+        };
+        let mem_barrier = VkMemoryBarrier {
+            sType: VkStructureType::STRUCTURE_TYPE_MEMORY_BARRIER,
+            pNext: std::ptr::null(),
+            // SHADER_WRITE | TRANSFER_WRITE
+            srcAccessMask: 0x40 | 0x1000,
+            // SHADER_READ | SHADER_WRITE | TRANSFER_READ | TRANSFER_WRITE
+            dstAccessMask: 0x20 | 0x40 | 0x800 | 0x1000,
+        };
+        unsafe {
+            barrier_fn(
+                cmd,
+                0x800 | 0x1000, // COMPUTE_SHADER | TRANSFER
+                0x800 | 0x1000,
+                0,
+                1,
+                &mem_barrier,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+            );
+        }
+    }
+
     /// Write the timestamp that closes dispatch `name` in the current batch.
     fn end_dispatch_timing(&mut self, device: &Device, cmd: VkCommandBuffer, name: &'static str) {
         let Some(bt) = self.batch_timing.as_mut() else {
@@ -422,6 +461,7 @@ impl Recorder {
             let cmd_raw = cmd.raw();
             self.batch_cb = Some(cmd);
             self.begin_batch_timing(device, cmd_raw)?;
+            Self::record_inter_batch_barrier(device, cmd_raw);
         }
         let cmd_handle = self.batch_cb.as_ref().unwrap().raw();
         let dt = device.dispatch();

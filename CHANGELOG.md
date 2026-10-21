@@ -1,6 +1,11 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.46 - 2026-10-21
+
+### Changed
+
+- Vulkan batches are now ordered structurally: `Recorder::record_inter_batch_barrier` starts every batch with a compute/transfer memory barrier whose first synchronization scope covers all earlier submissions on the queue, and the pipelined executor no longer waits on the host for in-flight Vulkan batches before recording the next Vulkan op (the old "Invariant E", in both executor loops). The GPU now runs submitted batches while the host records the next. Measured on Qwen3-0.6B Q4_K_M decode on Vulkan (RTX 4070, 5 runs, per-device bit-stable preference of the not-yet-merged PR #426 applied locally): step 122 ms to 71 ms; with the column-parallel matvec of PR #430 stacked, 62 ms (about 16 tokens/s). CPU-fixture check unchanged (max logit difference 9.9e-5, 0 of 64 greedy tokens differ). Vulkan synchronization validation: 0 hazards with the barrier, 20 with it removed (control) on the real decode. New example `batch_order_probe`. Not tested: more than one queue or device, mixed CUDA and Vulkan graphs.
 ## v0.20.45 - 2026-10-21
 
 ### Changed
