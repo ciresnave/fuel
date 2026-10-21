@@ -5,7 +5,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Changed
 
-- `fuel-dispatch`: the f32 Vulkan `FlashAttn` kernel now takes the split-KV path (ROADMAP item 17, H12) for decode steps with `sq == 1`, `b*hq <= 16` and `2048 <= sk <= 4096` (8 splits; heuristic `decode_splits`, read off the measured table, one device). Results in that region differ from the unsplit kernel in the last bits (deterministic; max abs 5.6e-9 against it in the route check). bf16/f16 attention is unchanged. Adds the live-GPU example `fuel-dispatch/examples/flash_attn_route_check.rs`. Model-level speed is NOT measured.
+- `fuel-dispatch`: the f32 Vulkan `FlashAttn` kernel now takes the split-KV path (ROADMAP item 17, H12) for decode steps with `sq == 1`, `b*hq <= 16` and `2048 <= sk <= 4096` (8 splits; heuristic `decode_splits`, read off the measured table, one device). Results in that region differ from the unsplit kernel in the last bits (deterministic; max abs 5.6e-9 against it in the route check). bf16/f16 attention is unchanged. Adds the live-GPU example `fuel-dispatch/examples/flash_attn_route_check.rs`. Model-level speed is NOT measured. Not bit-identical to the unsplit path (4.6e-9 vs an f64 reference), so exact-output comparisons across versions will see a change; the routed shape is rarely hit by real (bf16/f16) decode today, so no end-to-end claim.
 
 ## v0.20.33 - 2026-10-20
 
