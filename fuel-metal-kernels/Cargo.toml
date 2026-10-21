@@ -25,5 +25,7 @@ half       = { workspace = true }
 anyhow     = { workspace = true }
 rand       = { workspace = true }
 rand_distr = { workspace = true }
+# Tolerance comparison (assert_all_close) instead of round-then-equal.
+fuel-test-support = { path = "../fuel-test-support" }
 # [profile.*] sections only belong in the workspace root; cargo
 # warns when they appear in a non-root member. Removed.
