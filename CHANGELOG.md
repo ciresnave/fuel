@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.41 - 2026-10-21
+
+### Added
+
+- `fuel-dispatch`: `compiled::op_profile::{set_trace, take_trace, LaunchRow}`, an opt-in ordered launch trace (op, backend, source and destination storage, bytes, host time). `fuel-vulkan-backend` example `copy_cost_probe` (bare Vulkan copy cost by size). `qwen3_vulkan_profile` now prints a one-step copy anatomy and the planner's transfer estimates. Measured with them (`docs/research/qwen3-vulkan-decode-profile.md`, "Copy anatomy"): a Qwen3-0.6B decode step on Vulkan reads 2.39 GB from the GPU to the host, mostly the model's own f32 weights (197 large copies, about 55% of the step), because the matmuls are stamped to the CPU; none of the 253 matmuls is Q4_K. ROADMAP item 21 updated. No behaviour change.
+
 ## v0.20.40 - 2026-10-21
 
 ### Added

@@ -97,6 +97,41 @@ pub mod op_profile {
     use fuel_ir::probe::BackendId;
 
     static ENABLED: AtomicBool = AtomicBool::new(false);
+    static TRACE: AtomicBool = AtomicBool::new(false);
+    static TRACE_ROWS: Mutex<Vec<LaunchRow>> = Mutex::new(Vec::new());
+
+    /// One kernel launch, in launch order (see [`set_trace`]).
+    #[derive(Clone, Debug)]
+    pub struct LaunchRow {
+        /// `OpKind` rendered with `Debug`.
+        pub op: String,
+        /// The kernel's backend, rendered with `Debug`.
+        pub backend: String,
+        /// Where the first input lives (`Cpu`, `Vulkan`, `Cuda`, `Metal`, `?`).
+        pub src: &'static str,
+        /// Where the first output lives.
+        pub dst: &'static str,
+        /// Byte length of the first input.
+        pub bytes: usize,
+        /// Host wall time of the launch.
+        pub dt: Duration,
+    }
+
+    fn kind(s: &std::sync::Arc<std::sync::RwLock<fuel_memory::Storage>>) -> (&'static str, usize) {
+        let Ok(g) = s.try_read() else {
+            return ("?", 0);
+        };
+        let k = match &g.inner {
+            fuel_memory::BackendStorage::Cpu(_) => "Cpu",
+            #[cfg(feature = "cuda")]
+            fuel_memory::BackendStorage::Cuda(_) => "Cuda",
+            #[cfg(feature = "vulkan")]
+            fuel_memory::BackendStorage::Vulkan(_) => "Vulkan",
+            #[allow(unreachable_patterns)]
+            _ => "Other",
+        };
+        (k, g.len_bytes())
+    }
     /// `(op, backend)` rendered with `Debug` -> (launches, total host time).
     type Totals = HashMap<(String, String), (u64, Duration)>;
 
@@ -107,9 +142,45 @@ pub mod op_profile {
         ENABLED.store(on, Ordering::Relaxed);
     }
 
-    /// Whether accounting is on.
+    /// Also keep every launch as a [`LaunchRow`], in order (implies the
+    /// accounting path). For a one-step anatomy, not for long runs: one row per
+    /// launch. Does not clear what was recorded.
+    pub fn set_trace(on: bool) {
+        TRACE.store(on, Ordering::Relaxed);
+    }
+
+    /// Drain the launch trace.
+    pub fn take_trace() -> Vec<LaunchRow> {
+        std::mem::take(&mut *TRACE_ROWS.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// Whether accounting (or tracing) is on.
     pub fn enabled() -> bool {
-        ENABLED.load(Ordering::Relaxed)
+        ENABLED.load(Ordering::Relaxed) || TRACE.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn record_launch(
+        compiled: &super::CompiledNode,
+        inputs: &[std::sync::Arc<std::sync::RwLock<fuel_memory::Storage>>],
+        outputs: &[std::sync::Arc<std::sync::RwLock<fuel_memory::Storage>>],
+        dt: Duration,
+    ) {
+        record(compiled.op, compiled.backend, dt);
+        if TRACE.load(Ordering::Relaxed) {
+            let (src, bytes) = inputs.first().map_or(("?", 0), kind);
+            let dst = outputs.first().map_or("?", |o| kind(o).0);
+            TRACE_ROWS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(LaunchRow {
+                    op: format!("{:?}", compiled.op),
+                    backend: format!("{:?}", compiled.backend),
+                    src,
+                    dst,
+                    bytes,
+                    dt,
+                });
+        }
     }
 
     pub(super) fn record(op: OpKind, backend: BackendId, dt: Duration) {
@@ -253,7 +324,7 @@ pub fn execute_compiled_with_wait_hint(
     let profile_start = op_profile::enabled().then(std::time::Instant::now);
     let launched = (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params);
     if let Some(t0) = profile_start {
-        op_profile::record(compiled.op, compiled.backend, t0.elapsed());
+        op_profile::record_launch(compiled, inputs, outputs, t0.elapsed());
     }
     launched?;
     // Step E A4b-1: the kernel has *enqueued* its work (CUDA: launched on the
