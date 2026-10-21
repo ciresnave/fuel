@@ -96,6 +96,32 @@ pub(crate) struct RecyclePool {
     )]
     map: std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation, u64)>>>,
     epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Σ size × count over `map`. Written only while `map` is locked; read without the
+    /// lock by `Drop` as a cheap "is the pool over its cap" test.
+    parked_bytes: std::sync::atomic::AtomicU64,
+}
+
+/// Total bytes the recycler may park across all buckets.
+const MAX_POOL_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Evict whole buckets, smallest size first, until `pool` holds at most `max_bytes`;
+/// the evicted entries are appended to `trimmed` so the caller can destroy them
+/// after releasing the pool lock. Returns the bytes still parked.
+fn trim_to_byte_cap<T>(
+    pool: &mut std::collections::BTreeMap<u64, Vec<T>>,
+    max_bytes: u64,
+    trimmed: &mut Vec<T>,
+) -> u64 {
+    let mut total: u64 = pool.iter().map(|(&sz, v)| sz * v.len() as u64).sum();
+    while total > max_bytes {
+        let Some(&smallest) = pool.keys().next() else {
+            break;
+        };
+        let vec = pool.remove(&smallest).unwrap();
+        total = total.saturating_sub(smallest * vec.len() as u64);
+        trimmed.extend(vec);
+    }
+    total
 }
 
 impl Drop for VulkanBuffer {
@@ -106,8 +132,22 @@ impl Drop for VulkanBuffer {
             if let Some(pool) = &self.recycle_pool {
                 // Return to pool for reuse.
                 let freed_in = pool.epoch.load(std::sync::atomic::Ordering::Acquire);
+                // Entries trimmed to hold the byte cap are destroyed after the lock is
+                // released (a vkDestroyBuffer costs about a millisecond).
+                let mut trimmed: Vec<(Buffer, Allocation, u64)> = Vec::new();
                 if let Ok(mut p) = pool.map.lock() {
                     p.entry(self.byte_size).or_default().push((b, a, freed_in));
+                    let parked = pool
+                        .parked_bytes
+                        .fetch_add(self.byte_size, std::sync::atomic::Ordering::Relaxed)
+                        + self.byte_size;
+                    if parked > MAX_POOL_BYTES {
+                        let left = trim_to_byte_cap(&mut p, MAX_POOL_BYTES, &mut trimmed);
+                        pool.parked_bytes
+                            .store(left, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    drop(p);
+                    drop(trimmed);
                     return;
                 }
             }
@@ -940,6 +980,7 @@ impl VulkanBackend {
         let buffer_pool = std::sync::Arc::new(RecyclePool {
             map: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             epoch: batch_epoch,
+            parked_bytes: std::sync::atomic::AtomicU64::new(0),
         });
         Ok(Self {
             device,
@@ -1669,7 +1710,6 @@ impl VulkanBackend {
     /// though it can't all be pooled for reuse.
     fn take_or_alloc_device_buffer(&self, size: u64) -> fuel_ir::Result<(Buffer, Allocation)> {
         const MAX_BUCKETS: usize = 64;
-        const MAX_POOL_BYTES: u64 = 512 * 1024 * 1024; // 512 MB cap
         // Buffers trimmed from the pool are destroyed AFTER the lock is released:
         // a vkDestroyBuffer + free costs about a millisecond each, and doing it
         // under the lock stalls every other allocating thread.
@@ -1718,16 +1758,10 @@ impl VulkanBackend {
             }
             // 3. Total-bytes backstop: if pool > MAX_POOL_BYTES, evict
             //    smallest-size buckets first (they're typically stale).
-            let mut total_bytes: u64 = pool.iter().map(|(&sz, v)| sz * v.len() as u64).sum();
-            while total_bytes > MAX_POOL_BYTES {
-                let smallest = match pool.keys().next() {
-                    Some(&k) => k,
-                    None => break,
-                };
-                let vec = pool.remove(&smallest).unwrap();
-                total_bytes = total_bytes.saturating_sub(smallest * vec.len() as u64);
-                trimmed.extend(vec);
-            }
+            let left = trim_to_byte_cap(&mut pool, MAX_POOL_BYTES, &mut trimmed);
+            self.buffer_pool
+                .parked_bytes
+                .store(left, std::sync::atomic::Ordering::Relaxed);
             picked
         };
         drop(trimmed);
@@ -14747,6 +14781,42 @@ mod recycler_depth_tests {
         // Everything freed in the current epoch: nothing reusable.
         assert_eq!(reusable_index(&[('x', 7u64), ('y', 7)], freed_in, 7), None);
         assert_eq!(reusable_index::<(char, u64)>(&[], freed_in, 7), None);
+    }
+
+    #[test]
+    fn byte_cap_holds_after_every_free_not_just_the_next_allocation() {
+        use super::trim_to_byte_cap;
+        use std::collections::BTreeMap;
+        const CAP: u64 = 1 << 20;
+        let mut pool: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let mut trimmed = Vec::new();
+        let mut parked = 0u64;
+        let mut peak = 0u64;
+        // Mass free of 64 distinct sizes, 8 buffers each, ~1 KiB..64 KiB: far over CAP.
+        for sz in (1..=64u64).map(|i| i * 1024) {
+            for _ in 0..8 {
+                pool.entry(sz).or_default().push(0);
+                parked += sz;
+                if parked > CAP {
+                    parked = trim_to_byte_cap(&mut pool, CAP, &mut trimmed);
+                }
+                let actual: u64 = pool.iter().map(|(&s, v)| s * v.len() as u64).sum();
+                assert_eq!(parked, actual, "running total drifted from the pool");
+                assert!(
+                    actual <= CAP,
+                    "pool holds {actual} > cap {CAP} after a free"
+                );
+                peak = peak.max(actual);
+            }
+        }
+        // Control: the loop really exceeded the cap and trimmed (else it proved nothing).
+        assert!(!trimmed.is_empty());
+        assert!(peak > CAP / 2);
+        // Sabotage sibling: with a cap above the total nothing is evicted.
+        let mut all = BTreeMap::from([(4096u64, vec![0u8; 3])]);
+        let mut none = Vec::new();
+        assert_eq!(trim_to_byte_cap(&mut all, 1 << 30, &mut none), 3 * 4096);
+        assert!(none.is_empty());
     }
 
     #[test]
