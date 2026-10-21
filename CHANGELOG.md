@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.49 - 2026-10-21
+
+### Changed
+
+- ROADMAP rows 26 (kernels unavailable when a declared Vulkan feature is absent) and 27 (test plan for the 11 numerics-changing SPIR-V validation errors). Documentation only.
+
 ## v0.20.47 - 2026-10-21
 
 ### Fixed
