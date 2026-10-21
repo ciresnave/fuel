@@ -37,7 +37,7 @@
 //!
 //! - Format spec: `docs/specs/kernel-contract-format.md`.
 //! - Adoption plan: `docs/session-prompts/kernel-contract-adoption-plan.md`.
-//! - Authored corpus (valid instances): `docs/kernel-contracts/**/*.fkc.md`.
+//! - Authored corpus (valid instances): `fuel-dispatch/kernel-contracts/**/*.fkc.md`.
 
 mod caps_map;
 pub(crate) mod cost_compile;
@@ -132,12 +132,11 @@ mod tests {
 
     /// `elementwise-binary.fkc.md` — the simplest authored CPU contract.
     const ELEMENTWISE_BINARY: &str =
-        include_str!("../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
+        include_str!("../../kernel-contracts/cpu/elementwise-binary.fkc.md");
     /// `quant-matmul.fkc.md` — a more complex authored CPU contract (GGML quant
     /// weight matmuls + NF4 with a separate scale operand, gemm cost class,
     /// fdx.quant blocks).
-    const QUANT_MATMUL: &str =
-        include_str!("../../../docs/kernel-contracts/cpu/quant-matmul.fkc.md");
+    const QUANT_MATMUL: &str = include_str!("../../kernel-contracts/cpu/quant-matmul.fkc.md");
     /// `rope-apply.fkc.md` (Task 4.6) — baracuda's `rope_apply_<dt>_run`,
     /// shipped but never wired into any dispatch path before this task. Its
     /// `entry_point` names raw baracuda FFI symbols resolved only by a
@@ -149,7 +148,7 @@ mod tests {
     /// symbols — proof the contract is structurally well-formed (dtype-fan,
     /// entry_point suffixing, per-operand fixed-vs-varying dtypes) without
     /// touching any real CUDA code.
-    const ROPE_APPLY: &str = include_str!("../../../docs/kernel-contracts/cuda/rope-apply.fkc.md");
+    const ROPE_APPLY: &str = include_str!("../../kernel-contracts/cuda/rope-apply.fkc.md");
 
     // =====================================================================
     // PARSE A REAL CONTRACT — the key correctness test (§3.1/§3.3 schema match)

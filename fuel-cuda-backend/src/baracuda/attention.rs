@@ -517,7 +517,7 @@ rope_kernel!(rope_f64, f64, 8, "rope_f64");
 // `rope_<dt>` family and the `rope_<dt>` driver above both use (those
 // re-index a FULL-width table per pair; this kernel wants only the
 // `head_dim/2` distinct trig values per position — see
-// `docs/kernel-contracts/cuda/rope-apply.fkc.md` for the full note).
+// `fuel-dispatch/kernel-contracts/cuda/rope-apply.fkc.md` for the full note).
 // `stride_b` is always 0 here (a single table shared across every one of
 // the `outer_count` = batch*heads rows) — Fuel's cos/sin are always
 // model-wide, never per-batch, so that is the only value ever needed.

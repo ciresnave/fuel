@@ -26,7 +26,7 @@ use std::sync::OnceLock;
 
 /// One empirical verification result for a single kernel/backend/dtype/claim
 /// combination, as recorded by the (external, later-task) verification
-/// harness and checked in to `docs/kernel-contracts/.fkc-verified-ledger.json`.
+/// harness and checked in to `fuel-dispatch/kernel-contracts/.fkc-verified-ledger.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LedgerRecord {
     /// The kernel's `entry_point` / ref name, e.g. `"rope_apply_f32"`. Purely
@@ -78,8 +78,7 @@ pub struct VerificationLedger {
 /// re-seeded (e.g. `fuel-dev-tools seed-vulkan`), THIS crate must be recompiled
 /// for the new records to take effect — a downstream test binary relinking
 /// against a cached `fuel-dispatch` lib will still see the old ledger.
-const LEDGER_JSON: &str =
-    include_str!("../../../../docs/kernel-contracts/.fkc-verified-ledger.json");
+const LEDGER_JSON: &str = include_str!("../../../kernel-contracts/.fkc-verified-ledger.json");
 
 impl VerificationLedger {
     /// Parse a ledger from a JSON array of [`LedgerRecord`]s.
@@ -184,7 +183,7 @@ impl VerificationLedger {
 #[cfg(any(feature = "dev-tools", all(test, feature = "cuda")))]
 fn checked_in_ledger_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../docs/kernel-contracts/.fkc-verified-ledger.json")
+        .join("kernel-contracts/.fkc-verified-ledger.json")
 }
 
 /// Merge `fresh` into the CHECKED-IN ledger, WITHOUT writing anything.

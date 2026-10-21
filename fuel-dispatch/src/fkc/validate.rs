@@ -2645,7 +2645,7 @@ determinism: same_hardware_bitwise
         }
     }
 
-    /// THE CI LINT (Task 3). Walk `docs/kernel-contracts/**/*.fkc.md`
+    /// THE CI LINT (Task 3). Walk `fuel-dispatch/kernel-contracts/**/*.fkc.md`
     /// (excluding `_inventory/`), parse + lower + validate EVERY file with a
     /// permissive stub LinkRegistry, and report the file/section counts. A
     /// failing contract is CAPTURED and REPORTED (file + kernel + the rule it
@@ -2675,9 +2675,9 @@ determinism: same_hardware_bitwise
     #[test]
     fn ci_lint_corpus_parse_lower_validate() {
         // Locate the corpus relative to this crate (CARGO_MANIFEST_DIR =
-        // .../fuel-dispatch). The corpus lives at ../docs/kernel-contracts.
+        // .../fuel-dispatch). The corpus lives at kernel-contracts/ inside this crate.
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let corpus = manifest.join("..").join("docs").join("kernel-contracts");
+        let corpus = manifest.join("kernel-contracts");
         assert!(
             corpus.is_dir(),
             "corpus dir not found at {}",
@@ -2833,7 +2833,7 @@ determinism: same_hardware_bitwise
     #[test]
     fn ci_lint_corpus_has_no_cross_file_entry_point_collisions() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let corpus = manifest.join("..").join("docs").join("kernel-contracts");
+        let corpus = manifest.join("kernel-contracts");
         assert!(
             corpus.is_dir(),
             "corpus dir not found at {}",

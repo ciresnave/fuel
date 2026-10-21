@@ -14,7 +14,7 @@
 //! NEVER empirically verified. A later gate (`ledger::gate_precision`,
 //! wired in a follow-up task) downgrades any `bit_stable_on_same_hardware`
 //! claim lacking a passing entry in the git-checked-in
-//! `docs/kernel-contracts/.fkc-verified-ledger.json` for the kernel's
+//! `fuel-dispatch/kernel-contracts/.fkc-verified-ledger.json` for the kernel's
 //! exact `(kernel_revision_hash, backend, dtypes, claim)` tuple.
 //!
 //! This module RUNS the real, registered CPU kernel for every
@@ -1093,7 +1093,7 @@ fn verified_at_string() -> String {
 #[cfg(feature = "dev-tools")]
 /// Task 4.5b: empirically verify the CPU fused-op family and WRITE
 /// the resulting `"pass"` records to the git-checked-in verification
-/// ledger (`docs/kernel-contracts/.fkc-verified-ledger.json`).
+/// ledger (`fuel-dispatch/kernel-contracts/.fkc-verified-ledger.json`).
 ///
 /// Run with `--nocapture` to see the full per-op attempt log
 /// (pass/fail/unverified + reason) — every op in [`TARGETS`] is
@@ -2049,8 +2049,7 @@ mod tests {
     fn gap_228_what_the_production_fill_still_supplies() {
         use crate::fused::PrecisionGuarantee;
 
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel-contracts/cpu");
         let mut contract = crate::kernel::KernelBindingTable::new();
         let mut fused = crate::fused::FusedKernelRegistry::new();
         let mut n_contracts = 0usize;
@@ -2179,8 +2178,7 @@ mod tests {
         use crate::fkc::verify::VerificationLedger;
         use crate::fused::PrecisionGuarantee;
 
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel-contracts/cpu");
         let mut table = crate::kernel::KernelBindingTable::new();
         let mut fused = crate::fused::FusedKernelRegistry::new();
         let mut n_contracts = 0usize;

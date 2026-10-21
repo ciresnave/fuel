@@ -102,7 +102,7 @@ pub static CPU_BINARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU out-of-place scalar-param family's `symbol → production wrapper`
 /// map (affine / clamp / powi × 4 dtypes + powi_backward × 4 = 16 kernels).
-/// Contract: `docs/kernel-contracts/cpu/affine-clamp-powi.fkc.md`. The scalar
+/// Contract: `fuel-dispatch/kernel-contracts/cpu/affine-clamp-powi.fkc.md`. The scalar
 /// params (affine mul/add, clamp min/max, powi exp) ride in `OpParams`, NOT the
 /// dtype-list, so the binding keys stay `[t, t]` for the single-input forward
 /// ops and `[t, t, t]` for the two-input `powi_backward`. The `ep!` symbol is
@@ -134,7 +134,7 @@ pub static CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU elementwise-unary family's `symbol → production wrapper` map
 /// (22 ops × 4 dtypes = 88 kernels). Contract:
-/// `docs/kernel-contracts/cpu/elementwise-unary.fkc.md`. Each per-op section
+/// `fuel-dispatch/kernel-contracts/cpu/elementwise-unary.fkc.md`. Each per-op section
 /// declares a BASE `entry_point` (e.g. `…::relu`) and enumerates
 /// `dtypes: [F32,F64,BF16,F16]`; the importer's §3.4 multi-dtype fan-out then
 /// resolves `<base>_<dtype>` (e.g. `relu_f32`) against this table — so the
@@ -245,7 +245,7 @@ pub static CPU_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU elementwise-COMPARE family's `symbol → production wrapper` map
 /// (6 ops × 4 dtypes = 24). Contract:
-/// `docs/kernel-contracts/cpu/compare-where.fkc.md`. Each thunk is a
+/// `fuel-dispatch/kernel-contracts/cpu/compare-where.fkc.md`. Each thunk is a
 /// single-(op,dtype) section (its `lhs`/`rhs` enumerate ONE dtype), so it does
 /// NOT fan — the importer resolves its declared symbol AS-IS. That symbol
 /// carries the `_u8` output-mask suffix (`T × T → U8` mask, `return.out:
@@ -282,7 +282,7 @@ pub static CPU_COMPARE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU ternary-select (`where`) family's `symbol → production wrapper` map
 /// (1 op × 4 dtypes = 4). Contract:
-/// `docs/kernel-contracts/cpu/compare-where.fkc.md`. The single `where_kernel`
+/// `fuel-dispatch/kernel-contracts/cpu/compare-where.fkc.md`. The single `where_kernel`
 /// section enumerates `a`/`b` `dtypes: [F32,F64,BF16,F16]`, so it FANS (§3.4):
 /// its declared BASE `entry_point` `…::where` resolves `<base>_<dtype>` =
 /// `where_{f32,f64,bf16,f16}` against this table. The binding key is
@@ -295,7 +295,7 @@ pub static CPU_WHERE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// The CPU per-axis REDUCE family's `symbol → production wrapper` map
-/// (4 ops × 4 dtypes = 16). Contract: `docs/kernel-contracts/cpu/reduce.fkc.md`.
+/// (4 ops × 4 dtypes = 16). Contract: `fuel-dispatch/kernel-contracts/cpu/reduce.fkc.md`.
 /// Each per-(op, dtype) section (`## sum_reduce_f32`, …) declares a SPECIFIC
 /// single-dtype `entry_point` (`…::sum_reduce_f32`), so it does NOT fan — the
 /// importer resolves that symbol AS-IS. The binding key is `[T, T]` (input +
@@ -327,7 +327,7 @@ pub static CPU_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The CPU broadcast-target REDUCE-TO family's `symbol → production wrapper`
 /// map (ReduceSumTo / ReduceMaxTo × 4 dtypes = 8, key `[T, T]`, +
 /// ReduceMaxToBackward × 4 dtypes = 4, key `[T, T, T]` = 12). Contract:
-/// `docs/kernel-contracts/cpu/reduce-to.fkc.md`. Each per-(op, dtype) section
+/// `fuel-dispatch/kernel-contracts/cpu/reduce-to.fkc.md`. Each per-(op, dtype) section
 /// (`## reduce_sum_to_f32`, …) declares a SPECIFIC single-dtype `entry_point`
 /// (`…::reduce_sum_to_f32`), so it does NOT fan — the importer resolves that
 /// symbol AS-IS. The forward keys are `[T, T]` (input + `passthrough(input)`
@@ -370,7 +370,7 @@ pub static CPU_REDUCE_TO_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU last-dim NORM (forward) family's `symbol → production wrapper` map
 /// (Softmax / LogSoftmax / RmsNorm / LayerNorm last-dim × 4 dtypes = 16). Contract:
-/// `docs/kernel-contracts/cpu/norm.fkc.md`. Each per-(op, dtype) section
+/// `fuel-dispatch/kernel-contracts/cpu/norm.fkc.md`. Each per-(op, dtype) section
 /// (`## softmax_last_dim_f32`, `## rms_norm_last_dim_f32`, …) declares a SPECIFIC
 /// single-dtype `entry_point` (`…::softmax_last_dim_f32`), so none of them fan —
 /// the importer resolves that symbol AS-IS. The binding key is `[T, T]` (a SINGLE
@@ -441,7 +441,7 @@ pub static CPU_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU last-dim NORM-BACKWARD family's `symbol → production wrapper` map
 /// (Softmax / LogSoftmax / RmsNorm / LayerNorm last-dim BACKWARD × 4 dtypes = 16).
-/// Contract: `docs/kernel-contracts/cpu/norm-backward.fkc.md`. Each per-(op, dtype)
+/// Contract: `fuel-dispatch/kernel-contracts/cpu/norm-backward.fkc.md`. Each per-(op, dtype)
 /// section (`## softmax_last_dim_backward_f32`, `## rms_norm_last_dim_backward_f32`,
 /// …) declares a SPECIFIC single-dtype `entry_point`
 /// (`…::softmax_last_dim_backward_f32`), so none of them fan — the importer
@@ -542,7 +542,7 @@ pub static CPU_NORM_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU RoPE (rotary position embedding) family's `symbol → production
 /// wrapper` map (1 op × 4 dtypes = 4). Contract:
-/// `docs/kernel-contracts/cpu/rope.fkc.md`. Each per-dtype section
+/// `fuel-dispatch/kernel-contracts/cpu/rope.fkc.md`. Each per-dtype section
 /// (`## rope_f32`, …) declares a SPECIFIC single-dtype `entry_point`
 /// (`…::rope_f32`), so none of them fan — the importer resolves that symbol
 /// AS-IS. The binding key is `[T, T, T, T]` — RoPE takes THREE inputs (`x` +
@@ -566,7 +566,7 @@ pub static CPU_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The CPU SSM / Mamba family's `symbol → production wrapper` map — the FULL
 /// family: FusedSoftmaxCrossEntropy + CausalConv1d + SelectiveScan +
 /// SsdChunkScan (4 ops × 4 dtypes = 16). Contract:
-/// `docs/kernel-contracts/cpu/ssm.fkc.md`. Each per-(op, dtype) section
+/// `fuel-dispatch/kernel-contracts/cpu/ssm.fkc.md`. Each per-(op, dtype) section
 /// (`## fused_softmax_cross_entropy_f32`, `## selective_scan_f32`, …) declares a
 /// SPECIFIC single-dtype `entry_point` (`…::selective_scan_f32`), so none of
 /// them fan — the importer resolves that symbol AS-IS. Binding keys:
@@ -623,7 +623,7 @@ pub static CPU_SSM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU 2D-convolution family's `symbol → production wrapper` map — the FULL
 /// family: Conv2D + ConvTranspose2D × 4 dtypes = 8 symbols (each symbol serves
-/// BOTH operand-count keys). Contract: `docs/kernel-contracts/cpu/conv.fkc.md`.
+/// BOTH operand-count keys). Contract: `fuel-dispatch/kernel-contracts/cpu/conv.fkc.md`.
 /// Each per-(op, dtype) section (`## conv2d_f32`, `## conv_transpose2d_f32`, …)
 /// declares a SPECIFIC single-dtype `entry_point` (`…::conv2d_f32`), so none of
 /// them dtype-fan — the importer resolves that symbol AS-IS. Because the contract
@@ -659,7 +659,7 @@ pub static CPU_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU **padding** family's `symbol → production wrapper` map — the FULL
 /// family: mode-unified forward `Pad` × 6 dtypes = 6 + `PadBackward` × 4 dtypes
-/// = 4 (all key `[T, T]`). Contract: `docs/kernel-contracts/cpu/padding.fkc.md`.
+/// = 4 (all key `[T, T]`). Contract: `fuel-dispatch/kernel-contracts/cpu/padding.fkc.md`.
 ///
 /// - **Forward `Pad`** is a dtype-agnostic byte kernel with a SINGLE production
 ///   wrapper — the mode-dispatching `pad_cpu_wrapper` (dispatch layer), which
@@ -704,7 +704,7 @@ pub static CPU_PADDING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The CPU **shape-ops** family's `symbol → production wrapper` map — the
 /// MIGRATED subset (Flip + Roll + Concat + MaskedFill + WriteSlice +
 /// WriteSliceRotating dtype-fanned + CumSum per-dtype). Contract:
-/// `docs/kernel-contracts/cpu/shape-ops.fkc.md`.
+/// `fuel-dispatch/kernel-contracts/cpu/shape-ops.fkc.md`.
 ///
 /// - **Flip** / **Roll** / **Concat** / **MaskedFill** / **WriteSlice** /
 ///   **WriteSliceRotating** are **dtype-agnostic byte kernels** with a SINGLE
@@ -826,7 +826,7 @@ pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU **indexing / gather / scatter** family's `symbol → production
 /// wrapper` map — the FULL family (IndexSelect + Gather dtype-fanned, IndexAdd +
-/// ScatterAdd per-dtype). Contract: `docs/kernel-contracts/cpu/indexing.fkc.md`.
+/// ScatterAdd per-dtype). Contract: `fuel-dispatch/kernel-contracts/cpu/indexing.fkc.md`.
 ///
 /// - **IndexSelect** / **Gather** are **dtype-agnostic byte copies** (parameter-
 ///   ized `dtype_size`, one copy per selected/gathered element) with a SINGLE
@@ -883,7 +883,7 @@ pub static CPU_INDEXING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The CPU **matmul** family's `symbol → production wrapper` map — the FULL
 /// portable family: bare batched `MatMul` (6 dtypes) + fused `FusedLinear`
 /// (matmul + bias-add, 4 dtypes) = 10 entry points. Contract:
-/// `docs/kernel-contracts/cpu/matmul.fkc.md`.
+/// `fuel-dispatch/kernel-contracts/cpu/matmul.fkc.md`.
 ///
 /// Each per-(op, dtype) section (`## matmul_f32`, `## fused_linear_f32`, …)
 /// declares a SPECIFIC single-dtype `entry_point` (`…::matmul_f32`), so none of
@@ -929,7 +929,7 @@ pub static CPU_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The CPU **attention** family's `symbol → production wrapper` map — the
 /// MIGRATED (`KernelBindingTable`) subset: forward `FlashAttn` (4 dtypes) +
 /// `FlashAttnBackward{Q,K,V}` (3 selectors × 4 dtypes) = 16 entry points.
-/// Contract: `docs/kernel-contracts/cpu/attention.fkc.md`.
+/// Contract: `fuel-dispatch/kernel-contracts/cpu/attention.fkc.md`.
 ///
 /// Each per-(op, dtype) section (`## flash_attn_f32`, `## flash_attn_backward_q_f32`,
 /// …) declares a SPECIFIC single-dtype `entry_point`, so none of them dtype-fan
@@ -996,7 +996,7 @@ pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// ×4 dtypes = 84) + `InplaceAffine` / `ClampInplace` / `PowIInplace`
 /// (`affine_inplace` / `clamp_inplace` / `powi_inplace`, 4 dtypes each = 12) =
 /// 96 entry points. Contract:
-/// `docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md`.
+/// `fuel-dispatch/kernel-contracts/cpu/inplace-unary-affine.fkc.md`.
 ///
 /// - **In-place unary** (`relu_inplace` … `gelu_erf_inplace`): each per-op
 ///   section declares a BASE `entry_point` (`…::relu_inplace`) + enumerates
@@ -1137,7 +1137,7 @@ pub static CPU_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The CPU **cast** family's `symbol → production wrapper` map — the FULL
 /// directed-pair matrix: every ordered pair of the 11 real numeric dtypes
 /// {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64}, identity excluded =
-/// 11 × 10 = 110 entry points. Contract: `docs/kernel-contracts/cpu/cast.fkc.md`.
+/// 11 × 10 = 110 entry points. Contract: `fuel-dispatch/kernel-contracts/cpu/cast.fkc.md`.
 ///
 /// Each per-pair section (`## cast_f64_to_f32`, …) declares a SPECIFIC
 /// single-dtype `src` input + a `fixed(DST)` output, so it does NOT dtype-fan —
@@ -1307,7 +1307,7 @@ pub static CPU_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// The CPU norm/softmax **FUSED** family's `symbol → production wrapper` map —
 /// the FIRST fused-registry link table (the `fused_op` analogue of the
 /// primitive `CPU_*_ENTRY_POINTS`). Contract:
-/// `docs/kernel-contracts/fused/norm-softmax.fkc.md`.
+/// `fuel-dispatch/kernel-contracts/fused/norm-softmax.fkc.md`.
 ///
 /// Eight `fused_op` sections — three forward (`SOFTMAX_LAST_DIM` /
 /// `RMS_NORM_LAST_DIM` / `LAYER_NORM_LAST_DIM`, key `[T, T]`) plus five backward
@@ -1444,7 +1444,7 @@ pub static CPU_FUSED_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU **linear / quantized-matmul** FUSED family's `symbol → production
 /// wrapper` map — the MIGRATED subset of the `audited: true` linear-quant
-/// bundle. Contract: `docs/kernel-contracts/fused/linear-quant.fkc.md`.
+/// bundle. Contract: `fuel-dispatch/kernel-contracts/fused/linear-quant.fkc.md`.
 ///
 /// Four of the bundle's five `fused_op` sections migrate here (the fifth,
 /// `nf4_matmul`, is `registrable: false` — its `fdx.quant.family: AFFINE_BLOCK`
@@ -1518,7 +1518,7 @@ pub static CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 
 /// The CPU **conv / RoPE / SSM** FUSED family's `symbol → production wrapper`
 /// map — the FULL `audited: true` conv-rope bundle. Contract:
-/// `docs/kernel-contracts/fused/conv-rope.fkc.md`.
+/// `fuel-dispatch/kernel-contracts/fused/conv-rope.fkc.md`.
 ///
 /// All SIX `fused_op` sections migrate here; each declares a dtype-agnostic
 /// BASE `entry_point` `…::<op>_cpu` **plus a per-input `dtypes: [F32, F64, BF16,

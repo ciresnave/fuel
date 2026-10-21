@@ -3,11 +3,11 @@
 //! ledger.
 //!
 //! The CUDA analogue of Task 4.5b's [`super::seed_cpu_ledger`]. Every CUDA
-//! kernel contract in `docs/kernel-contracts/cuda/*.fkc.md` declares
+//! kernel contract in `fuel-dispatch/kernel-contracts/cuda/*.fkc.md` declares
 //! `bit_stable_on_same_hardware: true`, but the V-FKC-9 import gate
 //! ([`super::gate_precision`], wired at `register.rs:363`) downgrades any such
 //! claim lacking a matching `pass` entry in the git-checked-in
-//! `docs/kernel-contracts/.fkc-verified-ledger.json` to
+//! `fuel-dispatch/kernel-contracts/.fkc-verified-ledger.json` to
 //! `PrecisionGuarantee::UNAUDITED`. An unaudited CUDA candidate then loses its
 //! placement to the (Task-4.5b-seeded, audited) CPU alternative under
 //! [`crate::ranker::filters::BitStablePreferenceFilter`], so the decode runs on
@@ -549,7 +549,7 @@ pub fn run_cuda_verification(
 /// CapturedRun 4b-resume Step 3 — sweep the production CUDA binding table,
 /// empirically verify `bit_stable_on_same_hardware` for every op this
 /// harness has a recipe for, and WRITE the merged ledger back to the
-/// git-checked-in `docs/kernel-contracts/.fkc-verified-ledger.json`.
+/// git-checked-in `fuel-dispatch/kernel-contracts/.fkc-verified-ledger.json`.
 ///
 /// Requires a live CUDA device (a maintenance tool, not a test). Run:
 ///   `cargo run -p fuel-dispatch --features dev-tools --bin fuel-dev-tools -- seed-cuda (with --features cuda)`

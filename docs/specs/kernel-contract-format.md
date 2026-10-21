@@ -48,7 +48,7 @@ the `fuel-dispatch` / `fuel-graph` import path.
 > **Correction (2026-08-14).** This previously read *"Drops straight into the `fuel-book`
 > mdBook."* **That was never true and is now unrepresentable — `fuel-book` was deleted**
 > (fork-inherited Candle content, no live consumer). **Contracts have always lived in
-> `docs/kernel-contracts/` — 115 `.fkc.md` files there, and `fuel-book` held ZERO.** The
+> `fuel-dispatch/kernel-contracts/` — 115 `.fkc.md` files there, and `fuel-book` held ZERO.** The
 > mdBook destination was aspirational and never wired: measured at deletion time, **no
 > `.rs` file and no CI job referenced `fuel-book` at all.** Recorded rather than silently
 > repointed, because the sentence asserted a *destination* the artifacts never had.
