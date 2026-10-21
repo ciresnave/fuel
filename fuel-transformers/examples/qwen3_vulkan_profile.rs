@@ -52,6 +52,11 @@ struct Run {
     ops: BTreeMap<(String, String), (u64, Duration)>,
     /// Every launch of one extra (unprofiled-by-the-table) decode step, in order.
     trace: Vec<LaunchRow>,
+    /// GPU time per op name over `gpu_steps` further decode steps recorded with
+    /// timestamp queries on: `(op, dispatches, ns)`; empty if unsupported.
+    gpu: Vec<(&'static str, u64, u64)>,
+    /// Wall time of each of those steps.
+    gpu_steps: Vec<Duration>,
 }
 
 /// What the planner believes a Vulkan<->host copy costs (the numbers it prices
@@ -78,7 +83,8 @@ fn one_run(
     prompt_tokens: &[u32],
     steady: usize,
 ) -> Run {
-    let max_seq_len = prompt_tokens.len() + steady + 4;
+    // prefill + first decode + `steady` profiled + `steady` GPU-timed + 2 spare.
+    let max_seq_len = prompt_tokens.len() + 2 * steady + 4;
     let mut cache = KvCache::with_capacity(
         cfg.num_hidden_layers,
         cfg.num_key_value_heads,
@@ -111,6 +117,22 @@ fn one_run(
         steps.push(dt);
     }
     op_profile::set_enabled(false);
+    // Same number of steps again with Vulkan timestamp queries on, so the
+    // per-op table above (host time) is not perturbed by the extra commands.
+    let vk = fuel_tensor::vulkan_backend::as_device(dev).expect("vulkan device");
+    let mut gpu_steps = Vec::new();
+    let gpu = if vk.set_gpu_timing(true) {
+        vk.reset_gpu_time();
+        for _ in 0..steady {
+            let (n, dt) = step(&[next], false);
+            next = n;
+            gpu_steps.push(dt);
+        }
+        vk.set_gpu_timing(false);
+        vk.gpu_time_snapshot()
+    } else {
+        Vec::new()
+    };
     let ops = op_profile::take()
         .into_iter()
         .map(|(op, be, n, d)| ((op, be), (n, d)))
@@ -133,6 +155,8 @@ fn one_run(
         steps,
         ops,
         trace,
+        gpu,
+        gpu_steps,
     }
 }
 
@@ -223,6 +247,67 @@ fn print_op_table(all: &[Run], step_all: f64) {
     );
 }
 
+/// Name of the per-batch total row (`fuel_vulkan_backend::BATCH_TOTAL`, which this crate does not depend on directly).
+const BATCH_TOTAL: &str = "(batch total)";
+
+/// GPU time per op over the timestamp-instrumented steps: per run the per-step
+/// average ms, then median and spread across runs; share of the batch total.
+fn print_gpu_table(all: &[Run]) {
+    if all.iter().all(|r| r.gpu.is_empty()) {
+        println!("\nGPU timing: unsupported on this queue family");
+        return;
+    }
+    let mut keys: Vec<&'static str> = all.iter().flat_map(|r| r.gpu.iter().map(|g| g.0)).collect();
+    keys.sort();
+    keys.dedup();
+    let steps = |r: &Run| r.gpu_steps.len().max(1) as f64;
+    let total_key = BATCH_TOTAL;
+    let mut wall: Vec<f64> = all
+        .iter()
+        .map(|r| median(&mut r.gpu_steps.iter().map(|d| ms(*d)).collect::<Vec<_>>()))
+        .collect();
+    let mut totals: Vec<f64> = all
+        .iter()
+        .map(|r| {
+            let ns: u64 = r.gpu.iter().filter(|g| g.0 == total_key).map(|g| g.2).sum();
+            ns as f64 / 1e6 / steps(r)
+        })
+        .collect();
+    let (wall_med, total_med) = (median(&mut wall), median(&mut totals));
+    println!(
+        "\nper-op GPU time per decode step (Vulkan timestamps; median over runs; min-max; share of GPU batch time; dispatches/step):"
+    );
+    let mut rows: Vec<(f64, &str, f64, f64, u64)> = Vec::new();
+    for k in keys.iter().filter(|k| **k != total_key) {
+        let mut per: Vec<f64> = all
+            .iter()
+            .map(|r| {
+                let ns: u64 = r.gpu.iter().filter(|g| g.0 == *k).map(|g| g.2).sum();
+                ns as f64 / 1e6 / steps(r)
+            })
+            .collect();
+        let n: u64 = all[0]
+            .gpu
+            .iter()
+            .filter(|g| g.0 == *k)
+            .map(|g| g.1)
+            .sum::<u64>()
+            / all[0].gpu_steps.len().max(1) as u64;
+        let (lo, hi) = spread(&per);
+        rows.push((median(&mut per), k, lo, hi, n));
+    }
+    rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    for (m, name, lo, hi, n) in &rows {
+        println!(
+            "  {name:<26} {m:>9.3} ms  ({lo:.3}-{hi:.3})  {:>5.1}%  {n:>5}",
+            m / total_med * 100.0
+        );
+    }
+    println!(
+        "  {total_key:<26} {total_med:>9.3} ms   = GPU time between the first and last timestamp of each batch; step wall (timestamps on) {wall_med:.1} ms"
+    );
+}
+
 fn main() {
     let arg = |i: usize, d: usize| {
         std::env::args()
@@ -252,6 +337,7 @@ fn main() {
     copy_anatomy(&all.last().expect("at least one run").trace);
     let step_all = print_step_summary(&all, prompt_tokens.len(), steady);
     print_op_table(&all, step_all);
+    print_gpu_table(&all);
 }
 
 fn bucket(bytes: usize) -> &'static str {
