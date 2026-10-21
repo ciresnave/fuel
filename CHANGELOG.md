@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.36 - 2026-10-21
+
+### Fixed
+
+- `fuel-metal-kernels` tests: `cos_strided_random` compared Metal and CPU `cos` after rounding both to 4 decimals, on unseeded `rand::random` inputs, so a value near a rounding boundary failed it at random (macOS CI, 0.7316 vs 0.7317, on an unrelated Dependabot PR). It now draws from a seeded `StdRng` and compares with `fuel_test_support::assert_all_close` (abs 1e-5). The other unseeded draws in the file (the `reduce_*` shuffles, `const_fill`) are seeded too. Fixed-input comparisons against literal constants are unchanged. macOS behaviour is verified by CI only.
+
+### Added
+
+- `fuel-test-support`: `all_close` / `assert_all_close`, a `|got - want| <= abs + rel*|want|` comparison (NaN-safe, length-checked) with unit tests that run on every platform, including the rejection of an off-by-1e-3 value and the acceptance of the pair that flipped the rounded comparison.
+
 ## v0.20.35 - 2026-10-21
 
 ### Changed

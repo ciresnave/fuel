@@ -4,7 +4,8 @@ use crate::metal::{create_command_buffer, CommandSemaphore, Commands};
 use core::ffi::c_void;
 use half::{bf16, f16};
 use rand::prelude::SliceRandom;
-use rand::{rng, RngExt};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use std::sync::Arc;
 use std::thread;
 
@@ -213,26 +214,23 @@ fn cos_f32_strided() {
 
 #[test]
 fn cos_strided_random() {
-    let v: Vec<_> = (0..10_000).map(|_| rand::random::<f32>()).collect();
+    // Seeded: an unseeded draw plus round-to-4-decimals equality flaked on a
+    // value near a rounding boundary (0.7316 vs 0.7317, macOS CI).
+    let mut rng = StdRng::seed_from_u64(0xC05_5EED);
+    let v: Vec<f32> = (0..10_000).map(|_| rng.random::<f32>()).collect();
     let shape = vec![5_000, 2];
     let strides = vec![1, 5_000];
     let offset = 0;
     let results = run_strided(&v, unary::strided::cos::FLOAT, &shape, &strides, offset);
     let expected: Vec<_> = v.iter().map(|v| v.cos()).collect();
-    assert_eq!(approx(vec![results[0]], 4), approx(vec![expected[0]], 4));
-    assert_eq!(
-        approx(vec![results[1]], 4),
-        approx(vec![expected[5_000]], 4)
-    );
-    assert_eq!(approx(vec![results[2]], 4), approx(vec![expected[1]], 4));
-    assert_eq!(
-        approx(vec![results[3]], 4),
-        approx(vec![expected[5_001]], 4)
-    );
-    assert_eq!(
-        approx(vec![results[5_000]], 4),
-        approx(vec![expected[2_500]], 4)
-    );
+    // (result index, input index) pairs: the transposed view reads input
+    // (k % 2) * 5_000 + k / 2 for output k.
+    let picks = [(0, 0), (1, 5_000), (2, 1), (3, 5_001), (5_000, 2_500)];
+    let got: Vec<f32> = picks.iter().map(|&(r, _)| results[r]).collect();
+    let want: Vec<f32> = picks.iter().map(|&(_, e)| expected[e]).collect();
+    // cos on [0, 1): the GPU-vs-CPU difference is a few f32 ulps (~1e-7);
+    // 1e-5 is ~100x that, and still 100x below a 1e-3 mistake.
+    fuel_test_support::assert_all_close(&got, &want, 1e-5, 0.0);
 }
 
 #[test]
@@ -1052,7 +1050,7 @@ fn reduce_sum_case<const N: usize, const D: usize>() {
     let mut v = create_array::<N>();
     if D == 1 {
         // Hardens 1-dimensional test cases
-        v.shuffle(&mut rng());
+        v.shuffle(&mut StdRng::seed_from_u64(0x5EED));
     }
     let results = run_reduce(&v, N, D, "fast_sum_f32");
     assert_eq!(approx(results, 4), correct_sum::<N, D>());
@@ -1062,7 +1060,7 @@ fn reduce_max_case<const N: usize, const D: usize>() {
     let mut v = create_array::<N>();
     if D == 1 {
         // Hardens 1-dimensional test cases
-        v.shuffle(&mut rng());
+        v.shuffle(&mut StdRng::seed_from_u64(0x5EED));
     }
     let results = run_reduce(&v, N, D, "fast_max_f32");
     assert_eq!(approx(results, 4), correct_max::<N, D>());
@@ -1072,7 +1070,7 @@ fn reduce_argmax_case<const N: usize, const D: usize>() {
     let mut v = create_array::<N>();
     if D == 1 {
         // Hardens 1-dimensional test cases
-        v.shuffle(&mut rng());
+        v.shuffle(&mut StdRng::seed_from_u64(0x5EED));
     }
     let results: Vec<u32> = run_reduce(&v, N, D, "fast_argmax_f32");
     assert_eq!(results, correct_argmax::<N, D>(v));
@@ -2447,8 +2445,9 @@ fn const_fill() {
         name: &'static str,
         f: F,
     ) {
-        let len = rand::rng().random_range(2..16) * rand::rng().random_range(4..16);
-        let value = rand::rng().random_range(1. ..19.);
+        let mut rng = StdRng::seed_from_u64(0xF111);
+        let len = rng.random_range(2..16) * rng.random_range(4..16);
+        let value = rng.random_range(1. ..19.);
         let value = f(value);
         let v = constant_fill::<T>(name, len, value);
         assert_eq!(v, vec![value; len])
