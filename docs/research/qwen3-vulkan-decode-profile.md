@@ -254,6 +254,28 @@ The other 131 validation errors in both decode runs are the same pre-existing pi
 
 **What is left at 71 ms:** the loop is 65 ms: kernel items 25 ms (launches 15, output allocation 6, input gathering 3), per-token data 9 ms, evictions 6.5 ms, eager submits 3.8 ms, and 22.6 ms waiting at the end for the GPU, which is busy 36.7 ms per step in this configuration (about 16 ms with #430), so the host recording is now the longer pole.
 
+## Allocation churn and the per-token upload (ROADMAP item 23, continued)
+
+With the host no longer waiting on the GPU, two host phases stood out in the profile (per decode step, 805 kernels): `kernel.alloc_output` 7.2 ms and `decode.build_token_data` 10.5 ms. Both traced to the same two causes.
+
+**1. The per-token upload ran a full transient-graph realize per buffer.** `decode.build_token_data` was split into `decode.token_host_compute` (0.02 ms: the RoPE tables and mask are cheap) and `decode.token_upload` (all of the rest). `upload_host_buffer_to_device` built a transient `Op::Const -> Op::Copy` graph and ran `PipelinedExecutor::realize_many` on it for each of the four per-token buffers. On Vulkan it now calls `upload_bytes_handle` directly (the same staging copy the realized `Op::Copy` performs).
+
+**2. The buffer recycler destroyed and recreated the step's temporaries every step.** Instrumenting `take_or_alloc_device_buffer` showed the 3 ms was not allocation: the first allocation of a step, holding the pool lock, trimmed the 2,880-byte bucket from hundreds of buffers to the per-bucket depth of 4, and every `vkDestroyBuffer` is about a millisecond. The 2,880-byte bucket then missed 7,140 times against 2,100 hits in 7 steps. The depth is now `recycler_bucket_depth(size)`: as many buffers as fit in 16 MiB, between 4 and 1,024 (large buffers keep 4), and trimmed buffers are destroyed after the lock is released. The pool's total-bytes cap (512 MB) and bucket-count cap are unchanged.
+
+**Measured** (Qwen3-0.6B Q4_K_M decode on Vulkan, RTX 4070, #426's per-device preference applied locally and not in this PR, 3 runs x 10 steps, median step, baseline and new binaries run alternately three times):
+
+| | baseline (main) | this change |
+|---|---|---|
+| step, 3 alternating pairs | 62, 59, 59 ms | **43, 44, 45 ms** |
+| `kernel.alloc_output` per step | 7.2 ms | 1.3 ms |
+| `decode.token_upload` per step | about 10.5 ms | 1.7 ms |
+
+About 1.35x on the step, about 22 tokens/s. A first, non-alternating comparison was unusable (the box was loaded by other work: the GPU batch time moved from 14 to 19 ms between runs), which is why the table is from alternating runs.
+
+**Correctness:** `QWEN3_VERIFY=1` against the CPU fixture: max logit difference 9.2e-5, 0 of 64 greedy tokens differ, PASS (one run, on the tree with both changes). **Cost:** the recycler can now hold up to its existing 512 MB cap in more, smaller buffers; VRAM held by the pool was not re-measured.
+
+**Not tried:** batching the four uploads into one submission. Measured inside `upload_bytes`: the copy submission is 0.3 to 0.5 ms of the upload, the rest was the pool trim, so batching would save about 1 ms and was not kept.
+
 ## What this points at instead (not started)
 
 1. The 397 `Copy/Vulkan` launches per step (62%).
