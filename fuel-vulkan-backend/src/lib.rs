@@ -15,6 +15,7 @@ pub mod pipelines;
 pub mod probe;
 mod recorder;
 pub mod residency;
+pub mod spirv_caps;
 
 pub use byte_storage::VulkanStorageBytes;
 pub use capture::CapturedRun;
@@ -888,7 +889,14 @@ impl VulkanBackend {
 
         let queue = device.get_queue(queue_family, 0);
 
-        let pipelines = Pipelines::new(&device, has_required_coop_shape).map_err(vk_err)?;
+        let pipelines =
+            Pipelines::new(&device, has_required_coop_shape, optional).map_err(vk_err)?;
+        if !pipelines.unavailable.is_empty() {
+            tracing::warn!(
+                kernels = pipelines.unavailable.len(),
+                "kernels unavailable on this device (missing optional features); \n                 they decline with a typed `KernelUnavailable`",
+            );
+        }
         // GPU timestamp support: a non-zero period and valid bits on the compute
         // queue family. Opt-in per backend via `set_gpu_timing`.
         let gpu_time = std::sync::Arc::new(GpuTimeStats::default());
@@ -2180,7 +2188,8 @@ impl VulkanBackend {
             out,
             la,
             lb,
-            &self.pipelines.binary_f16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.binary_f16_pipeline, "binary_f16")?,
             &self.pipelines.binary_f16_layout,
         )
     }
@@ -2682,7 +2691,8 @@ impl VulkanBackend {
         let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "softmax_last_dim_f16_bytes",
-            &self.pipelines.softmax_f16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.softmax_f16_pipeline, "softmax_f16")?,
             &self.pipelines.softmax_f16_layout,
             desc,
             (outer_count as u32, 1, 1),
@@ -3011,7 +3021,10 @@ impl VulkanBackend {
         let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "rms_norm_last_dim_f16_bytes",
-            &self.pipelines.rms_norm_last_dim_f16_pipeline,
+            self.pipelines.pipeline(
+                &self.pipelines.rms_norm_last_dim_f16_pipeline,
+                "rms_norm_last_dim_f16",
+            )?,
             &self.pipelines.rms_norm_last_dim_f16_layout,
             desc,
             (outer_count as u32, 1, 1),
@@ -3437,12 +3450,14 @@ impl VulkanBackend {
 
         let (pipeline, pipe_layout, op_name) = match (src_dtype, dst_dtype) {
             (DType::F32, DType::F16) => (
-                &self.pipelines.cast_f32_to_f16_pipeline,
+                self.pipelines
+                    .pipeline(&self.pipelines.cast_f32_to_f16_pipeline, "cast_f32_to_f16")?,
                 &self.pipelines.cast_f32_to_f16_layout,
                 "cast_f32_to_f16",
             ),
             (DType::F16, DType::F32) => (
-                &self.pipelines.cast_f16_to_f32_pipeline,
+                self.pipelines
+                    .pipeline(&self.pipelines.cast_f16_to_f32_pipeline, "cast_f16_to_f32")?,
                 &self.pipelines.cast_f16_to_f32_layout,
                 "cast_f16_to_f32",
             ),
@@ -3895,7 +3910,10 @@ impl VulkanBackend {
         } else {
             self.matmul_small_half_inner(
                 "matmul_bf16_bf16_f32_bytes (small)",
-                &self.pipelines.matmul_small_bf16_bf16_f32_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.matmul_small_bf16_bf16_f32_pipeline,
+                    "matmul_small_bf16_bf16_f32",
+                )?,
                 &self.pipelines.matmul_small_bf16_bf16_f32_layout,
                 "matmul_small_bf16_bf16_f32",
                 lhs,
@@ -4089,7 +4107,10 @@ impl VulkanBackend {
         } else {
             self.matmul_small_half_inner(
                 "matmul_bf16_bf16_bf16_bytes (small)",
-                &self.pipelines.matmul_small_bf16_bf16_bf16_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.matmul_small_bf16_bf16_bf16_pipeline,
+                    "matmul_small_bf16_bf16_bf16",
+                )?,
                 &self.pipelines.matmul_small_bf16_bf16_bf16_layout,
                 "matmul_small_bf16_bf16_bf16",
                 lhs,
@@ -4935,7 +4956,8 @@ impl VulkanBackend {
         let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "affine_f16_bytes",
-            &self.pipelines.affine_f16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.affine_f16_pipeline, "affine_f16")?,
             &self.pipelines.affine_f16_layout,
             desc,
             (Self::workgroups(out_elem), 1, 1),
@@ -5645,7 +5667,8 @@ impl VulkanBackend {
                 let wb = [out_buf.raw()];
                 self.record_dispatch_batched(
                     "qmatvec_q4_0",
-                    &self.pipelines.qmatvec_q4_0_pipeline,
+                    self.pipelines
+                        .pipeline(&self.pipelines.qmatvec_q4_0_pipeline, "qmatvec_q4_0")?,
                     &self.pipelines.qmatvec_q4_0_layout,
                     desc,
                     (n as u32, 1, 1),
@@ -5706,7 +5729,10 @@ impl VulkanBackend {
                 let wb = [out_buf.raw()];
                 self.record_dispatch_batched(
                     "matmul_q4_0_tiled",
-                    &self.pipelines.matmul_q4_0_tiled_pipeline,
+                    self.pipelines.pipeline(
+                        &self.pipelines.matmul_q4_0_tiled_pipeline,
+                        "matmul_q4_0_tiled",
+                    )?,
                     &self.pipelines.matmul_q4_0_tiled_layout,
                     desc,
                     (n as u32, n_tiles_m, 1),
@@ -5795,7 +5821,8 @@ impl VulkanBackend {
         let wb = [w_f32_buf.raw()];
         self.record_dispatch_batched(
             "dequant_q4_km",
-            &self.pipelines.dequant_q4_km_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.dequant_q4_km_pipeline, "dequant_q4_km")?,
             &self.pipelines.dequant_q4_km_layout,
             desc,
             (n_blocks as u32, 1, 1),
@@ -5896,7 +5923,8 @@ impl VulkanBackend {
         let wb = [w_f32_buf.raw()];
         self.record_dispatch_batched(
             "dequant_q8_0",
-            &self.pipelines.dequant_q8_0_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.dequant_q8_0_pipeline, "dequant_q8_0")?,
             &self.pipelines.dequant_q8_0_layout,
             desc,
             (Self::workgroups(n_elements), 1, 1),
@@ -6634,12 +6662,18 @@ impl VulkanBackend {
             name: "flash_attn_bf16_split_bytes",
             elem: 2,
             split: (
-                &self.pipelines.flash_attn_split_bf16_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.flash_attn_split_bf16_pipeline,
+                    "flash_attn_split_bf16",
+                )?,
                 &self.pipelines.flash_attn_split_bf16_layout,
                 "flash_attn_split_bf16",
             ),
             combine: (
-                &self.pipelines.flash_attn_combine_bf16_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.flash_attn_combine_bf16_pipeline,
+                    "flash_attn_combine_bf16",
+                )?,
                 &self.pipelines.flash_attn_combine_bf16_layout,
                 "flash_attn_combine_bf16",
             ),
@@ -6947,7 +6981,8 @@ impl VulkanBackend {
     ) -> fuel_ir::Result<()> {
         self.flash_attn_bytes_impl(
             "flash_attn_bf16_bytes",
-            &self.pipelines.flash_attn_bf16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.flash_attn_bf16_pipeline, "flash_attn_bf16")?,
             &self.pipelines.flash_attn_bf16_layout,
             "flash_attn_bf16",
             q,
@@ -7347,7 +7382,10 @@ impl VulkanBackend {
         let im2col_wg = total.div_ceil(256);
         self.record_dispatch_batched(
             "conv2d_im2col_bf16",
-            &self.pipelines.conv2d_im2col_bf16_pipeline,
+            self.pipelines.pipeline(
+                &self.pipelines.conv2d_im2col_bf16_pipeline,
+                "conv2d_im2col_bf16",
+            )?,
             &self.pipelines.conv2d_im2col_bf16_layout,
             im2col_desc,
             (im2col_wg, 1, 1),
@@ -7596,7 +7634,10 @@ impl VulkanBackend {
         let im2col_wg = total.div_ceil(256);
         self.record_dispatch_batched(
             "conv2d_im2col_bf16",
-            &self.pipelines.conv2d_im2col_bf16_pipeline,
+            self.pipelines.pipeline(
+                &self.pipelines.conv2d_im2col_bf16_pipeline,
+                "conv2d_im2col_bf16",
+            )?,
             &self.pipelines.conv2d_im2col_bf16_layout,
             im2col_desc,
             (im2col_wg, 1, 1),
@@ -7903,7 +7944,10 @@ impl VulkanBackend {
             outer_count,
             last_dim,
             eps,
-            &self.pipelines.layer_norm_last_dim_backward_f16_pipeline,
+            self.pipelines.pipeline(
+                &self.pipelines.layer_norm_last_dim_backward_f16_pipeline,
+                "layer_norm_last_dim_backward_f16",
+            )?,
             &self.pipelines.layer_norm_last_dim_backward_f16_layout,
         )
     }
@@ -8110,7 +8154,10 @@ impl VulkanBackend {
             outer_count,
             last_dim,
             eps,
-            &self.pipelines.layer_norm_last_dim_f16_pipeline,
+            self.pipelines.pipeline(
+                &self.pipelines.layer_norm_last_dim_f16_pipeline,
+                "layer_norm_last_dim_f16",
+            )?,
             &self.pipelines.layer_norm_last_dim_f16_layout,
         )
     }
@@ -8591,7 +8638,8 @@ impl VulkanBackend {
         let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "scatter_add_f64_bytes",
-            &self.pipelines.scatter_add_f64_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.scatter_add_f64_pipeline, "scatter_add_f64")?,
             &self.pipelines.scatter_add_f64_layout,
             desc,
             (groups, 1, 1),
@@ -8650,7 +8698,8 @@ impl VulkanBackend {
             src_shape,
             dim,
             "scatter_add_f16_bytes",
-            &self.pipelines.scatter_add_f16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.scatter_add_f16_pipeline, "scatter_add_f16")?,
             &self.pipelines.scatter_add_f16_layout,
         )
     }
@@ -9050,7 +9099,10 @@ impl VulkanBackend {
                 &self.pipelines.arg_reduce_last_dim_f32_layout,
             ),
             DType::F16 => (
-                &self.pipelines.arg_reduce_last_dim_f16_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.arg_reduce_last_dim_f16_pipeline,
+                    "arg_reduce_last_dim_f16",
+                )?,
                 &self.pipelines.arg_reduce_last_dim_f16_layout,
             ),
             DType::BF16 => (
@@ -9177,7 +9229,8 @@ impl VulkanBackend {
             n_indices,
             inner_count,
             "index_add_f64_bytes",
-            &self.pipelines.index_add_f64_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.index_add_f64_pipeline, "index_add_f64")?,
             &self.pipelines.index_add_f64_layout,
             false,
         )
@@ -9235,7 +9288,8 @@ impl VulkanBackend {
             n_indices,
             inner_count,
             "index_add_f16_bytes",
-            &self.pipelines.index_add_f16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.index_add_f16_pipeline, "index_add_f16")?,
             &self.pipelines.index_add_f16_layout,
             true,
         )
@@ -9429,7 +9483,10 @@ impl VulkanBackend {
                 &self.pipelines.arg_reduce_any_dim_f32_layout,
             ),
             DType::F16 => (
-                &self.pipelines.arg_reduce_any_dim_f16_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.arg_reduce_any_dim_f16_pipeline,
+                    "arg_reduce_any_dim_f16",
+                )?,
                 &self.pipelines.arg_reduce_any_dim_f16_layout,
             ),
             DType::BF16 => (
@@ -9611,12 +9668,18 @@ impl VulkanBackend {
                 "pad_backward_replicate_f32",
             ),
             (DType::F64, 1) => (
-                &self.pipelines.pad_backward_reflect_f64_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.pad_backward_reflect_f64_pipeline,
+                    "pad_backward_reflect_f64",
+                )?,
                 &self.pipelines.pad_backward_reflect_f64_layout,
                 "pad_backward_reflect_f64",
             ),
             (DType::F64, 2) => (
-                &self.pipelines.pad_backward_replicate_f64_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.pad_backward_replicate_f64_pipeline,
+                    "pad_backward_replicate_f64",
+                )?,
                 &self.pipelines.pad_backward_replicate_f64_layout,
                 "pad_backward_replicate_f64",
             ),
@@ -9631,12 +9694,18 @@ impl VulkanBackend {
                 "pad_backward_replicate_bf16",
             ),
             (DType::F16, 1) => (
-                &self.pipelines.pad_backward_reflect_f16_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.pad_backward_reflect_f16_pipeline,
+                    "pad_backward_reflect_f16",
+                )?,
                 &self.pipelines.pad_backward_reflect_f16_layout,
                 "pad_backward_reflect_f16",
             ),
             (DType::F16, 2) => (
-                &self.pipelines.pad_backward_replicate_f16_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.pad_backward_replicate_f16_pipeline,
+                    "pad_backward_replicate_f16",
+                )?,
                 &self.pipelines.pad_backward_replicate_f16_layout,
                 "pad_backward_replicate_f16",
             ),
@@ -10644,7 +10713,10 @@ impl VulkanBackend {
             dx,
             outer_count,
             last_dim,
-            &self.pipelines.softmax_last_dim_backward_f16_pipeline,
+            self.pipelines.pipeline(
+                &self.pipelines.softmax_last_dim_backward_f16_pipeline,
+                "softmax_last_dim_backward_f16",
+            )?,
             &self.pipelines.softmax_last_dim_backward_f16_layout,
         )
     }
@@ -10808,7 +10880,10 @@ impl VulkanBackend {
             dim,
             a_layout,
             b_layout,
-            &self.pipelines.concat_along_dim_f16_pipeline,
+            self.pipelines.pipeline(
+                &self.pipelines.concat_along_dim_f16_pipeline,
+                "concat_along_dim_f16",
+            )?,
             &self.pipelines.concat_along_dim_f16_layout,
         )
     }
@@ -11292,7 +11367,8 @@ impl VulkanBackend {
             let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
-                &self.pipelines.reduce_f16_pipeline,
+                self.pipelines
+                    .pipeline(&self.pipelines.reduce_f16_pipeline, "reduce_f16")?,
                 &self.pipelines.reduce_f16_layout,
                 desc,
                 (1, 1, 1),
@@ -11358,7 +11434,10 @@ impl VulkanBackend {
             let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
-                &self.pipelines.reduce_last_dim_f16_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.reduce_last_dim_f16_pipeline,
+                    "reduce_last_dim_f16",
+                )?,
                 &self.pipelines.reduce_last_dim_f16_layout,
                 desc,
                 (n_rows as u32, 1, 1),
@@ -11824,7 +11903,10 @@ impl VulkanBackend {
             source_dim_size,
             n_indices,
             inner_count,
-            &self.pipelines.index_select_f16_pipeline,
+            self.pipelines.pipeline(
+                &self.pipelines.index_select_f16_pipeline,
+                "index_select_f16",
+            )?,
             &self.pipelines.index_select_f16_layout,
             /* pair_thread */ false,
         )
@@ -12200,7 +12282,8 @@ impl VulkanBackend {
             sin,
             out,
             x_layout,
-            &self.pipelines.rope_f16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.rope_f16_pipeline, "rope_f16")?,
             &self.pipelines.rope_f16_layout,
         )
     }
@@ -12583,7 +12666,8 @@ impl VulkanBackend {
             input,
             out,
             layout,
-            &self.pipelines.unary_f16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.unary_f16_pipeline, "unary_f16")?,
             &self.pipelines.unary_f16_layout,
         )
     }
@@ -13189,7 +13273,8 @@ impl VulkanBackend {
 
         let (pipeline, pipe_layout) = match byte_width {
             2 => (
-                &self.pipelines.flip_b2_pipeline,
+                self.pipelines
+                    .pipeline(&self.pipelines.flip_b2_pipeline, "flip_b2")?,
                 &self.pipelines.flip_b2_layout,
             ),
             4 => (
@@ -13335,7 +13420,8 @@ impl VulkanBackend {
 
         let (pipeline, pipe_layout) = match byte_width {
             2 => (
-                &self.pipelines.roll_b2_pipeline,
+                self.pipelines
+                    .pipeline(&self.pipelines.roll_b2_pipeline, "roll_b2")?,
                 &self.pipelines.roll_b2_layout,
             ),
             4 => (
@@ -13441,7 +13527,8 @@ impl VulkanBackend {
             layout,
             axis,
             "cumsum_f16",
-            &self.pipelines.cumsum_f16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.cumsum_f16_pipeline, "cumsum_f16")?,
             &self.pipelines.cumsum_f16_layout,
         )
     }
@@ -13460,7 +13547,8 @@ impl VulkanBackend {
             layout,
             axis,
             "cumsum_bf16",
-            &self.pipelines.cumsum_bf16_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.cumsum_bf16_pipeline, "cumsum_bf16")?,
             &self.pipelines.cumsum_bf16_layout,
         )
     }
@@ -13670,7 +13758,10 @@ impl VulkanBackend {
 
         let (pipeline, pipe_layout) = match byte_width {
             2 => (
-                &self.pipelines.strided_copy_signed_b2_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.strided_copy_signed_b2_pipeline,
+                    "strided_copy_signed_b2",
+                )?,
                 &self.pipelines.strided_copy_signed_b2_layout,
             ),
             4 => (
@@ -13789,12 +13880,18 @@ impl VulkanBackend {
                 "cast_f8e4m3_to_f32",
             ),
             (DType::F16, DType::F8E4M3) => (
-                &self.pipelines.cast_f16_to_f8e4m3_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.cast_f16_to_f8e4m3_pipeline,
+                    "cast_f16_to_f8e4m3",
+                )?,
                 &self.pipelines.cast_f16_to_f8e4m3_layout,
                 "cast_f16_to_f8e4m3",
             ),
             (DType::F8E4M3, DType::F16) => (
-                &self.pipelines.cast_f8e4m3_to_f16_pipeline,
+                self.pipelines.pipeline(
+                    &self.pipelines.cast_f8e4m3_to_f16_pipeline,
+                    "cast_f8e4m3_to_f16",
+                )?,
                 &self.pipelines.cast_f8e4m3_to_f16_layout,
                 "cast_f8e4m3_to_f16",
             ),
@@ -14022,7 +14119,8 @@ impl VulkanBackend {
         let total_pairs = n_blocks * (BLCK_SIZE / 2);
         self.dispatch_2buf(
             "dequant_q4_0",
-            &self.pipelines.dequant_q4_0_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.dequant_q4_0_pipeline, "dequant_q4_0")?,
             &self.pipelines.dequant_q4_0_layout,
             &input,
             &out,
@@ -14455,7 +14553,8 @@ impl VulkanBackend {
         let (pbuf, pmem) = self.upload_params(&p)?;
         self.dispatch_2buf(
             "dequant_q8_0",
-            &self.pipelines.dequant_q8_0_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.dequant_q8_0_pipeline, "dequant_q8_0")?,
             &self.pipelines.dequant_q8_0_layout,
             input,
             &out,
@@ -14508,7 +14607,8 @@ impl VulkanBackend {
         // 64 threads per workgroup, one workgroup per super-block.
         self.dispatch_2buf(
             "dequant_q4_km",
-            &self.pipelines.dequant_q4_km_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.dequant_q4_km_pipeline, "dequant_q4_km")?,
             &self.pipelines.dequant_q4_km_layout,
             blocks,
             &out,
@@ -14573,7 +14673,8 @@ impl VulkanBackend {
         let groups = n_blocks.div_ceil(64) as u32;
         self.dispatch_2buf(
             "quantize_q8_0",
-            &self.pipelines.quantize_q8_0_pipeline,
+            self.pipelines
+                .pipeline(&self.pipelines.quantize_q8_0_pipeline, "quantize_q8_0")?,
             &self.pipelines.quantize_q8_0_layout,
             src_f32,
             &out,

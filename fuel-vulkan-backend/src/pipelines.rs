@@ -6,6 +6,9 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use vulkane::safe::*;
 
+use crate::OptionalFeatureSupport;
+use crate::spirv_caps::{KernelUnavailable, required_features};
+
 /// Shader-registry contents, lazily materialized as `&'static
 /// [ShaderSource]` so it satisfies `ShaderRegistry::with_embedded`'s
 /// `'static` bound. Built once on first access from
@@ -22,6 +25,41 @@ fn embedded_shader_sources() -> &'static [ShaderSource] {
         .as_slice()
 }
 
+/// Loads shader modules, skipping any that need an optional device feature the device
+/// lacks. The check reads the module's own `OpCapability` words, so no hand-kept table
+/// can drift; a skipped kernel is recorded in `unavailable`.
+struct Gate<'a> {
+    registry: &'a ShaderRegistry,
+    device: &'a Device,
+    support: OptionalFeatureSupport,
+    unavailable: Vec<KernelUnavailable>,
+}
+
+impl Gate<'_> {
+    fn module(&mut self, name: &'static str) -> Result<Option<ShaderModule>> {
+        let bytes = self.registry.load(name)?;
+        if let Some(missing_feature) = self.support.first_missing(&required_features(&bytes)) {
+            self.unavailable.push(KernelUnavailable {
+                kernel: name,
+                missing_feature,
+            });
+            return Ok(None);
+        }
+        Ok(Some(ShaderModule::from_spirv_bytes(self.device, &bytes)?))
+    }
+
+    fn pipeline(
+        &mut self,
+        name: &'static str,
+        layout: &PipelineLayout,
+    ) -> Result<Option<ComputePipeline>> {
+        match self.module(name)? {
+            Some(m) => Ok(Some(ComputePipeline::new(self.device, layout, &m, "main")?)),
+            None => Ok(None),
+        }
+    }
+}
+
 /// Construct Fuel's Vulkan shader registry — the embedded byte
 /// table from `fuel-graph-executor` plus the dev-time disk override
 /// at `FUEL_SHADER_OVERRIDE_DIR`.
@@ -33,6 +71,9 @@ fn shader_registry() -> ShaderRegistry {
 
 /// All pre-compiled compute pipelines.
 pub struct Pipelines {
+    /// Kernels whose shader needs a device feature this device lacks; their pipeline
+    /// fields are `None`. Use [`Pipelines::pipeline`] to reach one with a typed error.
+    pub unavailable: Vec<KernelUnavailable>,
     /// 2 storage + 1 uniform (unary, affine, softmax, reduce).
     pub layout_2s1u: DescriptorSetLayout,
     /// 3 storage + 1 uniform (binary, matmul).
@@ -46,7 +87,7 @@ pub struct Pipelines {
 
     pub unary_pipeline: ComputePipeline,
     pub unary_layout: PipelineLayout,
-    pub unary_f16_pipeline: ComputePipeline,
+    pub unary_f16_pipeline: Option<ComputePipeline>,
     pub unary_f16_layout: PipelineLayout,
     pub unary_f64_pipeline: ComputePipeline,
     pub unary_f64_layout: PipelineLayout,
@@ -54,7 +95,7 @@ pub struct Pipelines {
     pub unary_bf16_layout: PipelineLayout,
     pub binary_pipeline: ComputePipeline,
     pub binary_layout: PipelineLayout,
-    pub binary_f16_pipeline: ComputePipeline,
+    pub binary_f16_pipeline: Option<ComputePipeline>,
     pub binary_f16_layout: PipelineLayout,
     pub binary_f64_pipeline: ComputePipeline,
     pub binary_f64_layout: PipelineLayout,
@@ -64,7 +105,7 @@ pub struct Pipelines {
     pub affine_layout: PipelineLayout,
     pub affine_f64_pipeline: ComputePipeline,
     pub affine_f64_layout: PipelineLayout,
-    pub affine_f16_pipeline: ComputePipeline,
+    pub affine_f16_pipeline: Option<ComputePipeline>,
     pub affine_f16_layout: PipelineLayout,
     pub affine_bf16_pipeline: ComputePipeline,
     pub affine_bf16_layout: PipelineLayout,
@@ -72,9 +113,9 @@ pub struct Pipelines {
     pub clamp_layout: PipelineLayout,
     pub powi_pipeline: ComputePipeline,
     pub powi_layout: PipelineLayout,
-    pub cast_f32_to_f16_pipeline: ComputePipeline,
+    pub cast_f32_to_f16_pipeline: Option<ComputePipeline>,
     pub cast_f32_to_f16_layout: PipelineLayout,
-    pub cast_f16_to_f32_pipeline: ComputePipeline,
+    pub cast_f16_to_f32_pipeline: Option<ComputePipeline>,
     pub cast_f16_to_f32_layout: PipelineLayout,
     pub cast_f32_to_bf16_pipeline: ComputePipeline,
     pub cast_f32_to_bf16_layout: PipelineLayout,
@@ -84,9 +125,9 @@ pub struct Pipelines {
     pub cast_f32_to_f8e4m3_layout: PipelineLayout,
     pub cast_f8e4m3_to_f32_pipeline: ComputePipeline,
     pub cast_f8e4m3_to_f32_layout: PipelineLayout,
-    pub cast_f16_to_f8e4m3_pipeline: ComputePipeline,
+    pub cast_f16_to_f8e4m3_pipeline: Option<ComputePipeline>,
     pub cast_f16_to_f8e4m3_layout: PipelineLayout,
-    pub cast_f8e4m3_to_f16_pipeline: ComputePipeline,
+    pub cast_f8e4m3_to_f16_pipeline: Option<ComputePipeline>,
     pub cast_f8e4m3_to_f16_layout: PipelineLayout,
     pub cast_bf16_to_f8e4m3_pipeline: ComputePipeline,
     pub cast_bf16_to_f8e4m3_layout: PipelineLayout,
@@ -139,17 +180,17 @@ pub struct Pipelines {
     pub pad_backward_reflect_f32_layout: PipelineLayout,
     pub pad_backward_replicate_f32_pipeline: ComputePipeline,
     pub pad_backward_replicate_f32_layout: PipelineLayout,
-    pub pad_backward_reflect_f64_pipeline: ComputePipeline,
+    pub pad_backward_reflect_f64_pipeline: Option<ComputePipeline>,
     pub pad_backward_reflect_f64_layout: PipelineLayout,
-    pub pad_backward_replicate_f64_pipeline: ComputePipeline,
+    pub pad_backward_replicate_f64_pipeline: Option<ComputePipeline>,
     pub pad_backward_replicate_f64_layout: PipelineLayout,
     pub pad_backward_reflect_bf16_pipeline: ComputePipeline,
     pub pad_backward_reflect_bf16_layout: PipelineLayout,
     pub pad_backward_replicate_bf16_pipeline: ComputePipeline,
     pub pad_backward_replicate_bf16_layout: PipelineLayout,
-    pub pad_backward_reflect_f16_pipeline: ComputePipeline,
+    pub pad_backward_reflect_f16_pipeline: Option<ComputePipeline>,
     pub pad_backward_reflect_f16_layout: PipelineLayout,
-    pub pad_backward_replicate_f16_pipeline: ComputePipeline,
+    pub pad_backward_replicate_f16_pipeline: Option<ComputePipeline>,
     pub pad_backward_replicate_f16_layout: PipelineLayout,
 
     pub masked_fill_b1_pipeline: ComputePipeline,
@@ -171,7 +212,7 @@ pub struct Pipelines {
     pub gather_b8_layout: PipelineLayout,
     pub write_slice_b8_pipeline: ComputePipeline,
     pub write_slice_b8_layout: PipelineLayout,
-    pub strided_copy_signed_b2_pipeline: ComputePipeline,
+    pub strided_copy_signed_b2_pipeline: Option<ComputePipeline>,
     pub strided_copy_signed_b2_layout: PipelineLayout,
     pub strided_copy_signed_b4_pipeline: ComputePipeline,
     pub strided_copy_signed_b4_layout: PipelineLayout,
@@ -189,13 +230,13 @@ pub struct Pipelines {
     pub tril_b4_layout: PipelineLayout,
     pub tril_b8_pipeline: ComputePipeline,
     pub tril_b8_layout: PipelineLayout,
-    pub flip_b2_pipeline: ComputePipeline,
+    pub flip_b2_pipeline: Option<ComputePipeline>,
     pub flip_b2_layout: PipelineLayout,
     pub flip_b4_pipeline: ComputePipeline,
     pub flip_b4_layout: PipelineLayout,
     pub flip_b8_pipeline: ComputePipeline,
     pub flip_b8_layout: PipelineLayout,
-    pub roll_b2_pipeline: ComputePipeline,
+    pub roll_b2_pipeline: Option<ComputePipeline>,
     pub roll_b2_layout: PipelineLayout,
     pub roll_b4_pipeline: ComputePipeline,
     pub roll_b4_layout: PipelineLayout,
@@ -205,9 +246,9 @@ pub struct Pipelines {
     pub cumsum_f32_layout: PipelineLayout,
     pub cumsum_f64_pipeline: ComputePipeline,
     pub cumsum_f64_layout: PipelineLayout,
-    pub cumsum_f16_pipeline: ComputePipeline,
+    pub cumsum_f16_pipeline: Option<ComputePipeline>,
     pub cumsum_f16_layout: PipelineLayout,
-    pub cumsum_bf16_pipeline: ComputePipeline,
+    pub cumsum_bf16_pipeline: Option<ComputePipeline>,
     pub cumsum_bf16_layout: PipelineLayout,
     /// WGSL matmul (4x4 register tile, no shared memory). Fast for
     /// short M where the shared-memory tiled version's barriers cost
@@ -247,9 +288,9 @@ pub struct Pipelines {
     pub matmul_coop_f16_f16_layout: Option<PipelineLayout>,
     pub matmul_coop_bf16_bf16_bf16_pipeline: Option<ComputePipeline>,
     pub matmul_coop_bf16_bf16_bf16_layout: Option<PipelineLayout>,
-    pub matmul_small_bf16_bf16_f32_pipeline: ComputePipeline,
+    pub matmul_small_bf16_bf16_f32_pipeline: Option<ComputePipeline>,
     pub matmul_small_bf16_bf16_f32_layout: PipelineLayout,
-    pub matmul_small_bf16_bf16_bf16_pipeline: ComputePipeline,
+    pub matmul_small_bf16_bf16_bf16_pipeline: Option<ComputePipeline>,
     pub matmul_small_bf16_bf16_bf16_layout: PipelineLayout,
     pub matmul_small_f16_f16_f32_pipeline: ComputePipeline,
     pub matmul_small_f16_f16_f32_layout: PipelineLayout,
@@ -261,15 +302,15 @@ pub struct Pipelines {
     pub flash_attn_split_f32_layout: PipelineLayout,
     pub flash_attn_combine_f32_pipeline: ComputePipeline,
     pub flash_attn_combine_f32_layout: PipelineLayout,
-    pub flash_attn_split_bf16_pipeline: ComputePipeline,
+    pub flash_attn_split_bf16_pipeline: Option<ComputePipeline>,
     pub flash_attn_split_bf16_layout: PipelineLayout,
-    pub flash_attn_combine_bf16_pipeline: ComputePipeline,
+    pub flash_attn_combine_bf16_pipeline: Option<ComputePipeline>,
     pub flash_attn_combine_bf16_layout: PipelineLayout,
     pub flash_attn_split_f16_pipeline: ComputePipeline,
     pub flash_attn_split_f16_layout: PipelineLayout,
     pub flash_attn_combine_f16_pipeline: ComputePipeline,
     pub flash_attn_combine_f16_layout: PipelineLayout,
-    pub flash_attn_bf16_pipeline: ComputePipeline,
+    pub flash_attn_bf16_pipeline: Option<ComputePipeline>,
     pub flash_attn_bf16_layout: PipelineLayout,
     pub flash_attn_f16_pipeline: ComputePipeline,
     pub flash_attn_f16_layout: PipelineLayout,
@@ -284,7 +325,7 @@ pub struct Pipelines {
     pub softmax_pipeline: ComputePipeline,
     pub softmax_layout: PipelineLayout,
 
-    pub softmax_f16_pipeline: ComputePipeline,
+    pub softmax_f16_pipeline: Option<ComputePipeline>,
     pub softmax_f16_layout: PipelineLayout,
 
     pub softmax_bf16_pipeline: ComputePipeline,
@@ -295,7 +336,7 @@ pub struct Pipelines {
     pub reduce_pipeline: ComputePipeline,
     pub reduce_layout: PipelineLayout,
 
-    pub reduce_f16_pipeline: ComputePipeline,
+    pub reduce_f16_pipeline: Option<ComputePipeline>,
     pub reduce_f16_layout: PipelineLayout,
 
     pub reduce_bf16_pipeline: ComputePipeline,
@@ -318,13 +359,13 @@ pub struct Pipelines {
 
     pub scatter_add_f32_pipeline: ComputePipeline,
     pub scatter_add_f32_layout: PipelineLayout,
-    pub scatter_add_f64_pipeline: ComputePipeline,
+    pub scatter_add_f64_pipeline: Option<ComputePipeline>,
     pub scatter_add_f64_layout: PipelineLayout,
     pub scatter_add_bf16_pipeline: ComputePipeline,
     pub scatter_add_bf16_layout: PipelineLayout,
-    pub scatter_add_f16_pipeline: ComputePipeline,
+    pub scatter_add_f16_pipeline: Option<ComputePipeline>,
     pub scatter_add_f16_layout: PipelineLayout,
-    pub arg_reduce_last_dim_f16_pipeline: ComputePipeline,
+    pub arg_reduce_last_dim_f16_pipeline: Option<ComputePipeline>,
     pub arg_reduce_last_dim_f16_layout: PipelineLayout,
     pub arg_reduce_last_dim_bf16_pipeline: ComputePipeline,
     pub arg_reduce_last_dim_bf16_layout: PipelineLayout,
@@ -336,18 +377,18 @@ pub struct Pipelines {
     pub arg_reduce_any_dim_f64_layout: PipelineLayout,
     pub arg_reduce_any_dim_bf16_pipeline: ComputePipeline,
     pub arg_reduce_any_dim_bf16_layout: PipelineLayout,
-    pub arg_reduce_any_dim_f16_pipeline: ComputePipeline,
+    pub arg_reduce_any_dim_f16_pipeline: Option<ComputePipeline>,
     pub arg_reduce_any_dim_f16_layout: PipelineLayout,
     pub index_add_f32_pipeline: ComputePipeline,
     pub index_add_f32_layout: PipelineLayout,
-    pub index_add_f64_pipeline: ComputePipeline,
+    pub index_add_f64_pipeline: Option<ComputePipeline>,
     pub index_add_f64_layout: PipelineLayout,
     pub index_add_bf16_pipeline: ComputePipeline,
     pub index_add_bf16_layout: PipelineLayout,
-    pub index_add_f16_pipeline: ComputePipeline,
+    pub index_add_f16_pipeline: Option<ComputePipeline>,
     pub index_add_f16_layout: PipelineLayout,
 
-    pub reduce_last_dim_f16_pipeline: ComputePipeline,
+    pub reduce_last_dim_f16_pipeline: Option<ComputePipeline>,
     pub reduce_last_dim_f16_layout: PipelineLayout,
 
     pub reduce_last_dim_bf16_pipeline: ComputePipeline,
@@ -359,7 +400,7 @@ pub struct Pipelines {
     pub rms_norm_last_dim_pipeline: ComputePipeline,
     pub rms_norm_last_dim_layout: PipelineLayout,
 
-    pub rms_norm_last_dim_f16_pipeline: ComputePipeline,
+    pub rms_norm_last_dim_f16_pipeline: Option<ComputePipeline>,
     pub rms_norm_last_dim_f16_layout: PipelineLayout,
 
     pub rms_norm_last_dim_bf16_pipeline: ComputePipeline,
@@ -374,7 +415,7 @@ pub struct Pipelines {
     pub softmax_last_dim_backward_pipeline: ComputePipeline,
     pub softmax_last_dim_backward_layout: PipelineLayout,
 
-    pub softmax_last_dim_backward_f16_pipeline: ComputePipeline,
+    pub softmax_last_dim_backward_f16_pipeline: Option<ComputePipeline>,
     pub softmax_last_dim_backward_f16_layout: PipelineLayout,
 
     pub softmax_last_dim_backward_bf16_pipeline: ComputePipeline,
@@ -386,7 +427,7 @@ pub struct Pipelines {
     pub layer_norm_last_dim_backward_pipeline: ComputePipeline,
     pub layer_norm_last_dim_backward_layout: PipelineLayout,
 
-    pub layer_norm_last_dim_backward_f16_pipeline: ComputePipeline,
+    pub layer_norm_last_dim_backward_f16_pipeline: Option<ComputePipeline>,
     pub layer_norm_last_dim_backward_f16_layout: PipelineLayout,
     pub layer_norm_last_dim_backward_bf16_pipeline: ComputePipeline,
     pub layer_norm_last_dim_backward_bf16_layout: PipelineLayout,
@@ -395,7 +436,7 @@ pub struct Pipelines {
 
     pub layer_norm_last_dim_pipeline: ComputePipeline,
     pub layer_norm_last_dim_layout: PipelineLayout,
-    pub layer_norm_last_dim_f16_pipeline: ComputePipeline,
+    pub layer_norm_last_dim_f16_pipeline: Option<ComputePipeline>,
     pub layer_norm_last_dim_f16_layout: PipelineLayout,
     pub layer_norm_last_dim_bf16_pipeline: ComputePipeline,
     pub layer_norm_last_dim_bf16_layout: PipelineLayout,
@@ -408,7 +449,7 @@ pub struct Pipelines {
     pub index_select_pipeline: ComputePipeline,
     pub index_select_layout: PipelineLayout,
 
-    pub index_select_f16_pipeline: ComputePipeline,
+    pub index_select_f16_pipeline: Option<ComputePipeline>,
     pub index_select_f16_layout: PipelineLayout,
 
     pub index_select_bf16_pipeline: ComputePipeline,
@@ -423,7 +464,7 @@ pub struct Pipelines {
     pub rope_pipeline: ComputePipeline,
     pub rope_layout: PipelineLayout,
 
-    pub rope_f16_pipeline: ComputePipeline,
+    pub rope_f16_pipeline: Option<ComputePipeline>,
     pub rope_f16_layout: PipelineLayout,
 
     pub rope_bf16_pipeline: ComputePipeline,
@@ -435,7 +476,7 @@ pub struct Pipelines {
     pub concat_along_dim_pipeline: ComputePipeline,
     pub concat_along_dim_layout: PipelineLayout,
 
-    pub concat_along_dim_f16_pipeline: ComputePipeline,
+    pub concat_along_dim_f16_pipeline: Option<ComputePipeline>,
     pub concat_along_dim_f16_layout: PipelineLayout,
 
     pub concat_along_dim_bf16_pipeline: ComputePipeline,
@@ -449,7 +490,7 @@ pub struct Pipelines {
     /// matrix, then dispatch matmul (weight × patches) per group.
     pub conv2d_im2col_pipeline: ComputePipeline,
     pub conv2d_im2col_layout: PipelineLayout,
-    pub conv2d_im2col_bf16_pipeline: ComputePipeline,
+    pub conv2d_im2col_bf16_pipeline: Option<ComputePipeline>,
     pub conv2d_im2col_bf16_layout: PipelineLayout,
 
     /// FlashAttention v2 forward (Phase 8 Tier 2). Single-dispatch
@@ -458,22 +499,22 @@ pub struct Pipelines {
     pub flash_attention_pipeline: ComputePipeline,
     pub flash_attention_layout: PipelineLayout,
 
-    pub dequant_q4_0_pipeline: ComputePipeline,
+    pub dequant_q4_0_pipeline: Option<ComputePipeline>,
     pub dequant_q4_0_layout: PipelineLayout,
 
-    pub dequant_q8_0_pipeline: ComputePipeline,
+    pub dequant_q8_0_pipeline: Option<ComputePipeline>,
     pub dequant_q8_0_layout: PipelineLayout,
 
-    pub dequant_q4_km_pipeline: ComputePipeline,
+    pub dequant_q4_km_pipeline: Option<ComputePipeline>,
     pub dequant_q4_km_layout: PipelineLayout,
 
-    pub qmatvec_q4_0_pipeline: ComputePipeline,
+    pub qmatvec_q4_0_pipeline: Option<ComputePipeline>,
     pub qmatvec_q4_0_layout: PipelineLayout,
 
-    pub matmul_q4_0_tiled_pipeline: ComputePipeline,
+    pub matmul_q4_0_tiled_pipeline: Option<ComputePipeline>,
     pub matmul_q4_0_tiled_layout: PipelineLayout,
 
-    pub quantize_q8_0_pipeline: ComputePipeline,
+    pub quantize_q8_0_pipeline: Option<ComputePipeline>,
     pub quantize_q8_0_layout: PipelineLayout,
 
     /// Active descriptor pool — the one new allocations come from.
@@ -579,13 +620,37 @@ fn make_desc_pool(device: &Device) -> Result<DescriptorPool> {
 }
 
 impl Pipelines {
+    /// The pipeline for `kernel`, or the typed reason this device does not offer it.
+    pub fn pipeline<'a>(
+        &self,
+        pipeline: &'a Option<ComputePipeline>,
+        kernel: &'static str,
+    ) -> std::result::Result<&'a ComputePipeline, KernelUnavailable> {
+        pipeline.as_ref().ok_or_else(|| {
+            self.unavailable
+                .iter()
+                .find(|u| u.kernel == kernel)
+                .cloned()
+                .unwrap_or(KernelUnavailable {
+                    kernel,
+                    missing_feature: "VK_KHR_cooperative_matrix 16x16x16 f16 tile",
+                })
+        })
+    }
+}
+
+impl Pipelines {
     /// `coop_shape_ok` means the device advertises the exact 16x16x16
     /// f16xf16->f32 cooperative-matrix tile the `matmul_coop*` shaders need
     /// (see `CoopMatrixShape::is_matmul_coop_tile`), NOT merely that
     /// `VK_KHR_cooperative_matrix` is present. The coop pipelines below are
     /// built eagerly with `?`, so gating them on extension-presence alone would
     /// fail backend init on a device that has the extension but not this tile.
-    pub fn new(device: &Device, coop_shape_ok: bool) -> Result<Self> {
+    pub fn new(
+        device: &Device,
+        coop_shape_ok: bool,
+        support: OptionalFeatureSupport,
+    ) -> Result<Self> {
         // Layout: 2 storage buffers (binding 0,1) + 1 uniform (binding 2).
         let layout_2s1u = DescriptorSetLayout::new(
             device,
@@ -650,28 +715,27 @@ impl Pipelines {
         // ShaderModule. No intermediate SPIR-V word vectors needed.
         use fuel_vulkan_kernels as shaders;
         let registry = shader_registry();
+        let mut gate = Gate {
+            registry: &registry,
+            device,
+            support,
+            unavailable: Vec::new(),
+        };
         let unary_mod = registry.load_module(device, shaders::UNARY)?;
-        let unary_f16_mod = registry.load_module(device, shaders::UNARY_F16)?;
         let unary_f64_mod = registry.load_module(device, shaders::UNARY_F64)?;
         let unary_bf16_mod = registry.load_module(device, shaders::UNARY_BF16)?;
         let binary_mod = registry.load_module(device, shaders::BINARY)?;
-        let binary_f16_mod = registry.load_module(device, shaders::BINARY_F16)?;
         let binary_f64_mod = registry.load_module(device, shaders::BINARY_F64)?;
         let binary_bf16_mod = registry.load_module(device, shaders::BINARY_BF16)?;
         let affine_mod = registry.load_module(device, shaders::AFFINE)?;
         let affine_f64_mod = registry.load_module(device, shaders::AFFINE_F64)?;
-        let affine_f16_mod = registry.load_module(device, shaders::AFFINE_F16)?;
         let affine_bf16_mod = registry.load_module(device, shaders::AFFINE_BF16)?;
         let clamp_mod = registry.load_module(device, shaders::CLAMP)?;
         let powi_mod = registry.load_module(device, shaders::POWI)?;
-        let cast_f32_to_f16_mod = registry.load_module(device, shaders::CAST_F32_TO_F16)?;
-        let cast_f16_to_f32_mod = registry.load_module(device, shaders::CAST_F16_TO_F32)?;
         let cast_f32_to_bf16_mod = registry.load_module(device, shaders::CAST_F32_TO_BF16)?;
         let cast_bf16_to_f32_mod = registry.load_module(device, shaders::CAST_BF16_TO_F32)?;
         let cast_f32_to_f8e4m3_mod = registry.load_module(device, shaders::CAST_F32_TO_F8E4M3)?;
         let cast_f8e4m3_to_f32_mod = registry.load_module(device, shaders::CAST_F8E4M3_TO_F32)?;
-        let cast_f16_to_f8e4m3_mod = registry.load_module(device, shaders::CAST_F16_TO_F8E4M3)?;
-        let cast_f8e4m3_to_f16_mod = registry.load_module(device, shaders::CAST_F8E4M3_TO_F16)?;
         let cast_bf16_to_f8e4m3_mod = registry.load_module(device, shaders::CAST_BF16_TO_F8E4M3)?;
         let cast_f8e4m3_to_bf16_mod = registry.load_module(device, shaders::CAST_F8E4M3_TO_BF16)?;
         let write_slice_b1_mod = registry.load_module(device, shaders::WRITE_SLICE_B1)?;
@@ -701,18 +765,10 @@ impl Pipelines {
             registry.load_module(device, shaders::PAD_BACKWARD_REFLECT_F32)?;
         let pad_backward_replicate_f32_mod =
             registry.load_module(device, shaders::PAD_BACKWARD_REPLICATE_F32)?;
-        let pad_backward_reflect_f64_mod =
-            registry.load_module(device, shaders::PAD_BACKWARD_REFLECT_F64)?;
-        let pad_backward_replicate_f64_mod =
-            registry.load_module(device, shaders::PAD_BACKWARD_REPLICATE_F64)?;
         let pad_backward_reflect_bf16_mod =
             registry.load_module(device, shaders::PAD_BACKWARD_REFLECT_BF16)?;
         let pad_backward_replicate_bf16_mod =
             registry.load_module(device, shaders::PAD_BACKWARD_REPLICATE_BF16)?;
-        let pad_backward_reflect_f16_mod =
-            registry.load_module(device, shaders::PAD_BACKWARD_REFLECT_F16)?;
-        let pad_backward_replicate_f16_mod =
-            registry.load_module(device, shaders::PAD_BACKWARD_REPLICATE_F16)?;
         let masked_fill_b1_mod = registry.load_module(device, shaders::MASKED_FILL_B1)?;
         let masked_fill_b2_mod = registry.load_module(device, shaders::MASKED_FILL_B2)?;
         let masked_fill_b4_mod = registry.load_module(device, shaders::MASKED_FILL_B4)?;
@@ -722,8 +778,6 @@ impl Pipelines {
         let gather_b4_mod = registry.load_module(device, shaders::GATHER_B4)?;
         let gather_b8_mod = registry.load_module(device, shaders::GATHER_B8)?;
         let write_slice_b8_mod = registry.load_module(device, shaders::WRITE_SLICE_B8)?;
-        let strided_copy_signed_b2_mod =
-            registry.load_module(device, shaders::STRIDED_COPY_SIGNED_B2)?;
         let strided_copy_signed_b4_mod =
             registry.load_module(device, shaders::STRIDED_COPY_SIGNED_B4)?;
         let strided_copy_signed_b8_mod =
@@ -734,16 +788,12 @@ impl Pipelines {
         let tril_b2_mod = registry.load_module(device, shaders::TRIL_B2)?;
         let tril_b4_mod = registry.load_module(device, shaders::TRIL_B4)?;
         let tril_b8_mod = registry.load_module(device, shaders::TRIL_B8)?;
-        let flip_b2_mod = registry.load_module(device, shaders::FLIP_B2)?;
         let flip_b4_mod = registry.load_module(device, shaders::FLIP_B4)?;
         let flip_b8_mod = registry.load_module(device, shaders::FLIP_B8)?;
-        let roll_b2_mod = registry.load_module(device, shaders::ROLL_B2)?;
         let roll_b4_mod = registry.load_module(device, shaders::ROLL_B4)?;
         let roll_b8_mod = registry.load_module(device, shaders::ROLL_B8)?;
         let cumsum_f32_mod = registry.load_module(device, shaders::CUMSUM_F32)?;
         let cumsum_f64_mod = registry.load_module(device, shaders::CUMSUM_F64)?;
-        let cumsum_f16_mod = registry.load_module(device, shaders::CUMSUM_F16)?;
-        let cumsum_bf16_mod = registry.load_module(device, shaders::CUMSUM_BF16)?;
         let matmul_mod = registry.load_module(device, shaders::MATMUL)?;
         let matmul_tiled_mod = registry.load_module(device, shaders::MATMUL_TILED_GLSL)?;
         let matvec_mod = registry.load_module(device, shaders::MATVEC_GLSL)?;
@@ -752,29 +802,25 @@ impl Pipelines {
         let matmul_tiled_bf16_b_mod =
             registry.load_module(device, shaders::MATMUL_TILED_BF16_B_GLSL)?;
         let matmul_coop_mod = if coop_shape_ok {
-            Some(registry.load_module(device, shaders::MATMUL_COOP)?)
+            gate.module(shaders::MATMUL_COOP)?
         } else {
             None
         };
         let matmul_coop_bf16_bf16_mod = if coop_shape_ok {
-            Some(registry.load_module(device, shaders::MATMUL_COOP_BF16_BF16)?)
+            gate.module(shaders::MATMUL_COOP_BF16_BF16)?
         } else {
             None
         };
         let matmul_coop_f16_f16_mod = if coop_shape_ok {
-            Some(registry.load_module(device, shaders::MATMUL_COOP_F16_F16)?)
+            gate.module(shaders::MATMUL_COOP_F16_F16)?
         } else {
             None
         };
         let matmul_coop_bf16_bf16_bf16_mod = if coop_shape_ok {
-            Some(registry.load_module(device, shaders::MATMUL_COOP_BF16_BF16_BF16)?)
+            gate.module(shaders::MATMUL_COOP_BF16_BF16_BF16)?
         } else {
             None
         };
-        let matmul_small_bf16_bf16_f32_mod =
-            registry.load_module(device, shaders::MATMUL_SMALL_BF16_BF16_F32)?;
-        let matmul_small_bf16_bf16_bf16_mod =
-            registry.load_module(device, shaders::MATMUL_SMALL_BF16_BF16_BF16)?;
         let matmul_small_f16_f16_f32_mod =
             registry.load_module(device, shaders::MATMUL_SMALL_F16_F16_F32)?;
         let matmul_small_f16_f16_f16_mod =
@@ -784,15 +830,10 @@ impl Pipelines {
             registry.load_module(device, shaders::FLASH_ATTN_SPLIT_F32)?;
         let flash_attn_combine_f32_mod =
             registry.load_module(device, shaders::FLASH_ATTN_COMBINE_F32)?;
-        let flash_attn_split_bf16_mod =
-            registry.load_module(device, shaders::FLASH_ATTN_SPLIT_BF16)?;
-        let flash_attn_combine_bf16_mod =
-            registry.load_module(device, shaders::FLASH_ATTN_COMBINE_BF16)?;
         let flash_attn_split_f16_mod =
             registry.load_module(device, shaders::FLASH_ATTN_SPLIT_F16)?;
         let flash_attn_combine_f16_mod =
             registry.load_module(device, shaders::FLASH_ATTN_COMBINE_F16)?;
-        let flash_attn_bf16_mod = registry.load_module(device, shaders::FLASH_ATTN_BF16)?;
         let flash_attn_f16_mod = registry.load_module(device, shaders::FLASH_ATTN_F16)?;
         let flash_attn_backward_q_f32_mod =
             registry.load_module(device, shaders::FLASH_ATTN_BACKWARD_Q_F32)?;
@@ -801,16 +842,14 @@ impl Pipelines {
         let flash_attn_backward_v_f32_mod =
             registry.load_module(device, shaders::FLASH_ATTN_BACKWARD_V_F32)?;
         let matmul_coop_f16_f16_f16_mod = if coop_shape_ok {
-            Some(registry.load_module(device, shaders::MATMUL_COOP_F16_F16_F16)?)
+            gate.module(shaders::MATMUL_COOP_F16_F16_F16)?
         } else {
             None
         };
         let softmax_mod = registry.load_module(device, shaders::SOFTMAX)?;
-        let softmax_f16_mod = registry.load_module(device, shaders::SOFTMAX_F16)?;
         let softmax_bf16_mod = registry.load_module(device, shaders::SOFTMAX_BF16)?;
         let softmax_f64_mod = registry.load_module(device, shaders::SOFTMAX_F64)?;
         let reduce_mod = registry.load_module(device, shaders::REDUCE)?;
-        let reduce_f16_mod = registry.load_module(device, shaders::REDUCE_F16)?;
         let reduce_bf16_mod = registry.load_module(device, shaders::REDUCE_BF16)?;
         let reduce_f64_mod = registry.load_module(device, shaders::REDUCE_F64)?;
         let cast_f32_to_f64_mod = registry.load_module(device, shaders::CAST_F32_TO_F64)?;
@@ -819,11 +858,7 @@ impl Pipelines {
         let arg_reduce_last_dim_f32_mod =
             registry.load_module(device, shaders::ARG_REDUCE_LAST_DIM_F32)?;
         let scatter_add_f32_mod = registry.load_module(device, shaders::SCATTER_ADD_F32)?;
-        let scatter_add_f64_mod = registry.load_module(device, shaders::SCATTER_ADD_F64)?;
         let scatter_add_bf16_mod = registry.load_module(device, shaders::SCATTER_ADD_BF16)?;
-        let scatter_add_f16_mod = registry.load_module(device, shaders::SCATTER_ADD_F16)?;
-        let arg_reduce_last_dim_f16_mod =
-            registry.load_module(device, shaders::ARG_REDUCE_LAST_DIM_F16)?;
         let arg_reduce_last_dim_bf16_mod =
             registry.load_module(device, shaders::ARG_REDUCE_LAST_DIM_BF16)?;
         let arg_reduce_last_dim_f64_mod =
@@ -834,19 +869,12 @@ impl Pipelines {
             registry.load_module(device, shaders::ARG_REDUCE_ANY_DIM_F64)?;
         let arg_reduce_any_dim_bf16_mod =
             registry.load_module(device, shaders::ARG_REDUCE_ANY_DIM_BF16)?;
-        let arg_reduce_any_dim_f16_mod =
-            registry.load_module(device, shaders::ARG_REDUCE_ANY_DIM_F16)?;
         let index_add_f32_mod = registry.load_module(device, shaders::INDEX_ADD_F32)?;
-        let index_add_f64_mod = registry.load_module(device, shaders::INDEX_ADD_F64)?;
         let index_add_bf16_mod = registry.load_module(device, shaders::INDEX_ADD_BF16)?;
-        let index_add_f16_mod = registry.load_module(device, shaders::INDEX_ADD_F16)?;
-        let reduce_last_dim_f16_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM_F16)?;
         let reduce_last_dim_bf16_mod =
             registry.load_module(device, shaders::REDUCE_LAST_DIM_BF16)?;
         let reduce_last_dim_f64_mod = registry.load_module(device, shaders::REDUCE_LAST_DIM_F64)?;
         let rms_norm_last_dim_mod = registry.load_module(device, shaders::RMS_NORM_LAST_DIM)?;
-        let rms_norm_last_dim_f16_mod =
-            registry.load_module(device, shaders::RMS_NORM_LAST_DIM_F16)?;
         let rms_norm_last_dim_bf16_mod =
             registry.load_module(device, shaders::RMS_NORM_LAST_DIM_BF16)?;
         let rms_norm_last_dim_f64_mod =
@@ -855,53 +883,36 @@ impl Pipelines {
             registry.load_module(device, shaders::RMS_NORM_LAST_DIM_BACKWARD)?;
         let softmax_last_dim_backward_mod =
             registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD)?;
-        let softmax_last_dim_backward_f16_mod =
-            registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD_F16)?;
         let softmax_last_dim_backward_bf16_mod =
             registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD_BF16)?;
         let softmax_last_dim_backward_f64_mod =
             registry.load_module(device, shaders::SOFTMAX_LAST_DIM_BACKWARD_F64)?;
         let layer_norm_last_dim_backward_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD)?;
-        let layer_norm_last_dim_backward_f16_mod =
-            registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD_F16)?;
         let layer_norm_last_dim_backward_bf16_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD_BF16)?;
         let layer_norm_last_dim_backward_f64_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BACKWARD_F64)?;
         let layer_norm_last_dim_mod = registry.load_module(device, shaders::LAYER_NORM_LAST_DIM)?;
-        let layer_norm_last_dim_f16_mod =
-            registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_F16)?;
         let layer_norm_last_dim_bf16_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_BF16)?;
         let layer_norm_last_dim_f64_mod =
             registry.load_module(device, shaders::LAYER_NORM_LAST_DIM_F64)?;
         let strided_copy_mod = registry.load_module(device, shaders::STRIDED_COPY)?;
         let index_select_mod = registry.load_module(device, shaders::INDEX_SELECT)?;
-        let index_select_f16_mod = registry.load_module(device, shaders::INDEX_SELECT_F16)?;
         let index_select_bf16_mod = registry.load_module(device, shaders::INDEX_SELECT_BF16)?;
         let index_select_f64_mod = registry.load_module(device, shaders::INDEX_SELECT_F64)?;
         let add_assign_scaled_mod = registry.load_module(device, shaders::ADD_ASSIGN_SCALED)?;
         let rope_mod = registry.load_module(device, shaders::ROPE)?;
-        let rope_f16_mod = registry.load_module(device, shaders::ROPE_F16)?;
         let rope_bf16_mod = registry.load_module(device, shaders::ROPE_BF16)?;
         let rope_f64_mod = registry.load_module(device, shaders::ROPE_F64)?;
         let concat_along_dim_mod = registry.load_module(device, shaders::CONCAT_ALONG_DIM)?;
-        let concat_along_dim_f16_mod =
-            registry.load_module(device, shaders::CONCAT_ALONG_DIM_F16)?;
         let concat_along_dim_bf16_mod =
             registry.load_module(device, shaders::CONCAT_ALONG_DIM_BF16)?;
         let concat_along_dim_f64_mod =
             registry.load_module(device, shaders::CONCAT_ALONG_DIM_F64)?;
         let conv2d_im2col_mod = registry.load_module(device, shaders::CONV2D_IM2COL)?;
-        let conv2d_im2col_bf16_mod = registry.load_module(device, shaders::CONV2D_IM2COL_BF16)?;
         let flash_attention_mod = registry.load_module(device, shaders::FLASH_ATTENTION)?;
-        let dequant_q4_0_mod = registry.load_module(device, shaders::DEQUANT_Q4_0)?;
-        let dequant_q4_km_mod = registry.load_module(device, shaders::DEQUANT_Q4_KM)?;
-        let dequant_q8_0_mod = registry.load_module(device, shaders::DEQUANT_Q8_0)?;
-        let qmatvec_q4_0_mod = registry.load_module(device, shaders::QMATVEC_Q4_0)?;
-        let matmul_q4_0_tiled_mod = registry.load_module(device, shaders::MATMUL_Q4_0_TILED)?;
-        let quantize_q8_0_mod = registry.load_module(device, shaders::QUANTIZE_Q8_0)?;
 
         // No push constants — params go through uniform buffers.
         let unary_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
@@ -1110,15 +1121,13 @@ impl Pipelines {
         let quantize_q8_0_layout = PipelineLayout::new(device, &[&layout_2s1u])?;
 
         let unary_pipeline = ComputePipeline::new(device, &unary_layout, &unary_mod, "main")?;
-        let unary_f16_pipeline =
-            ComputePipeline::new(device, &unary_f16_layout, &unary_f16_mod, "main")?;
+        let unary_f16_pipeline = gate.pipeline(shaders::UNARY_F16, &unary_f16_layout)?;
         let unary_f64_pipeline =
             ComputePipeline::new(device, &unary_f64_layout, &unary_f64_mod, "main")?;
         let unary_bf16_pipeline =
             ComputePipeline::new(device, &unary_bf16_layout, &unary_bf16_mod, "main")?;
         let binary_pipeline = ComputePipeline::new(device, &binary_layout, &binary_mod, "main")?;
-        let binary_f16_pipeline =
-            ComputePipeline::new(device, &binary_f16_layout, &binary_f16_mod, "main")?;
+        let binary_f16_pipeline = gate.pipeline(shaders::BINARY_F16, &binary_f16_layout)?;
         let binary_f64_pipeline =
             ComputePipeline::new(device, &binary_f64_layout, &binary_f64_mod, "main")?;
         let binary_bf16_pipeline =
@@ -1126,24 +1135,15 @@ impl Pipelines {
         let affine_pipeline = ComputePipeline::new(device, &affine_layout, &affine_mod, "main")?;
         let affine_f64_pipeline =
             ComputePipeline::new(device, &affine_f64_layout, &affine_f64_mod, "main")?;
-        let affine_f16_pipeline =
-            ComputePipeline::new(device, &affine_f16_layout, &affine_f16_mod, "main")?;
+        let affine_f16_pipeline = gate.pipeline(shaders::AFFINE_F16, &affine_f16_layout)?;
         let affine_bf16_pipeline =
             ComputePipeline::new(device, &affine_bf16_layout, &affine_bf16_mod, "main")?;
         let clamp_pipeline = ComputePipeline::new(device, &clamp_layout, &clamp_mod, "main")?;
         let powi_pipeline = ComputePipeline::new(device, &powi_layout, &powi_mod, "main")?;
-        let cast_f32_to_f16_pipeline = ComputePipeline::new(
-            device,
-            &cast_f32_to_f16_layout,
-            &cast_f32_to_f16_mod,
-            "main",
-        )?;
-        let cast_f16_to_f32_pipeline = ComputePipeline::new(
-            device,
-            &cast_f16_to_f32_layout,
-            &cast_f16_to_f32_mod,
-            "main",
-        )?;
+        let cast_f32_to_f16_pipeline =
+            gate.pipeline(shaders::CAST_F32_TO_F16, &cast_f32_to_f16_layout)?;
+        let cast_f16_to_f32_pipeline =
+            gate.pipeline(shaders::CAST_F16_TO_F32, &cast_f16_to_f32_layout)?;
         let cast_f32_to_bf16_pipeline = ComputePipeline::new(
             device,
             &cast_f32_to_bf16_layout,
@@ -1168,18 +1168,10 @@ impl Pipelines {
             &cast_f8e4m3_to_f32_mod,
             "main",
         )?;
-        let cast_f16_to_f8e4m3_pipeline = ComputePipeline::new(
-            device,
-            &cast_f16_to_f8e4m3_layout,
-            &cast_f16_to_f8e4m3_mod,
-            "main",
-        )?;
-        let cast_f8e4m3_to_f16_pipeline = ComputePipeline::new(
-            device,
-            &cast_f8e4m3_to_f16_layout,
-            &cast_f8e4m3_to_f16_mod,
-            "main",
-        )?;
+        let cast_f16_to_f8e4m3_pipeline =
+            gate.pipeline(shaders::CAST_F16_TO_F8E4M3, &cast_f16_to_f8e4m3_layout)?;
+        let cast_f8e4m3_to_f16_pipeline =
+            gate.pipeline(shaders::CAST_F8E4M3_TO_F16, &cast_f8e4m3_to_f16_layout)?;
         let cast_bf16_to_f8e4m3_pipeline = ComputePipeline::new(
             device,
             &cast_bf16_to_f8e4m3_layout,
@@ -1274,17 +1266,13 @@ impl Pipelines {
             &pad_backward_replicate_f32_mod,
             "main",
         )?;
-        let pad_backward_reflect_f64_pipeline = ComputePipeline::new(
-            device,
+        let pad_backward_reflect_f64_pipeline = gate.pipeline(
+            shaders::PAD_BACKWARD_REFLECT_F64,
             &pad_backward_reflect_f64_layout,
-            &pad_backward_reflect_f64_mod,
-            "main",
         )?;
-        let pad_backward_replicate_f64_pipeline = ComputePipeline::new(
-            device,
+        let pad_backward_replicate_f64_pipeline = gate.pipeline(
+            shaders::PAD_BACKWARD_REPLICATE_F64,
             &pad_backward_replicate_f64_layout,
-            &pad_backward_replicate_f64_mod,
-            "main",
         )?;
         let pad_backward_reflect_bf16_pipeline = ComputePipeline::new(
             device,
@@ -1298,17 +1286,13 @@ impl Pipelines {
             &pad_backward_replicate_bf16_mod,
             "main",
         )?;
-        let pad_backward_reflect_f16_pipeline = ComputePipeline::new(
-            device,
+        let pad_backward_reflect_f16_pipeline = gate.pipeline(
+            shaders::PAD_BACKWARD_REFLECT_F16,
             &pad_backward_reflect_f16_layout,
-            &pad_backward_reflect_f16_mod,
-            "main",
         )?;
-        let pad_backward_replicate_f16_pipeline = ComputePipeline::new(
-            device,
+        let pad_backward_replicate_f16_pipeline = gate.pipeline(
+            shaders::PAD_BACKWARD_REPLICATE_F16,
             &pad_backward_replicate_f16_layout,
-            &pad_backward_replicate_f16_mod,
-            "main",
         )?;
         let masked_fill_b1_pipeline =
             ComputePipeline::new(device, &masked_fill_b1_layout, &masked_fill_b1_mod, "main")?;
@@ -1328,11 +1312,9 @@ impl Pipelines {
             ComputePipeline::new(device, &gather_b8_layout, &gather_b8_mod, "main")?;
         let write_slice_b8_pipeline =
             ComputePipeline::new(device, &write_slice_b8_layout, &write_slice_b8_mod, "main")?;
-        let strided_copy_signed_b2_pipeline = ComputePipeline::new(
-            device,
+        let strided_copy_signed_b2_pipeline = gate.pipeline(
+            shaders::STRIDED_COPY_SIGNED_B2,
             &strided_copy_signed_b2_layout,
-            &strided_copy_signed_b2_mod,
-            "main",
         )?;
         let strided_copy_signed_b4_pipeline = ComputePipeline::new(
             device,
@@ -1352,20 +1334,18 @@ impl Pipelines {
         let tril_b2_pipeline = ComputePipeline::new(device, &tril_b2_layout, &tril_b2_mod, "main")?;
         let tril_b4_pipeline = ComputePipeline::new(device, &tril_b4_layout, &tril_b4_mod, "main")?;
         let tril_b8_pipeline = ComputePipeline::new(device, &tril_b8_layout, &tril_b8_mod, "main")?;
-        let flip_b2_pipeline = ComputePipeline::new(device, &flip_b2_layout, &flip_b2_mod, "main")?;
+        let flip_b2_pipeline = gate.pipeline(shaders::FLIP_B2, &flip_b2_layout)?;
         let flip_b4_pipeline = ComputePipeline::new(device, &flip_b4_layout, &flip_b4_mod, "main")?;
         let flip_b8_pipeline = ComputePipeline::new(device, &flip_b8_layout, &flip_b8_mod, "main")?;
-        let roll_b2_pipeline = ComputePipeline::new(device, &roll_b2_layout, &roll_b2_mod, "main")?;
+        let roll_b2_pipeline = gate.pipeline(shaders::ROLL_B2, &roll_b2_layout)?;
         let roll_b4_pipeline = ComputePipeline::new(device, &roll_b4_layout, &roll_b4_mod, "main")?;
         let roll_b8_pipeline = ComputePipeline::new(device, &roll_b8_layout, &roll_b8_mod, "main")?;
         let cumsum_f32_pipeline =
             ComputePipeline::new(device, &cumsum_f32_layout, &cumsum_f32_mod, "main")?;
         let cumsum_f64_pipeline =
             ComputePipeline::new(device, &cumsum_f64_layout, &cumsum_f64_mod, "main")?;
-        let cumsum_f16_pipeline =
-            ComputePipeline::new(device, &cumsum_f16_layout, &cumsum_f16_mod, "main")?;
-        let cumsum_bf16_pipeline =
-            ComputePipeline::new(device, &cumsum_bf16_layout, &cumsum_bf16_mod, "main")?;
+        let cumsum_f16_pipeline = gate.pipeline(shaders::CUMSUM_F16, &cumsum_f16_layout)?;
+        let cumsum_bf16_pipeline = gate.pipeline(shaders::CUMSUM_BF16, &cumsum_bf16_layout)?;
         let matmul_pipeline = ComputePipeline::new(device, &matmul_layout, &matmul_mod, "main")?;
         let matmul_tiled_pipeline =
             ComputePipeline::new(device, &matmul_tiled_layout, &matmul_tiled_mod, "main")?;
@@ -1401,17 +1381,13 @@ impl Pipelines {
             (Some(m), Some(l)) => Some(ComputePipeline::new(device, l, m, "main")?),
             _ => None,
         };
-        let matmul_small_bf16_bf16_f32_pipeline = ComputePipeline::new(
-            device,
+        let matmul_small_bf16_bf16_f32_pipeline = gate.pipeline(
+            shaders::MATMUL_SMALL_BF16_BF16_F32,
             &matmul_small_bf16_bf16_f32_layout,
-            &matmul_small_bf16_bf16_f32_mod,
-            "main",
         )?;
-        let matmul_small_bf16_bf16_bf16_pipeline = ComputePipeline::new(
-            device,
+        let matmul_small_bf16_bf16_bf16_pipeline = gate.pipeline(
+            shaders::MATMUL_SMALL_BF16_BF16_BF16,
             &matmul_small_bf16_bf16_bf16_layout,
-            &matmul_small_bf16_bf16_bf16_mod,
-            "main",
         )?;
         let matmul_small_f16_f16_f32_pipeline = ComputePipeline::new(
             device,
@@ -1439,17 +1415,13 @@ impl Pipelines {
             &flash_attn_combine_f32_mod,
             "main",
         )?;
-        let flash_attn_split_bf16_pipeline = ComputePipeline::new(
-            device,
+        let flash_attn_split_bf16_pipeline = gate.pipeline(
+            shaders::FLASH_ATTN_SPLIT_BF16,
             &flash_attn_split_bf16_layout,
-            &flash_attn_split_bf16_mod,
-            "main",
         )?;
-        let flash_attn_combine_bf16_pipeline = ComputePipeline::new(
-            device,
+        let flash_attn_combine_bf16_pipeline = gate.pipeline(
+            shaders::FLASH_ATTN_COMBINE_BF16,
             &flash_attn_combine_bf16_layout,
-            &flash_attn_combine_bf16_mod,
-            "main",
         )?;
         let flash_attn_split_f16_pipeline = ComputePipeline::new(
             device,
@@ -1463,12 +1435,8 @@ impl Pipelines {
             &flash_attn_combine_f16_mod,
             "main",
         )?;
-        let flash_attn_bf16_pipeline = ComputePipeline::new(
-            device,
-            &flash_attn_bf16_layout,
-            &flash_attn_bf16_mod,
-            "main",
-        )?;
+        let flash_attn_bf16_pipeline =
+            gate.pipeline(shaders::FLASH_ATTN_BF16, &flash_attn_bf16_layout)?;
         let flash_attn_f16_pipeline =
             ComputePipeline::new(device, &flash_attn_f16_layout, &flash_attn_f16_mod, "main")?;
         let flash_attn_backward_q_f32_pipeline = ComputePipeline::new(
@@ -1497,15 +1465,13 @@ impl Pipelines {
             _ => None,
         };
         let softmax_pipeline = ComputePipeline::new(device, &softmax_layout, &softmax_mod, "main")?;
-        let softmax_f16_pipeline =
-            ComputePipeline::new(device, &softmax_f16_layout, &softmax_f16_mod, "main")?;
+        let softmax_f16_pipeline = gate.pipeline(shaders::SOFTMAX_F16, &softmax_f16_layout)?;
         let softmax_bf16_pipeline =
             ComputePipeline::new(device, &softmax_bf16_layout, &softmax_bf16_mod, "main")?;
         let softmax_f64_pipeline =
             ComputePipeline::new(device, &softmax_f64_layout, &softmax_f64_mod, "main")?;
         let reduce_pipeline = ComputePipeline::new(device, &reduce_layout, &reduce_mod, "main")?;
-        let reduce_f16_pipeline =
-            ComputePipeline::new(device, &reduce_f16_layout, &reduce_f16_mod, "main")?;
+        let reduce_f16_pipeline = gate.pipeline(shaders::REDUCE_F16, &reduce_f16_layout)?;
         let reduce_bf16_pipeline =
             ComputePipeline::new(device, &reduce_bf16_layout, &reduce_bf16_mod, "main")?;
         let reduce_f64_pipeline =
@@ -1540,29 +1506,19 @@ impl Pipelines {
             &scatter_add_f32_mod,
             "main",
         )?;
-        let scatter_add_f64_pipeline = ComputePipeline::new(
-            device,
-            &scatter_add_f64_layout,
-            &scatter_add_f64_mod,
-            "main",
-        )?;
+        let scatter_add_f64_pipeline =
+            gate.pipeline(shaders::SCATTER_ADD_F64, &scatter_add_f64_layout)?;
         let scatter_add_bf16_pipeline = ComputePipeline::new(
             device,
             &scatter_add_bf16_layout,
             &scatter_add_bf16_mod,
             "main",
         )?;
-        let scatter_add_f16_pipeline = ComputePipeline::new(
-            device,
-            &scatter_add_f16_layout,
-            &scatter_add_f16_mod,
-            "main",
-        )?;
-        let arg_reduce_last_dim_f16_pipeline = ComputePipeline::new(
-            device,
+        let scatter_add_f16_pipeline =
+            gate.pipeline(shaders::SCATTER_ADD_F16, &scatter_add_f16_layout)?;
+        let arg_reduce_last_dim_f16_pipeline = gate.pipeline(
+            shaders::ARG_REDUCE_LAST_DIM_F16,
             &arg_reduce_last_dim_f16_layout,
-            &arg_reduce_last_dim_f16_mod,
-            "main",
         )?;
         let arg_reduce_last_dim_bf16_pipeline = ComputePipeline::new(
             device,
@@ -1594,26 +1550,20 @@ impl Pipelines {
             &arg_reduce_any_dim_bf16_mod,
             "main",
         )?;
-        let arg_reduce_any_dim_f16_pipeline = ComputePipeline::new(
-            device,
+        let arg_reduce_any_dim_f16_pipeline = gate.pipeline(
+            shaders::ARG_REDUCE_ANY_DIM_F16,
             &arg_reduce_any_dim_f16_layout,
-            &arg_reduce_any_dim_f16_mod,
-            "main",
         )?;
         let index_add_f32_pipeline =
             ComputePipeline::new(device, &index_add_f32_layout, &index_add_f32_mod, "main")?;
         let index_add_f64_pipeline =
-            ComputePipeline::new(device, &index_add_f64_layout, &index_add_f64_mod, "main")?;
+            gate.pipeline(shaders::INDEX_ADD_F64, &index_add_f64_layout)?;
         let index_add_bf16_pipeline =
             ComputePipeline::new(device, &index_add_bf16_layout, &index_add_bf16_mod, "main")?;
         let index_add_f16_pipeline =
-            ComputePipeline::new(device, &index_add_f16_layout, &index_add_f16_mod, "main")?;
-        let reduce_last_dim_f16_pipeline = ComputePipeline::new(
-            device,
-            &reduce_last_dim_f16_layout,
-            &reduce_last_dim_f16_mod,
-            "main",
-        )?;
+            gate.pipeline(shaders::INDEX_ADD_F16, &index_add_f16_layout)?;
+        let reduce_last_dim_f16_pipeline =
+            gate.pipeline(shaders::REDUCE_LAST_DIM_F16, &reduce_last_dim_f16_layout)?;
         let reduce_last_dim_bf16_pipeline = ComputePipeline::new(
             device,
             &reduce_last_dim_bf16_layout,
@@ -1632,11 +1582,9 @@ impl Pipelines {
             &rms_norm_last_dim_mod,
             "main",
         )?;
-        let rms_norm_last_dim_f16_pipeline = ComputePipeline::new(
-            device,
+        let rms_norm_last_dim_f16_pipeline = gate.pipeline(
+            shaders::RMS_NORM_LAST_DIM_F16,
             &rms_norm_last_dim_f16_layout,
-            &rms_norm_last_dim_f16_mod,
-            "main",
         )?;
         let rms_norm_last_dim_bf16_pipeline = ComputePipeline::new(
             device,
@@ -1662,11 +1610,9 @@ impl Pipelines {
             &softmax_last_dim_backward_mod,
             "main",
         )?;
-        let softmax_last_dim_backward_f16_pipeline = ComputePipeline::new(
-            device,
+        let softmax_last_dim_backward_f16_pipeline = gate.pipeline(
+            shaders::SOFTMAX_LAST_DIM_BACKWARD_F16,
             &softmax_last_dim_backward_f16_layout,
-            &softmax_last_dim_backward_f16_mod,
-            "main",
         )?;
         let softmax_last_dim_backward_bf16_pipeline = ComputePipeline::new(
             device,
@@ -1686,11 +1632,9 @@ impl Pipelines {
             &layer_norm_last_dim_backward_mod,
             "main",
         )?;
-        let layer_norm_last_dim_backward_f16_pipeline = ComputePipeline::new(
-            device,
+        let layer_norm_last_dim_backward_f16_pipeline = gate.pipeline(
+            shaders::LAYER_NORM_LAST_DIM_BACKWARD_F16,
             &layer_norm_last_dim_backward_f16_layout,
-            &layer_norm_last_dim_backward_f16_mod,
-            "main",
         )?;
         let layer_norm_last_dim_backward_bf16_pipeline = ComputePipeline::new(
             device,
@@ -1710,11 +1654,9 @@ impl Pipelines {
             &layer_norm_last_dim_mod,
             "main",
         )?;
-        let layer_norm_last_dim_f16_pipeline = ComputePipeline::new(
-            device,
+        let layer_norm_last_dim_f16_pipeline = gate.pipeline(
+            shaders::LAYER_NORM_LAST_DIM_F16,
             &layer_norm_last_dim_f16_layout,
-            &layer_norm_last_dim_f16_mod,
-            "main",
         )?;
         let layer_norm_last_dim_bf16_pipeline = ComputePipeline::new(
             device,
@@ -1732,12 +1674,8 @@ impl Pipelines {
             ComputePipeline::new(device, &strided_copy_layout, &strided_copy_mod, "main")?;
         let index_select_pipeline =
             ComputePipeline::new(device, &index_select_layout, &index_select_mod, "main")?;
-        let index_select_f16_pipeline = ComputePipeline::new(
-            device,
-            &index_select_f16_layout,
-            &index_select_f16_mod,
-            "main",
-        )?;
+        let index_select_f16_pipeline =
+            gate.pipeline(shaders::INDEX_SELECT_F16, &index_select_f16_layout)?;
         let index_select_bf16_pipeline = ComputePipeline::new(
             device,
             &index_select_bf16_layout,
@@ -1757,8 +1695,7 @@ impl Pipelines {
             "main",
         )?;
         let rope_pipeline = ComputePipeline::new(device, &rope_layout, &rope_mod, "main")?;
-        let rope_f16_pipeline =
-            ComputePipeline::new(device, &rope_f16_layout, &rope_f16_mod, "main")?;
+        let rope_f16_pipeline = gate.pipeline(shaders::ROPE_F16, &rope_f16_layout)?;
         let rope_bf16_pipeline =
             ComputePipeline::new(device, &rope_bf16_layout, &rope_bf16_mod, "main")?;
         let rope_f64_pipeline =
@@ -1769,12 +1706,8 @@ impl Pipelines {
             &concat_along_dim_mod,
             "main",
         )?;
-        let concat_along_dim_f16_pipeline = ComputePipeline::new(
-            device,
-            &concat_along_dim_f16_layout,
-            &concat_along_dim_f16_mod,
-            "main",
-        )?;
+        let concat_along_dim_f16_pipeline =
+            gate.pipeline(shaders::CONCAT_ALONG_DIM_F16, &concat_along_dim_f16_layout)?;
         let concat_along_dim_bf16_pipeline = ComputePipeline::new(
             device,
             &concat_along_dim_bf16_layout,
@@ -1789,36 +1722,26 @@ impl Pipelines {
         )?;
         let conv2d_im2col_pipeline =
             ComputePipeline::new(device, &conv2d_im2col_layout, &conv2d_im2col_mod, "main")?;
-        let conv2d_im2col_bf16_pipeline = ComputePipeline::new(
-            device,
-            &conv2d_im2col_bf16_layout,
-            &conv2d_im2col_bf16_mod,
-            "main",
-        )?;
+        let conv2d_im2col_bf16_pipeline =
+            gate.pipeline(shaders::CONV2D_IM2COL_BF16, &conv2d_im2col_bf16_layout)?;
         let flash_attention_pipeline = ComputePipeline::new(
             device,
             &flash_attention_layout,
             &flash_attention_mod,
             "main",
         )?;
-        let dequant_q4_0_pipeline =
-            ComputePipeline::new(device, &dequant_q4_0_layout, &dequant_q4_0_mod, "main")?;
+        let dequant_q4_0_pipeline = gate.pipeline(shaders::DEQUANT_Q4_0, &dequant_q4_0_layout)?;
         let dequant_q4_km_pipeline =
-            ComputePipeline::new(device, &dequant_q4_km_layout, &dequant_q4_km_mod, "main")?;
-        let dequant_q8_0_pipeline =
-            ComputePipeline::new(device, &dequant_q8_0_layout, &dequant_q8_0_mod, "main")?;
-        let qmatvec_q4_0_pipeline =
-            ComputePipeline::new(device, &qmatvec_q4_0_layout, &qmatvec_q4_0_mod, "main")?;
-        let matmul_q4_0_tiled_pipeline = ComputePipeline::new(
-            device,
-            &matmul_q4_0_tiled_layout,
-            &matmul_q4_0_tiled_mod,
-            "main",
-        )?;
+            gate.pipeline(shaders::DEQUANT_Q4_KM, &dequant_q4_km_layout)?;
+        let dequant_q8_0_pipeline = gate.pipeline(shaders::DEQUANT_Q8_0, &dequant_q8_0_layout)?;
+        let qmatvec_q4_0_pipeline = gate.pipeline(shaders::QMATVEC_Q4_0, &qmatvec_q4_0_layout)?;
+        let matmul_q4_0_tiled_pipeline =
+            gate.pipeline(shaders::MATMUL_Q4_0_TILED, &matmul_q4_0_tiled_layout)?;
         let quantize_q8_0_pipeline =
-            ComputePipeline::new(device, &quantize_q8_0_layout, &quantize_q8_0_mod, "main")?;
+            gate.pipeline(shaders::QUANTIZE_Q8_0, &quantize_q8_0_layout)?;
 
         Ok(Self {
+            unavailable: gate.unavailable,
             layout_2s1u,
             layout_3s1u,
             layout_4s1u,
