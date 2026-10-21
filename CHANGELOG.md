@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.45 - 2026-10-21
+
+### Changed
+
+- `fuel-vulkan-backend`: new column-parallel f32 GEMV kernel `matvec_cols` (`matvec_cols.glsl`) for `m == 1` matmuls with `n % 4 == 0`, replacing the per-column-workgroup `matvec` for those shapes (the old kernel remains for other N and as `set_matvec_cols(false)`). The old kernel read the row-major weight matrix with neighbouring threads N floats apart; the new one has threads own columns, loads `vec4`s and reduces K in a fixed order. Measured: 1.9x to 2.9x on the Qwen3-0.6B layer shapes and 3.6x to 6.6x on the LM head (up to 218 GB/s, about 85% of nominal) at kernel level, within 2.5e-7 of an f64 reference; on the decode step matvec GPU time per step 82.6 ms to 15.2 ms and GPU time per step 86.5 ms to 20.9 ms; step 122 ms to 91 ms median on a local stack with #429 and #426 (CPU-fixture check: max logit difference 9.2e-5, 0 of 64 greedy tokens differ). Result bits differ from the old kernel (different K reduction order). Example `matvec_probe`. ROADMAP item 24.
+
 ## v0.20.44 - 2026-10-21
 
 ### Changed
