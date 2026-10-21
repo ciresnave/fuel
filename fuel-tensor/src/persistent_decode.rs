@@ -720,6 +720,7 @@ pub fn compute_decode_token_host<M: DecodeBackbone + ?Sized>(
     max_seq_len: usize,
     rope_inv_freq: Option<&[f64]>,
 ) -> DecodeTokenHost {
+    let _t = fuel_dispatch::compiled::op_profile::PhaseTimer::start("decode.token_host_compute");
     let dims = model.decode_dims();
     let seq = tokens.len();
     let (rope_cos, rope_sin) = build_rope_variants(
@@ -1051,6 +1052,7 @@ pub fn upload_decode_token_data(
     cache_dtype: DType,
     device_offset: Option<usize>,
 ) -> Result<DecodeTokenData> {
+    let _t = fuel_dispatch::compiled::op_profile::PhaseTimer::start("decode.token_upload");
     let upload = crate::pipelined_bridge::upload_host_buffer_to_device;
     let mask = match cache_dtype {
         DType::F32 => fuel_ir::HostBuffer::F32(host.mask.clone()),
