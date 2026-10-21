@@ -187,6 +187,39 @@ The 1,170 or so items that launch nothing were not the cost (about 1 ms). The co
 
 **What is left in the 122 ms:** the host waiting on the GPU (65 ms in the drain, the GPU being busy about 86 ms per step in the earlier table, which was measured before this change), kernel launches 18 ms, per-token data 10 ms, evictions 9.5 ms, output allocation 7 ms. Nothing here has been tried yet: submitting batches earlier so recording overlaps execution, the M = 1 matmul kernel (95% of GPU time), reading fewer bytes (quantized loader).
 
+## The M = 1 matmul kernel (ROADMAP item 24)
+
+By the GPU table the M = 1 `matvec` was 95% of GPU time (82.6 ms of 86.5 ms per step) at about 29 GB/s against a nominal 256 GB/s for this card.
+
+**Cause (read from `matvec.glsl`, then measured):** one workgroup per output column, its 128 threads striding over K and reading `B[k * N + col]`. For the row-major `[K, N]` weights every neighbouring thread reads an address N floats apart: one useful float per cache line.
+
+**Change:** `matvec_cols.glsl`, used by `matmul_f32_bytes` for `m == 1` and `n % 4 == 0`. Threads map to columns: a workgroup owns 32 columns, 8 lanes each load a `vec4` (4 adjacent columns), 32 K-slices walk down K together with four loads in flight per thread, and the slices are summed in a fixed order. A warp now reads consecutive floats of a B row. Other N (the attention shapes, where N is the cache length) keep the original kernel. `set_matvec_cols(false)` selects the old kernel, for the probe only.
+
+**Kernel level** (`matvec_probe`: both kernels against an f64 CPU reference, then GPU timestamps over a batch cycling through distinct weight buffers, so the weights are not in L2; median of 4 timed rounds; a second run after adding a warm-up):
+
+| K | N | role in Qwen3-0.6B | matvec | matvec_cols | speedup | bandwidth old to new |
+|---:|---:|---|---:|---:|---:|---|
+| 1024 | 1024 | k_proj, v_proj | 43.4 us | 22.5 us | 1.92x | 97 to 186 GB/s |
+| 1024 | 2048 | q_proj | 86.9 us | 45.0 us | 1.93x | 96 to 186 GB/s |
+| 2048 | 1024 | o_proj | 90.9 us | 45.0 us | 2.02x | 92 to 186 GB/s |
+| 1024 | 3072 | gate, up | 168.3 us | 57.7 us | 2.92x | 75 to 218 GB/s |
+| 3072 | 1024 | down | 134.2 us | 57.8 us | 2.32x | 94 to 218 GB/s |
+| 1024 | 151,936 | lm head | 22.2 ms | 6.1 ms | 3.62x | 28 to 101 GB/s |
+
+An earlier run of the same probe, before the warm-up, gave 6.60x for the LM head (19.0 ms to 2.9 ms, 216 GB/s) and was read slow on the first row for both kernels; the LM-head ratio varies between 3.6x and 6.6x with the GPU's clock mode on this box (ROADMAP item 18). Both kernels were within 1.5e-7 (old) and 2.5e-7 (new) of the f64 reference, relative to the largest output, on every shape. The best new figure, 218 GB/s, is about 85% of nominal.
+
+**Decode step** (the Qwen3 harness on a local build that stacks this change on #429's native contiguize, with the per-device bit-stable preference of #426 applied locally; neither is in this PR; 5 runs x 10 steps, median over runs, min to max):
+
+| | before this kernel | after |
+|---|---|---|
+| matvec GPU time per step | 82.6 ms, 253 dispatches (`matvec`) | **14.8 ms, 225 dispatches (`matvec_cols`) + 0.4 ms, 28 dispatches (`matvec`)** |
+| GPU time per step (first to last timestamp) | 86.5 ms | **20.9 ms** |
+| steady decode step | 122 ms (119 to 129) | **91 ms** (82 to 678) |
+
+The slowest of the five per-run medians was 678 ms, most likely a run in the slow GPU mode of ROADMAP item 18 (not separately confirmed; the other per-run medians were not recorded individually), so the median and the minimum are the figures to read; the maximum is real and is not hidden. Against the 86.5 ms baseline the GPU table also gains a `strided_copy_signed` row (1.2 ms, 112 dispatches) that was previously host work (#429). `QWEN3_VERIFY=1` against the CPU fixture: max logit difference **9.2e-5** (9.9e-5 before: the reduction order changed), 0 of 64 greedy tokens differ, PASS (one run).
+
+**Not claimed:** run-to-run bit reproducibility of the new kernel (its K reduction order is fixed by construction, unlike the subgroup-add of the old one, but this was not tested, and the kernel contract still declares the matmul non-bit-stable); half-precision (`matvec_bf16_b`) and quantized weights, which this does not touch; any other GPU. The step is now 91 ms of which the GPU is busy about 21 ms: what is left is host time (recording, launch, waiting) and the batch being submitted only after it is recorded.
+
 ## What this points at instead (not started)
 
 1. The 397 `Copy/Vulkan` launches per step (62%).

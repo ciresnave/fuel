@@ -384,6 +384,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
         include_bytes!("../spv/matmul_coop_f16_f16_f16.spv"),
     ),
     ("matvec", include_bytes!("../spv/matvec.spv")),
+    ("matvec_cols", include_bytes!("../spv/matvec_cols.spv")),
     ("matvec_bf16_b", include_bytes!("../spv/matvec_bf16_b.spv")),
     ("reduce", include_bytes!("../spv/reduce.spv")),
     ("reduce_f16", include_bytes!("../spv/reduce_f16.spv")),
@@ -790,6 +791,9 @@ pub const FLASH_ATTN_BACKWARD_V_F32: &str = "flash_attn_backward_v_f32";
 pub const MATMUL_COOP_F16_F16_F16: &str = "matmul_coop_f16_f16_f16";
 /// GLSL gemv (M == 1 matmul specialization), all-f32.
 pub const MATVEC_GLSL: &str = "matvec";
+/// Column-parallel f32 GEMV for M == 1 with a unit-stride-along-N right operand
+/// (coalesced B reads, deterministic K reduction). See `matvec_cols.glsl`.
+pub const MATVEC_COLS_GLSL: &str = "matvec_cols";
 /// GLSL gemv (M == 1) with bf16 weight matrix (B), f32 activations
 /// (A) and f32 output (C). Decode-phase path for bf16-quantized LLM
 /// weights on GPU.

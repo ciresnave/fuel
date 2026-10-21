@@ -397,6 +397,9 @@ pub struct VulkanBackend {
     /// GPU-side per-op time from timestamp queries (opt-in, see
     /// [`Self::set_gpu_timing`]).
     gpu_time: std::sync::Arc<GpuTimeStats>,
+    /// Use the column-parallel `matvec_cols` kernel for eligible M == 1 f32
+    /// matmuls (default on). A switch only so a probe can time the old kernel.
+    matvec_cols_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl VulkanBackend {
@@ -437,6 +440,14 @@ impl VulkanBackend {
     /// Zero the GPU-time counters.
     pub fn reset_gpu_time(&self) {
         self.gpu_time.reset();
+    }
+
+    /// Choose the kernel for eligible M == 1 f32 matmuls: `true` (default) the
+    /// column-parallel `matvec_cols`, `false` the original per-column-workgroup
+    /// `matvec`. Exists so a probe can time both on one device; both are correct.
+    pub fn set_matvec_cols(&self, on: bool) {
+        self.matvec_cols_enabled
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -801,6 +812,7 @@ impl VulkanBackend {
             recorder,
             op_stats: OpStats::default(),
             gpu_time,
+            matvec_cols_enabled: std::sync::atomic::AtomicBool::new(true),
             buffer_pool,
             download_mem_type,
             download_pool,
@@ -5064,7 +5076,24 @@ impl VulkanBackend {
         let (pbuf, pmem) = self.upload_params(&params)?;
         let params_size = std::mem::size_of::<MatmulParams>() as u64;
 
-        let (pipeline, pipe_layout, op_name, gx, gy, gz) = if m == 1 {
+        // M == 1 with a dense row-major [K, N] right operand (always the case
+        // here) and N a multiple of 4: the column-parallel kernel, which reads B
+        // coalesced. Other N keep the per-column-workgroup kernel.
+        let use_cols = m == 1
+            && n.is_multiple_of(4)
+            && self
+                .matvec_cols_enabled
+                .load(std::sync::atomic::Ordering::Relaxed);
+        let (pipeline, pipe_layout, op_name, gx, gy, gz) = if use_cols {
+            (
+                &self.pipelines.matvec_cols_pipeline,
+                &self.pipelines.matvec_cols_layout,
+                "matvec_cols",
+                n.div_ceil(32) as u32,
+                1u32,
+                batch as u32,
+            )
+        } else if m == 1 {
             (
                 &self.pipelines.matvec_pipeline,
                 &self.pipelines.matvec_layout,
