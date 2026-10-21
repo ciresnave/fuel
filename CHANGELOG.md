@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.55 - 2026-10-21
+
+### Changed
+
+- Vulkan: a kernel whose shader needs an optional device feature the device does not report (`uniformAndStorageBuffer16BitAccess`, `shaderInt16`, `shaderBufferInt64Atomics`, `vulkanMemoryModel`, `vulkanMemoryModelDeviceScope`) is no longer created. `Pipelines::new` reads each module's `OpCapability` words (new `spirv_caps`, a `Gate` helper outside `Pipelines::new`), so no hand-kept table can drift, and the 49 affected pipeline fields are now `Option`; reaching one on a device that lacks the feature returns a typed `KernelUnavailable { kernel, missing_feature }` (via `Pipelines::pipeline`, listed in `Pipelines::unavailable`). Behaviour on the RTX 4070 and AMD 610M (which report all five) is unchanged. Tests inject each feature absent and assert the declined kernels, with a sabotage sibling that enables the feature and asserts the kernel is offered. Not done: placement does not yet avoid such a kernel before execution (the Vulkan kernel binding table is device-independent); see ROADMAP row 26.
+
 ## v0.20.54 - 2026-10-21
 
 ### Changed
