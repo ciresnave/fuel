@@ -57,6 +57,7 @@ cuda = ["fuel-tensor/cuda"]
 cudnn = ["fuel-tensor/cudnn"]
 mkl = ["dep:intel-mkl-src", "fuel-tensor/mkl"]
 metal = ["fuel-tensor/metal"]
+vulkan = ["fuel-tensor/vulkan"]
 # Manual developer tools (ignore retirement): the Qwen3 yardstick fixture
 # regenerator and speed harness, as `examples/qwen3_yardstick_tool.rs`. The
 # integration tests enable it through the self dev-dependency below.
@@ -84,3 +85,7 @@ anyhow = { workspace = true }
 [[example]]
 name = "qwen3_yardstick_tool"
 required-features = ["dev-tools"]
+
+[[example]]
+name = "qwen3_vulkan_profile"
+required-features = ["dev-tools", "vulkan"]

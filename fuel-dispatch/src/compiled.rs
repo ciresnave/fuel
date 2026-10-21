@@ -79,6 +79,63 @@ impl CompiledNode {
     }
 }
 
+/// Opt-in per-`(OpKind, BackendId)` host-time accounting for kernel launches
+/// ([`execute_compiled_with_wait_hint`]). Off by default (one relaxed atomic load
+/// per launch). What it measures: wall time of the kernel call on the HOST. A
+/// kernel that only enqueues work (Vulkan batches into a command buffer, CUDA
+/// launches on a stream) is charged its enqueue cost, NOT its device time; a
+/// kernel that blocks (CPU math, a host-to-device upload, a forced flush) is
+/// charged all of it. Device time lands wherever the realize finally waits, so
+/// compare the per-op sum with the caller's own wall clock around a step.
+pub mod op_profile {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use fuel_ir::dispatch::OpKind;
+    use fuel_ir::probe::BackendId;
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    /// `(op, backend)` rendered with `Debug` -> (launches, total host time).
+    type Totals = HashMap<(String, String), (u64, Duration)>;
+
+    static TOTALS: Mutex<Option<Totals>> = Mutex::new(None);
+
+    /// Turn accounting on or off. Does not clear what was recorded.
+    pub fn set_enabled(on: bool) {
+        ENABLED.store(on, Ordering::Relaxed);
+    }
+
+    /// Whether accounting is on.
+    pub fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn record(op: OpKind, backend: BackendId, dt: Duration) {
+        let mut g = TOTALS.lock().unwrap_or_else(|p| p.into_inner());
+        let e = g
+            .get_or_insert_with(HashMap::new)
+            .entry((format!("{op:?}"), format!("{backend:?}")))
+            .or_insert((0, Duration::ZERO));
+        e.0 += 1;
+        e.1 += dt;
+    }
+
+    /// Drain the totals: `(op, backend, launches, total host time)`, longest first.
+    pub fn take() -> Vec<(String, String, u64, Duration)> {
+        let mut g = TOTALS.lock().unwrap_or_else(|p| p.into_inner());
+        let mut v: Vec<_> = g
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|((op, be), (n, d))| (op, be, n, d))
+            .collect();
+        v.sort_by_key(|row| std::cmp::Reverse(row.3));
+        v
+    }
+}
+
 /// Resolve a node's kernel from the binding table and return a
 /// [`CompiledNode`] ready for execution. Production-correct: surfaces
 /// `NoBackendForOp` if the table doesn't have a binding for the
@@ -193,7 +250,12 @@ pub fn execute_compiled_with_wait_hint(
     layouts: &[Layout],
     will_be_waited: bool,
 ) -> Result<CompletionHandle> {
-    (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params)?;
+    let profile_start = op_profile::enabled().then(std::time::Instant::now);
+    let launched = (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params);
+    if let Some(t0) = profile_start {
+        op_profile::record(compiled.op, compiled.backend, t0.elapsed());
+    }
+    launched?;
     // Step E A4b-1: the kernel has *enqueued* its work (CUDA: launched on the
     // device stream and returned without a per-op sync, per A3; CPU/Vulkan: see
     // below). Produce a completion handle FROM THE OUTPUT STORAGE — the kernel
@@ -365,6 +427,46 @@ impl CompletionHandle {
 pub trait Completion: Send {
     /// Block until the enqueued work this handle represents has finished.
     fn wait(self: Box<Self>) -> Result<()>;
+}
+
+#[cfg(test)]
+mod op_profile_tests {
+    use super::op_profile;
+    use fuel_ir::dispatch::OpKind;
+    use fuel_ir::probe::BackendId;
+    use std::time::Duration;
+
+    /// The only test that touches the process-global totals.
+    #[test]
+    fn totals_sum_per_key_sort_longest_first_and_drain() {
+        let _ = op_profile::take();
+        op_profile::record(
+            OpKind::AddElementwise,
+            BackendId::Cpu,
+            Duration::from_millis(2),
+        );
+        op_profile::record(
+            OpKind::AddElementwise,
+            BackendId::Cpu,
+            Duration::from_millis(3),
+        );
+        op_profile::record(OpKind::MatMul, BackendId::Cpu, Duration::from_millis(1));
+        op_profile::record(OpKind::MatMul, BackendId::Vulkan, Duration::from_millis(9));
+        let rows = op_profile::take();
+        let got: Vec<(&str, &str, u64, u128)> = rows
+            .iter()
+            .map(|(o, b, n, d)| (o.as_str(), b.as_str(), *n, d.as_millis()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("MatMul", "Vulkan", 1, 9),
+                ("AddElementwise", "Cpu", 2, 5),
+                ("MatMul", "Cpu", 1, 1),
+            ]
+        );
+        assert!(op_profile::take().is_empty(), "take() drains");
+    }
 }
 
 #[cfg(test)]
