@@ -1366,6 +1366,7 @@ impl DecodeSession {
         data: DecodeTokenData,
         sym_env: &SymEnv,
     ) -> Result<Vec<f32>> {
+        let _t = fuel_dispatch::compiled::op_profile::PhaseTimer::start("decode.realize_token");
         let mut cache = self.base_cache.clone();
         cache.insert(self.token_ids_node, data.token_ids);
         cache.insert(self.rope_cos_node, data.rope_cos);

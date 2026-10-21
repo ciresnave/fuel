@@ -742,6 +742,22 @@ enum WorkItemKind {
 
 /// One unit of work emitted by the compiler thread to the executor
 /// thread.
+/// Work items that touch no device: adopting an input-cache entry (`Op::Const`),
+/// and the metadata-only view items. Their `target_backend` is a placeholder
+/// (a `Const` is always stamped `Cpu`; a view inherits its producer's or
+/// defaults to `Cpu`), so letting them take part in the chunk-boundary logic made
+/// every weight `Const` that sits between two Vulkan kernels look like a
+/// Vulkan -> Cpu -> Vulkan backend switch: the executor armed `multi_backend`,
+/// submitted the open Vulkan batch at each "switch", and then waited for it
+/// before the next Vulkan op. In Qwen3-0.6B decode that was about 400 forced
+/// submit-and-wait round trips per step (`docs/research/qwen3-vulkan-decode-profile.md`).
+fn is_backend_neutral(kind: &WorkItemKind) -> bool {
+    matches!(
+        kind,
+        WorkItemKind::ConstAdopt | WorkItemKind::ViewOf { .. } | WorkItemKind::SlotView { .. }
+    )
+}
+
 struct WorkItem {
     node_id: NodeId,
     inputs: Vec<NodeId>,
@@ -1478,6 +1494,7 @@ impl PipelinedExecutor {
         // connection cycle break). No-op when no destructive ops
         // are present.
         {
+            let _t = crate::compiled::op_profile::PhaseTimer::start("realize.safety_copies");
             let mut g = graph.write().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
             insert_safety_copies(&mut g, &effective_roots);
@@ -1497,6 +1514,7 @@ impl PipelinedExecutor {
             WaitSet,
             HashMap<NodeId, Layout>,
         ) = {
+            let _t = crate::compiled::op_profile::PhaseTimer::start("realize.plan_order");
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
             // PR-A3b-1: the OptimizedGraph path lowers via
@@ -1531,9 +1549,15 @@ impl PipelinedExecutor {
         // `Streaming` work spec the thread also resolves each branch's arm
         // at the frontier (the SAME VRAM-only selector the one-shot picker
         // uses) before compiling that arm's runs.
-        let compiler = thread::spawn(move || {
-            compiler_thread_body(graph_for_compiler, compiler_work, sym_env, tx);
-        });
+        let compiler = {
+            let _t = crate::compiled::op_profile::PhaseTimer::start("realize.spawn_compiler");
+            thread::spawn(move || {
+                let _t = crate::compiled::op_profile::PhaseTimer::start(
+                    "compiler_thread (runs concurrently)",
+                );
+                compiler_thread_body(graph_for_compiler, compiler_work, sym_env, tx);
+            })
+        };
 
         // Executor on this thread: consume WorkItems, gather
         // inputs from the cache, allocate outputs, call kernels,
@@ -1579,7 +1603,14 @@ impl PipelinedExecutor {
         // switch, so this stays false and the eager-submit / in-flight machinery is
         // unreachable (single-device byte-identical + throughput-neutral, §5).
         let mut multi_backend = false;
-        for item in rx {
+        let loop_total = crate::compiled::op_profile::PhaseTimer::start("realize.loop_total");
+        loop {
+            let t_wait =
+                crate::compiled::op_profile::PhaseTimer::start("realize.wait_for_compiler");
+            let Ok(item) = rx.recv() else {
+                break;
+            };
+            drop(t_wait);
             let item = item?;
             // Chunk-boundary hook (target_backend change). Existing duty: the
             // `TopologyChanged` generation check. Step E A4b-4 adds two duties:
@@ -1587,7 +1618,8 @@ impl PipelinedExecutor {
             // LEAVING a Vulkan chunk on a multi-backend graph, eager-submit the
             // open Vulkan batch so the iGPU starts it concurrently with the chunk
             // we are about to dispatch (the overlap win).
-            if current_chunk_backend != Some(item.target_backend) {
+            if !is_backend_neutral(&item.kind) && current_chunk_backend != Some(item.target_backend)
+            {
                 if let Some(plan_gen) = plan_generation {
                     let live = crate::dispatch::topology_generation();
                     if live != plan_gen {
@@ -1611,7 +1643,12 @@ impl PipelinedExecutor {
                     // chunk with all its intra-CB barriers) — UAF/race-safe per
                     // `eager_submit_all_vulkan`'s contract.
                     if prev == BackendId::Vulkan {
-                        eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                        {
+                            let _pt = crate::compiled::op_profile::PhaseTimer::start(
+                                "realize.eager_submit_vulkan",
+                            );
+                            eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                        }
                     }
                 }
                 current_chunk_backend = Some(item.target_backend);
@@ -1627,10 +1664,16 @@ impl PipelinedExecutor {
             // re-sync as Vulkan work resumes. No-op when single-device
             // (`multi_backend` false) or no batches are in flight.
             if multi_backend
+                && !is_backend_neutral(&item.kind)
                 && item.target_backend == BackendId::Vulkan
                 && !inflight_vulkan.is_empty()
             {
-                drain_inflight_vulkan(&mut inflight_vulkan)?;
+                {
+                    let _pt = crate::compiled::op_profile::PhaseTimer::start(
+                        "realize.drain_inflight_vulkan",
+                    );
+                    drain_inflight_vulkan(&mut inflight_vulkan)?;
+                }
             }
             // Step E A4b-3 + A4b-4: the cross-device residency boundary.
             if matches!(
@@ -1642,7 +1685,12 @@ impl PipelinedExecutor {
                 // wait on CUDA (the §5.1 ordering — submit Vulkan *before* draining
                 // CUDA). Cheap + safe; gated to multi-backend (no-op single-device).
                 if multi_backend {
-                    eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                    {
+                        let _pt = crate::compiled::op_profile::PhaseTimer::start(
+                            "realize.eager_submit_vulkan",
+                        );
+                        eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                    }
                 }
                 if let Some(&producer) = item.inputs.first() {
                     // A4b-4: a VULKAN-source D2H must read COMPLETED data, and the
@@ -1654,7 +1702,12 @@ impl PipelinedExecutor {
                     // work that was eager-submitted at the chunk boundary keeps
                     // running concurrently until ITS result is the one being copied.
                     if multi_backend && copy_source_is_vulkan(&cache, producer)? {
-                        drain_inflight_vulkan(&mut inflight_vulkan)?;
+                        {
+                            let _pt = crate::compiled::op_profile::PhaseTimer::start(
+                                "realize.drain_inflight_vulkan",
+                            );
+                            drain_inflight_vulkan(&mut inflight_vulkan)?;
+                        }
                     }
                     // Step E A4b-3: FINER CUDA source-drain — wait ONLY the source
                     // producer's recorded event (not the whole source device), so
@@ -1663,6 +1716,8 @@ impl PipelinedExecutor {
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
+            let t_exec =
+                crate::compiled::op_profile::PhaseTimer::start("realize.execute_work_item");
             let handle = execute_work_item(
                 &item,
                 &mut cache,
@@ -1674,6 +1729,7 @@ impl PipelinedExecutor {
                 None,
             )
             .map_err(|e| with_node_location(&graph, item.node_id, e))?;
+            drop(t_exec);
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input
                 && let Some(&destroyed) = item.inputs.get(d_idx)
@@ -1702,9 +1758,14 @@ impl PipelinedExecutor {
                 // unsafe single-device (no eager-submit/in-flight tracking, and the
                 // cross-batch RAW guard at :832 doesn't run — see
                 // force_flush_vulkan's doc).
+                let _t =
+                    crate::compiled::op_profile::PhaseTimer::start("realize.evict_destroyed_input");
                 if multi_backend {
                     defer_evicted_vulkan_buffer(&cache, destroyed, &mut inflight_vulkan)?;
                 } else if let Some(d_arc) = cache.get(&destroyed) {
+                    let _f = crate::compiled::op_profile::PhaseTimer::start(
+                        "realize.evict_force_flush_vulkan",
+                    );
                     force_flush_vulkan(d_arc)?;
                 }
                 cache.remove(&destroyed);
@@ -1716,14 +1777,19 @@ impl PipelinedExecutor {
             }
         }
 
-        compiler
-            .join()
-            .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
+        drop(loop_total);
+        {
+            let _t = crate::compiled::op_profile::PhaseTimer::start("realize.join_compiler");
+            compiler
+                .join()
+                .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
+        }
 
         // Step E A4b-1: drain every outstanding async handle before the result is
         // read / the cache drops (freeing intermediates). For CUDA this waits the
         // recorded events (one stream/device ⇒ waiting the latest drains all prior
         // stream work too; see `drain_handles`).
+        let post_loop = crate::compiled::op_profile::PhaseTimer::start("realize.post_loop_drains");
         drain_handles(&mut handles)?;
         // Step E A4b open question #4 — "event only where waited": most CUDA
         // nodes in this realize never got an Event (elided per the `WaitSet`),
@@ -1735,7 +1801,11 @@ impl PipelinedExecutor {
         // Step E A4b-4: wait every eagerly-submitted (in-flight) Vulkan batch
         // before the cache drops, freeing the data buffers their CBs read. Empty
         // on a single-device realize (nothing was eager-submitted).
-        drain_inflight_vulkan(&mut inflight_vulkan)?;
+        {
+            let _pt =
+                crate::compiled::op_profile::PhaseTimer::start("realize.drain_inflight_vulkan");
+            drain_inflight_vulkan(&mut inflight_vulkan)?;
+        }
         // Step E A4b-2: drain all deferred Vulkan work before reading/returning
         // the result (and before the cache drops, freeing buffers). The A2
         // submit+wait is now SPLIT — `drain_vulkan_pending` submits the open
@@ -1747,6 +1817,7 @@ impl PipelinedExecutor {
             "A4b-4: in-flight Vulkan batch list must be empty after realize-end drain",
         );
 
+        drop(post_loop);
         let storage = cache.remove(&target).ok_or_else(|| {
             Error::Msg(format!(
                 "PipelinedExecutor::realize: target slot {:?} not populated after execution",
@@ -1761,6 +1832,12 @@ impl PipelinedExecutor {
             ))
             .bt()
         })?;
+        {
+            let _t = crate::compiled::op_profile::PhaseTimer::start("realize.drop_cache");
+            drop(cache);
+            drop(handles);
+            drop(layout_cache);
+        }
         Ok((storage, layout, produced_syms))
     }
 
@@ -2002,7 +2079,8 @@ impl PipelinedExecutor {
             let item = item?;
             // Chunk-boundary hook: TopologyChanged check + (A4b-4) backend-switch
             // detection + eager-submit-on-leaving-a-Vulkan-chunk.
-            if current_chunk_backend != Some(item.target_backend) {
+            if !is_backend_neutral(&item.kind) && current_chunk_backend != Some(item.target_backend)
+            {
                 if let Some(plan_gen) = plan_generation {
                     let live = crate::dispatch::topology_generation();
                     if live != plan_gen {
@@ -2027,6 +2105,7 @@ impl PipelinedExecutor {
             // Step E A4b-4 (Invariant E): wait in-flight Vulkan before recording a
             // new Vulkan op (same-device cross-chunk RAW safety). See realize_inner.
             if multi_backend
+                && !is_backend_neutral(&item.kind)
                 && item.target_backend == BackendId::Vulkan
                 && !inflight_vulkan.is_empty()
             {
@@ -7523,6 +7602,33 @@ fn contiguize_into(
                 .to_string(),
         )
         .bt()),
+    }
+}
+
+#[cfg(test)]
+mod backend_neutral_tests {
+    use super::*;
+
+    #[test]
+    fn only_deviceless_items_are_backend_neutral() {
+        let n = NodeId(0);
+        // Adopting an input-cache entry or aliasing a producer touches no device.
+        assert!(is_backend_neutral(&WorkItemKind::ConstAdopt));
+        assert!(is_backend_neutral(&WorkItemKind::ViewOf { input: n }));
+        assert!(is_backend_neutral(&WorkItemKind::SlotView { producer: n }));
+        // Sabotage siblings: anything that runs a kernel or moves bytes is NOT,
+        // so a real backend switch still arms the chunk-boundary logic.
+        assert!(!is_backend_neutral(&WorkItemKind::Kernel));
+        assert!(!is_backend_neutral(&WorkItemKind::ContiguizeOf {
+            input: n
+        }));
+        assert!(!is_backend_neutral(&WorkItemKind::Copy {
+            target_location: DeviceLocation::Cpu
+        }));
+        assert!(!is_backend_neutral(&WorkItemKind::WriteSlice {
+            dest: n,
+            source: n
+        }));
     }
 }
 

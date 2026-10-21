@@ -111,8 +111,10 @@ pub fn rebind_and_realize_prebuilt<M: PersistentDecodeModel + ?Sized>(
     // Session guaranteed Some + valid by the caller.
     let s = session.as_ref().expect("session is Some");
 
-    let data =
-        model.build_decode_token_data(&device, cached_len, tokens, s, cache, rope_inv_freq)?;
+    let data = {
+        let _t = fuel_dispatch::compiled::op_profile::PhaseTimer::start("decode.build_token_data");
+        model.build_decode_token_data(&device, cached_len, tokens, s, cache, rope_inv_freq)?
+    };
 
     // Bind BOTH per-token symbols. Inert for a device-offset session, and
     // load-bearing for a SymEnv one — see `per_token_sym_env`'s doc before
