@@ -5,7 +5,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Changed
 
-- Docs only: README records what the 0.20.61 publish covered. All 40 publishable crates went to crates.io at 0.20.61 from `6dded17a`, read back from crates.io (40 present, 0 yanked). Held at 0.20.14: `fuel-examples`, `fuel-lazy-examples`, `fuel-test-support`; the fixture crates are `publish = false`. Holes: the publish ran with `DOCS_RS=1`, so the CUDA kernel (`nvcc`), `mkl` and `aocl` builds were not verified, and `fuel-metal-backend` was published `--no-verify` (`gemm-f16` does not cross-compile on Windows).
+- Docs only: README records what the 0.20.61 publish covered. All 40 publishable crates went to crates.io at 0.20.61 from `6dded17a`, read back from crates.io (40 present, 0 yanked). Held at 0.20.14: `fuel-examples`, `fuel-lazy-examples`, `fuel-test-support`; the fixture crates are `publish = false`. Holes: the publish ran with `DOCS_RS=1`, so the CUDA kernel (`nvcc`), `mkl` and `aocl` builds were not verified, and `fuel-metal-backend` was published `--no-verify` (`gemm-f16` does not cross-compile on Windows). ROADMAP row 31 (AWQ) records baracuda's scale-layout finding (baracuda#218).
 
 ## v0.20.61 - 2026-10-22
 
