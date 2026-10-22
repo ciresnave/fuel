@@ -27,7 +27,7 @@ import os
 import posixpath
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404 -- only used with fixed argument lists and no shell
 import sys
 import tarfile
 import tempfile
@@ -100,8 +100,8 @@ def read_allowlist(path):
     return entries
 
 
-def scan(crate_dir, allow_path):
-    crates = sorted(f for f in os.listdir(crate_dir) if f.endswith(".crate"))
+def collect_escapes(crate_dir, crates):
+    """Return (hard src escapes, {(crate, file, kind): count} of allowlistable escapes)."""
     found = {}
     hard = []
     for f in crates:
@@ -110,14 +110,12 @@ def scan(crate_dir, allow_path):
                 hard.append((name, rel, tgt))
             else:
                 found[(name, rel, kind)] = found.get((name, rel, kind), 0) + 1
-    allow = read_allowlist(allow_path)
+    return hard, found
+
+
+def check_allowlist(found, allow):
+    """Count unlisted, grown and stale allowlist entries, printing each."""
     bad = 0
-    print(f"scanned {len(crates)} .crate files")
-    for name, rel, tgt in hard:
-        print(f"FAIL src escape (no allowlist for src/): {name}/{rel} -> {tgt}")
-        bad += 1
-    print(f"allowlisted escapes found: {sum(found.values())} in {len(found)} files "
-          f"(allowlist entries: {len(allow)})")
     for key in sorted(found):
         want = allow.get(key)
         tag = "ok " if want and want[0] == found[key] else "NEW"
@@ -125,11 +123,23 @@ def scan(crate_dir, allow_path):
         if not want or want[0] != found[key]:
             print(f"FAIL unlisted or grown escape: {key} found {found[key]}, allowed {want[0] if want else 0}")
             bad += 1
-    for key, (count, reason) in sorted(allow.items()):
+    for key in sorted(allow):
         if key not in found:
             print(f"FAIL allowlist entry no longer exists (remove it): {key}")
             bad += 1
     return bad
+
+
+def scan(crate_dir, allow_path):
+    crates = sorted(f for f in os.listdir(crate_dir) if f.endswith(".crate"))
+    hard, found = collect_escapes(crate_dir, crates)
+    allow = read_allowlist(allow_path)
+    print(f"scanned {len(crates)} .crate files")
+    for name, rel, tgt in hard:
+        print(f"FAIL src escape (no allowlist for src/): {name}/{rel} -> {tgt}")
+    print(f"allowlisted escapes found: {sum(found.values())} in {len(found)} files "
+          f"(allowlist entries: {len(allow)})")
+    return len(hard) + check_allowlist(found, allow)
 
 
 def make_crate(dirpath, name, files):
@@ -194,33 +204,48 @@ def _dir_with(src_dir, names):
     return d
 
 
+def safe_extract(tf, dest):
+    """Extract a tarball, refusing absolute paths, `..` components and links.
+
+    The tarballs are ours (`cargo package`), but this script is the guard, so it does
+    not trust them: members are validated, then extracted with the `data` filter.
+    """
+    root = os.path.realpath(dest)
+    for m in tf.getmembers():
+        target = os.path.realpath(os.path.join(dest, m.name))
+        if m.issym() or m.islnk() or os.path.isabs(m.name) or os.path.commonpath([root, target]) != root:
+            raise ValueError(f"unsafe tar member: {m.name}")
+    tf.extractall(dest, filter="data")
+
+
+def write_workspace(ws, names):
+    """Write the throwaway workspace manifest: every extracted crate patched in by path."""
+    patch = [f'{d.rsplit("-", 1)[0]} = {{ path = "{d}" }}' for d in names]
+    root = (
+        "[workspace]\nresolver = \"2\"\nmembers = [\n"
+        + "".join(f'    "{d}",\n' for d in names)
+        + "]\n\n[patch.crates-io]\n" + "\n".join(patch) + "\n"
+    )
+    with open(os.path.join(ws, "Cargo.toml"), "w", encoding="utf8") as fh:
+        fh.write(root)
+
+
 def build(crate_dir, lockfile, excludes):
     crates = sorted(f for f in os.listdir(crate_dir) if f.endswith(".crate"))
     ws = tempfile.mkdtemp(prefix="packaged-ws-")
-    names = []
     for f in crates:
         with tarfile.open(os.path.join(crate_dir, f), "r:gz") as tf:
-            tf.extractall(ws)
-        names.append(f[: -len(".crate")])  # name-version directory
-    patch = []
-    members = []
-    for d in names:
-        name = d.rsplit("-", 1)[0]
-        members.append(d)
-        patch.append(f'{name} = {{ path = "{d}" }}')
-    root = (
-        "[workspace]\nresolver = \"2\"\nmembers = [\n"
-        + "".join(f'    "{m}",\n' for m in members)
-        + "]\n\n[patch.crates-io]\n" + "\n".join(patch) + "\n"
-    )
-    open(os.path.join(ws, "Cargo.toml"), "w", encoding="utf8").write(root)
+            safe_extract(tf, ws)
+    names = [f[: -len(".crate")] for f in crates]  # name-version directories
+    write_workspace(ws, names)
     if lockfile and os.path.exists(lockfile):
         shutil.copy(lockfile, os.path.join(ws, "Cargo.lock"))
     cmd = ["cargo", "check", "--workspace"] + [x for e in excludes for x in ("--exclude", e)]
-    print(f"BUILD throwaway workspace {ws}: {len(members)} extracted crates; {' '.join(cmd)}")
+    print(f"BUILD throwaway workspace {ws}: {len(names)} extracted crates; {' '.join(cmd)}")
     print("NAMED HOLES: DOCS_RS is set by the caller, so the CUDA/forge (nvcc) compile of "
           "baracuda-kernels-sys is NOT verified; excluded crates are not built at all.")
-    return subprocess.run(cmd, cwd=ws).returncode
+    # Fixed argument list, no shell, no user input: the only variable parts are CLI-supplied crate names.
+    return subprocess.run(cmd, cwd=ws).returncode  # NOSONAR # nosec B603
 
 
 def main(argv):
