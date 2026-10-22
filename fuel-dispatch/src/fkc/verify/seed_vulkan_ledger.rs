@@ -8,7 +8,7 @@
 //! `max_ulp: 0` for the data-movers / cast / arg-reduce families), but the
 //! import gate ([`super::gate_precision`]) downgrades any declared claim
 //! lacking a matching `pass` entry in the git-checked-in
-//! `fuel-dispatch/kernel-contracts/.fkc-verified-ledger.json` to
+//! `fuel-dispatch/kernel-contracts/fkc-verified-ledger.json` to
 //! `PrecisionGuarantee::UNAUDITED`. With NO Vulkan ledger entries, EVERY
 //! Vulkan kernel showed UNAUDITED (209 (op, dtype) tuples) and the
 //! `vulkan_dispatch_per_kernel_precision_and_cost_coverage` lint failed. This
@@ -384,7 +384,7 @@ pub fn run_vulkan_verification_on(
 /// empirically verify `bit_stable_on_same_hardware` (+ byte-exact
 /// `max_ulp: 0` for the data-mover / cast / arg-reduce families) for every
 /// op this harness has a recipe for, and WRITE the merged ledger back to
-/// the git-checked-in `fuel-dispatch/kernel-contracts/.fkc-verified-ledger.json`.
+/// the git-checked-in `fuel-dispatch/kernel-contracts/fkc-verified-ledger.json`.
 ///
 /// Requires a live Vulkan device (a maintenance tool, not a test). Run:
 ///   `cargo run -p fuel-dispatch --features dev-tools --bin fuel-dev-tools -- seed-vulkan (with --features vulkan)`
