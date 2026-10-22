@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.63 - 2026-10-22
+
+### Changed
+
+- Docs only: ROADMAP rows 32-35 record the gaps Lightbulb found removing Candle (prefix-cache stats, scheduler observability, bf16 CPU weights, and the undecided remainder).
+
 ## v0.20.62 - 2026-10-22
 
 ### Changed
