@@ -1,6 +1,14 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.21.0 - 2026-10-22
+
+### Changed
+
+- **Breaking** `fuel-dispatch`: the default placement preference is now by accuracy claim, not by bit-stability (board 240, option D). `BitStablePreferenceFilter` is removed and replaced by `AccuracyPreferenceFilter` (`DEFAULT_ACCURACY_BOUND`, `AccuracyBound`, `meets_accuracy_bound`) in `default_chain`: cost ranking now compares, across devices, the kernels whose accuracy claim is within 1e-3 relative and absolute, with a kernel that has an earned `bit_stable` ledger pass counting as reference-grade and a kernel with no claim not winning by default. `PrecisionRequirement { require_bit_stable }` (strict reproducibility) is unchanged. Default-mode graphs that place a claimed non-bit-stable GPU kernel are no longer bit-identical run to run in the last bits.
+- `fuel-dispatch`: the Vulkan f32 `MatMul`, `RmsNormLastDim`, `SoftmaxLastDim` and `Rope` contracts declare measured `max_relative` / `max_absolute` claims (`vulkan/matmul.fkc.md`, `vulkan/norm.fkc.md`, `vulkan/rope.fkc.md`; the f32 binding is split out of the fanned norm and rope sections so it can carry its own precision block). `fkc-verified-ledger.json` gains the 8 accuracy records and 58 refreshed Vulkan `bit_stable` passes (records earned at the current kernel revisions; none replaced). New `fuel-dev-tools seed-vulkan-accuracy` and `check-vulkan-accuracy`.
+- Qwen3-0.6B decode on Vulkan: all 253 matmuls, and the norms, rope and softmax, now place on Vulkan (decode step 4,271 ms to 36 ms median; ROADMAP item 21).
+
 ## v0.20.71 - 2026-10-22
 
 ### Changed
