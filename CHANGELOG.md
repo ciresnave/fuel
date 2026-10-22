@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.69 - 2026-10-22
+
+### Fixed
+
+- `fuel-loaders`: `derive_config` reads an absent `{arch}.attention.head_count_kv` as `attention.head_count` (llama.cpp's own convention) instead of declining; a present key keeps its value and a present key of the wrong type still declines (ROADMAP row 37, from Lightbulb's census: stories15M q4_0/q8_0 failed only on the missing key).
+
 ## v0.20.68 - 2026-10-22
 
 ### Added
