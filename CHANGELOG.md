@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.66 - 2026-10-22
+
+### Changed
+
+- Docs only: ROADMAP row 36 (un-ignore `t5_gpu_batched_flash_equals_serial_bf16` on a self-hosted GPU runner).
+
 ## v0.20.64 - 2026-10-22
 
 ### Added
