@@ -467,6 +467,58 @@ impl Llama3Model {
         )
     }
 
+    /// Paged single-token forward with this model's (possibly llama3-scaled)
+    /// RoPE frequencies -- [`LlamaModel::forward_paged_step_inv_freq`] with the
+    /// vector from [`Self::rope_inv_freq`] passed down, so a scaled model's
+    /// paged decode matches its contiguous decode instead of silently using
+    /// unscaled RoPE.
+    pub fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        session: fuel_kv_pool::SessionHandle,
+    ) -> Result<Vec<f32>> {
+        let inv = self.rope_inv_freq();
+        self.inner
+            .forward_paged_step_inv_freq(token, pool, session, Some(&inv))
+    }
+
+    /// Batched paged forward with this model's RoPE frequencies
+    /// ([`LlamaModel::forward_paged_step_batched_inv_freq`]).
+    pub fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        sessions: &[fuel_kv_pool::SessionHandle],
+    ) -> Result<Vec<Vec<f32>>> {
+        let inv = self.rope_inv_freq();
+        self.inner
+            .forward_paged_step_batched_inv_freq(tokens, pool, sessions, Some(&inv))
+    }
+
+    /// Plan-once paged forward with this model's RoPE frequencies
+    /// ([`LlamaModel::forward_paged_step_persistent_inv_freq`]).
+    pub fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        session: fuel_kv_pool::SessionHandle,
+        max_blocks_cap: usize,
+        plan: fuel_tensor::inference_context::PagedDecodePlan,
+        decode_session: &mut Option<fuel_tensor::inference_context::PagedDecodeSession>,
+    ) -> Result<Vec<f32>> {
+        let inv = self.rope_inv_freq();
+        self.inner.forward_paged_step_persistent_inv_freq(
+            token,
+            pool,
+            session,
+            max_blocks_cap,
+            plan,
+            decode_session,
+            Some(&inv),
+        )
+    }
+
     /// Forward from token ids. Returns logits `[1, seq, vocab_size]`.
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.inner.config;
@@ -1224,6 +1276,153 @@ mod tests {
             max_diff > 10.0 * PARITY_TOL,
             "scaled and unscaled decode are indistinguishable (max diff {max_diff}) — the parity test above would pass with the override removed",
         );
+    }
+
+    // ---- Paged decode with scaled RoPE (PagedDecodeModel Stage 1) ----
+
+    /// Paged-vs-oracle tolerance. Paged attention gathers-then-SDPAs, so it is
+    /// epsilon-close (not bit-equal) to the full-prefix forward; the negative
+    /// control below pins the scaled/unscaled separation far above this.
+    const PAGED_TOL: f32 = 5e-5;
+
+    fn paged_pool(cfg: &LlamaConfig) -> fuel_tensor::kv_block_pool_device::DeviceKvPool {
+        let geom = fuel_kv_pool::KvGeometry {
+            n_layers: cfg.n_layers,
+            num_blocks: 16,
+            block_size: 4,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
+            elem_size: 4,
+        };
+        fuel_tensor::kv_block_pool_device::DeviceKvPool::new(
+            geom,
+            fuel_ir::DType::F32,
+            &fuel_tensor::Device::cpu(),
+        )
+        .unwrap()
+    }
+
+    fn scaled_llama3(scaling: Option<Llama3RopeConfig>) -> Llama3Model {
+        let cfg = scaled_cfg();
+        Llama3Model::new(
+            LlamaModel {
+                config: cfg.clone(),
+                weights: tiny_weights(&cfg),
+            },
+            scaling,
+            None,
+        )
+    }
+
+    /// Full-prefix oracle logits at the last position of `all`.
+    fn last_logits_full(m: &Llama3Model, all: &[u32]) -> Vec<f32> {
+        let v = m.inner.config.vocab_size;
+        let full = m.forward(all, 0).unwrap().realize_f32();
+        full[(all.len() - 1) * v..].to_vec()
+    }
+
+    fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len());
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max)
+    }
+
+    const PAGED_SEQ: [u32; 7] = [1, 2, 3, 4, 5, 6, 7];
+
+    /// Single-token paged decode of `PAGED_SEQ`, one token per step, through
+    /// `step`; returns the last step's logits.
+    fn paged_decode_last(
+        cfg: &LlamaConfig,
+        mut step: impl FnMut(
+            u32,
+            &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+            fuel_kv_pool::SessionHandle,
+        ) -> Vec<f32>,
+    ) -> Vec<f32> {
+        let mut pool = paged_pool(cfg);
+        let s = pool.core_mut().open();
+        let mut last = Vec::new();
+        for &t in &PAGED_SEQ {
+            last = step(t, &mut pool, s);
+        }
+        last
+    }
+
+    /// The scaled model's paged decode matches its own full-prefix forward
+    /// with scaling engaged (seven steps, so the rotation at every position
+    /// 0..6 is exercised, not just the first).
+    #[test]
+    fn scaled_paged_decode_matches_full_prefix_forward() {
+        let m = scaled_llama3(Some(llama3_scaling()));
+        let want = last_logits_full(&m, &PAGED_SEQ);
+        let got = paged_decode_last(&m.inner.config, |t, pool, s| {
+            m.forward_paged_step(t, pool, s).unwrap()
+        });
+        let d = max_abs_diff(&got, &want);
+        assert!(d < PAGED_TOL, "scaled paged decode diverged: max |diff| {d}");
+    }
+
+    /// Retained sabotage sibling: paged decode through the UNSCALED inner path
+    /// (what a plain delegation to `self.inner` would do) must be
+    /// distinguishable from the scaled oracle, or the parity test above would
+    /// pass with the override removed.
+    #[test]
+    fn unscaled_paged_decode_diverges_from_scaled_oracle() {
+        let m = scaled_llama3(Some(llama3_scaling()));
+        let want = last_logits_full(&m, &PAGED_SEQ);
+        let got = paged_decode_last(&m.inner.config, |t, pool, s| {
+            m.inner.forward_paged_step(t, pool, s).unwrap()
+        });
+        let d = max_abs_diff(&got, &want);
+        assert!(
+            d > 10.0 * PAGED_TOL,
+            "unscaled paged decode is indistinguishable from the scaled oracle (max |diff| {d})",
+        );
+    }
+
+    /// Plan-once persistent paged decode threads the frequencies through BOTH
+    /// the first-token build and every later rebind.
+    #[test]
+    fn scaled_persistent_paged_decode_matches_full_prefix_forward() {
+        use fuel_tensor::inference_context::PagedDecodePlan;
+        let m = scaled_llama3(Some(llama3_scaling()));
+        let want = last_logits_full(&m, &PAGED_SEQ);
+        let mut ds = None;
+        let got = paged_decode_last(&m.inner.config, |t, pool, s| {
+            m.forward_paged_step_persistent(t, pool, s, 4, PagedDecodePlan::PlanOnce, &mut ds)
+                .unwrap()
+        });
+        let d = max_abs_diff(&got, &want);
+        assert!(
+            d < PAGED_TOL,
+            "scaled persistent paged decode diverged: max |diff| {d}"
+        );
+    }
+
+    /// Batched paged decode (two same-position sessions) threads the
+    /// frequencies through the per-row RoPE tables.
+    #[test]
+    fn scaled_batched_paged_decode_matches_full_prefix_forward() {
+        let m = scaled_llama3(Some(llama3_scaling()));
+        let cfg = m.inner.config.clone();
+        let want = last_logits_full(&m, &PAGED_SEQ);
+        let mut pool = paged_pool(&cfg);
+        let sessions = [pool.core_mut().open(), pool.core_mut().open()];
+        let mut last = Vec::new();
+        for &t in &PAGED_SEQ {
+            last = m
+                .forward_paged_step_batched(&[t, t], &mut pool, &sessions)
+                .unwrap();
+        }
+        for (b, row) in last.iter().enumerate() {
+            let d = max_abs_diff(row, &want);
+            assert!(
+                d < PAGED_TOL,
+                "scaled batched paged decode row {b} diverged: max |diff| {d}"
+            );
+        }
     }
 
     /// GAP-281: an odd `head_dim` must DECLINE, not panic. `half = head_dim / 2`
