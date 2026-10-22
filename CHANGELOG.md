@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.60 - 2026-10-21
+
+### Added
+
+- CI job `Packaged crates` and `scripts/verify-packaged-crates.py`: every publishable crate is packaged (`cargo package --workspace --locked --no-verify`), each `.crate` is scanned for `include_str!`/`include_bytes!`/`include!`/`#[path]` targets outside its own tarball (a `src/` or `build.rs` escape is a hard failure with no allowlist; `tests/`/`benches/`/`examples/` and runtime `CARGO_MANIFEST_DIR/..` escapes live in the shrink-only `scripts/packaged-escapes-allowlist.txt`, 12 entries today, and a stale entry fails), then every `.crate` is extracted into a throwaway workspace patched to itself and `cargo check`ed. Known-bad controls run first (`selftest`). Named holes, printed by the job: the CUDA/forge compile is not verified (`DOCS_RS=1`), and the `WORKSPACE_EXCLUDES` crates are not built. This closes the gap that let `fuel-dispatch` 0.19.1/0.20.0/0.20.14 publish unbuildable (fixed in 0.20.59).
+
+### Changed
+
+- `fuel-dispatch` `fkc::validate` test: the FDX code table (`fuel-ir/src/dlpack/codes.rs`) is read at run time from the workspace instead of `include_str!`d from outside the crate. A tarball cannot run that test; it fails loudly rather than skipping.
+
 ## v0.20.59 - 2026-10-21
 
 ### Fixed

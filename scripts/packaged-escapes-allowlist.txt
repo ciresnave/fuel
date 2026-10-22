@@ -1,0 +1,14 @@
+# Escapes the packaged-crate check (scripts/verify-packaged-crates.py) tolerates. A RATCHET:
+# it may shrink, never grow. An unlisted escape fails; an entry whose escape is gone fails too
+# (remove it). Fields are TAB-separated: crate, file in the tarball, kind, count, reason.
+#
+# `src/` (and build.rs) `include_*!` escapes are NEVER listed here: they break a consumer build.
+# Kinds: aux = include in tests/ benches/ examples/ (a tarball cannot compile those anyway:
+# workspace dev-dependencies are path-only and `cargo publish` strips them);
+# runtime = a CARGO_MANIFEST_DIR/.. read at run time, only reached by a workspace test or tool.
+fuel	tests/facade_disjoint.rs	aux	1	reads fuel-transformers/src/models/mod.rs (facade/workspace consistency test)
+fuel	tests/feature_forwarding.rs	aux	3	reads sibling Cargo.toml files (feature-forwarding consistency test)
+fuel-cpu-backend	tests/kiss_int_wrap.rs	aux	1	reads fuel-dispatch/fixtures/kiss-corpus; cpu-backend cannot depend on fuel-dispatch (cycle)
+fuel-tensor	tests/kiss_nan_conformance.rs	aux	5	reads fuel-dispatch/fixtures/kiss-corpus (conformance vectors)
+fuel-dispatch	src/fkc/contract_audit_flip.rs	runtime	1	dev-tools `pinned_toolchain` reads the workspace rust-toolchain.toml
+fuel-dispatch	src/fkc/validate.rs	runtime	1	test compares fuel-dispatch's FDX token mirror with fuel-ir/src/dlpack/codes.rs source text
