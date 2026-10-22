@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.0 - 2026-10-22
+
+### Changed
+
+- **Breaking** `fuel-graph`: `Tensor::awq_matmul` / `AWQ_MATMUL` now take the baracuda kernel layout instead of the HF checkpoint layout: weight `[N, K/8]`, zeros `[N, zeros_w]`, scales `[N, 8*zeros_w]` in F16, group size 64 or 128 (`awq_zeros_w` gives the padded width). HF checkpoints are repacked once on the host by `fuel_quantized::awq_repack::repack_hf_awq_for_kernel`. The op is still decompose-only; the CUDA registration is the next step of ROADMAP row 31.
+
 ## v0.21.1 - 2026-10-22
 
 ### Fixed

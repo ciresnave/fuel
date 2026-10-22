@@ -3612,51 +3612,39 @@ mod tests {
         assert_grad_close("nf4_matmul d/dact", &g, &fd);
     }
 
-    /// AWQ: arbitrary packed words are valid data (any nibble is a code), and
-    /// the gradient wrt the activation does not depend on the packing
-    /// convention, so a fixed set of words exercises the decompose's
-    /// dequantize-then-matmul path under autograd.
+    /// AWQ: arbitrary packed words are valid data (any nibble is a code), so a
+    /// fixed set of words exercises the decompose's dequantize-then-matmul
+    /// path under autograd. Kernel layout: `K = 64`, `group_size = 64`
+    /// (`zeros_w = 2`), `N = 8`.
     #[test]
     fn awq_matmul_activation_gradient_matches_finite_difference() {
-        let (g, fd) = grad_vs_fd_lowered(
-            &[0.5, -1.0, 2.0, 0.25, -0.75, 1.5, 0.1, -0.3],
-            &[1, 8],
-            |act| {
-                let qweight = act
-                    .graph_tensor()
-                    .const_u32_like(
-                        vec![
-                            0x1234_5678,
-                            0x9ABC_DEF0,
-                            0x0FED_CBA9,
-                            0x8765_4321,
-                            0x1357_9BDF,
-                            0x2468_ACE0,
-                            0xFEDC_BA98,
-                            0x0123_4567,
-                        ],
-                        Shape::from_dims(&[8, 1]),
-                    )
-                    .unwrap();
-                let qzeros = act
-                    .graph_tensor()
-                    .const_u32_like(vec![0x7777_7777], Shape::from_dims(&[1, 1]))
-                    .unwrap();
-                let scales = act
-                    .const_f32_like(
-                        vec![0.1, 0.2, 0.15, 0.05, 0.3, 0.25, 0.12, 0.08],
-                        Shape::from_dims(&[1, 8]),
-                    )
-                    .unwrap();
-                Tensor::from_graph_tensor(act.graph_tensor().awq_matmul(
-                    &qweight,
-                    &qzeros,
-                    scales.graph_tensor(),
-                    8,
-                    8,
-                ))
-            },
-        );
+        let x_vals: Vec<f32> = (0..64).map(|k| ((k * 7) % 13) as f32 * 0.1 - 0.6).collect();
+        let (g, fd) = grad_vs_fd_lowered(&x_vals, &[1, 64], |act| {
+            let words: Vec<u32> = (0..64u32)
+                .map(|i| i.wrapping_mul(0x9E37_79B1) ^ 0x1234_5678)
+                .collect();
+            let weight = act
+                .graph_tensor()
+                .const_u32_like(words, Shape::from_dims(&[8, 8]))
+                .unwrap();
+            let zeros = act
+                .graph_tensor()
+                .const_u32_like(vec![0x7777_7777; 16], Shape::from_dims(&[8, 2]))
+                .unwrap();
+            let scales: Vec<half::f16> = (0..128)
+                .map(|i| half::f16::from_f32(0.05 + 0.01 * (i % 7) as f32))
+                .collect();
+            let scales = act
+                .const_f16_like(scales, Shape::from_dims(&[8, 16]))
+                .unwrap();
+            Tensor::from_graph_tensor(act.graph_tensor().awq_matmul(
+                &weight,
+                &zeros,
+                scales.graph_tensor(),
+                64,
+                8,
+            ))
+        });
         assert_grad_close("awq_matmul d/dact", &g, &fd);
     }
 
