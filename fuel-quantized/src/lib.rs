@@ -21,6 +21,7 @@
 
 #[cfg(target_feature = "avx2")]
 pub mod avx;
+pub mod awq_repack;
 pub mod cpu;
 pub mod dequant;
 pub mod iq4;

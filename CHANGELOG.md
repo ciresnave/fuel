@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.68 - 2026-10-22
+
+### Added
+
+- `fuel-quantized`: `awq_repack` (`repack_hf_awq_for_kernel`, `awq_zeros_w`, `HF_AWQ_PACK_ORDER`): host repack of a HuggingFace `*-AWQ` layer into the padded OC-major buffers baracuda's AWQ kernel reads (ROADMAP row 31, loader step). Tested against baracuda's documented read formula; no CUDA needed.
+
 ## v0.20.67 - 2026-10-22
 
 ### Added
