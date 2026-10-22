@@ -2043,7 +2043,22 @@ determinism: same_hardware_bitwise
     /// gate — the exact failure mode that let this drift survive. Reading the
     /// source text needs no feature, so this runs in a plain
     /// `cargo test -p fuel-dispatch`.
-    const FDX_CODES_SRC: &str = include_str!("../../../fuel-ir/src/dlpack/codes.rs");
+    ///
+    /// Read at run time, not `include_str!`d: `fuel-ir` is a sibling crate, so the
+    /// file is outside this crate's tarball, and an `include_str!` of it would make
+    /// the published crate unbuildable (the packaged-crate check fails any `src/`
+    /// include that leaves the crate). From a tarball the test fails loudly rather
+    /// than skipping: it is a workspace consistency check.
+    fn fdx_codes_src() -> String {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fuel-ir/src/dlpack/codes.rs");
+        std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "the FDX code table must be readable from the workspace (this test checks \
+                 fuel-dispatch against fuel-ir's source text); read {path:?}: {e}"
+            )
+        })
+    }
 
     /// `(FDX const name, the token an FKC contract writes)`. Every const named
     /// here must exist in `codes.rs` and every `FDX_QUANT_*` const there must
@@ -2067,7 +2082,7 @@ determinism: same_hardware_bitwise
 
     /// Every `pub const <prefix>… ` declared in FDX's code table.
     fn fdx_consts_with_prefix(prefix: &str) -> std::collections::BTreeSet<String> {
-        FDX_CODES_SRC
+        fdx_codes_src()
             .lines()
             .filter_map(|l| l.trim().strip_prefix("pub const ")?.split(':').next())
             .map(|n| n.trim().to_string())
@@ -2091,7 +2106,7 @@ determinism: same_hardware_bitwise
              the parse found neither known anchor, so it is broken, not the table",
             families.len(),
             grans.len(),
-            FDX_CODES_SRC.lines().count()
+            fdx_codes_src().lines().count()
         );
 
         let declared_families: std::collections::BTreeSet<String> = FDX_FAMILY_TOKENS

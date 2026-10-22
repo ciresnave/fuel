@@ -461,6 +461,18 @@ Cheatsheet:
 - [fuel-flash-attn](./fuel-flash-attn): Flash attention v2 layer.
 - [fuel-onnx](./fuel-onnx/): ONNX model evaluation.
 
+### Published crates build from their tarballs
+
+A published crate contains only its own directory, so nothing in `src/` may `include_str!` (or
+`include_bytes!`/`include!`/`#[path]`) a file outside it. CI's `Packaged crates` job packages every
+publishable crate, fails on any such `src/` escape (no allowlist), keeps the `tests/`-only and runtime
+escapes in a shrink-only list (`scripts/packaged-escapes-allowlist.txt`), then extracts every `.crate`
+into a throwaway workspace and runs `cargo check` on it
+(`scripts/verify-packaged-crates.py`). **Not verified by that job:** the CUDA/forge compile
+(`DOCS_RS=1` skips `baracuda-kernels-sys`'s `nvcc` step) and the `fuel-mkl-cpu-backend`,
+`fuel-aocl-cpu-backend`, `fuel-cuda-backend`, `fuel-metal-backend` and `fuel-metal-kernels` crates,
+which need an SDK or another OS.
+
 ## FAQ
 
 ### Why should I use Fuel?
