@@ -42,6 +42,8 @@
 //!   fallback, and this project's own registry records what that costs elsewhere on this same
 //!   config-parse path (a silently truncated GQA ratio, a `hidden_size / 0` panic). A missing
 //!   key is a typed [`GgufConfigError`] naming the key, never a guess and never an `unwrap`.
+//!   The one exception is `attention.head_count_kv`: llama.cpp itself reads an absent key as
+//!   `attention.head_count`, so that default is the format's own convention, not a guess.
 
 use super::arch::Architecture;
 use super::gguf_file::{Content, TensorInfo};
@@ -66,7 +68,7 @@ pub struct GgufDerivedConfig {
     /// `{arch}.attention.head_count`.
     pub n_heads: usize,
     /// `{arch}.attention.head_count_kv` — equal to `n_heads` for plain multi-head attention,
-    /// smaller under GQA.
+    /// smaller under GQA. An absent key defaults to `n_heads` (llama.cpp convention).
     pub n_kv_heads: usize,
     /// `{arch}.attention.layer_norm_rms_epsilon`.
     pub rms_norm_eps: f64,
@@ -174,6 +176,20 @@ impl<'a> GgufMeta<'a> {
         })
     }
 
+    /// [`Self::u32`], except an ABSENT key yields `default`. A present key of the wrong type
+    /// still returns [`GgufConfigError::WrongMetadataType`].
+    fn u32_or(&self, suffix: &str, default: u32) -> Result<u32> {
+        if self
+            .content
+            .metadata
+            .contains_key(&format!("{}.{suffix}", self.prefix))
+        {
+            self.u32(suffix)
+        } else {
+            Ok(default)
+        }
+    }
+
     fn f32(&self, suffix: &str) -> Result<f32> {
         let key = format!("{}.{suffix}", self.prefix);
         let value = self.content.metadata.get(&key).ok_or_else(|| {
@@ -193,7 +209,8 @@ impl<'a> GgufMeta<'a> {
 }
 
 /// Extract [`GgufDerivedConfig`] from `content`'s metadata and tensor table, reading every key
-/// under `arch.as_str()`'s prefix. Never defaults a missing field; every failure names the
+/// under `arch.as_str()`'s prefix. Never defaults a missing field (except `head_count_kv`,
+/// which follows llama.cpp's convention of falling back to `head_count`); every failure names the
 /// exact key or tensor that was absent or malformed.
 pub fn derive_config(content: &Content, arch: Architecture) -> Result<GgufDerivedConfig> {
     let m = GgufMeta {
@@ -205,7 +222,9 @@ pub fn derive_config(content: &Content, arch: Architecture) -> Result<GgufDerive
     let intermediate_size = m.u32("feed_forward_length")? as usize;
     let n_layers = m.u32("block_count")? as usize;
     let n_heads = m.u32("attention.head_count")? as usize;
-    let n_kv_heads = m.u32("attention.head_count_kv")? as usize;
+    // llama.cpp reads an ABSENT `head_count_kv` as `head_count` (plain multi-head attention);
+    // a present-but-malformed value still declines.
+    let n_kv_heads = m.u32_or("attention.head_count_kv", n_heads as u32)? as usize;
     let rms_norm_eps = m.f32("attention.layer_norm_rms_epsilon")? as f64;
     let rope_theta = m.f32("rope.freq_base")? as f64;
     let max_position_embeddings = m.u32("context_length")? as usize;
@@ -344,6 +363,71 @@ mod tests {
             "n_layers must come from qwen2.block_count (7), not the conflicting \
              llama.block_count (999) -- a leaked prefix would return 999 here"
         );
+    }
+
+    /// A complete llama metadata set (8 heads) with `attention.head_count_kv` set to `kv`
+    /// (`None` = key absent), plus the `token_embd.weight` vocab inference needs.
+    fn llama_content_with_kv(kv: Option<Value>) -> Content {
+        let mut metadata = std::collections::HashMap::new();
+        for (k, v) in [
+            ("embedding_length", Value::U32(64)),
+            ("feed_forward_length", Value::U32(128)),
+            ("block_count", Value::U32(2)),
+            ("attention.head_count", Value::U32(8)),
+            ("context_length", Value::U32(2048)),
+        ] {
+            metadata.insert(format!("llama.{k}"), v);
+        }
+        if let Some(kv) = kv {
+            metadata.insert("llama.attention.head_count_kv".to_string(), kv);
+        }
+        metadata.insert(
+            "llama.attention.layer_norm_rms_epsilon".to_string(),
+            Value::F32(1e-5),
+        );
+        metadata.insert("llama.rope.freq_base".to_string(), Value::F32(10000.0));
+        let mut content = content_with(metadata);
+        content.tensor_infos.insert(
+            "token_embd.weight".to_string(),
+            TensorInfo {
+                ggml_dtype: fuel_ir::quantized::GgmlDType::F32,
+                shape: fuel_ir::Shape::from_dims(&[64, 100]),
+                offset: 0,
+            },
+        );
+        content
+    }
+
+    /// llama.cpp reads an absent `head_count_kv` as `head_count` (plain multi-head attention).
+    #[test]
+    fn absent_head_count_kv_defaults_to_head_count() {
+        let cfg = derive_config(&llama_content_with_kv(None), Architecture::Llama).unwrap();
+        assert_eq!(cfg.n_heads, 8);
+        assert_eq!(cfg.n_kv_heads, 8);
+    }
+
+    /// Known-bad control for the default above: a PRESENT key that differs from `head_count`
+    /// must keep its value, so the default cannot be applied unconditionally.
+    #[test]
+    fn present_head_count_kv_keeps_its_own_value() {
+        let cfg = derive_config(
+            &llama_content_with_kv(Some(Value::U32(2))),
+            Architecture::Llama,
+        )
+        .unwrap();
+        assert_eq!(cfg.n_heads, 8);
+        assert_eq!(cfg.n_kv_heads, 2);
+    }
+
+    /// The default covers an ABSENT key only; a present key of the wrong type still declines.
+    #[test]
+    fn malformed_head_count_kv_still_declines() {
+        let err = derive_config(
+            &llama_content_with_kv(Some(Value::String("4".to_string()))),
+            Architecture::Llama,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("llama.attention.head_count_kv"));
     }
 
     #[test]
