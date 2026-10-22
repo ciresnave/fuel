@@ -1288,6 +1288,63 @@ pub struct PagedSessionScheduler<'m, M: PagedDecodeModel> {
     /// re-realize every token). Correctness is identical either way; the flag only
     /// trades a one-time build for per-token planner savings.
     plan: PagedDecodePlan,
+    /// Monotonic lifetime counters behind [`stats`](Self::stats).
+    counters: PagedCounters,
+}
+
+/// Lifetime counters of one [`PagedSessionScheduler`].
+#[derive(Clone, Copy, Debug, Default)]
+struct PagedCounters {
+    admitted: u64,
+    reaped: u64,
+    evicted: u64,
+    restored: u64,
+    steps: u64,
+}
+
+/// A point-in-time view of a [`PagedSessionScheduler`] for a serving host's
+/// admin surface. **Mechanism, not policy:** the scheduler only reports; which
+/// request should win is the consumer's call (ROADMAP row 33).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PagedSchedulerStats {
+    /// Live sessions waiting to prefill (not suspended).
+    pub prefill: usize,
+    /// Live sessions decoding (not suspended).
+    pub decode: usize,
+    /// Finished sessions not yet reaped.
+    pub finished: usize,
+    /// Suspended (evicted) sessions, in any phase.
+    pub suspended: usize,
+    /// Free KV pool blocks.
+    pub kv_free_blocks: usize,
+    /// Resident KV bytes.
+    pub kv_bytes_resident: u64,
+    /// Sessions ever admitted.
+    pub admitted_total: u64,
+    /// Sessions ever reaped.
+    pub reaped_total: u64,
+    /// Successful `evict_session` suspensions (an already-suspended no-op is not counted).
+    pub evicted_total: u64,
+    /// Successful `restore_session` resumptions.
+    pub restored_total: u64,
+    /// `step` / `step_batched` calls.
+    pub steps_total: u64,
+}
+
+/// One session as a serving host sees it in a queue listing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PagedSessionInfo {
+    pub id: SessionId,
+    pub phase: SessionPhase,
+    pub suspended: bool,
+    /// The consumer-assigned priority
+    /// ([`set_priority`](PagedSessionScheduler::set_priority)); the scheduler
+    /// never reads it.
+    pub priority: i32,
+    /// Tokens generated so far.
+    pub generated: usize,
+    /// Token budget left.
+    pub remaining: usize,
 }
 
 /// One session of a [`PagedSessionScheduler`]. Its KV is the pool blocks reached
@@ -1341,6 +1398,9 @@ struct PagedSession {
     /// mis-positioned prefix) hides under both greedy argmax and seeded
     /// multinomial, so a correctness test must compare logits, not tokens.
     captured_logits: Option<Vec<Vec<f32>>>,
+    /// Opaque consumer-assigned priority, exposed through
+    /// [`PagedSessionInfo`]. The scheduler never orders by it.
+    priority: i32,
 }
 
 impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
@@ -1372,6 +1432,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             sessions: Vec::new(),
             next_id: 0,
             plan: PagedDecodePlan::PlanOnce,
+            counters: PagedCounters::default(),
         })
     }
 
@@ -1481,6 +1542,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         // so the plan rebuilds on the first post-restore decode token (eviction is
         // already a full host round-trip — one rebuild is negligible).
         self.sessions[idx].decode_session = None;
+        self.counters.evicted += 1;
         Ok(())
     }
 
@@ -1520,7 +1582,9 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             .take()
             .expect("checked Some above");
         let handle = self.sessions[idx].handle;
-        self.pool.restore(handle, evicted)
+        self.pool.restore(handle, evicted)?;
+        self.counters.restored += 1;
+        Ok(())
     }
 
     /// Admit a session from a prompt (optimistic — no up-front block reservation).
@@ -1571,8 +1635,10 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             max_blocks_cap,
             prefill_start: 0,
             captured_logits: None,
+            priority: 0,
         });
         self.next_id += 1;
+        self.counters.admitted += 1;
         Ok(id)
     }
 
@@ -1700,8 +1766,10 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             max_blocks_cap,
             prefill_start: shared_tokens,
             captured_logits: None,
+            priority: 0,
         });
         self.next_id += 1;
+        self.counters.admitted += 1;
         Ok(id)
     }
 
@@ -1712,6 +1780,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
     /// session's blocks; a pool exhaustion (or any per-session error) is isolated
     /// into that session finishing-with-error, never propagated.
     pub fn step(&mut self) -> StepReport {
+        self.counters.steps += 1;
         let mut report = StepReport::default();
         self.prefill_pass(&mut report);
         for idx in self.collect_decode_ready() {
@@ -1729,6 +1798,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
     /// batched↔serial parity gate). `StepReport::used_batched_arm` is set when a
     /// batch actually ran.
     pub fn step_batched(&mut self, max_batch: usize) -> StepReport {
+        self.counters.steps += 1;
         let mut report = StepReport::default();
         self.prefill_pass(&mut report);
 
@@ -1971,7 +2041,62 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             }
         }
         self.sessions = kept;
+        self.counters.reaped += reaped.len() as u64;
         reaped
+    }
+
+    /// Assign session `id` an opaque priority. Mechanism only: the scheduler
+    /// stores and reports it ([`session_infos`](Self::session_infos)) but never
+    /// orders by it; the consumer's policy does. `Err` for an unknown session.
+    pub fn set_priority(&mut self, id: SessionId, priority: i32) -> fuel::Result<()> {
+        let s = self
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or_else(|| Error::Msg(format!("set_priority: unknown session {id:?}")).bt())?;
+        s.priority = priority;
+        Ok(())
+    }
+
+    /// A listing of every live (not yet reaped) session, in admission order.
+    pub fn session_infos(&self) -> Vec<PagedSessionInfo> {
+        self.sessions
+            .iter()
+            .map(|s| PagedSessionInfo {
+                id: s.id,
+                phase: s.phase.clone(),
+                suspended: s.suspended.is_some(),
+                priority: s.priority,
+                generated: s.new_tokens.len(),
+                remaining: s.remaining,
+            })
+            .collect()
+    }
+
+    /// A point-in-time snapshot of the scheduler for an admin surface.
+    pub fn stats(&self) -> PagedSchedulerStats {
+        let mut st = PagedSchedulerStats {
+            kv_free_blocks: self.pool.core().free_blocks(),
+            kv_bytes_resident: self.pool.core().kv_bytes_resident(),
+            admitted_total: self.counters.admitted,
+            reaped_total: self.counters.reaped,
+            evicted_total: self.counters.evicted,
+            restored_total: self.counters.restored,
+            steps_total: self.counters.steps,
+            ..PagedSchedulerStats::default()
+        };
+        for s in &self.sessions {
+            if s.suspended.is_some() {
+                st.suspended += 1;
+            } else {
+                match s.phase {
+                    SessionPhase::Prefill => st.prefill += 1,
+                    SessionPhase::Decode => st.decode += 1,
+                    SessionPhase::Finished => st.finished += 1,
+                }
+            }
+        }
+        st
     }
 }
 
@@ -3614,6 +3739,50 @@ mod tests {
         assert_eq!(
             out, reference,
             "evict→restore resumes byte-exact (same tokens as uninterrupted)"
+        );
+    }
+
+    /// ROADMAP row 33: the stats snapshot and per-session listing track the
+    /// real lifecycle, and priority is stored but never reorders anything.
+    #[test]
+    fn paged_scheduler_stats_track_the_lifecycle_and_priority_is_inert() {
+        let model = tiny_model(9999);
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        assert_eq!(s.stats().admitted_total, 0);
+        let a = s
+            .add_session(&[1, 2, 3], SamplingStrategy::Greedy, None, 4)
+            .unwrap();
+        let b = s
+            .add_session(&[4, 5], SamplingStrategy::Greedy, None, 4)
+            .unwrap();
+        let st = s.stats();
+        assert_eq!((st.prefill, st.decode, st.admitted_total), (2, 0, 2));
+        s.set_priority(b, 7).unwrap();
+        assert!(s.set_priority(SessionId(999), 1).is_err());
+        s.step();
+        let st = s.stats();
+        assert_eq!((st.prefill, st.decode, st.steps_total), (0, 2, 1));
+        assert!(st.kv_bytes_resident > 0);
+        s.evict_session(a).unwrap();
+        s.evict_session(a).unwrap(); // already suspended: a no-op, not counted
+        let st = s.stats();
+        assert_eq!((st.suspended, st.decode, st.evicted_total), (1, 1, 1));
+        let infos = s.session_infos();
+        assert_eq!(infos.len(), 2);
+        assert!(infos[0].suspended && infos[0].priority == 0);
+        assert!(!infos[1].suspended && infos[1].priority == 7);
+        s.restore_session(a).unwrap();
+        assert_eq!(s.stats().restored_total, 1);
+        let out = s.run_to_completion();
+        // Priority 7 on `b` reordered nothing: ids come back in admission order.
+        assert_eq!(out.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![a, b]);
+        assert_eq!(s.stats().finished, 2);
+        assert_eq!(s.reap_finished().len(), 2);
+        let st = s.stats();
+        assert_eq!(
+            (st.reaped_total, st.finished, st.kv_bytes_resident),
+            (2, 0, 0)
         );
     }
 

@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.67 - 2026-10-22
+
+### Added
+
+- `fuel-inference`: `PagedSessionScheduler::stats()` (`PagedSchedulerStats`), `session_infos()` (`PagedSessionInfo`) and `set_priority()` (ROADMAP row 33). Mechanism only: the scheduler reports phase counts, KV free blocks and bytes, and lifetime admit/reap/evict/restore/step totals, and stores a per-session priority it never orders by.
+
+### Changed
+
+- Docs: ROADMAP row 31 records baracuda#219 (padded OC-major AWQ layout; the Marlin repack was wrong alpha.64-alpha.145, fixed alpha.146).
+
 ## v0.20.66 - 2026-10-22
 
 ### Changed
