@@ -308,11 +308,9 @@ fn kiss_advisory_diff_summary(r: &LedgerRecord) -> String {
 /// identity-ordered `Bind` leaves (`Bind{0}`, `Bind{1}`, …) — the only shape the
 /// kiss-ref advisory diff can align a probe against. `None` for a multi-node/fused
 /// decompose, a reordered/gapped binding, or no decompose.
-// The generalized (region-based) advisory block (T3) no longer consults this;
-// it is re-consumed by the dormant corpus consult in the numeric region (Task
-// 4/5) and by its CPU unit test. Unconditionally allowed until that re-wiring
-// lands.
-#[cfg(test)]
+// Consumed by the dormant corpus consult in the numeric region (`cuda` builds) and by
+// its CPU unit test; `cfg(test)` alone left the `cuda` consumer without it.
+#[cfg(any(feature = "cuda", test))]
 fn single_primitive_optag(
     dec: Option<&fuel_graph::jit::PatternNode>,
 ) -> Option<fuel_graph::jit::OpTag> {

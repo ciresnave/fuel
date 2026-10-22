@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.70 - 2026-10-22
+
+### Changed
+
+- Dependencies: every `baracuda-*` pin goes from `0.0.1-alpha.116` to `0.0.1-alpha.147` (the padded OC-major AWQ layout, baracuda#219; ROADMAP row 31). `unpopped-vocab` 0.20.1 -> 0.20.19 follows transitively.
+
 ## v0.20.69 - 2026-10-22
 
 ### Fixed
