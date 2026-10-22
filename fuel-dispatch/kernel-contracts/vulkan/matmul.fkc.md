@@ -132,10 +132,10 @@ cost:
 precision:
   bit_stable_on_same_hardware: false    # f32 tile / subgroup accumulation; scheduler/subgroup order not pinned
   max_ulp: ~
-  max_relative: ~
-  max_absolute: ~
-  audited: true                         # audited none(reason): scheduler-dependent FADD/subgroup order, non-associative f32 (§4.8)
-  notes: "f32 multiply-accumulate (matvec/reg-tile/tiled); accumulation order tile/subgroup-dependent, not pinned cross-run; not bit-stable cross-hardware."
+  max_relative: 0.001                   # MEASURED (board 240, option D): worst 8.8e-5 over 12 shapes; see notes
+  max_absolute: 0.001                   # MEASURED: worst 2.3e-4 over 12 shapes at unit-scale inputs; see notes
+  audited: true                         # accuracy claim backed by ledger records (seed_vulkan_matmul_accuracy); repeatability is NOT claimed
+  notes: "f32 multiply-accumulate (matvec/reg-tile/tiled); accumulation order tile/subgroup-dependent, not pinned cross-run; not bit-stable cross-hardware. [evidence: accuracy MEASURED, not derived. The registered kernel was driven through VulkanInvoker over 12 shapes covering all three routes (M==1 matvec; 1<M<32 reg-tile; M>=32 tiled), k up to 4096, inputs uniform [-1,1), against an f64 host matmul of the same f32 inputs. Worst |out-ref| = 2.33e-4 (M=127,N=1024,K=4096); worst |out-ref|/max(|ref|,1.0) = 8.8e-5 (ledger evidence, fuel-dev-tools seed-vulkan-accuracy, RTX 4070 Laptop). The claim is 1e-3 for both (4x / 11x headroom). max_absolute is for unit-scale inputs only: it is not scale-free. The same 12 shapes on the integrated AMD Radeon 610M adapter gave the same worst error (fuel-dev-tools check-vulkan-accuracy with FUEL_VULKAN_TEST_ADAPTER=AMD; not recorded in the ledger, which has no adapter field). Not evidence about other inputs, the bf16/f16 variants, or k above 4096. Repeatability (bit_stable) is separately NOT claimed. The claim is what lets the default placement rule consider this kernel against the CPU kernel on cost.]"
 
 determinism: nondeterministic
 ```

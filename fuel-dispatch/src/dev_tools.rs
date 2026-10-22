@@ -28,6 +28,20 @@ pub fn seed_vulkan_ledger() {
     verify::seed_vulkan_ledger::run_seed_vulkan_ledger();
 }
 
+/// Earn the Vulkan f32 matmul's `max_relative`/`max_absolute` ledger records (board 240).
+/// Needs a live Vulkan device.
+#[cfg(feature = "vulkan")]
+pub fn seed_vulkan_matmul_accuracy() {
+    verify::seed_vulkan_matmul_accuracy::run_seed_vulkan_matmul_accuracy();
+}
+
+/// Measure the Vulkan f32 accuracy claims and print; writes nothing (board 240). Needs a live
+/// Vulkan device; `FUEL_VULKAN_TEST_ADAPTER` selects the adapter.
+#[cfg(feature = "vulkan")]
+pub fn check_vulkan_accuracy() {
+    verify::seed_vulkan_matmul_accuracy::run_check_vulkan_accuracy();
+}
+
 /// GAP-228: flip the fully-backed `audited: false` CPU contract sections.
 pub fn gap_228_flip() {
     contract_audit_flip::run_gap_228_flip();

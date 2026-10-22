@@ -51,12 +51,12 @@ native.
 
 ---
 
-## softmax_last_dim  (softmax along the last dim; f32/f16/bf16/f64; contiguous)
+## softmax_last_dim  (softmax along the last dim; f16/bf16/f64; contiguous)
 
 Numerically-stable softmax along the last dim: per-row max, then exp, then sum, then divide (subgroup-
 tree reduction internally). FOUR distinct per-dtype wrappers (`softmax::softmax_{f32,f16,bf16,f64}`);
-this section fans the BASE `entry_point` over `[F32, F16, BF16, F64]`. Dispatch key
-`(SoftmaxLastDim, [T, T], Vulkan)`.
+this section fans the BASE `entry_point` over `[F16, BF16, F64]` (f32 is `softmax_last_dim_f32` below,
+which carries a measured accuracy claim). Dispatch key `(SoftmaxLastDim, [T, T], Vulkan)`.
 
 ```fkc
 kernel: softmax_last_dim
@@ -70,7 +70,7 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: input
-      dtypes: [F32, F16, BF16, F64]
+      dtypes: [F16, BF16, F64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "softmax over the last dim (per-row)"
@@ -107,6 +107,68 @@ precision:
   max_absolute: ~
   audited: true                        # audited none(reason): no static bound (non-associative subgroup reduction)
   notes: "per-row max + exp + sum + divide (subgroup-tree reduction); f16/bf16 accumulate in f32; FADD order scheduler-dependent; NOT bit-stable."
+
+determinism: nondeterministic
+```
+
+---
+
+## softmax_last_dim_f32  (softmax along the last dim; f32 only; measured accuracy claim)
+
+The f32 binding of the section above, split out so it can carry its own precision block: a fanned
+section shares ONE precision block across its dtypes, and a claim measured for f32 is not true for
+f16/bf16 (their output narrowing alone exceeds it). Same kernel, same dispatch key
+`(SoftmaxLastDim, [F32, F32], Vulkan)`; the single-dtype section resolves its `entry_point` as-is.
+
+```fkc
+kernel: softmax_last_dim_f32
+op_kind: SoftmaxLastDim
+blurb: "Numerically-stable softmax along the last dim; f32/f16/bf16/f64; subgroup-tree reduction; contiguous-only binding."
+backend: Vulkan
+kernel_source: "vulkan-slang"
+entry_point: "fuel_vulkan_backend::fkc::softmax_last_dim_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: input
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "softmax over the last dim (per-row)"
+  op_params:
+    variant: SoftmaxLastDim       # OpParams::SoftmaxLastDim (primitive namespace; §3.7)
+    fields: {}
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(input)       # key [T, T]
+      shape_rule: same_as(input)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: reduction }
+  in_place: false
+  alignment_bytes: 16
+  access_granularity_bits: 32
+
+cost:
+  provenance: judge_measured
+  class: reduction
+  flops: "5 * n"                       # per element: sub-max, exp, add, div (+ the row reductions)
+  bytes_moved: "2 * n * dtype_bytes"
+
+precision:
+  bit_stable_on_same_hardware: false   # per-row subgroup-tree reduction; scheduler-dependent FADD order; repeatability is NOT claimed
+  max_ulp: ~
+  max_relative: 0.00001                 # MEASURED (board 240, option D); see notes
+  max_absolute: 0.00001                 # MEASURED; see notes
+  audited: true                         # accuracy claim backed by ledger records (seed_vulkan_matmul_accuracy)
+  notes: "per-row max + exp + sum + divide (subgroup-tree reduction); FADD order scheduler-dependent; NOT bit-stable. [evidence: accuracy MEASURED, not derived. The registered kernel was driven through VulkanInvoker over 7 shapes (rows 1-28, cols 22-8192; attention-row widths of a Qwen3-0.6B decode plus wide rows), x uniform [-4,4), against an f64 host exp(x-max)/sum. Worst |out-ref| = 5.83e-8 (also the worst relative error, since softmax outputs are below the 1.0 floor); claim 1e-5 is ~170x headroom (ledger evidence, fuel-dev-tools seed-vulkan-accuracy, RTX 4070 Laptop). Not evidence about other inputs, other kernels in the family (f16/bf16/f64), or shapes beyond the listed ones. The same cases on the integrated AMD Radeon 610M adapter also stayed inside the claim (fuel-dev-tools check-vulkan-accuracy with FUEL_VULKAN_TEST_ADAPTER=AMD; not recorded in the ledger, which has no adapter field). Repeatability (bit_stable) is separately NOT claimed. The claim is what lets the default placement rule consider this kernel against the CPU kernel on cost.]"
 
 determinism: nondeterministic
 ```
@@ -312,12 +374,12 @@ determinism: nondeterministic
 
 ---
 
-## rms_norm_last_dim  (RMS norm along the last dim; f32/f16/bf16/f64; contiguous)
+## rms_norm_last_dim  (RMS norm along the last dim; f16/bf16/f64; contiguous)
 
 Root-mean-square normalization along the last dim: per-row `x²` sum (subgroup-tree reduction), then
 `rsqrt` and divide. FOUR distinct per-dtype wrappers (`norm::rms_{f32,f16,bf16,f64}`); this section
-fans the BASE `entry_point` over `[F32, F16, BF16, F64]`. Dispatch key
-`(RmsNormLastDim, [T, T], Vulkan)`.
+fans the BASE `entry_point` over `[F16, BF16, F64]` (f32 is `rms_norm_last_dim_f32` below, which carries
+a measured accuracy claim). Dispatch key `(RmsNormLastDim, [T, T], Vulkan)`.
 
 ```fkc
 kernel: rms_norm_last_dim
@@ -331,7 +393,7 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: input
-      dtypes: [F32, F16, BF16, F64]
+      dtypes: [F16, BF16, F64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "RMS norm over the last dim (per-row)"
@@ -369,6 +431,67 @@ precision:
   max_absolute: ~
   audited: true
   notes: "per-row x^2 sum (subgroup-tree reduction) + rsqrt + divide; f16/bf16 accumulate in f32, f64 native; FADD order scheduler-dependent; NOT bit-stable."
+
+determinism: nondeterministic
+```
+
+---
+
+## rms_norm_last_dim_f32  (RMS norm along the last dim; f32 only; measured accuracy claim)
+
+The f32 binding of the section above, split out so it can carry its own precision block (see
+`softmax_last_dim_f32` for why). Dispatch key `(RmsNormLastDim, [F32, F32], Vulkan)`.
+
+```fkc
+kernel: rms_norm_last_dim_f32
+op_kind: RmsNormLastDim
+blurb: "RMS norm along the last dim (per-row x^2 sum, rsqrt, divide); f32/f16/bf16/f64; subgroup-tree reduction; contiguous-only binding."
+backend: Vulkan
+kernel_source: "vulkan-slang"
+entry_point: "fuel_vulkan_backend::fkc::rms_norm_last_dim_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: input
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "RMS norm over the last dim (per-row)"
+  op_params:
+    variant: NormLastDim          # OpParams::NormLastDim (primitive namespace; §3.7)
+    fields:
+      eps: { kind: f64, note: "numerical-stability epsilon" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(input)       # key [T, T]
+      shape_rule: same_as(input)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: reduction }
+  in_place: false
+  alignment_bytes: 16
+  access_granularity_bits: 32
+
+cost:
+  provenance: judge_measured
+  class: reduction
+  flops: "4 * n"
+  bytes_moved: "2 * n * dtype_bytes"
+
+precision:
+  bit_stable_on_same_hardware: false   # per-row subgroup-tree sum of squares; scheduler-dependent FADD order; repeatability is NOT claimed
+  max_ulp: ~
+  max_relative: 0.00001                 # MEASURED (board 240, option D); see notes
+  max_absolute: 0.00001                 # MEASURED; see notes
+  audited: true                         # accuracy claim backed by ledger records (seed_vulkan_matmul_accuracy)
+  notes: "native f32; no affine; subgroup sum-of-squares + rsqrt; FADD order scheduler-dependent; NOT bit-stable. [evidence: accuracy MEASURED, not derived. The registered kernel was driven through VulkanInvoker over 9 shapes (rows 1-448, cols 64-4096; Qwen3-0.6B decode and prefill widths), x uniform [-2,2), eps 1e-5, against an f64 host x/sqrt(mean(x^2)+eps). Worst |out-ref| = 2.29e-7, worst |out-ref|/max(|ref|,1.0) = 1.52e-7; claim 1e-5 is ~44x headroom (ledger evidence, fuel-dev-tools seed-vulkan-accuracy, RTX 4070 Laptop). Not evidence about other inputs, other kernels in the family (f16/bf16/f64), or shapes beyond the listed ones. The same cases on the integrated AMD Radeon 610M adapter also stayed inside the claim (fuel-dev-tools check-vulkan-accuracy with FUEL_VULKAN_TEST_ADAPTER=AMD; not recorded in the ledger, which has no adapter field). Repeatability (bit_stable) is separately NOT claimed. The claim is what lets the default placement rule consider this kernel against the CPU kernel on cost.]"
 
 determinism: nondeterministic
 ```

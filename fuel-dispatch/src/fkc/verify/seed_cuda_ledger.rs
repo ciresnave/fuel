@@ -10,7 +10,7 @@
 //! `fuel-dispatch/kernel-contracts/fkc-verified-ledger.json` to
 //! `PrecisionGuarantee::UNAUDITED`. An unaudited CUDA candidate then loses its
 //! placement to the (Task-4.5b-seeded, audited) CPU alternative under
-//! [`crate::ranker::filters::BitStablePreferenceFilter`], so the decode runs on
+//! [`crate::ranker::filters::AccuracyPreferenceFilter`] (an unaudited candidate has no accuracy claim and is not bit-stable), so the decode runs on
 //! CPU and never enters a CapturedRun capture scope. This harness earns the
 //! CUDA `bit_stable_on_same_hardware` ledger entries so the decode-path CUDA
 //! kernels are audited and win their placements.

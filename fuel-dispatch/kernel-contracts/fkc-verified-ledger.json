@@ -28520,5 +28520,1584 @@
       "reference": "exact in-process (fkc::verify::exact_ref)",
       "reference_kind": "truth"
     }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 239164729840164972,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681235",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 4584731933413264325,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681236",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 1590111574508658334,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681238",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 68793184698096245,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681239",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "U32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17283702457747657631,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681240",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 15955142655310935602,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681240",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 13622131112907015413,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681240",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 14486641245205106652,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681244",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 4584731933413264325,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681247",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 15955142655310935602,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681248",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 13622131112907015413,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681248",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 16580465927670195623,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681249",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 16580465927670195623,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681249",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 9306241221942528487,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681249",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3882325560234614418,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681249",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 12504822457066021896,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681249",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 7143707280442191436,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681250",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 16580465927670195623,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681250",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 9306241221942528487,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681250",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 13622131112907015413,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681250",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 6734069308025175097,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681250",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 68793184698096245,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681251",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 15955142655310935602,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681251",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "U32",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 3356494355088864177,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681251",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5740669510790234727,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681252",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6692478047380707728,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681252",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 15228885328269656396,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681252",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "U32",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 17283702457747657631,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681252",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 4584731933413264325,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681253",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 9306241221942528487,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681253",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 5496978603567792751,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681253",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 68793184698096245,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681253",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 18371565327335149448,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681253",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 68793184698096245,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681253",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "U32",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 17283702457747657631,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681254",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8535054721333240161,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681254",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8535054721333240161,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681254",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 15955142655310935602,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681254",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "U32",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 17283702457747657631,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681254",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "U32",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 3356494355088864177,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681254",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 15228885328269656396,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681255",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 6734069308025175097,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681255",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 239164729840164972,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681255",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 239164729840164972,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681255",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 7678599190885483221,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681255",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6692478047380707728,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681255",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "U32",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 3356494355088864177,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681256",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 15228885328269656396,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681256",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 6734069308025175097,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681256",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 5496978603567792751,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681256",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 13622131112907015413,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681256",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 9306241221942528487,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681256",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 16580465927670195623,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681256",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 15228885328269656396,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681257",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 5496978603567792751,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681257",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "U32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3356494355088864177,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681257",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6734069308025175097,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681259",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5740669510790234727,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792681260",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "v-fkc-9/seed_vulkan_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 18371565327335149448,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792681424",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.001,
+      "cases": [
+        {
+          "abs": 5.250745090279452e-6,
+          "case": "m=1 n=1024 k=1024",
+          "rel": 2.805220534122233e-6
+        },
+        {
+          "abs": 8.838332234972768e-6,
+          "case": "m=1 n=3072 k=1024",
+          "rel": 3.787209692518445e-6
+        },
+        {
+          "abs": 0.000010909417881066474,
+          "case": "m=1 n=1024 k=3072",
+          "rel": 4.757237434205308e-6
+        },
+        {
+          "abs": 9.869502875403668e-6,
+          "case": "m=1 n=8192 k=1024",
+          "rel": 3.7610144545396906e-6
+        },
+        {
+          "abs": 9.842032213214225e-6,
+          "case": "m=1 n=64 k=4096",
+          "rel": 3.2976695482835738e-6
+        },
+        {
+          "abs": 0.00003855901999827438,
+          "case": "m=4 n=1024 k=1024",
+          "rel": 0.000014159427209392561
+        },
+        {
+          "abs": 0.000052461654519220247,
+          "case": "m=16 n=3072 k=1024",
+          "rel": 0.000023159624774393706
+        },
+        {
+          "abs": 0.0001010165498769311,
+          "case": "m=31 n=512 k=2048",
+          "rel": 0.00004081988815585191
+        },
+        {
+          "abs": 0.0000484268298492907,
+          "case": "m=32 n=1024 k=1024",
+          "rel": 0.00002066587120452823
+        },
+        {
+          "abs": 0.00007106863859007717,
+          "case": "m=64 n=3072 k=1024",
+          "rel": 0.000027241252865906063
+        },
+        {
+          "abs": 0.00023245422595152831,
+          "case": "m=127 n=1024 k=4096",
+          "rel": 0.00008771322202960619
+        },
+        {
+          "abs": 0.00005074673318006262,
+          "case": "m=21 n=1024 k=1024",
+          "rel": 0.00001969704030102548
+        }
+      ],
+      "harness": "board-240/seed_vulkan_matmul_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 0.00023245422595152831,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MatMul",
+      "reference": "f64 host matmul of the same f32 inputs"
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 18371565327335149448,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792681424",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.001,
+      "cases": [
+        {
+          "abs": 5.250745090279452e-6,
+          "case": "m=1 n=1024 k=1024",
+          "rel": 2.805220534122233e-6
+        },
+        {
+          "abs": 8.838332234972768e-6,
+          "case": "m=1 n=3072 k=1024",
+          "rel": 3.787209692518445e-6
+        },
+        {
+          "abs": 0.000010909417881066474,
+          "case": "m=1 n=1024 k=3072",
+          "rel": 4.757237434205308e-6
+        },
+        {
+          "abs": 9.869502875403668e-6,
+          "case": "m=1 n=8192 k=1024",
+          "rel": 3.7610144545396906e-6
+        },
+        {
+          "abs": 9.842032213214225e-6,
+          "case": "m=1 n=64 k=4096",
+          "rel": 3.2976695482835738e-6
+        },
+        {
+          "abs": 0.00003855901999827438,
+          "case": "m=4 n=1024 k=1024",
+          "rel": 0.000014159427209392561
+        },
+        {
+          "abs": 0.000052461654519220247,
+          "case": "m=16 n=3072 k=1024",
+          "rel": 0.000023159624774393706
+        },
+        {
+          "abs": 0.0001010165498769311,
+          "case": "m=31 n=512 k=2048",
+          "rel": 0.00004081988815585191
+        },
+        {
+          "abs": 0.0000484268298492907,
+          "case": "m=32 n=1024 k=1024",
+          "rel": 0.00002066587120452823
+        },
+        {
+          "abs": 0.00007106863859007717,
+          "case": "m=64 n=3072 k=1024",
+          "rel": 0.000027241252865906063
+        },
+        {
+          "abs": 0.00023245422595152831,
+          "case": "m=127 n=1024 k=4096",
+          "rel": 0.00008771322202960619
+        },
+        {
+          "abs": 0.00005074673318006262,
+          "case": "m=21 n=1024 k=1024",
+          "rel": 0.00001969704030102548
+        }
+      ],
+      "harness": "board-240/seed_vulkan_matmul_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 0.00008771322202960619,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MatMul",
+      "reference": "f64 host matmul of the same f32 inputs"
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 12504822457066021896,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792681424",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 9.017112878595412e-8,
+          "case": "rows=1 cols=1024",
+          "rel": 7.315808559986447e-8
+        },
+        {
+          "abs": 1.404594114351454e-7,
+          "case": "rows=16 cols=1024",
+          "rel": 1.0345817673205188e-7
+        },
+        {
+          "abs": 1.994157832196919e-7,
+          "case": "rows=21 cols=1024",
+          "rel": 1.4021331962202646e-7
+        },
+        {
+          "abs": 8.065948131630307e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 7.08380244304745e-8
+        },
+        {
+          "abs": 1.5595047231364845e-7,
+          "case": "rows=8 cols=128",
+          "rel": 1.1044125730722722e-7
+        },
+        {
+          "abs": 1.7958199505230255e-7,
+          "case": "rows=16 cols=128",
+          "rel": 1.265861582565764e-7
+        },
+        {
+          "abs": 2.288810285744347e-7,
+          "case": "rows=448 cols=128",
+          "rel": 1.5155883388177955e-7
+        },
+        {
+          "abs": 1.0370724079500349e-7,
+          "case": "rows=1 cols=4096",
+          "rel": 8.316005178754561e-8
+        },
+        {
+          "abs": 1.7705947930046761e-7,
+          "case": "rows=32 cols=64",
+          "rel": 1.2210309327687396e-7
+        }
+      ],
+      "harness": "board-240/seed_vulkan_matmul_accuracy",
+      "input_range": "uniform [-2, 2)",
+      "measured_worst": 2.288810285744347e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RmsNormLastDim",
+      "reference": "f64 host x / sqrt(mean(x^2) + eps)"
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 12504822457066021896,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792681424",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 9.017112878595412e-8,
+          "case": "rows=1 cols=1024",
+          "rel": 7.315808559986447e-8
+        },
+        {
+          "abs": 1.404594114351454e-7,
+          "case": "rows=16 cols=1024",
+          "rel": 1.0345817673205188e-7
+        },
+        {
+          "abs": 1.994157832196919e-7,
+          "case": "rows=21 cols=1024",
+          "rel": 1.4021331962202646e-7
+        },
+        {
+          "abs": 8.065948131630307e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 7.08380244304745e-8
+        },
+        {
+          "abs": 1.5595047231364845e-7,
+          "case": "rows=8 cols=128",
+          "rel": 1.1044125730722722e-7
+        },
+        {
+          "abs": 1.7958199505230255e-7,
+          "case": "rows=16 cols=128",
+          "rel": 1.265861582565764e-7
+        },
+        {
+          "abs": 2.288810285744347e-7,
+          "case": "rows=448 cols=128",
+          "rel": 1.5155883388177955e-7
+        },
+        {
+          "abs": 1.0370724079500349e-7,
+          "case": "rows=1 cols=4096",
+          "rel": 8.316005178754561e-8
+        },
+        {
+          "abs": 1.7705947930046761e-7,
+          "case": "rows=32 cols=64",
+          "rel": 1.2210309327687396e-7
+        }
+      ],
+      "harness": "board-240/seed_vulkan_matmul_accuracy",
+      "input_range": "uniform [-2, 2)",
+      "measured_worst": 1.5155883388177955e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RmsNormLastDim",
+      "reference": "f64 host x / sqrt(mean(x^2) + eps)"
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 7678599190885483221,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792681424",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 1.2010994837607925e-8,
+          "case": "rows=1 cols=22",
+          "rel": 1.2010994837607925e-8
+        },
+        {
+          "abs": 5.827911847555711e-8,
+          "case": "rows=16 cols=22",
+          "rel": 5.827911847555711e-8
+        },
+        {
+          "abs": 1.061937241614297e-8,
+          "case": "rows=16 cols=128",
+          "rel": 1.061937241614297e-8
+        },
+        {
+          "abs": 1.4112424666368195e-9,
+          "case": "rows=28 cols=1024",
+          "rel": 1.4112424666368195e-9
+        },
+        {
+          "abs": 7.214630264734678e-10,
+          "case": "rows=16 cols=2048",
+          "rel": 7.214630264734678e-10
+        },
+        {
+          "abs": 3.4173622742370013e-10,
+          "case": "rows=8 cols=4096",
+          "rel": 3.4173622742370013e-10
+        },
+        {
+          "abs": 1.7681011190741336e-10,
+          "case": "rows=1 cols=8192",
+          "rel": 1.7681011190741336e-10
+        }
+      ],
+      "harness": "board-240/seed_vulkan_matmul_accuracy",
+      "input_range": "uniform [-4, 4)",
+      "measured_worst": 5.827911847555711e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SoftmaxLastDim",
+      "reference": "f64 host exp(x - max) / sum"
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 7678599190885483221,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792681424",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 1.2010994837607925e-8,
+          "case": "rows=1 cols=22",
+          "rel": 1.2010994837607925e-8
+        },
+        {
+          "abs": 5.827911847555711e-8,
+          "case": "rows=16 cols=22",
+          "rel": 5.827911847555711e-8
+        },
+        {
+          "abs": 1.061937241614297e-8,
+          "case": "rows=16 cols=128",
+          "rel": 1.061937241614297e-8
+        },
+        {
+          "abs": 1.4112424666368195e-9,
+          "case": "rows=28 cols=1024",
+          "rel": 1.4112424666368195e-9
+        },
+        {
+          "abs": 7.214630264734678e-10,
+          "case": "rows=16 cols=2048",
+          "rel": 7.214630264734678e-10
+        },
+        {
+          "abs": 3.4173622742370013e-10,
+          "case": "rows=8 cols=4096",
+          "rel": 3.4173622742370013e-10
+        },
+        {
+          "abs": 1.7681011190741336e-10,
+          "case": "rows=1 cols=8192",
+          "rel": 1.7681011190741336e-10
+        }
+      ],
+      "harness": "board-240/seed_vulkan_matmul_accuracy",
+      "input_range": "uniform [-4, 4)",
+      "measured_worst": 5.827911847555711e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SoftmaxLastDim",
+      "reference": "f64 host exp(x - max) / sum"
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3882325560234614418,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792681424",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "outer=16 seq=1 hd=128",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "outer=8 seq=1 hd=128",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.1920928955078125e-7,
+          "case": "outer=16 seq=21 hd=128",
+          "rel": 1.1909474654017852e-7
+        },
+        {
+          "abs": 1.1920928955078125e-7,
+          "case": "outer=1 seq=64 hd=128",
+          "rel": 1.1884657026625198e-7
+        },
+        {
+          "abs": 1.1920928955078125e-7,
+          "case": "outer=4 seq=512 hd=64",
+          "rel": 1.1919311979170764e-7
+        }
+      ],
+      "harness": "board-240/seed_vulkan_matmul_accuracy",
+      "input_range": "x uniform [-1, 1); cos/sin of position * 10000^(-2j/hd)",
+      "measured_worst": 1.1920928955078125e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "Rope",
+      "reference": "registered portable-cpu Rope kernel (f32)"
+    }
+  },
+  {
+    "kernel_ref": "vulkan-slang",
+    "backend": "Vulkan",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3882325560234614418,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792681424",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "outer=16 seq=1 hd=128",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "outer=8 seq=1 hd=128",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.1920928955078125e-7,
+          "case": "outer=16 seq=21 hd=128",
+          "rel": 1.1909474654017852e-7
+        },
+        {
+          "abs": 1.1920928955078125e-7,
+          "case": "outer=1 seq=64 hd=128",
+          "rel": 1.1884657026625198e-7
+        },
+        {
+          "abs": 1.1920928955078125e-7,
+          "case": "outer=4 seq=512 hd=64",
+          "rel": 1.1919311979170764e-7
+        }
+      ],
+      "harness": "board-240/seed_vulkan_matmul_accuracy",
+      "input_range": "x uniform [-1, 1); cos/sin of position * 10000^(-2j/hd)",
+      "measured_worst": 1.1919311979170764e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "Rope",
+      "reference": "registered portable-cpu Rope kernel (f32)"
+    }
   }
 ]

@@ -12,9 +12,12 @@
 //! 2. [`StridedInputPreferenceFilter`] (soft, `min_remaining = 1`)
 //!    — prefers `caps.strided_input` when any input is non-contiguous;
 //!    no-op otherwise.
-//! 3. [`BitStablePreferenceFilter`] (soft, `min_remaining = 1`) —
-//!    prefers bit-stable candidates when available without strictly
-//!    requiring them.
+//! 3. [`AccuracyPreferenceFilter`] (soft, `min_remaining = 1`) —
+//!    prefers candidates whose accuracy claim meets
+//!    [`DEFAULT_ACCURACY_BOUND`] (bit-stable kernels count as
+//!    reference-grade), so cost ranking compares them across devices;
+//!    a kernel with no claim does not win by default. Repeatability is
+//!    the separate opt-in `PrecisionRequirement::require_bit_stable`.
 //!
 //! Phase 3 will insert a Judge-driven `JudgeFastestFilter` (soft,
 //! `min_remaining = 1`) at the end of this chain when empirical
@@ -22,11 +25,13 @@
 //!
 //! [`AlternativeFilter`]: super::filter::AlternativeFilter
 
-pub mod bit_stable_pref;
+pub mod accuracy_pref;
 pub mod precision_floor;
 pub mod strided_input_pref;
 
-pub use bit_stable_pref::BitStablePreferenceFilter;
+pub use accuracy_pref::{
+    AccuracyBound, AccuracyPreferenceFilter, DEFAULT_ACCURACY_BOUND, meets_accuracy_bound,
+};
 pub use precision_floor::{PrecisionFloorFilter, PrecisionRequirement};
 pub use strided_input_pref::StridedInputPreferenceFilter;
 
@@ -43,7 +48,7 @@ pub fn default_chain(
     vec![
         Box::new(PrecisionFloorFilter::new(precision_requirement)),
         Box::new(StridedInputPreferenceFilter::default()),
-        Box::new(BitStablePreferenceFilter::default()),
+        Box::new(AccuracyPreferenceFilter::default()),
     ]
 }
 
