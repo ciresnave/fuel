@@ -35,9 +35,9 @@ use half::f16;
 /// AutoAWQ's `order_map` (`awq/modules/linear/gemm.py`, `WQLinear_GEMM.from_linear`):
 /// nibble position `i` of an HF-packed word holds the value of logical column
 /// `HF_AWQ_PACK_ORDER[i]` within its group of 8. The same order applies to `qweight`
-/// and `qzeros`. Equal to `fuel_graph::registry::awq_matmul::AWQ_UNPACK_ORDER`
-/// (`fuel-quantized` cannot depend on `fuel-graph`, so the values are repeated and
-/// pinned by the tests below).
+/// and `qzeros`. This is the HuggingFace checkpoint's order only: the op
+/// (`fuel_graph::registry::awq_matmul`) takes the sequential kernel layout this
+/// module produces.
 pub const HF_AWQ_PACK_ORDER: [usize; 8] = [0, 2, 4, 6, 1, 3, 5, 7];
 
 /// The kernel-layout buffers for one linear layer.

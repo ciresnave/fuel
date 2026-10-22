@@ -323,29 +323,26 @@ pub enum FusedOpParams {
     Nf4Matmul { block_size: usize },
     /// AwqMatmul — AWQ (mit-han-lab) asymmetric int4 weight-only
     /// matmul: `dequant(q) = (q - zero_point) * scale`, per-group.
-    /// Three inputs:
+    /// Four inputs, the quantized three in the baracuda W4A16 kernel
+    /// layout (OC-major):
     /// - `activations`: `[..., M, K]`
-    /// - `qweight`:     `[N, K/8]` U32 (eight int4 codes packed
-    ///   per word, K must be a multiple of 8).
-    /// - `qzeros`:      `[K/group_size, N/8]` U32 (eight int4
-    ///   zero-point codes packed per word, N must be a multiple
-    ///   of 8).
-    /// - `scales`:      `[K/group_size, N]` F32 (per-group,
-    ///   per-output-channel scale).
+    /// - `weight`:      `[N, K/8]` U32 (eight int4 codes per word,
+    ///   sequential nibble order, K must be a multiple of 8).
+    /// - `zeros`:       `[N, zeros_w]` U32 (group `g` is nibble
+    ///   `g % 8` of word `g / 8`); `zeros_w` is
+    ///   [`crate::registry::awq_matmul::awq_zeros_w`].
+    /// - `scales`:      `[N, 8 * zeros_w]` F16 (entry `g` is group
+    ///   `g`'s scale).
     ///
     /// Output: `[..., M, N]` matching the activations' dtype.
     ///
-    /// `group_size` (∈ {64, 128} per AWQ's format) must evenly
-    /// divide `K`. `split_k_iters` is a CUDA-kernel launch-tuning
-    /// parameter (unused by the decompose path; carried so a future
-    /// fused CUDA dispatch doesn't need a second params shape).
+    /// `group_size` must be 64 or 128 and evenly divide `K`.
+    /// `split_k_iters` is a CUDA-kernel launch-tuning parameter (unused
+    /// by the decompose path; carried so the fused CUDA dispatch does
+    /// not need a second params shape).
     ///
-    /// ⚠️ The packed-int4 UNPACK ORDER within each `U32` word
-    /// (`qweight`/`qzeros`) is NOT independently verified against a
-    /// real AutoAWQ/llm-awq checkpoint in this change — see the
-    /// module doc on [`crate::registry::awq_matmul`] for what IS and
-    /// isn't confirmed. Treat dequantized values as unverified
-    /// against real checkpoints until that is checked.
+    /// See the module doc on [`crate::registry::awq_matmul`] for the
+    /// layout rationale and the decompose recipe.
     AwqMatmul {
         group_size: usize,
         split_k_iters: i32,
@@ -1216,19 +1213,19 @@ impl FusedOps {
     pub const FLASH_ATTN_BACKWARD_V: FusedOpId = FusedOpId(24);
 
     /// AwqMatmul — AWQ (mit-han-lab) asymmetric int4 weight-only
-    /// matmul. Four inputs `[activations, qweight, qzeros, scales]`
+    /// matmul. Four inputs `[activations, weight, zeros, scales]`
     /// (one more than NF4's three — AWQ's zero-point is a fourth
     /// operand, not baked into the dequant like NF4's codebook) where
-    /// `qweight: [N, K/8] U32`,
-    /// `qzeros: [K/group_size, N/8] U32`, `scales: [K/group_size, N]
-    /// F32`. Output `[..., M, N]` matching activations' dtype
+    /// `weight: [N, K/8] U32`, `zeros: [N, zeros_w] U32`,
+    /// `scales: [N, 8 * zeros_w] F16` — the baracuda kernel layout.
+    /// Output `[..., M, N]` matching activations' dtype
     /// (F32/F16/BF16 in v1). Carries `{ group_size, split_k_iters }`
-    /// in [`FusedOpParams::AwqMatmul`]. `BackwardKind::NotDifferentiable`
-    /// (AWQ weights are frozen, same reasoning as [`Self::NF4_MATMUL`]).
-    /// Unlike NF4 (a non-linear codebook with no primitive spelling),
-    /// AWQ's affine dequant decomposes cleanly into primitives — see
-    /// the module doc on [`crate::registry::awq_matmul`] for the
-    /// recipe and its current verification status.
+    /// in [`FusedOpParams::AwqMatmul`]. `BackwardKind::Decompose`
+    /// (the weight is frozen; the activation gradient flows through
+    /// the decompose). Unlike NF4 (a non-linear codebook with no
+    /// primitive spelling), AWQ's affine dequant decomposes cleanly
+    /// into primitives — see the module doc on
+    /// [`crate::registry::awq_matmul`] for the recipe.
     pub const AWQ_MATMUL: FusedOpId = FusedOpId(25);
 }
 
