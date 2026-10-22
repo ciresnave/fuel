@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.71 - 2026-10-22
+
+### Changed
+
+- Docs only: ROADMAP row 37 (GGUF `head_count_kv` default, done in 0.20.69) and row 38 (CUDA clippy lint debt).
+
 ## v0.20.70 - 2026-10-22
 
 ### Changed
