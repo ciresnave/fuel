@@ -121,6 +121,22 @@ fn check_len(what: &'static str, got: usize, want: usize) -> Result<(), AwqRepac
     }
 }
 
+fn check_multiple(
+    what: &'static str,
+    value: usize,
+    multiple_of: usize,
+) -> Result<(), AwqRepackError> {
+    if value.is_multiple_of(multiple_of) {
+        Ok(())
+    } else {
+        Err(AwqRepackError::BadDim {
+            what,
+            value,
+            multiple_of,
+        })
+    }
+}
+
 /// Unpack one HF-packed row-major `[rows, oc/8]` tensor into logical `[rows, oc]`
 /// 4-bit codes.
 fn unpack_hf(words: &[u32], rows: usize, oc: usize) -> Vec<u8> {
@@ -152,20 +168,8 @@ pub fn repack_hf_awq_for_kernel(
     group_size: usize,
 ) -> Result<AwqKernelBuffers, AwqRepackError> {
     let zeros_w = awq_zeros_w(ic, group_size)?;
-    if !ic.is_multiple_of(8) {
-        return Err(AwqRepackError::BadDim {
-            what: "IC",
-            value: ic,
-            multiple_of: 8,
-        });
-    }
-    if !oc.is_multiple_of(8) {
-        return Err(AwqRepackError::BadDim {
-            what: "OC",
-            value: oc,
-            multiple_of: 8,
-        });
-    }
+    check_multiple("IC", ic, 8)?;
+    check_multiple("OC", oc, 8)?;
     let groups = ic / group_size;
     check_len("qweight", qweight.len(), ic * (oc / 8))?;
     check_len("qzeros", qzeros.len(), groups * (oc / 8))?;
@@ -173,25 +177,35 @@ pub fn repack_hf_awq_for_kernel(
 
     let q = unpack_hf(qweight, ic, oc); // [IC, OC]
     let z = unpack_hf(qzeros, groups, oc); // [groups, OC]
-    let sf_w = zeros_w * 8;
-    let mut weight = vec![0u32; oc * (ic / 8)];
-    let mut zeros = vec![0u32; oc * zeros_w];
-    let mut out_scales = vec![f16::ZERO; oc * sf_w];
-    for o in 0..oc {
-        for i in 0..ic {
-            weight[o * (ic / 8) + i / 8] |= u32::from(q[i * oc + o]) << (4 * (i % 8));
-        }
-        for g in 0..groups {
-            zeros[o * zeros_w + g / 8] |= u32::from(z[g * oc + o]) << (4 * (g % 8));
-            out_scales[o * sf_w + g] = scales[g * oc + o];
-        }
-    }
     Ok(AwqKernelBuffers {
-        weight,
-        zeros,
-        scales: out_scales,
+        weight: pack_oc_major(&q, ic, oc, ic / 8),
+        zeros: pack_oc_major(&z, groups, oc, zeros_w),
+        scales: transpose_scales(scales, groups, oc, zeros_w * 8),
         zeros_w,
     })
+}
+
+/// Transpose logical `[rows, oc]` 4-bit codes to OC-major and pack 8 per `u32` along
+/// the row axis: output is `[oc, words_per_oc]`, word `r / 8` nibble `r % 8`.
+fn pack_oc_major(codes: &[u8], rows: usize, oc: usize, words_per_oc: usize) -> Vec<u32> {
+    let mut out = vec![0u32; oc * words_per_oc];
+    for o in 0..oc {
+        for r in 0..rows {
+            out[o * words_per_oc + r / 8] |= u32::from(codes[r * oc + o]) << (4 * (r % 8));
+        }
+    }
+    out
+}
+
+/// Transpose `[groups, oc]` scales to OC-major `[oc, sf_w]`, zero-padded past `groups`.
+fn transpose_scales(scales: &[f16], groups: usize, oc: usize, sf_w: usize) -> Vec<f16> {
+    let mut out = vec![f16::ZERO; oc * sf_w];
+    for o in 0..oc {
+        for g in 0..groups {
+            out[o * sf_w + g] = scales[g * oc + o];
+        }
+    }
+    out
 }
 
 #[cfg(test)]
