@@ -1311,7 +1311,7 @@ pub struct PagedSchedulerStats {
     pub prefill: usize,
     /// Live sessions decoding (not suspended).
     pub decode: usize,
-    /// Finished sessions not yet reaped.
+    /// Finished sessions still awaiting collection.
     pub finished: usize,
     /// Suspended (evicted) sessions, in any phase.
     pub suspended: usize,
@@ -2058,7 +2058,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         Ok(())
     }
 
-    /// A listing of every live (not yet reaped) session, in admission order.
+    /// A listing of every live (uncollected) session, in admission order.
     pub fn session_infos(&self) -> Vec<PagedSessionInfo> {
         self.sessions
             .iter()
