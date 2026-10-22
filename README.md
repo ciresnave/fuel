@@ -473,6 +473,12 @@ into a throwaway workspace and runs `cargo check` on it
 `fuel-aocl-cpu-backend`, `fuel-cuda-backend`, `fuel-metal-backend` and `fuel-metal-kernels` crates,
 which need an SDK or another OS.
 
+**Release 0.20.61 on crates.io.** All 40 publishable crates were published at 0.20.61 from `6dded17a` and read back from
+crates.io. `fuel-examples`, `fuel-lazy-examples` and `fuel-test-support` were held back and stay at 0.20.14; the two
+`fuel-model-*fixture` crates are `publish = false`. The release was published with `DOCS_RS=1`, so the CUDA kernel
+(`nvcc`), `mkl` and `aocl` builds were **not** exercised or verified at publish time, and `fuel-metal-backend` was published
+with `--no-verify` because `gemm-f16` does not cross-compile on Windows.
+
 ## FAQ
 
 ### Why should I use Fuel?
