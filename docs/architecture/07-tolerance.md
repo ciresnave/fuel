@@ -1,6 +1,6 @@
 # Tolerance: per-op error budgets and approximate optimization
 
-**Status**: v0.3 (draft, 2026-05-09). v0.3 changes: calibration tooling picks comparators using the `PrecisionGuarantee` structure (per [05-backend-contract](05-backend-contract.md#per-kernel-precision-guarantees)) instead of a distinguished reference backend. v0.2 added the "Tolerance discovery and calibration" section.
+**Status**: v0.4 (draft, 2026-10-22). v0.4 records the one default path to the opt-in rule: default placement admits kernels whose accuracy claim meets a named bound (board 240, option D; [10-decisions-log §2026-10-22](10-decisions-log.md)). v0.3 (2026-05-09). v0.3 changes: calibration tooling picks comparators using the `PrecisionGuarantee` structure (per [05-backend-contract](05-backend-contract.md#per-kernel-precision-guarantees)) instead of a distinguished reference backend. v0.2 added the "Tolerance discovery and calibration" section.
 
 The architectural model for *controlled approximation*: how users, model definitions, and runtime callers specify acceptable numerical deviation, how the optimizer reasons about cumulative error along candidate routes, and what optimization space tolerance unlocks.
 
@@ -12,7 +12,7 @@ This is one of fuel's five competitive edges (see [01-identity §The five compet
 
 A **tolerance budget** is the maximum acceptable deviation between the strict-equivalence result of a computation and the result an optimization may produce. Budgets are specified by users, model definitions, or runtime callers; they're consumed by optimization rules that introduce non-strict transformations; the optimizer prunes candidate routes that exceed the available budget.
 
-By default, every computation runs strict-equivalence — tolerance defaults to zero, no approximate optimizations fire, results are bit-reproducible (subject to floating-point determinism caveats discussed below). Tolerance is opt-in everywhere except in narrow, explicitly-marked default paths (none planned for v1).
+By default, every computation runs strict-equivalence — tolerance defaults to zero, no approximate optimizations fire, results are bit-reproducible (subject to floating-point determinism caveats discussed below). Tolerance is opt-in everywhere except in narrow, explicitly-marked default paths (one, since 2026-10-22: default *placement* admits kernels whose accuracy claim meets the named bound, not only bit-stable ones — [04-optimization §Precision-filter pass](04-optimization.md#precision-filter-pass-runs-before-cost-ranking), [10-decisions-log](10-decisions-log.md); strict reproducibility mode, `require_bit_stable`, is unchanged).
 
 Three forms of tolerance specification, listed in increasing strictness:
 

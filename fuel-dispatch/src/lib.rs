@@ -162,11 +162,12 @@ pub use optimize::{OptimizedGraph, optimize_graph};
 pub use pipelined::PipelinedExecutor;
 pub use plan::{ExecutionPlan, PlanOptions, compile_plan};
 pub use ranker::{
-    AlternativeFilter, AlternativeSet, BitStablePreferenceFilter, Candidate, CapabilitiesLookup,
-    CouplingAdjustment, FilterClass, FilterContext, HashMapJudge, JudgeOracle, KEEP_PER_DEVICE,
-    PrecisionFloorFilter, PrecisionRequirement, StridedInputPreferenceFilter, TransferEstimator,
-    apply_filter_chain, apply_inbound_transfer_costs, composite_ns, compute_static_costs,
-    default_chain, enumerate_candidates,
+    AccuracyBound, AccuracyPreferenceFilter, AlternativeFilter, AlternativeSet, Candidate,
+    CapabilitiesLookup, CouplingAdjustment, DEFAULT_ACCURACY_BOUND, FilterClass, FilterContext,
+    HashMapJudge, JudgeOracle, KEEP_PER_DEVICE, PrecisionFloorFilter, PrecisionRequirement,
+    StridedInputPreferenceFilter, TransferEstimator, apply_filter_chain,
+    apply_inbound_transfer_costs, composite_ns, compute_static_costs, default_chain,
+    enumerate_candidates,
 };
 pub use residency::{
     EvictReload, LiveRange, ResidencyPlanner, ResidencyReport, insert_residency_evictions,

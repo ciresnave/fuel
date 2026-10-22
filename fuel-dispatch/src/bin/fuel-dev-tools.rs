@@ -4,6 +4,7 @@
 //! fuel-dev-tools -- <tool>`.
 //!
 //! Tools: `seed-cpu`, `seed-cuda` (`--features cuda`, live device), `seed-vulkan`
+//! (`--features vulkan`, live device), `seed-vulkan-accuracy` and `check-vulkan-accuracy`
 //! (`--features vulkan`, live device), `gap-228-flip`, `gap-228-report`.
 
 use fuel_dispatch::dev_tools;
@@ -16,11 +17,15 @@ fn main() {
         "seed-cuda" => dev_tools::seed_cuda_ledger(),
         #[cfg(feature = "vulkan")]
         "seed-vulkan" => dev_tools::seed_vulkan_ledger(),
+        #[cfg(feature = "vulkan")]
+        "seed-vulkan-accuracy" => dev_tools::seed_vulkan_matmul_accuracy(),
+        #[cfg(feature = "vulkan")]
+        "check-vulkan-accuracy" => dev_tools::check_vulkan_accuracy(),
         "gap-228-flip" => dev_tools::gap_228_flip(),
         "gap-228-report" => dev_tools::gap_228_sections_report(),
         other => {
             eprintln!(
-                "unknown tool {other:?}; expected seed-cpu | seed-cuda | seed-vulkan | gap-228-flip | gap-228-report"
+                "unknown tool {other:?}; expected seed-cpu | seed-cuda | seed-vulkan | seed-vulkan-accuracy | check-vulkan-accuracy | gap-228-flip | gap-228-report"
             );
             std::process::exit(2);
         }

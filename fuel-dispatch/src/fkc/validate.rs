@@ -2963,6 +2963,11 @@ determinism: same_hardware_bitwise
                 "portable-cpu",
                 "fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f32",
             ),
+            // vulkan/conv-attn-rope.fkc.md (orphan) vs vulkan/rope.fkc.md: rope_f32 was split
+            // out of rope.fkc.md's fanned `rope` section to carry its own measured precision
+            // block (board 240); the orphan names the same literal symbol. The other three
+            // dtypes still fan from rope.fkc.md's base `rope` symbol and do not collide.
+            ("vulkan-slang", "fuel_vulkan_backend::fkc::rope_f32"),
             // vulkan/conv-attn-rope.fkc.md (orphan) vs vulkan/attention.fkc.md
             ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_f32"),
             ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_bf16"),

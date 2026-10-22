@@ -70,8 +70,8 @@ pub use device_load::{
 pub use enumerate::enumerate_candidates;
 pub use filter::{AlternativeFilter, FilterClass, FilterContext};
 pub use filters::{
-    BitStablePreferenceFilter, PrecisionFloorFilter, PrecisionRequirement,
-    StridedInputPreferenceFilter, default_chain,
+    AccuracyBound, AccuracyPreferenceFilter, DEFAULT_ACCURACY_BOUND, PrecisionFloorFilter,
+    PrecisionRequirement, StridedInputPreferenceFilter, default_chain,
 };
 pub use judge::{HashMapJudge, JudgeOracle};
 pub use judge_aware_selector::JudgeAwareSelector;

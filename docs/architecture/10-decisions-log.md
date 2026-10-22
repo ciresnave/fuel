@@ -1561,6 +1561,22 @@ entry's *why* is the interim protection. GAP-016 census: this removes the
 
 ---
 
+## 2026-10-22 — Default placement is by accuracy claim, not by bit-stability (board 240, option D)
+
+**Sections affected**: 04, 07
+**Phase / PR**: board 240 (CireSnave: "On decision 240: D"); supersedes #426
+**Bumped to**: 04 v0.11 → v0.12, 07 v0.3 → v0.4
+
+**What changed**: the default filter chain's soft preference is now `AccuracyPreferenceFilter` (kernels meeting `DEFAULT_ACCURACY_BOUND`) in place of `BitStablePreferenceFilter` (bit-stable kernels only). Cost ranking then compares the survivors across devices. Bit-stable kernels count as reference-grade; a non-bit-stable kernel must carry a ledger-backed `max_relative`/`max_absolute` claim within the bound; a kernel with no claim does not win by default. Repeatability stays the separate opt-in `require_bit_stable`, unchanged. The Vulkan f32 matmul now declares a measured claim (`max_relative`/`max_absolute` 1e-3; worst measured 8.8e-5 / 2.3e-4 over 12 shapes), earned by `fuel-dev-tools seed-vulkan-accuracy`.
+
+**Why**: Qwen3-0.6B decode on Vulkan placed all 253 decode MatMuls on the CPU because the soft bit-stable preference ran across devices before cost ranking, and the Vulkan matmul is honestly not bit-stable (0.23 tok/s). A per-device preference (#426) fixed that but let any non-bit-stable kernel win on cost with no accuracy statement at all; option D asks for an accuracy statement instead.
+
+**Alternatives considered**: (A) per-device bit-stable preference (#426): admits kernels with no accuracy claim. (B) keep bit-stable-first: leaves GPU decode 13x slower by default. Both rejected by CireSnave in favour of D.
+
+**Implications going forward**: a kernel that should win placement on a non-bit-stable device needs a measured, ledger-backed accuracy claim; an unclaimed GPU kernel loses to a bit-stable CPU kernel in the default chain even when cheaper. The reference-grade treatment of bit-stable kernels without a numeric bound is an interpretation of "no accuracy claim" recorded here for ratification. Default-mode results are no longer bit-identical run to run where a claimed non-bit-stable kernel is placed.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
