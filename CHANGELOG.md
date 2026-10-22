@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.21.1 - 2026-10-22
+
+### Fixed
+
+- `fuel-loaders` `derive_config`: an absent `{arch}.rope.freq_base` now defaults to 10000.0, as llama.cpp does (`llama-model.cpp` initialises `rope_freq_base_train = 10000.0f` and reads the key as optional). A present key keeps its value; a present key of the wrong type still declines. Unblocks GGUF files that omit the key (e.g. stories15M).
+
 ## v0.21.0 - 2026-10-22
 
 ### Changed

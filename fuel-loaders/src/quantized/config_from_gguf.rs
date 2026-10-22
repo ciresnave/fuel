@@ -44,6 +44,9 @@
 //!   key is a typed [`GgufConfigError`] naming the key, never a guess and never an `unwrap`.
 //!   The one exception is `attention.head_count_kv`: llama.cpp itself reads an absent key as
 //!   `attention.head_count`, so that default is the format's own convention, not a guess.
+//!   The other is `rope.freq_base`: llama.cpp initialises it to 10000.0 and reads the key as
+//!   optional (the GGUF spec lists it without a default, so the reference implementation is the
+//!   authority).
 
 use super::arch::Architecture;
 use super::gguf_file::{Content, TensorInfo};
@@ -72,7 +75,8 @@ pub struct GgufDerivedConfig {
     pub n_kv_heads: usize,
     /// `{arch}.attention.layer_norm_rms_epsilon`.
     pub rms_norm_eps: f64,
-    /// `{arch}.rope.freq_base` — the rotary position embedding frequency base.
+    /// `{arch}.rope.freq_base` — the rotary position embedding frequency base. An absent key
+    /// defaults to 10000.0 (llama.cpp convention).
     pub rope_theta: f64,
     /// `{arch}.context_length` — the model's trained maximum sequence length.
     pub max_position_embeddings: usize,
@@ -190,6 +194,20 @@ impl<'a> GgufMeta<'a> {
         }
     }
 
+    /// [`Self::f32`], except an ABSENT key yields `default`. A present key of the wrong type
+    /// still returns [`GgufConfigError::WrongMetadataType`].
+    fn f32_or(&self, suffix: &str, default: f32) -> Result<f32> {
+        if self
+            .content
+            .metadata
+            .contains_key(&format!("{}.{suffix}", self.prefix))
+        {
+            self.f32(suffix)
+        } else {
+            Ok(default)
+        }
+    }
+
     fn f32(&self, suffix: &str) -> Result<f32> {
         let key = format!("{}.{suffix}", self.prefix);
         let value = self.content.metadata.get(&key).ok_or_else(|| {
@@ -208,9 +226,14 @@ impl<'a> GgufMeta<'a> {
     }
 }
 
+/// llama.cpp's default `rope.freq_base` when the key is absent (`llama-model.cpp`:
+/// `hparams.rope_freq_base_train = 10000.0f`, then an optional `get_key`).
+const DEFAULT_ROPE_FREQ_BASE: f32 = 10000.0;
+
 /// Extract [`GgufDerivedConfig`] from `content`'s metadata and tensor table, reading every key
 /// under `arch.as_str()`'s prefix. Never defaults a missing field (except `head_count_kv`,
-/// which follows llama.cpp's convention of falling back to `head_count`); every failure names the
+/// which follows llama.cpp's convention of falling back to `head_count`, and `rope.freq_base`,
+/// which falls back to llama.cpp's 10000.0); every failure names the
 /// exact key or tensor that was absent or malformed.
 pub fn derive_config(content: &Content, arch: Architecture) -> Result<GgufDerivedConfig> {
     let m = GgufMeta {
@@ -226,7 +249,9 @@ pub fn derive_config(content: &Content, arch: Architecture) -> Result<GgufDerive
     // a present-but-malformed value still declines.
     let n_kv_heads = m.u32_or("attention.head_count_kv", n_heads as u32)? as usize;
     let rms_norm_eps = m.f32("attention.layer_norm_rms_epsilon")? as f64;
-    let rope_theta = m.f32("rope.freq_base")? as f64;
+    // llama.cpp initialises the base to 10000.0 and reads the key as optional; a
+    // present-but-malformed value still declines.
+    let rope_theta = m.f32_or("rope.freq_base", DEFAULT_ROPE_FREQ_BASE)? as f64;
     let max_position_embeddings = m.u32("context_length")? as usize;
 
     let vocab_size = infer_vocab_size(&content.tensor_infos, hidden_size)?;
@@ -417,6 +442,40 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.n_heads, 8);
         assert_eq!(cfg.n_kv_heads, 2);
+    }
+
+    /// llama.cpp initialises `rope_freq_base_train` to 10000.0 and reads the key as optional
+    /// (`llama-model.cpp`, `ml.get_key(LLM_KV_ROPE_FREQ_BASE, ..., false)`), so an ABSENT
+    /// `rope.freq_base` means 10000.0.
+    #[test]
+    fn absent_rope_freq_base_defaults_to_10000() {
+        let mut content = llama_content_with_kv(None);
+        assert!(content.metadata.remove("llama.rope.freq_base").is_some());
+        let cfg = derive_config(&content, Architecture::Llama).unwrap();
+        assert_eq!(cfg.rope_theta, 10000.0);
+    }
+
+    /// Known-bad control for the default above: a PRESENT value must keep its own value.
+    #[test]
+    fn present_rope_freq_base_keeps_its_own_value() {
+        let mut content = llama_content_with_kv(None);
+        content
+            .metadata
+            .insert("llama.rope.freq_base".to_string(), Value::F32(500000.0));
+        let cfg = derive_config(&content, Architecture::Llama).unwrap();
+        assert_eq!(cfg.rope_theta, 500000.0);
+    }
+
+    /// The default covers an ABSENT key only; a present key of the wrong type still declines.
+    #[test]
+    fn malformed_rope_freq_base_still_declines() {
+        let mut content = llama_content_with_kv(None);
+        content.metadata.insert(
+            "llama.rope.freq_base".to_string(),
+            Value::String("10000".to_string()),
+        );
+        let err = derive_config(&content, Architecture::Llama).unwrap_err();
+        assert!(err.to_string().contains("llama.rope.freq_base"));
     }
 
     /// The default covers an ABSENT key only; a present key of the wrong type still declines.
