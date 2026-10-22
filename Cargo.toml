@@ -96,7 +96,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.20.69"
+version = "0.20.70"
 edition = "2024"
 description = "Minimalist ML framework."
 repository = "https://github.com/ciresnave/fuel"
@@ -124,44 +124,44 @@ aocl-types = "0.1"
 onemkl = "0.2"
 anyhow = { version = "1", features = ["backtrace"] }
 byteorder = "1.4.3"
-fuel = { path = "./fuel", version = "0.20.69" }
-fuel-nn = { path = "./fuel-nn", version = "0.20.69" }
-fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.20.69" }
-fuel-conv = { path = "./fuel-conv", version = "0.20.69" }
-fuel-test-support = { path = "./fuel-test-support", version = "0.20.69" }
-fuel-ir = { path = "./fuel-ir", version = "0.20.69" }
-fuel-backend-contract = { path = "./fuel-backend-contract", version = "0.20.69" }
-fuel-cpu-kernels = { path = "./fuel-cpu-kernels", version = "0.20.69" }
-fuel-hardware = { path = "./fuel-hardware", version = "0.20.69" }
-fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0.20.69" }
-fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.20.69" }
-fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.20.69" }
-fuel-graph = { path = "./fuel-graph", version = "0.20.69" }
-fuel-kernel-seam-announce = { path = "./fuel-kernel-seam-announce", version = "0.20.69" }
-fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types", version = "0.20.69" }
-fuel-kernel-seam = { path = "./fuel-kernel-seam", version = "0.20.69" }
-fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.20.69" }
-fuel-dispatch = { path = "./fuel-dispatch", version = "0.20.69" }
-fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.20.69" }
-fuel-tensor = { path = "./fuel-tensor", version = "0.20.69" }
-fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.20.69" }
-fuel-kv-pool = { path = "./fuel-kv-pool", version = "0.20.69" }
-fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.20.69" }
-fuel-datasets = { path = "./fuel-datasets", version = "0.20.69" }
-fuel-formats = { path = "./fuel-formats", version = "0.20.69" }
-fuel-loaders = { path = "./fuel-loaders", version = "0.20.69" }
-fuel-model-llama = { path = "./fuel-model-llama", version = "0.20.69" }
-fuel-model-phi = { path = "./fuel-model-phi", version = "0.20.69" }
-fuel-inference = { path = "./fuel-inference", version = "0.20.69" }
-fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.20.69" }
-fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.20.69" }
-fuel-onnx = { path = "./fuel-onnx", version = "0.20.69" }
-fuel-parallel = { path = "./fuel-parallel", version = "0.20.69" }
-fuel-quantized = { path = "./fuel-quantized", version = "0.20.69" }
-fuel-memory = { path = "./fuel-memory", version = "0.20.69" }
-fuel-training = { path = "./fuel-training", version = "0.20.69" }
-fuel-transformers = { path = "./fuel-transformers", version = "0.20.69" }
-fuel-posttrain = { path = "./fuel-posttrain", version = "0.20.69" }
+fuel = { path = "./fuel", version = "0.20.70" }
+fuel-nn = { path = "./fuel-nn", version = "0.20.70" }
+fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.20.70" }
+fuel-conv = { path = "./fuel-conv", version = "0.20.70" }
+fuel-test-support = { path = "./fuel-test-support", version = "0.20.70" }
+fuel-ir = { path = "./fuel-ir", version = "0.20.70" }
+fuel-backend-contract = { path = "./fuel-backend-contract", version = "0.20.70" }
+fuel-cpu-kernels = { path = "./fuel-cpu-kernels", version = "0.20.70" }
+fuel-hardware = { path = "./fuel-hardware", version = "0.20.70" }
+fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0.20.70" }
+fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.20.70" }
+fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.20.70" }
+fuel-graph = { path = "./fuel-graph", version = "0.20.70" }
+fuel-kernel-seam-announce = { path = "./fuel-kernel-seam-announce", version = "0.20.70" }
+fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types", version = "0.20.70" }
+fuel-kernel-seam = { path = "./fuel-kernel-seam", version = "0.20.70" }
+fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.20.70" }
+fuel-dispatch = { path = "./fuel-dispatch", version = "0.20.70" }
+fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.20.70" }
+fuel-tensor = { path = "./fuel-tensor", version = "0.20.70" }
+fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.20.70" }
+fuel-kv-pool = { path = "./fuel-kv-pool", version = "0.20.70" }
+fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.20.70" }
+fuel-datasets = { path = "./fuel-datasets", version = "0.20.70" }
+fuel-formats = { path = "./fuel-formats", version = "0.20.70" }
+fuel-loaders = { path = "./fuel-loaders", version = "0.20.70" }
+fuel-model-llama = { path = "./fuel-model-llama", version = "0.20.70" }
+fuel-model-phi = { path = "./fuel-model-phi", version = "0.20.70" }
+fuel-inference = { path = "./fuel-inference", version = "0.20.70" }
+fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.20.70" }
+fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.20.70" }
+fuel-onnx = { path = "./fuel-onnx", version = "0.20.70" }
+fuel-parallel = { path = "./fuel-parallel", version = "0.20.70" }
+fuel-quantized = { path = "./fuel-quantized", version = "0.20.70" }
+fuel-memory = { path = "./fuel-memory", version = "0.20.70" }
+fuel-training = { path = "./fuel-training", version = "0.20.70" }
+fuel-transformers = { path = "./fuel-transformers", version = "0.20.70" }
+fuel-posttrain = { path = "./fuel-posttrain", version = "0.20.70" }
 clap = { version = "4", features = ["derive"] }
 criterion = { version = "0.8", default-features = false }
 # --- CUDA FFI layer: baracuda -----------------------------------------------
@@ -247,19 +247,19 @@ criterion = { version = "0.8", default-features = false }
 # 173/173 live CUDA parity). The whole workspace moved to alpha.77 in lockstep
 # (also carries kernelgen breadth: base_offset/where-select/hetero-dropout/
 # argsort/topk/im2col — all off-key, no STRUCTURE_KEY_VERSION bump).
-baracuda-types         = { version = "0.0.1-alpha.116", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.116" }
-baracuda-cuda-sys      = { version = "0.0.1-alpha.116" }
-baracuda-driver        = { version = "0.0.1-alpha.116" }
-baracuda-runtime       = { version = "0.0.1-alpha.116" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.116" }
-baracuda-cublas        = { version = "0.0.1-alpha.116" }
-baracuda-cudnn-sys     = { version = "0.0.1-alpha.116" }
-baracuda-cudnn         = { version = "0.0.1-alpha.116", features = ["half-crate"] }
-baracuda-curand-sys    = { version = "0.0.1-alpha.116" }
-baracuda-curand        = { version = "0.0.1-alpha.116" }
-baracuda-nvrtc-sys     = { version = "0.0.1-alpha.116" }
-baracuda-nvrtc         = { version = "0.0.1-alpha.116" }
+baracuda-types         = { version = "0.0.1-alpha.147", features = ["half-crate", "f8-crate"] }
+baracuda-core          = { version = "0.0.1-alpha.147" }
+baracuda-cuda-sys      = { version = "0.0.1-alpha.147" }
+baracuda-driver        = { version = "0.0.1-alpha.147" }
+baracuda-runtime       = { version = "0.0.1-alpha.147" }
+baracuda-cublas-sys    = { version = "0.0.1-alpha.147" }
+baracuda-cublas        = { version = "0.0.1-alpha.147" }
+baracuda-cudnn-sys     = { version = "0.0.1-alpha.147" }
+baracuda-cudnn         = { version = "0.0.1-alpha.147", features = ["half-crate"] }
+baracuda-curand-sys    = { version = "0.0.1-alpha.147" }
+baracuda-curand        = { version = "0.0.1-alpha.147" }
+baracuda-nvrtc-sys     = { version = "0.0.1-alpha.147" }
+baracuda-nvrtc         = { version = "0.0.1-alpha.147" }
 # The live JIT synthesizer (BaracudaSynthesizer, the fuel-kernel-seam Synthesizer
 # impl). Was an EXACT pin (only the `seam` module surface deemed
 # supported/stable, generator internals treated as alpha-fluid) — retired
@@ -319,9 +319,9 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.116" }
 # work with", not "which baracuda snapshot is this" — it is not comparable to
 # the other `baracuda-*` pins' alpha numbers in the same way.
 baracuda-cuda-emit     = { version = "0.11.0" }
-baracuda-nccl-sys      = { version = "0.0.1-alpha.116" }
-baracuda-nccl          = { version = "0.0.1-alpha.116", features = ["half-crate"] }
-baracuda-cutlass       = { version = "0.0.1-alpha.116" }
+baracuda-nccl-sys      = { version = "0.0.1-alpha.147" }
+baracuda-nccl          = { version = "0.0.1-alpha.147", features = ["half-crate"] }
+baracuda-cutlass       = { version = "0.0.1-alpha.147" }
 # baracuda alpha.26 — new ML kernel facade. Fuel uses `baracuda-kernels-sys`
 # (raw extern "C") rather than the safe `baracuda-kernels` Plan-based wrapper
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
@@ -332,8 +332,10 @@ baracuda-cutlass       = { version = "0.0.1-alpha.116" }
 # registration-based TargetId impl; 0.11.0 was the old fixed-index one).
 # Adopted at alpha.116 with every other baracuda-* pin (PM, 2026-10-16: one family,
 # one alpha); the crates do not have to share a number, but nothing here needs them apart.
-baracuda-kernels-types = { version = "0.0.1-alpha.116" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.116", features = [
+# Bumped to alpha.147 (2026-10-22): the first alpha with the padded OC-major AWQ layout
+# (baracuda#219; the Marlin repack was wrong alpha.64-alpha.145), for ROADMAP row 31.
+baracuda-kernels-types = { version = "0.0.1-alpha.147" }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.147", features = [
     "cudnn",
     "sm89",
     # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.
