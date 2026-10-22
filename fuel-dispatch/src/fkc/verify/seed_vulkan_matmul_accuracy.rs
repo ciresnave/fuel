@@ -227,8 +227,10 @@ fn f32_tensor(shape: Vec<usize>, data: &[f32]) -> HostTensor {
 
 fn f32s(t: &HostTensor) -> Vec<f32> {
     t.bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
