@@ -85,7 +85,7 @@ pub(crate) mod seed_cpu_ledger;
 pub(crate) mod seed_cuda_ledger;
 #[cfg(feature = "vulkan")]
 pub(crate) mod seed_vulkan_ledger;
-#[cfg(all(feature = "vulkan", any(test, feature = "dev-tools")))]
+#[cfg(all(feature = "vulkan", feature = "dev-tools"))]
 pub(crate) mod seed_vulkan_matmul_accuracy;
 mod ulp;
 
