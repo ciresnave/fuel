@@ -76,7 +76,8 @@ pub struct GgufDerivedConfig {
     /// `{arch}.attention.layer_norm_rms_epsilon`.
     pub rms_norm_eps: f64,
     /// `{arch}.rope.freq_base` — the rotary position embedding frequency base. An absent key
-    /// defaults to 10000.0 (llama.cpp convention).
+    /// defaults to 10000.0 for every architecture, as in llama.cpp's loader (converted Gemma3
+    /// files carry their own 1,000,000.0 in the key).
     pub rope_theta: f64,
     /// `{arch}.context_length` — the model's trained maximum sequence length.
     pub max_position_embeddings: usize,
@@ -227,7 +228,12 @@ impl<'a> GgufMeta<'a> {
 }
 
 /// llama.cpp's default `rope.freq_base` when the key is absent (`llama-model.cpp`:
-/// `hparams.rope_freq_base_train = 10000.0f`, then an optional `get_key`).
+/// `hparams.rope_freq_base_train = 10000.0f`, then an optional `get_key`). The default is
+/// architecture-independent in llama.cpp: `llama_model_gemma3::load_arch_hparams` does not
+/// override it, so a Gemma3 file without the key also runs at 10000.0 there. Gemma3's
+/// 1,000,000.0 global-layer base lives in the converter (`conversion/gemma.py` writes
+/// `rope.freq_base` from the HF `rope_theta`, falling back to 1_000_000.0), so a converted
+/// Gemma3 GGUF carries the key and never reaches this default.
 const DEFAULT_ROPE_FREQ_BASE: f32 = 10000.0;
 
 /// Extract [`GgufDerivedConfig`] from `content`'s metadata and tensor table, reading every key
