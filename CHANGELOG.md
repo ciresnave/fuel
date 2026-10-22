@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.64 - 2026-10-22
+
+### Added
+
+- `fuel-kv-pool`: `CacheStats` and `KvBlockPool::cache_stats()` count block-index lookups, block hits and misses, commits and evictions (ROADMAP row 32). Mechanism only: the pool decides nothing from them.
+
 ## v0.20.63 - 2026-10-22
 
 ### Changed

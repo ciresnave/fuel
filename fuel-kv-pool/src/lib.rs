@@ -109,7 +109,7 @@ pub enum StateKind {
 
 mod block_index;
 mod sizing;
-pub use block_index::{BlockHash, chain_block_hash};
+pub use block_index::{BlockHash, CacheStats, chain_block_hash};
 pub use sizing::{KvBudget, KvSizingError, non_kv_resident_bytes};
 
 /// KV pool geometry — the model-agnostic shape the pool manages. It speaks KV
@@ -365,6 +365,8 @@ pub struct KvBlockPool {
     cached_by_block: HashMap<PhysBlockId, BlockHash>,
     /// Monotonic use counter for LRU ordering of cached blocks.
     tick: u64,
+    /// Counters over the block index (see [`CacheStats`]).
+    cache_stats: CacheStats,
 }
 
 fn blocks_for(tokens: usize, block_size: usize) -> usize {
@@ -386,6 +388,7 @@ impl KvBlockPool {
             cached: HashMap::new(),
             cached_by_block: HashMap::new(),
             tick: 0,
+            cache_stats: CacheStats::default(),
         }
     }
 

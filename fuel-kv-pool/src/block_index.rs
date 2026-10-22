@@ -38,6 +38,28 @@ pub(crate) struct CachedBlock {
     pub(crate) last_used: u64,
 }
 
+/// Cumulative counters over the block index since the pool was built.
+///
+/// **Mechanism, not policy:** the pool only counts. Whether a hit rate is good,
+/// or what to evict because of it, is the caller's call. A lookup is one
+/// [`lookup_chain`](KvBlockPool::lookup_chain) call, including the one inside
+/// [`splice_cached_chain`](KvBlockPool::splice_cached_chain), counted once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    /// `lookup_chain` calls.
+    pub lookups: u64,
+    /// Blocks matched across all lookups.
+    pub block_hits: u64,
+    /// Requested blocks not matched: for each lookup, the hashes at and after
+    /// the first miss.
+    pub block_misses: u64,
+    /// Blocks newly registered by `commit_block` (a refused duplicate is not
+    /// counted).
+    pub commits: u64,
+    /// Entries dropped by `release_cached`: the evictions a policy chose.
+    pub evictions: u64,
+}
+
 /// A convenience chained hash: `hash(parent, tokens, extra)` over two
 /// independent 64-bit lanes. **Not cryptographic.** Accidental collisions are
 /// negligible at 128 bits, but a party who controls the tokens can craft one, so
@@ -113,6 +135,7 @@ impl KvBlockPool {
             },
         );
         self.cached_by_block.insert(p, hash);
+        self.cache_stats.commits += 1;
         Ok(true)
     }
 
@@ -131,6 +154,9 @@ impl KvBlockPool {
             entry.last_used = self.tick;
             out.push(entry.block);
         }
+        self.cache_stats.lookups += 1;
+        self.cache_stats.block_hits += out.len() as u64;
+        self.cache_stats.block_misses += (hashes.len() - out.len()) as u64;
         out
     }
 
@@ -181,12 +207,18 @@ impl KvBlockPool {
             .remove(&hash)
             .ok_or(KvAllocError::UnknownCachedBlock)?;
         self.cached_by_block.remove(&entry.block);
+        self.cache_stats.evictions += 1;
         let rc = &mut self.refcount[entry.block as usize];
         *rc -= 1;
         if *rc == 0 {
             self.free.push(entry.block);
         }
         Ok(())
+    }
+
+    /// The index counters since the pool was built.
+    pub fn cache_stats(&self) -> CacheStats {
+        self.cache_stats
     }
 
     /// How many blocks the index currently holds.
@@ -405,6 +437,37 @@ mod tests {
         assert_eq!(
             p.splice_cached_chain(gone, &chain),
             Err(KvAllocError::UnknownSession)
+        );
+    }
+
+    #[test]
+    fn stats_count_hits_misses_commits_and_evictions() {
+        let mut p = pool(16);
+        assert_eq!(p.cache_stats(), CacheStats::default());
+        let ids: Vec<u32> = (0..12).collect();
+        let (_s, chain) = session_with(&mut p, &ids, b"");
+        assert_eq!(p.cache_stats().commits, 3);
+        // A duplicate commit is refused and must not count.
+        p.commit_block(_s, 0, chain[0]).unwrap();
+        assert_eq!(p.cache_stats().commits, 3);
+        // Two shared blocks then a diverging third: 2 hits, 1 miss.
+        let mut other: Vec<u32> = (0..8).collect();
+        other.extend([99, 98, 97, 96]);
+        assert_eq!(p.lookup_chain(&chain_of(&other, b"")).len(), 2);
+        let st = p.cache_stats();
+        assert_eq!((st.lookups, st.block_hits, st.block_misses), (1, 2, 1));
+        // Splice counts its single inner lookup once.
+        let dst = p.open();
+        p.splice_cached_chain(dst, &chain).unwrap();
+        let st = p.cache_stats();
+        assert_eq!((st.lookups, st.block_hits, st.block_misses), (2, 5, 1));
+        p.release_cached(chain[2]).unwrap();
+        assert_eq!(p.cache_stats().evictions, 1);
+        assert!(p.release_cached(chain[2]).is_err());
+        assert_eq!(
+            p.cache_stats().evictions,
+            1,
+            "a failed release is not an eviction"
         );
     }
 
