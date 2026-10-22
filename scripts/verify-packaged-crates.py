@@ -113,21 +113,24 @@ def collect_escapes(crate_dir, crates):
     return hard, found
 
 
+def judge_escape(key, n, want):
+    """Print one found escape against its allowlist entry; return 1 if it fails, else 0."""
+    allowed = want[0] if want else 0
+    reason = f"  -- {want[1]}" if want else ""
+    print(f"  {'ok ' if allowed == n else 'NEW'} {key[0]}/{key[1]} [{key[2]}] x{n}{reason}")
+    if allowed == n:
+        return 0
+    print(f"FAIL unlisted or grown escape: {key} found {n}, allowed {allowed}")
+    return 1
+
+
 def check_allowlist(found, allow):
     """Count unlisted, grown and stale allowlist entries, printing each."""
-    bad = 0
-    for key in sorted(found):
-        want = allow.get(key)
-        tag = "ok " if want and want[0] == found[key] else "NEW"
-        print(f"  {tag} {key[0]}/{key[1]} [{key[2]}] x{found[key]}" + (f"  -- {want[1]}" if want else ""))
-        if not want or want[0] != found[key]:
-            print(f"FAIL unlisted or grown escape: {key} found {found[key]}, allowed {want[0] if want else 0}")
-            bad += 1
-    for key in sorted(allow):
-        if key not in found:
-            print(f"FAIL allowlist entry no longer exists (remove it): {key}")
-            bad += 1
-    return bad
+    bad = sum(judge_escape(key, found[key], allow.get(key)) for key in sorted(found))
+    stale = [key for key in sorted(allow) if key not in found]
+    for key in stale:
+        print(f"FAIL allowlist entry no longer exists (remove it): {key}")
+    return bad + len(stale)
 
 
 def scan(crate_dir, allow_path):
@@ -230,41 +233,65 @@ def write_workspace(ws, names):
         fh.write(root)
 
 
-def build(crate_dir, lockfile, excludes):
-    crates = sorted(f for f in os.listdir(crate_dir) if f.endswith(".crate"))
-    ws = tempfile.mkdtemp(prefix="packaged-ws-")
+CRATE_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def extract_all(crate_dir, crates, ws):
+    """Extract every tarball into `ws`; return the name-version directory names."""
     for f in crates:
         with tarfile.open(os.path.join(crate_dir, f), "r:gz") as tf:
             safe_extract(tf, ws)
-    names = [f[: -len(".crate")] for f in crates]  # name-version directories
+    return [f[: -len(".crate")] for f in crates]
+
+
+def cargo_check_argv(excludes):
+    """argv for `cargo check --workspace`: constants plus crate names validated as plain identifiers."""
+    for e in excludes:
+        if not CRATE_NAME.fullmatch(e):
+            raise ValueError(f"not a crate name: {e!r}")
+    return ["cargo", "check", "--workspace"] + [x for e in excludes for x in ("--exclude", e)]
+
+
+def build(crate_dir, lockfile, excludes):
+    crates = sorted(f for f in os.listdir(crate_dir) if f.endswith(".crate"))
+    argv = cargo_check_argv(excludes)
+    ws = tempfile.mkdtemp(prefix="packaged-ws-")
+    names = extract_all(crate_dir, crates, ws)
     write_workspace(ws, names)
     if lockfile and os.path.exists(lockfile):
         shutil.copy(lockfile, os.path.join(ws, "Cargo.lock"))
-    cmd = ["cargo", "check", "--workspace"] + [x for e in excludes for x in ("--exclude", e)]
-    print(f"BUILD throwaway workspace {ws}: {len(names)} extracted crates; {' '.join(cmd)}")
+    print(f"BUILD throwaway workspace {ws}: {len(names)} extracted crates; {' '.join(argv)}")
     print("NAMED HOLES: DOCS_RS is set by the caller, so the CUDA/forge (nvcc) compile of "
           "baracuda-kernels-sys is NOT verified; excluded crates are not built at all.")
-    # Fixed argument list, no shell, no user input: the only variable parts are CLI-supplied crate names.
-    return subprocess.run(cmd, cwd=ws).returncode  # NOSONAR # nosec B603
+    # argv is constants plus identifier-validated crate names; no shell; cwd is our own temp dir.
+    return subprocess.run(argv, cwd=ws).returncode  # NOSONAR # nosec B603
+
+
+def cmd_selftest(argv):
+    return 1 if selftest() else 0
+
+
+def cmd_scan(argv):
+    allow = ALLOWLIST_DEFAULT
+    if "--allowlist" in argv:
+        allow = argv[argv.index("--allowlist") + 1]
+    return 1 if scan(argv[2], allow) else 0
+
+
+def cmd_build(argv):
+    ex = [argv[i + 1] for i, a in enumerate(argv) if a == "--exclude"]
+    return build(argv[2], argv[3], ex)
+
+
+COMMANDS = {"selftest": cmd_selftest, "scan": cmd_scan, "build": cmd_build}
 
 
 def main(argv):
-    if len(argv) < 2:
+    handler = COMMANDS.get(argv[1]) if len(argv) > 1 else None
+    if handler is None:
         print(__doc__)
         return 2
-    cmd = argv[1]
-    if cmd == "selftest":
-        return 1 if selftest() else 0
-    if cmd == "scan":
-        allow = ALLOWLIST_DEFAULT
-        if "--allowlist" in argv:
-            allow = argv[argv.index("--allowlist") + 1]
-        return 1 if scan(argv[2], allow) else 0
-    if cmd == "build":
-        ex = [argv[i + 1] for i, a in enumerate(argv) if a == "--exclude"]
-        return build(argv[2], argv[3], ex)
-    print(__doc__)
-    return 2
+    return handler(argv)
 
 
 if __name__ == "__main__":
