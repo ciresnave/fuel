@@ -27,6 +27,11 @@ use half::{bf16, f16};
 
 use crate::byte_storage::CudaStorageBytes;
 
+/// A rejected matrix view (negative dimension or slice too short) as a typed error.
+fn view_err<E: std::fmt::Display>(e: E) -> Error {
+    Error::Msg(format!("cutlass matrix view: {e}")).bt()
+}
+
 /// Generic CUTLASS Rrr matmul on the byte-storage substrate. Equal-
 /// batch path only — caller is responsible for splitting GQA /
 /// unequal batches into multiple invocations.
@@ -123,25 +128,10 @@ where
         let d_slice = out_view.slice_mut(d_off..d_off + out_per_batch);
 
         let args = GemmArgs::<T> {
-            a: MatrixRef {
-                data: a_slice,
-                rows: m_i32,
-                cols: k_i32,
-                ld: k as i64,
-            },
-            b: MatrixRef {
-                data: b_slice,
-                rows: k_i32,
-                cols: n_i32,
-                ld: n as i64,
-            },
+            a: MatrixRef::new(a_slice, m_i32, k_i32, k as i64).map_err(view_err)?,
+            b: MatrixRef::new(b_slice, k_i32, n_i32, n as i64).map_err(view_err)?,
             c: None,
-            d: MatrixMut {
-                data: d_slice,
-                rows: m_i32,
-                cols: n_i32,
-                ld: n as i64,
-            },
+            d: MatrixMut::new(d_slice, m_i32, n_i32, n as i64).map_err(view_err)?,
             bias: None,
             alpha: 1.0,
             beta: 0.0,
