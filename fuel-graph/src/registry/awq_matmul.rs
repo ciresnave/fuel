@@ -6,52 +6,40 @@
 //! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules, a
 //!   total `decompose` to the primitive dequantize→matmul recipe, and a
 //!   stubbed pattern, mirroring [`super::nf4_matmul`]'s shape).
+//! - [`awq_zeros_w`] — the kernel's per-row padding rule for `zeros`.
 //!
-//! Inputs: `[activations, qweight, qzeros, scales]` — one more than NF4's
-//! three, because AWQ is ASYMMETRIC (a per-group zero-point is a real
-//! operand, not baked into a codebook):
-//!   - `activations`: `[..., M, K]` — caller's dtype (F32/F16/BF16 in v1).
-//!   - `qweight`: `[N, K/8]` U32 — eight packed int4 weight codes per word.
+//! ## Operand layout — the baracuda W4A16 kernel layout
+//!
+//! Inputs: `[activations, weight, zeros, scales]`. The three quantized
+//! operands are in the layout baracuda's AWQ GEMM kernel reads (documented on
+//! baracuda's `Int4AwqGemmArgs`, alpha.147), NOT the HuggingFace checkpoint
+//! layout. `fuel_quantized::awq_repack::repack_hf_awq_for_kernel` converts a
+//! checkpoint's `qweight`/`qzeros`/`scales` into it on the host. Everything is
+//! OC-major (`N` = output channels, `K` = input features,
+//! `groups = K / group_size`, `mult = 128 / group_size`):
+//!   - `activations`: `[..., M, K]` — caller's dtype (F32/F16/BF16).
+//!   - `weight`: `[N, K/8]` U32 — eight int4 codes per word in plain
+//!     sequential nibble order: nibble `k % 8` of word `k / 8` in row `n`.
 //!     `K` must be a multiple of 8.
-//!   - `qzeros`:  `[K/group_size, N/8]` U32 — eight packed int4
-//!     zero-point codes per word. `N` must be a multiple of 8.
-//!   - `scales`:  `[K/group_size, N]` F32 — per-group, per-output-channel
+//!   - `zeros`: `[N, zeros_w]` U32 — nibble `g % 8` of word `g / 8` in row `n`
+//!     holds group `g`'s zero-point; `zeros_w = awq_zeros_w(K, group_size)`.
+//!   - `scales`: `[N, 8 * zeros_w]` F16 — entry `g` of row `n` is group `g`'s
 //!     scale.
 //!
-//! Output: `[..., M, N]` matching the activations' dtype. `group_size`
-//! (∈ {64, 128} per AWQ's format) must evenly divide `K`.
+//! The tail of each `zeros`/`scales` row past `groups` is padding the kernel
+//! never reads as data; this op's decompose ignores it too, whatever it holds.
 //!
-//! ## Packing-order — verified against AutoAWQ's own source
+//! Output: `[..., M, N]` matching the activations' dtype. `group_size` must
+//! be 64 or 128 (the kernel's two supported values) and evenly divide `K`.
 //!
-//! AWQ's CUDA kernel (and AutoAWQ/llm-awq's packer) does NOT pack eight
-//! int4 values into a `U32` word in plain sequential nibble order. Confirmed
-//! directly against AutoAWQ's packer (`awq/modules/linear/gemm.py`,
-//! `WQLinear_GEMM.from_linear`, fetched and read 2026-10-02 — not inferred
-//! from a paraphrased description): it packs with
-//! `order_map = [0, 2, 4, 6, 1, 3, 5, 7]` via
-//! `qweight[:, col] |= intweight[:, col*8 + order_map[i]] << (i*4)` —
-//! i.e. physical nibble position `i` within the packed word holds the
-//! value from LOGICAL column `order_map[i]`, exactly [`AWQ_UNPACK_ORDER`]
-//! below. The same source states explicitly that **the identical order
-//! applies to `qzeros`**, confirming the assumption this module makes for
-//! both `qweight` (along `K`) and `qzeros` (along `N`).
+//! ## Why the operands are the kernel layout (PM ruling B, ROADMAP row 31)
 //!
-//! (A web search surfaced a DIFFERENT 8-value permutation,
-//! `[0, 4, 1, 5, 2, 6, 3, 7]`, attributed to AWQ — that is
-//! `_REVERSE_AWQ_PACK_ORDER`, the INVERSE permutation some tools use to
-//! convert an AWQ-packed tensor back to sequential/GPTQ order for
-//! re-packing. It is not the packing order itself, and using it here
-//! would have been exactly backwards. Recorded so the next reader who
-//! finds that same search result doesn't re-derive the same near-miss.)
-//!
-//! **What IS tested:** the decompose's own internal consistency — the
-//! unit tests build a small hand-packed example USING
-//! [`AWQ_UNPACK_ORDER`] and confirm the decompose recovers the exact
-//! codes and dequantized values those tests packed. Combined with the
-//! source-verified order above, this is now a correctness claim against
-//! the real format, not just an internal-consistency check — but it has
-//! NOT been checked against bytes from a real `*-AWQ` checkpoint on disk;
-//! that remains the next verification step before shipping a loader.
+//! The previous operands were the HuggingFace layout with AutoAWQ's
+//! interleaved nibble order. A fused kernel cannot read that layout, so every
+//! launch would repack on the device. The repack is a one-time host cost at
+//! load, so the op takes the kernel layout and one buffer set serves both the
+//! CUDA kernel and this decompose. Changing the operand layout of an existing
+//! op is a Breaking change (0.21).
 //!
 //! ## Architectural note — primitive decomposition (the recipe)
 //!
@@ -61,27 +49,15 @@
 //! which decomposes cleanly into Fuel's existing primitive ops: unpack
 //! int4 codes from each packed `U32` word → subtract the (broadcast,
 //! per-group) zero-point → multiply by the (broadcast, per-group)
-//! scale → standard `MatMul`. So, unlike NF4 (bespoke fused kernel on
-//! every backend, no decompose), AWQ ships with ONLY a decompose in
-//! this change — no bespoke CPU kernel is written, and no backend-native
-//! dispatch wiring (OpKind / cost model / CUDA registration) is added.
-//! The real, measured AWQ GEMM kernel already exists
-//! (`fuel-cuda-backend/src/baracuda/quant_w4a16.rs::awq_gemm_f16`,
-//! `awq` cargo feature) but reaching it from this op is explicitly
-//! DEFERRED follow-on work — see the module's own top-of-file note in
-//! that file and this crate's registry-level gap tracking. This
-//! decompose is the correctness floor: it produces the right answer on
-//! every backend (including CUDA, via lowering); reaching the fast fused
-//! kernel path is the separate follow-on work named above.
+//! scale → standard `MatMul`. This decompose is the correctness floor: it
+//! produces the right answer on every backend.
 //!
-//! Unlike NF4's bit-extraction (packed as `U8`, exact in `F32`), AWQ's
-//! packed words are `U32` (values up to 2^32−1), which LOSES PRECISION
-//! if cast directly to `F32` (24-bit mantissa, exact only up to 2^24).
-//! The nibble-extraction arithmetic therefore runs in **F64** (53-bit
-//! mantissa, exact for any `u32` value) — see step 1 of [`decompose`]'s
-//! recipe — with the extracted small-integer codes (0..15) cast down to
-//! `F32` before the affine dequant math, which is exact since codes are
-//! tiny integers.
+//! Packed words are `U32` (values up to 2^32−1), which LOSES PRECISION if
+//! cast directly to `F32` (24-bit mantissa, exact only up to 2^24). The
+//! nibble-extraction arithmetic therefore runs in **F64** (53-bit mantissa,
+//! exact for any `u32` value) — see step 1 of [`decompose`]'s recipe — with
+//! the extracted small-integer codes (0..15) cast down to `F32` before the
+//! affine dequant math, which is exact since codes are tiny integers.
 //!
 //! ## Why `BackwardKind::Decompose` (changed 2026-10-20, PM ruling)
 //!
@@ -97,14 +73,22 @@ use crate::registry::{BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, 
 use crate::{Graph, Node, NodeId, Op};
 use fuel_ir::{DType, Shape};
 
-/// Physical nibble position (0..7, LSB-first within the packed `U32`
-/// word) → logical column index within its group of 8. Verified directly
-/// against AutoAWQ's packer source (`order_map` in
-/// `awq/modules/linear/gemm.py`) — see the module doc for the citation
-/// and a near-miss worth not repeating (a different 8-value permutation
-/// found by web search is the INVERSE of this one, used for a different
-/// purpose).
-pub const AWQ_UNPACK_ORDER: [u32; 8] = [0, 2, 4, 6, 1, 3, 5, 7];
+/// Words per `zeros` row (and `scales` entries per row, divided by 8) for `k`
+/// input features at `group_size`: `ceil(ceil(groups / 8) / mult) * mult`
+/// with `groups = k / group_size` and `mult = 128 / group_size`. `None` when
+/// `group_size` is not 64 or 128 or does not divide `k`.
+///
+/// The same rule as `fuel_quantized::awq_repack::awq_zeros_w` (`fuel-graph`
+/// cannot depend on `fuel-quantized`, so the rule is repeated and pinned by a
+/// test there).
+pub fn awq_zeros_w(k: usize, group_size: usize) -> Option<usize> {
+    if (group_size != 64 && group_size != 128) || !k.is_multiple_of(group_size) {
+        return None;
+    }
+    let groups = k / group_size;
+    let mult = 128 / group_size;
+    Some(groups.div_ceil(8).div_ceil(mult) * mult)
+}
 
 /// Metadata-side registry entry for AwqMatmul.
 pub fn entry() -> FusedOpEntry {
@@ -123,12 +107,12 @@ pub fn entry() -> FusedOpEntry {
 }
 
 /// Output shape rule: `[..., M, N]` where M is activations' second-to-last
-/// dim and N is `qweight`'s first dim (`qweight: [N, K/8]`).
+/// dim and N is `weight`'s first dim (`weight: [N, K/8]`).
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
         input_shapes.len(),
         4,
-        "AwqMatmul takes 4 inputs (activations, qweight, qzeros, scales)",
+        "AwqMatmul takes 4 inputs (activations, weight, zeros, scales)",
     );
     let a_dims = input_shapes[0].dims();
     let w_dims = input_shapes[1].dims();
@@ -139,7 +123,7 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
         w_dims.len(),
         2,
-        "AwqMatmul: qweight must be rank 2 [N, K/8], got {w_dims:?}"
+        "AwqMatmul: weight must be rank 2 [N, K/8], got {w_dims:?}"
     );
     let n = w_dims[0];
     let mut out_dims: Vec<usize> = a_dims[..a_dims.len() - 1].to_vec();
@@ -152,7 +136,7 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     debug_assert_eq!(
         input_dtypes.len(),
         4,
-        "AwqMatmul takes 4 inputs (activations, qweight, qzeros, scales)",
+        "AwqMatmul takes 4 inputs (activations, weight, zeros, scales)",
     );
     input_dtypes[0]
 }
@@ -178,11 +162,9 @@ fn push(graph: &mut Graph, op: Op, inputs: Vec<NodeId>, shape: Shape, dtype: DTy
 
 /// Extract the 8 packed int4 nibbles from a `U32`-packed tensor `packed`
 /// (shape `[..., W]`, each element a packed word) into 8 separate `F64`
-/// tensors of shape `[..., W]`, one per PHYSICAL nibble position
-/// (`result[p]` holds the value at physical position `p`, still in
-/// physical order — the caller reorders to logical column order via
-/// [`AWQ_UNPACK_ORDER`]). Arithmetic runs in F64 because a
-/// `U32` value can exceed F32's 24-bit-mantissa exact-integer range.
+/// tensors of shape `[..., W]`, one per nibble position (`result[p]` holds
+/// nibble `p`, LSB first). Arithmetic runs in F64 because a `U32` value can
+/// exceed F32's 24-bit-mantissa exact-integer range.
 ///
 /// `nibble_p = floor(w / 16^p) mod 16`, computed as
 /// `shifted = floor(w / 16^p); nibble = shifted - 16*floor(shifted/16)`
@@ -233,31 +215,23 @@ fn unpack_u32_nibbles(graph: &mut Graph, packed: NodeId, out_shape: &Shape) -> [
     positions.try_into().unwrap_or_else(|_| unreachable!())
 }
 
-/// Reorder 8 physical-position `[..., W]` F64 tensors into one logical
-/// `[..., W*8]` F32 tensor, per [`AWQ_UNPACK_ORDER`], then reshape to
-/// `logical_shape` (`[..., W, 8]` flattened to `[..., W*8]` interleaves
-/// correctly because `Concat` on a new trailing axis followed by
-/// `Reshape` puts `concat_list[j]` at logical offset `j` within each
-/// group of 8 — exactly bitsandbytes/NF4's interleave trick, generalized
-/// from 2-way to 8-way).
+/// Interleave 8 nibble-position `[..., W]` F64 tensors into one
+/// `[..., W*8]` F32 tensor in sequential order (nibble `p` of word `w` lands at
+/// column `w*8 + p`), reshaped to `logical_shape`. `Concat` on a new trailing
+/// axis followed by `Reshape` puts `positions[j]` at offset `j` within each
+/// group of 8 — bitsandbytes/NF4's interleave trick, generalized from 2-way
+/// to 8-way.
 fn interleave_and_cast_to_f32(
     graph: &mut Graph,
     positions: &[NodeId; 8],
     half_shape: &Shape,
     logical_shape: &Shape,
 ) -> NodeId {
-    // concat_list[logical_slot] = positions[physical_position_filling_that_slot]
-    // AWQ_UNPACK_ORDER[p] = logical slot that physical position p fills, so
-    // invert it: concat_list[slot] = the p such that AWQ_UNPACK_ORDER[p] == slot.
-    let mut concat_list = [0usize; 8];
-    for (p, &slot) in AWQ_UNPACK_ORDER.iter().enumerate() {
-        concat_list[slot as usize] = p;
-    }
     let half_dims = half_shape.dims();
     let mut unsq_shape_dims = half_dims.to_vec();
     unsq_shape_dims.push(1);
     let unsq_shape = Shape::from_dims(&unsq_shape_dims);
-    let unsqueezed: Vec<NodeId> = concat_list
+    let unsqueezed: Vec<NodeId> = positions
         .iter()
         .map(|&p| {
             push(
@@ -265,7 +239,7 @@ fn interleave_and_cast_to_f32(
                 Op::Unsqueeze {
                     dim: half_dims.len(),
                 },
-                vec![positions[p]],
+                vec![p],
                 unsq_shape.clone(),
                 DType::F64,
             )
@@ -300,8 +274,33 @@ fn interleave_and_cast_to_f32(
     )
 }
 
+/// Keep the first `groups` columns of a `[n_out, full]` tensor (drops the
+/// kernel's row padding); a no-op when nothing is padded.
+fn drop_row_padding(
+    graph: &mut Graph,
+    x: NodeId,
+    n_out: usize,
+    full: usize,
+    groups: usize,
+) -> NodeId {
+    if full == groups {
+        return x;
+    }
+    push(
+        graph,
+        Op::Slice {
+            dim: 1,
+            start: 0,
+            len: groups,
+        },
+        vec![x],
+        Shape::from_dims(&[n_out, groups]),
+        DType::F32,
+    )
+}
+
 /// Lower a fused AwqMatmul node to its
-/// `dequantize(qweight, qzeros, scales) -> matmul` primitive subgraph and
+/// `dequantize(weight, zeros, scales) -> matmul` primitive subgraph and
 /// return the new root id. Per G2 this is total + never-panic: a
 /// wrong-params payload or a malformed/inconsistent node returns `id`
 /// (the fixpoint signal) before any emission.
@@ -313,7 +312,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
         } => (*group_size, *split_k_iters),
         _ => return id,
     };
-    let (a_shape, w_shape, z_shape, s_shape, dtype) = {
+    let (a_shape, w_shape, z_shape, s_shape, s_dtype, dtype) = {
         let n = graph.node(id);
         if n.inputs.len() != 4 {
             return id;
@@ -321,8 +320,15 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
         let a_shape = graph.node(n.inputs[0]).shape.clone();
         let w_shape = graph.node(n.inputs[1]).shape.clone();
         let z_shape = graph.node(n.inputs[2]).shape.clone();
-        let s_shape = graph.node(n.inputs[3]).shape.clone();
-        (a_shape, w_shape, z_shape, s_shape, n.dtype)
+        let s_node = graph.node(n.inputs[3]);
+        (
+            a_shape,
+            w_shape,
+            z_shape,
+            s_node.shape.clone(),
+            s_node.dtype,
+            n.dtype,
+        )
     };
     let (a_id, w_id, z_id, s_id) = {
         let n = graph.node(id);
@@ -340,11 +346,11 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     let n_out = w_dims[0];
     let k_over_8 = w_dims[1];
     let k = k_over_8 * 8;
-    if group_size == 0 || k % group_size != 0 || n_out % 8 != 0 {
+    let Some(zeros_w) = awq_zeros_w(k, group_size) else {
         return id;
-    }
+    };
     let n_groups = k / group_size;
-    if z_dims != [n_groups, n_out / 8] || s_dims != [n_groups, n_out] {
+    if z_dims != [n_out, zeros_w] || s_dims != [n_out, 8 * zeros_w] {
         return id;
     }
     let k_from_act = a_dims[a_dims.len() - 1];
@@ -352,7 +358,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
         return id;
     }
 
-    // --- 1. Unpack qweight [N, K/8] U32 -> wcodes [N, K] F32 (logical K order).
+    // --- 1. Unpack weight [N, K/8] U32 -> wcodes [N, K] F32.
     let half_w_shape = Shape::from_dims(&[n_out, k_over_8]);
     let w_positions = unpack_u32_nibbles(graph, w_id, &half_w_shape);
     let wcodes = interleave_and_cast_to_f32(
@@ -362,67 +368,80 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
         &Shape::from_dims(&[n_out, k]),
     );
 
-    // --- 2. Unpack qzeros [n_groups, N/8] U32 -> zcodes [n_groups, N] F32.
-    let half_z_shape = Shape::from_dims(&[n_groups, n_out / 8]);
+    // --- 2. Unpack zeros [N, zeros_w] U32 -> [N, 8*zeros_w] F32, then drop
+    //        the padding past `n_groups` -> zcodes [N, n_groups].
+    let half_z_shape = Shape::from_dims(&[n_out, zeros_w]);
     let z_positions = unpack_u32_nibbles(graph, z_id, &half_z_shape);
-    let zcodes = interleave_and_cast_to_f32(
+    let zcodes_padded = interleave_and_cast_to_f32(
         graph,
         &z_positions,
         &half_z_shape,
-        &Shape::from_dims(&[n_groups, n_out]),
+        &Shape::from_dims(&[n_out, 8 * zeros_w]),
     );
+    let zcodes = drop_row_padding(graph, zcodes_padded, n_out, 8 * zeros_w, n_groups);
 
-    // --- 3. Transpose wcodes [N, K] -> [K, N] so it aligns with
-    //        zeros/scales' natural [n_groups-expanded, N] layout, and so the
-    //        final dequant is ALREADY the [K, N] shape MatMul needs.
-    let wcodes_t = push(
-        graph,
-        Op::Transpose,
-        vec![wcodes],
-        Shape::from_dims(&[k, n_out]),
-        DType::F32,
-    );
+    // --- 3. scales [N, 8*zeros_w] (F16) -> F32, drop padding -> [N, n_groups].
+    let scales_f32 = if s_dtype == DType::F32 {
+        s_id
+    } else {
+        push(
+            graph,
+            Op::Cast(DType::F32),
+            vec![s_id],
+            s_shape.clone(),
+            DType::F32,
+        )
+    };
+    let scales = drop_row_padding(graph, scales_f32, n_out, 8 * zeros_w, n_groups);
 
-    // --- 4. Expand zcodes/scales [n_groups, N] -> [K, N] (repeat each group
-    //        row across its group_size rows).
-    let expand = |graph: &mut Graph, x: NodeId, dtype_x: DType| -> NodeId {
+    // --- 4. Expand zcodes/scales [N, n_groups] -> [N, K] (repeat each group
+    //        column across its group_size columns).
+    let expand = |graph: &mut Graph, x: NodeId| -> NodeId {
         let unsq = push(
             graph,
-            Op::Unsqueeze { dim: 1 },
+            Op::Unsqueeze { dim: 2 },
             vec![x],
-            Shape::from_dims(&[n_groups, 1, n_out]),
-            dtype_x,
+            Shape::from_dims(&[n_out, n_groups, 1]),
+            DType::F32,
         );
         let bcast = push(
             graph,
-            Op::BroadcastTo(Shape::from_dims(&[n_groups, group_size, n_out])),
+            Op::BroadcastTo(Shape::from_dims(&[n_out, n_groups, group_size])),
             vec![unsq],
-            Shape::from_dims(&[n_groups, group_size, n_out]),
-            dtype_x,
+            Shape::from_dims(&[n_out, n_groups, group_size]),
+            DType::F32,
         );
         push(
             graph,
-            Op::Reshape(Shape::from_dims(&[k, n_out])),
+            Op::Reshape(Shape::from_dims(&[n_out, k])),
             vec![bcast],
-            Shape::from_dims(&[k, n_out]),
-            dtype_x,
+            Shape::from_dims(&[n_out, k]),
+            DType::F32,
         )
     };
-    let zcodes_full = expand(graph, zcodes, DType::F32);
-    let scales_full = expand(graph, s_id, DType::F32);
+    let zcodes_full = expand(graph, zcodes);
+    let scales_full = expand(graph, scales);
 
-    // --- 5. dequant[K, N] = (wcodes_t - zcodes_full) * scales_full.
+    // --- 5. dequant[N, K] = (wcodes - zcodes_full) * scales_full, then
+    //        transpose to the [K, N] shape MatMul needs.
     let centered = push(
         graph,
         Op::Sub,
-        vec![wcodes_t, zcodes_full],
-        Shape::from_dims(&[k, n_out]),
+        vec![wcodes, zcodes_full],
+        Shape::from_dims(&[n_out, k]),
+        DType::F32,
+    );
+    let dequant_nk = push(
+        graph,
+        Op::Mul,
+        vec![centered, scales_full],
+        Shape::from_dims(&[n_out, k]),
         DType::F32,
     );
     let dequant = push(
         graph,
-        Op::Mul,
-        vec![centered, scales_full],
+        Op::Transpose,
+        vec![dequant_nk],
         Shape::from_dims(&[k, n_out]),
         DType::F32,
     );
@@ -472,19 +491,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 mod tests {
     use super::*;
     use crate::{Node, Op};
-
-    /// Pack 8 int4 codes (each 0..15) into one `U32` word per
-    /// [`AWQ_UNPACK_ORDER`] (the decompose's assumed order) — the inverse of
-    /// [`unpack_u32_nibbles`] + [`interleave_and_cast_to_f32`]. `codes[i]` is
-    /// the value at LOGICAL column `i`; this places it at its
-    /// `AWQ_UNPACK_ORDER`-defined physical nibble position.
-    fn pack_u32_nibbles(codes: [u32; 8]) -> u32 {
-        let mut word = 0u32;
-        for (p, &slot) in AWQ_UNPACK_ORDER.iter().enumerate() {
-            word |= (codes[slot as usize] & 0xF) << (4 * p);
-        }
-        word
-    }
+    use std::collections::HashMap;
 
     fn const_node(g: &mut Graph, shape: Shape, dtype: DType) -> NodeId {
         g.push(Node {
@@ -495,31 +502,206 @@ mod tests {
         })
     }
 
-    /// Build a fused AwqMatmul node over a single group (`group_size == K`,
-    /// `n_groups == 1`) with `n_out == 8` (one packed zero/scale word) and
-    /// `k == 8` (one packed weight word per output row) — the smallest shape
-    /// that exercises every unpack axis exactly once.
-    fn fused_node_1group(g: &mut Graph, m: usize, work: DType) -> (NodeId, NodeId, NodeId, NodeId) {
-        let k = 8usize;
-        let n = 8usize;
-        let group_size = k;
-        let act = const_node(g, Shape::from_dims(&[m, k]), work);
-        let qweight = const_node(g, Shape::from_dims(&[n, k / 8]), DType::U32);
-        let qzeros = const_node(g, Shape::from_dims(&[1, n / 8]), DType::U32);
-        let scales = const_node(g, Shape::from_dims(&[1, n]), DType::F32);
-        let fused = g.push(Node {
+    /// A deterministic problem in the kernel layout: `n` output channels, `k`
+    /// input features, `group_size` 64 or 128, `m` activation rows.
+    struct Problem {
+        n: usize,
+        k: usize,
+        gs: usize,
+        m: usize,
+        zeros_w: usize,
+    }
+
+    impl Problem {
+        fn new(n: usize, k: usize, gs: usize, m: usize) -> Self {
+            let zeros_w = awq_zeros_w(k, gs).expect("test shape is valid");
+            Self {
+                n,
+                k,
+                gs,
+                m,
+                zeros_w,
+            }
+        }
+        fn groups(&self) -> usize {
+            self.k / self.gs
+        }
+        fn wcode(&self, n: usize, k: usize) -> u32 {
+            ((n * 7 + k * 3 + k / 5) % 16) as u32
+        }
+        fn zcode(&self, n: usize, g: usize) -> u32 {
+            ((n * 5 + g * 3 + 1) % 16) as u32
+        }
+        /// Exact in f16 and f32.
+        fn scale(&self, n: usize, g: usize) -> f64 {
+            0.25 * (((n + g) % 4) + 1) as f64
+        }
+        fn act(&self, mi: usize, k: usize) -> f64 {
+            ((mi * 3 + k) % 11) as f64 - 5.0
+        }
+        /// `weight [N, K/8]`, sequential nibbles.
+        fn weight_words(&self) -> Vec<f64> {
+            let mut out = vec![0u32; self.n * self.k / 8];
+            for n in 0..self.n {
+                for k in 0..self.k {
+                    out[n * (self.k / 8) + k / 8] |= self.wcode(n, k) << (4 * (k % 8));
+                }
+            }
+            out.into_iter().map(f64::from).collect()
+        }
+        /// `zeros [N, zeros_w]`; every nibble past `groups` is `0xF` garbage.
+        fn zeros_words(&self, pad_garbage: bool) -> Vec<f64> {
+            let mut out = vec![0u32; self.n * self.zeros_w];
+            for n in 0..self.n {
+                for g in 0..8 * self.zeros_w {
+                    let code = if g < self.groups() {
+                        self.zcode(n, g)
+                    } else if pad_garbage {
+                        0xF
+                    } else {
+                        0
+                    };
+                    out[n * self.zeros_w + g / 8] |= code << (4 * (g % 8));
+                }
+            }
+            out.into_iter().map(f64::from).collect()
+        }
+        /// `scales [N, 8*zeros_w]`; the padding is a large garbage value.
+        fn scale_values(&self, pad_garbage: bool) -> Vec<f64> {
+            let w = 8 * self.zeros_w;
+            let mut out = vec![0f64; self.n * w];
+            for n in 0..self.n {
+                for g in 0..w {
+                    out[n * w + g] = if g < self.groups() {
+                        self.scale(n, g)
+                    } else if pad_garbage {
+                        99.0
+                    } else {
+                        0.0
+                    };
+                }
+            }
+            out
+        }
+        /// Reference output `[M, N]` straight from the definition
+        /// `sum_k a[m,k] * (code - zero) * scale`, with switches that each
+        /// break one term (used only by the sabotage tests).
+        fn reference(&self, skip_zero: bool, group_of: impl Fn(usize) -> usize) -> Vec<f64> {
+            let mut out = vec![0f64; self.m * self.n];
+            for mi in 0..self.m {
+                for n in 0..self.n {
+                    let mut acc = 0f64;
+                    for k in 0..self.k {
+                        let g = group_of(k);
+                        let z = if skip_zero {
+                            0.0
+                        } else {
+                            self.zcode(n, g) as f64
+                        };
+                        acc += self.act(mi, k) * (self.wcode(n, k) as f64 - z) * self.scale(n, g);
+                    }
+                    out[mi * self.n + n] = acc;
+                }
+            }
+            out
+        }
+        fn correct_reference(&self) -> Vec<f64> {
+            let gs = self.gs;
+            self.reference(false, move |k| k / gs)
+        }
+        /// Build the fused node and evaluate its decomposition.
+        fn run_decompose(&self, pad_garbage: bool) -> Vec<f64> {
+            self.run_decompose_with_weight(pad_garbage, self.weight_words())
+        }
+        /// As [`Self::run_decompose`] with the `weight` words supplied.
+        fn run_decompose_with_weight(&self, pad_garbage: bool, weight_words: Vec<f64>) -> Vec<f64> {
+            let mut g = Graph::new();
+            let act = const_node(&mut g, Shape::from_dims(&[self.m, self.k]), DType::F32);
+            let weight = const_node(&mut g, Shape::from_dims(&[self.n, self.k / 8]), DType::U32);
+            let zeros = const_node(
+                &mut g,
+                Shape::from_dims(&[self.n, self.zeros_w]),
+                DType::U32,
+            );
+            let scales = const_node(
+                &mut g,
+                Shape::from_dims(&[self.n, 8 * self.zeros_w]),
+                DType::F16,
+            );
+            let params = FusedOpParams::AwqMatmul {
+                group_size: self.gs,
+                split_k_iters: 8,
+            };
+            let fused = g.push(Node {
+                op: Op::Fused(FusedOps::AWQ_MATMUL, params.clone()),
+                inputs: vec![act, weight, zeros, scales],
+                shape: Shape::from_dims(&[self.m, self.n]),
+                dtype: DType::F32,
+            });
+            let new_root = decompose(&mut g, fused, &params);
+            assert_ne!(new_root, fused, "decompose must fire, not fixpoint");
+            assert_eq!(g.node(new_root).shape, Shape::from_dims(&[self.m, self.n]));
+            let act_vals: Vec<f64> = (0..self.m)
+                .flat_map(|mi| (0..self.k).map(move |k| (mi, k)))
+                .map(|(mi, k)| self.act(mi, k))
+                .collect();
+            let bindings: HashMap<NodeId, Vec<f64>> = [
+                (act, act_vals),
+                (weight, weight_words),
+                (zeros, self.zeros_words(pad_garbage)),
+                (scales, self.scale_values(pad_garbage)),
+            ]
+            .into_iter()
+            .collect();
+            eval_node(&g, new_root, &bindings)
+        }
+    }
+
+    fn assert_close(got: &[f64], want: &[f64]) {
+        assert_eq!(got.len(), want.len(), "length mismatch");
+        for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+            assert!((g - w).abs() < 1e-6, "output[{i}]: got {g}, want {w}");
+        }
+    }
+
+    fn fused_node_for(g: &mut Graph, p: &Problem) -> NodeId {
+        let act = const_node(g, Shape::from_dims(&[p.m, p.k]), DType::F32);
+        let weight = const_node(g, Shape::from_dims(&[p.n, p.k / 8]), DType::U32);
+        let zeros = const_node(g, Shape::from_dims(&[p.n, p.zeros_w]), DType::U32);
+        let scales = const_node(g, Shape::from_dims(&[p.n, 8 * p.zeros_w]), DType::F16);
+        g.push(Node {
             op: Op::Fused(
                 FusedOps::AWQ_MATMUL,
                 FusedOpParams::AwqMatmul {
-                    group_size,
+                    group_size: p.gs,
                     split_k_iters: 8,
                 },
             ),
-            inputs: vec![act, qweight, qzeros, scales],
-            shape: Shape::from_dims(&[m, n]),
-            dtype: work,
-        });
-        (fused, qweight, qzeros, scales)
+            inputs: vec![act, weight, zeros, scales],
+            shape: Shape::from_dims(&[p.m, p.n]),
+            dtype: DType::F32,
+        })
+    }
+
+    /// The padding rule, pinned to the kernel doc's formula on cases whose
+    /// answers are worked by hand: 1 group at 64 -> ceil(ceil(1/8)/2)*2 = 2;
+    /// 1 group at 128 -> ceil(1/1)*1 = 1; 17 groups at 64 -> ceil(3/2)*2 = 4.
+    #[test]
+    fn awq_zeros_w_matches_the_kernel_padding_rule() {
+        assert_eq!(awq_zeros_w(64, 64), Some(2));
+        assert_eq!(awq_zeros_w(128, 128), Some(1));
+        assert_eq!(awq_zeros_w(17 * 64, 64), Some(4));
+        // The same hand-worked cases `fuel-quantized`'s own test pins.
+        assert_eq!(awq_zeros_w(128 * 9, 128), Some(2));
+        assert_eq!(awq_zeros_w(64 * 8, 64), Some(2));
+        assert_eq!(awq_zeros_w(128 * 16, 128), Some(2));
+        assert_eq!(awq_zeros_w(64 * 24, 64), Some(4));
+        assert_eq!(
+            awq_zeros_w(64, 32),
+            None,
+            "only 64/128 are kernel group sizes"
+        );
+        assert_eq!(awq_zeros_w(100, 64), None, "group_size must divide k");
     }
 
     /// Totality (G2): a wrong params payload declines to a fixpoint, never a
@@ -527,24 +709,49 @@ mod tests {
     #[test]
     fn awq_matmul_wrong_params_is_a_fixpoint_not_a_crash() {
         let mut g = Graph::new();
-        let (fused, _, _, _) = fused_node_1group(&mut g, 2, DType::F32);
+        let fused = fused_node_for(&mut g, &Problem::new(8, 64, 64, 2));
         let before = g.len();
         let out = decompose(&mut g, fused, &FusedOpParams::Rope);
         assert_eq!(out, fused, "wrong params => typed decline => fixpoint");
         assert_eq!(g.len(), before, "declined before any emission");
     }
 
-    /// Born-red control: the decompose actually fires (produces a new root,
-    /// not the fused node itself) and the output shape/dtype match the
-    /// fused node's own declared shape/dtype.
+    /// Totality (G2): operands whose shapes disagree with the kernel layout
+    /// (here: `zeros` has the un-padded width) decline before any emission.
+    #[test]
+    fn awq_matmul_wrong_zeros_width_is_a_fixpoint_not_a_crash() {
+        let p = Problem::new(8, 64, 64, 2);
+        let mut g = Graph::new();
+        let act = const_node(&mut g, Shape::from_dims(&[p.m, p.k]), DType::F32);
+        let weight = const_node(&mut g, Shape::from_dims(&[p.n, p.k / 8]), DType::U32);
+        let zeros = const_node(&mut g, Shape::from_dims(&[p.n, 1]), DType::U32);
+        let scales = const_node(&mut g, Shape::from_dims(&[p.n, 8]), DType::F16);
+        let params = FusedOpParams::AwqMatmul {
+            group_size: 64,
+            split_k_iters: 8,
+        };
+        let fused = g.push(Node {
+            op: Op::Fused(FusedOps::AWQ_MATMUL, params.clone()),
+            inputs: vec![act, weight, zeros, scales],
+            shape: Shape::from_dims(&[p.m, p.n]),
+            dtype: DType::F32,
+        });
+        let before = g.len();
+        assert_eq!(decompose(&mut g, fused, &params), fused);
+        assert_eq!(g.len(), before);
+    }
+
+    /// Born-red control: the decompose fires and the output shape/dtype match
+    /// the fused node's own declared shape/dtype.
     #[test]
     fn awq_matmul_decompose_fires_and_matches_declared_shape_dtype() {
+        let p = Problem::new(8, 64, 64, 2);
         let mut g = Graph::new();
-        let (fused, ..) = fused_node_1group(&mut g, 2, DType::F32);
+        let fused = fused_node_for(&mut g, &p);
         let out_sh = g.node(fused).shape.clone();
         let out_dt = g.node(fused).dtype;
         let params = FusedOpParams::AwqMatmul {
-            group_size: 8,
+            group_size: 64,
             split_k_iters: 8,
         };
         let new_root = decompose(&mut g, fused, &params);
@@ -553,190 +760,100 @@ mod tests {
         assert_eq!(g.node(new_root).dtype, out_dt);
     }
 
-    /// Correctness: a single-group, single-weight-word, single-zero-word
-    /// example with HAND-CHOSEN codes/scale, executed by walking the emitted
-    /// graph's arithmetic directly (no backend execution available in a
-    /// `fuel-graph`-only test) via a tiny interpreter that mirrors exactly
-    /// the ops this decompose emits. This is the decompose's OWN packing
-    /// convention end-to-end (pack -> unpack -> dequant), not an external
-    /// AWQ reference — see the module doc's packing-order caveat.
-    ///
-    /// Weight codes (logical K order) = [1, 2, 3, 4, 5, 6, 7, 8] for every
-    /// output row (same codes packed per row since `n_out`-axis doesn't
-    /// interact with the K-axis packing). Zero codes (logical N order) =
-    /// [0, 1, 2, 3, 4, 5, 6, 7]. Scale = 2.0 for every output channel.
-    /// Expected dequantized weight row for channel n: `(code_k - zero_n) *
-    /// 2.0`, independent of k here since every row uses the same codes.
+    /// Correctness, one group (`group_size == K == 64`): activations vary with
+    /// `k`, so a wrong nibble order along `K` changes the answer.
     #[test]
-    fn awq_matmul_decompose_dequant_matches_hand_computed_example() {
-        let mut g = Graph::new();
-        let m = 1usize;
-        let (fused, qweight, qzeros, scales) = fused_node_1group(&mut g, m, DType::F32);
+    fn awq_matmul_decompose_matches_reference_one_group() {
+        let p = Problem::new(8, 64, 64, 3);
+        assert_close(&p.run_decompose(true), &p.correct_reference());
+    }
 
-        // Pack qweight: every output row (8 of them) uses logical codes
-        // [1..8]. Only ONE packed word exists since k/8 == 1 and the
-        // shape is [n_out=8, 1] -- so there are 8 words, one per row, all
-        // identical.
-        let w_codes_per_row: [u32; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
-        let packed_w_word = pack_u32_nibbles(w_codes_per_row);
-        let w_bytes: Vec<u32> = vec![packed_w_word; 8];
+    /// Correctness, several groups with padded `zeros`/`scales` rows
+    /// (`K = 640`, `group_size = 64` -> 10 groups, `zeros_w = 2`, so 6
+    /// padding nibbles per row).
+    #[test]
+    fn awq_matmul_decompose_matches_reference_many_groups() {
+        let p = Problem::new(16, 640, 64, 2);
+        assert_eq!(p.groups(), 10);
+        assert_eq!(p.zeros_w, 2);
+        assert_close(&p.run_decompose(true), &p.correct_reference());
+    }
 
-        // Pack qzeros: one group, logical N codes [0..7].
-        let z_codes: [u32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
-        let packed_z_word = pack_u32_nibbles(z_codes);
-        let z_bytes: Vec<u32> = vec![packed_z_word];
+    /// Correctness at `group_size = 128`.
+    #[test]
+    fn awq_matmul_decompose_matches_reference_group_128() {
+        let p = Problem::new(8, 256, 128, 2);
+        assert_close(&p.run_decompose(true), &p.correct_reference());
+    }
 
-        let scale_val = 2.0f32;
-        let scale_bytes = [scale_val; 8];
+    /// The kernel never reads the padding, so neither may the decompose: the
+    /// result with garbage in the padding equals the result with zeros there.
+    #[test]
+    fn awq_matmul_decompose_ignores_row_padding() {
+        let p = Problem::new(8, 640, 64, 2);
+        assert_close(&p.run_decompose(true), &p.run_decompose(false));
+    }
 
-        // Verify the pack/unpack round trip directly (sanity on the test's
-        // own packing helper before trusting the graph-level assertions
-        // below).
-        for (p, &expected_slot_value) in w_codes_per_row.iter().enumerate() {
-            let slot = AWQ_UNPACK_ORDER
+    /// Sabotage siblings: each reference breaks one term, and the decompose's
+    /// output must differ from it — so the correctness tests above are
+    /// sensitive to that term. (Skipping the zero-point, indexing the group
+    /// as `k % groups` instead of `k / group_size`.)
+    #[test]
+    fn awq_matmul_sabotage_references_differ_from_the_decompose() {
+        let p = Problem::new(16, 640, 64, 2);
+        let got = p.run_decompose(true);
+        let groups = p.groups();
+        let no_zero = p.reference(true, |k| k / 64);
+        let wrong_group = p.reference(false, |k| k % groups);
+        for (name, bad) in [
+            ("skip zero-point", no_zero),
+            ("wrong group index", wrong_group),
+        ] {
+            let max_diff = got
                 .iter()
-                .position(|&s| s == p as u32)
-                .unwrap();
-            let shift = 4 * slot;
-            let extracted = (packed_w_word >> shift) & 0xF;
-            assert_eq!(
-                extracted, expected_slot_value,
-                "round-trip check: logical col {p} should extract to {expected_slot_value}"
-            );
-        }
-
-        // Expected dequantized weight (post-transpose [K, N] layout):
-        // dequant[k][n] = (w_codes_per_row[k] - z_codes[n]) * scale_val,
-        // since every output row packs the SAME w_codes_per_row.
-        let mut expected = vec![vec![0f32; 8]; 8];
-        for (k, row) in expected.iter_mut().enumerate() {
-            for (n, cell) in row.iter_mut().enumerate() {
-                *cell = (w_codes_per_row[k] as f32 - z_codes[n] as f32) * scale_val;
-            }
-        }
-
-        let params = FusedOpParams::AwqMatmul {
-            group_size: 8,
-            split_k_iters: 8,
-        };
-        let new_root = decompose(&mut g, fused, &params);
-        assert_ne!(new_root, fused);
-
-        // Walk the emitted graph with a tiny interpreter that understands
-        // exactly the op set this decompose emits, evaluating with the
-        // packed bytes above bound to qweight/qzeros/scales and an
-        // activations input bound to a simple all-ones row (so the final
-        // MatMul output is directly the dequantized weight's row sums,
-        // letting us cross-check the dequant math transitively).
-        let act_input = {
-            let n = g.node(fused);
-            n.inputs[0]
-        };
-        let bindings: std::collections::HashMap<NodeId, Vec<f64>> = [
-            (act_input, vec![1.0f64; m * 8]),
-            (
-                qweight,
-                w_bytes.iter().map(|&x| x as f64).collect::<Vec<_>>(),
-            ),
-            (
-                qzeros,
-                z_bytes.iter().map(|&x| x as f64).collect::<Vec<_>>(),
-            ),
-            (
-                scales,
-                scale_bytes.iter().map(|&x| x as f64).collect::<Vec<_>>(),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let result = eval_node(&g, new_root, &bindings);
-
-        // Expected output[n] = sum_k expected[k][n] (activations row is all
-        // ones), since out = a2[1,K] @ dequant[K,N].
-        let expected_out: Vec<f64> = (0..8)
-            .map(|n| expected.iter().map(|row| row[n] as f64).sum())
-            .collect();
-        for (i, (&got, &want)) in result.iter().zip(expected_out.iter()).enumerate() {
+                .zip(bad.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max);
             assert!(
-                (got - want).abs() < 1e-3,
-                "output[{i}]: got {got}, want {want}"
+                max_diff > 1e-3,
+                "sabotage `{name}` must change the result, max diff {max_diff}"
             );
         }
     }
 
-    /// Sabotage: skip the zero-point subtraction (dequant = wcodes * scale,
-    /// no centering) and confirm the correctness test's own comparison
-    /// would catch it -- i.e. the hand-computed expected values genuinely
-    /// discriminate a broken decompose, not just a differently-shaped one.
+    /// Sabotage: AutoAWQ's interleaved order along `K` (the previous operand
+    /// layout) is a different layout; weight words packed that way and fed to
+    /// the sequential-order decompose must NOT reproduce the reference.
     #[test]
-    fn awq_matmul_sabotage_skipping_zero_point_changes_the_result() {
-        let mut g = Graph::new();
-        let m = 1usize;
-        let (fused, qweight, qzeros, scales) = fused_node_1group(&mut g, m, DType::F32);
-        let w_codes_per_row: [u32; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
-        let packed_w_word = pack_u32_nibbles(w_codes_per_row);
-        let w_bytes: Vec<u32> = vec![packed_w_word; 8];
-        let z_codes: [u32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
-        let packed_z_word = pack_u32_nibbles(z_codes);
-        let z_bytes: Vec<u32> = vec![packed_z_word];
-        let scale_val = 2.0f32;
-        let scale_bytes = [scale_val; 8];
-
-        let params = FusedOpParams::AwqMatmul {
-            group_size: 8,
-            split_k_iters: 8,
-        };
-        let new_root = decompose(&mut g, fused, &params);
-
-        let act_input = {
-            let n = g.node(fused);
-            n.inputs[0]
-        };
-        let bindings: std::collections::HashMap<NodeId, Vec<f64>> = [
-            (act_input, vec![1.0f64; m * 8]),
-            (
-                qweight,
-                w_bytes.iter().map(|&x| x as f64).collect::<Vec<_>>(),
-            ),
-            (
-                qzeros,
-                z_bytes.iter().map(|&x| x as f64).collect::<Vec<_>>(),
-            ),
-            (
-                scales,
-                scale_bytes.iter().map(|&x| x as f64).collect::<Vec<_>>(),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let result = eval_node(&g, new_root, &bindings);
-
-        // Sabotaged expectation: if the zero-point were (wrongly) never
-        // subtracted, dequant[k][n] = w_codes_per_row[k] * scale_val
-        // (independent of n), so every output column would be IDENTICAL --
-        // which the real (correct) result must NOT be, since z_codes varies
-        // by n.
-        let all_equal = result.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-6);
-        assert!(
-            !all_equal,
-            "the correct decompose's output must vary across n (zero-point \
-             subtracted per-channel) -- if this fires, the zero-point term \
-             silently dropped out somewhere"
-        );
+    fn awq_matmul_sabotage_interleaved_nibble_order_is_not_sequential() {
+        let p = Problem::new(8, 64, 64, 2);
+        let order = [0usize, 2, 4, 6, 1, 3, 5, 7];
+        let mut words = vec![0u32; p.n * p.k / 8];
+        for n in 0..p.n {
+            for k in 0..p.k {
+                let phys = order.iter().position(|&o| o == k % 8).unwrap();
+                words[n * (p.k / 8) + k / 8] |= p.wcode(n, k) << (4 * phys);
+            }
+        }
+        let interleaved: Vec<f64> = words.into_iter().map(f64::from).collect();
+        let got = p.run_decompose_with_weight(true, interleaved);
+        let want = p.correct_reference();
+        let max_diff = got
+            .iter()
+            .zip(want.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(max_diff > 1e-3, "a layout mix-up must be observable");
     }
 
     /// Minimal interpreter for exactly the op set [`decompose`] emits
-    /// (`Cast`, `Floor`, `MulScalar`, `AddScalar`, `Sub`, `Mul`, `Unsqueeze`,
-    /// `Concat`, `Reshape`, `BroadcastTo`, `Transpose`, `MatMul`, `Const`),
+    /// (`Cast`, `Floor`, `MulScalar`, `Sub`, `Mul`, `Unsqueeze`, `Concat`,
+    /// `Reshape`, `BroadcastTo`, `Slice`, `Transpose`, `MatMul`, `Const`),
     /// evaluated over `f64` with the given leaf bindings. Shapes are tracked
     /// via the graph's own `Node::shape`; this interpreter trusts them
     /// (rather than re-deriving) since shape correctness is covered by the
     /// `shape_rule`/structural-guard tests above.
-    fn eval_node(
-        g: &Graph,
-        id: NodeId,
-        bindings: &std::collections::HashMap<NodeId, Vec<f64>>,
-    ) -> Vec<f64> {
+    fn eval_node(g: &Graph, id: NodeId, bindings: &HashMap<NodeId, Vec<f64>>) -> Vec<f64> {
         if let Some(v) = bindings.get(&id) {
             return v.clone();
         }
@@ -752,10 +869,6 @@ mod tests {
                 .into_iter()
                 .map(|x| x * s)
                 .collect(),
-            Op::AddScalar(s) => eval_node(g, n.inputs[0], bindings)
-                .into_iter()
-                .map(|x| x + s)
-                .collect(),
             Op::Sub => {
                 let a = eval_node(g, n.inputs[0], bindings);
                 let b = eval_node(g, n.inputs[1], bindings);
@@ -770,9 +883,7 @@ mod tests {
             // Every Concat this decompose emits concatenates K tensors whose
             // LAST axis has size 1 (freshly `Unsqueeze`d) along that last
             // axis -- i.e. a per-"outer index" interleave: output[o*K + j] =
-            // inputs[j][o], NOT a whole-array concatenation (which would be
-            // correct only for a concat along axis 0 of flat arrays, not the
-            // innermost axis of a multi-row tensor).
+            // inputs[j][o].
             Op::Concat { .. } => {
                 let arrs: Vec<Vec<f64>> = n
                     .inputs
@@ -789,21 +900,29 @@ mod tests {
                 }
                 out
             }
+            // Only the group-broadcast this decompose emits:
+            // [N, groups, 1] -> [N, groups, group_size].
             Op::BroadcastTo(target) => {
                 let src = eval_node(g, n.inputs[0], bindings);
                 let src_shape = g.node(n.inputs[0]).shape.dims().to_vec();
-                let target_dims = target.dims();
-                // Only the group-broadcast shape this decompose emits:
-                // [n_groups, 1, N] -> [n_groups, group_size, N].
                 assert_eq!(src_shape.len(), 3);
-                assert_eq!(target_dims.len(), 3);
-                let (g0, _one, n0) = (src_shape[0], src_shape[1], src_shape[2]);
-                let gsize = target_dims[1];
-                let mut out = Vec::with_capacity(g0 * gsize * n0);
-                for gi in 0..g0 {
-                    for _ in 0..gsize {
-                        out.extend_from_slice(&src[gi * n0..(gi + 1) * n0]);
-                    }
+                assert_eq!(src_shape[2], 1);
+                let gsize = target.dims()[2];
+                src.iter()
+                    .flat_map(|&x| std::iter::repeat_n(x, gsize))
+                    .collect()
+            }
+            // Only the row-padding drop this decompose emits: columns
+            // [start, start+len) of a rank-2 tensor.
+            Op::Slice { dim, start, len } => {
+                assert_eq!(*dim, 1);
+                let src = eval_node(g, n.inputs[0], bindings);
+                let src_shape = g.node(n.inputs[0]).shape.dims().to_vec();
+                assert_eq!(src_shape.len(), 2);
+                let (rows, cols) = (src_shape[0], src_shape[1]);
+                let mut out = Vec::with_capacity(rows * len);
+                for r in 0..rows {
+                    out.extend_from_slice(&src[r * cols + start..r * cols + start + len]);
                 }
                 out
             }
