@@ -11,7 +11,7 @@
 
 use crate::fkc::{contract_audit_flip, verify};
 
-/// Re-seed the CPU half of `fuel-dispatch/kernel-contracts/.fkc-verified-ledger.json`.
+/// Re-seed the CPU half of `fuel-dispatch/kernel-contracts/fkc-verified-ledger.json`.
 pub fn seed_cpu_ledger() {
     verify::seed_cpu_ledger::run_seed_cpu_ledger();
 }

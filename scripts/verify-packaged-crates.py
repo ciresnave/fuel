@@ -68,6 +68,17 @@ def classify(rel):
     return "src"  # src/, build.rs, anything else compiled for a consumer
 
 
+def leaves_tarball(tgt, members):
+    """True if an include target is outside the tarball, or hidden (a dot-file or dot-directory).
+
+    Hidden files are packaged from a git checkout but NOT from a plain source archive
+    (cargo's non-git file walk drops them), so a `src/` include of one builds in CI and
+    fails when the crate is packaged from an archive.
+    """
+    hidden = any(part.startswith(".") and part != ".." for part in tgt.split("/"))
+    return tgt.startswith("..") or tgt not in members or hidden
+
+
 def scan_crate(path):
     """Yield (crate, file, kind, target) for each escape; kind is 'src', 'aux' or 'runtime'."""
     root, files = crate_members(path)
@@ -80,7 +91,7 @@ def scan_crate(path):
         for m in INCLUDE.finditer(text):
             p = m.group(1) or m.group(2)
             tgt = posixpath.normpath(posixpath.join(posixpath.dirname(rel), p))
-            if tgt.startswith("..") or tgt not in members:
+            if leaves_tarball(tgt, members):
                 yield (name, rel, classify(rel), p)
         for m in RUNTIME.finditer(text):
             yield (name, rel, "runtime", " ".join(m.group(0).split())[:80])
@@ -170,6 +181,7 @@ def selftest():
         make_crate(d, "bad_src", {"src/lib.rs": 'const X: &str = include_str!("../x.md");\n'})
         make_crate(d, "bad_wrapped", {"src/lib.rs": 'const X: &[u8] = include_bytes!(\n    "../../y.bin"\n);\n'})
         make_crate(d, "good", {"src/lib.rs": 'const X: &str = include_str!("data.txt");\n', "src/data.txt": "x"})
+        make_crate(d, "hidden", {"src/lib.rs": 'const X: &str = include_str!("../.ledger.json");\n', ".ledger.json": "{}"})
         make_crate(d, "aux_only", {"src/lib.rs": "", "tests/t.rs": 'const X: &str = include_str!("../../z");\n'})
         make_crate(d, "runtime", {"src/lib.rs": 'fn f() { let _ = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../q"); }\n'})
         empty = os.path.join(d, "empty.txt")
@@ -179,6 +191,7 @@ def selftest():
             return sum(1 for e in scan_crate(os.path.join(d, f"{name}-0.0.0.crate")) if e[2] == kind)
 
         expect("planted src include('../x') is a src escape", count("bad_src", "src"), 1)
+        expect("a src include of a hidden dot-file inside the tarball is a src escape", count("hidden", "src"), 1)
         expect("planted multi-line include_bytes! is a src escape", count("bad_wrapped", "src"), 1)
         expect("an include inside the tarball is not an escape", sum(1 for _ in scan_crate(os.path.join(d, "good-0.0.0.crate"))), 0)
         expect("a tests/ escape is classed aux, not src", (count("aux_only", "aux"), count("aux_only", "src")), (1, 0))

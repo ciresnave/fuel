@@ -1,6 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.20.61 - 2026-10-22
+
+### Fixed
+
+- `fuel-dispatch` could not be packaged from a plain source archive (no `.git`): cargo drops hidden files from a non-git file walk, so `kernel-contracts/.fkc-verified-ledger.json`, `include_str!`d by `fkc/verify/ledger.rs`, was missing from the tarball and the verify step failed. The ledger is now `kernel-contracts/fkc-verified-ledger.json`. The 0.20.60 `Packaged crates` job could not see this: it packages from a git checkout, where hidden tracked files are included.
+
+### Added
+
+- `scripts/verify-packaged-crates.py`: a `src/` include of a hidden file (any path component starting with `.`) is now a hard failure, with a selftest control.
+- ROADMAP row 31: AWQ/Marlin loader -> op -> kernel gap.
+
 ## v0.20.60 - 2026-10-21
 
 ### Added
