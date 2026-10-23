@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.6 - 2026-10-23
+
+### Changed
+
+- `fuel-metal-kernels`: `objc2*` dependencies are target-gated to macOS/iOS and the library is empty elsewhere, so `cargo publish` verification builds on non-Apple hosts
+
 ## v0.22.5 - 2026-10-23
 
 ### Added

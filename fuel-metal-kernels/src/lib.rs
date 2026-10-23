@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+//! Metal kernels. Apple platforms only: on any other target this crate is empty.
+#![cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod err;
 pub mod kernel;
 pub mod kernels;
