@@ -784,11 +784,18 @@ pub mod conv1d {
 //
 // Four inputs `[activations F16, weight U32, zeros U32, scales F16]` in the
 // kernel layout `fuel_quantized::awq_repack` produces; output `[batch*m, n]`
-// F16. F16 activations only (the kernel is fp16-only; BF16/F32 activations stay
-// on the decompose path). `awq_gemm_f16` takes the buffers in the kernel's own
-// argument order (scales before zeros) and enforces the kernel's constraints
-// (`n % 64`, `k % (32 * split_k_iters)`, sm_80+) through baracuda's
-// `can_implement`, returning `Err` rather than launching a misaligned problem.
+// F16. F16 activations only: the kernel is fp16-only, and there is NO binding
+// for BF16/F32 activations. Those are served only if the caller first lowers
+// `AWQ_MATMUL` through its `decompose` (dequantise, then matmul); production
+// realize does not do that on its own, so an F32/BF16 AWQ graph fails with
+// `NoBackendForOp` (GAP-367).
+//
+// `awq_gemm_f16` takes the buffers in the kernel's own argument order (scales
+// before zeros) and calls baracuda's `can_implement` (`awq_can_implement_f16`)
+// before any allocation or launch, so a shape the kernel cannot run
+// (`group_size` in {64, 128}, `n % 64`, `k % group_size`, `split_k_iters > 0`,
+// `k % (32 * split_k_iters)`) is an `Err`. The sm_80+ requirement is not a shape
+// property and is not checked there: an older device fails at the launch.
 
 pub mod awq {
     use super::*;

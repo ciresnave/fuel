@@ -188,6 +188,17 @@ pub fn load_awq_layer(
     awq_from_hf_buffers(&qweight, &qzeros, &scales, ic, oc, group_size, device)
 }
 
+fn check_geometry(ic: usize, oc: usize, group_size: usize) -> Result<()> {
+    if group_size == 0 || !ic.is_multiple_of(group_size) || !oc.is_multiple_of(8) {
+        return Err(fuel_ir::Error::Msg(format!(
+            "load_awq_layer: ic={ic} must be a multiple of group_size={group_size} \
+             and oc={oc} a multiple of 8"
+        ))
+        .bt());
+    }
+    Ok(())
+}
+
 /// Fetch and validate the three tensors of one `WQLinear_GEMM` layer through
 /// `get`, which resolves a full tensor key to its view (a parsed
 /// `SafeTensors`, or a memory-mapped file). Returns the HF-layout buffers.
@@ -198,13 +209,7 @@ fn read_hf_layer<'a>(
     oc: usize,
     group_size: usize,
 ) -> Result<(Vec<u32>, Vec<u32>, Vec<f16>)> {
-    if group_size == 0 || !ic.is_multiple_of(group_size) || !oc.is_multiple_of(8) {
-        return Err(fuel_ir::Error::Msg(format!(
-            "load_awq_layer: ic={ic} must be a multiple of group_size={group_size} \
-             and oc={oc} a multiple of 8"
-        ))
-        .bt());
-    }
+    check_geometry(ic, oc, group_size)?;
     let groups = ic / group_size;
     let (kw, kz, ks) = (
         format!("{prefix}.qweight"),

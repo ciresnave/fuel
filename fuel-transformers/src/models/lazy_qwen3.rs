@@ -843,75 +843,14 @@ impl Qwen3Weights {
     ) -> Result<Self> {
         use fuel_tensor::{lazy::load_tensor_as_f32, lazy::load_transposed_matrix_preserve_dtype};
         let h = cfg.hidden_size;
-        let q_dim = cfg.num_attention_heads * cfg.head_dim;
-        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
-        let inter = cfg.intermediate_size;
-
         let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
 
         let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         let mut layer_extras: Vec<Qwen3LayerExtras> = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
-            let p = format!("model.layers.{i}");
-            let attn_q = proj(&format!("{p}.self_attn.q_proj"), q_dim, h)?;
-            let attn_k = proj(&format!("{p}.self_attn.k_proj"), kv_dim, h)?;
-            let attn_v = proj(&format!("{p}.self_attn.v_proj"), kv_dim, h)?;
-            let attn_o = proj(&format!("{p}.self_attn.o_proj"), h, q_dim)?;
-            let (attn_q_bias, attn_k_bias, attn_v_bias) = if cfg.attention_bias {
-                (
-                    Some(Arc::from(load_tensor_as_f32(
-                        st,
-                        &format!("{p}.self_attn.q_proj.bias"),
-                    )?)),
-                    Some(Arc::from(load_tensor_as_f32(
-                        st,
-                        &format!("{p}.self_attn.k_proj.bias"),
-                    )?)),
-                    Some(Arc::from(load_tensor_as_f32(
-                        st,
-                        &format!("{p}.self_attn.v_proj.bias"),
-                    )?)),
-                )
-            } else {
-                (None, None, None)
-            };
-            let ffn_gate = proj(&format!("{p}.mlp.gate_proj"), inter, h)?;
-            let ffn_up = proj(&format!("{p}.mlp.up_proj"), inter, h)?;
-            let ffn_down = proj(&format!("{p}.mlp.down_proj"), h, inter)?;
-            let attn_norm_gain = Arc::from(load_tensor_as_f32(
-                st,
-                &format!("{p}.input_layernorm.weight"),
-            )?);
-            let ffn_norm_gain = Arc::from(load_tensor_as_f32(
-                st,
-                &format!("{p}.post_attention_layernorm.weight"),
-            )?);
-            layers.push(LayerWeights {
-                attn_q,
-                attn_q_bias,
-                attn_k,
-                attn_k_bias,
-                attn_v,
-                attn_v_bias,
-                attn_o,
-                ffn_gate,
-                ffn_up,
-                ffn_down,
-                attn_norm_gain,
-                ffn_norm_gain,
-            });
-            let q_norm_gain = Arc::from(load_tensor_as_f32(
-                st,
-                &format!("{p}.self_attn.q_norm.weight"),
-            )?);
-            let k_norm_gain = Arc::from(load_tensor_as_f32(
-                st,
-                &format!("{p}.self_attn.k_norm.weight"),
-            )?);
-            layer_extras.push(Qwen3LayerExtras {
-                q_norm_gain,
-                k_norm_gain,
-            });
+            let (layer, extras) = Self::load_layer(st, cfg, i, &proj)?;
+            layers.push(layer);
+            layer_extras.push(extras);
         }
         let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
         let output = if cfg.tie_word_embeddings {
@@ -931,6 +870,51 @@ impl Qwen3Weights {
             final_norm_gain,
             output,
         })
+    }
+
+    /// One decoder layer's projections (through `proj`), optional Q/K/V biases
+    /// and norm gains.
+    fn load_layer(
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
+        cfg: &Qwen3Config,
+        i: usize,
+        proj: &impl Fn(&str, usize, usize) -> Result<WeightStorage>,
+    ) -> Result<(LayerWeights, Qwen3LayerExtras)> {
+        use fuel_tensor::lazy::load_tensor_as_f32;
+        let h = cfg.hidden_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        let inter = cfg.intermediate_size;
+        let p = format!("model.layers.{i}");
+        let gain = |name: &str| -> Result<Arc<[f32]>> {
+            Ok(Arc::from(load_tensor_as_f32(st, &format!("{p}.{name}"))?))
+        };
+        let bias = |name: &str| -> Result<Option<Arc<[f32]>>> {
+            if cfg.attention_bias {
+                gain(name).map(Some)
+            } else {
+                Ok(None)
+            }
+        };
+        let layer = LayerWeights {
+            attn_q: proj(&format!("{p}.self_attn.q_proj"), q_dim, h)?,
+            attn_q_bias: bias("self_attn.q_proj.bias")?,
+            attn_k: proj(&format!("{p}.self_attn.k_proj"), kv_dim, h)?,
+            attn_k_bias: bias("self_attn.k_proj.bias")?,
+            attn_v: proj(&format!("{p}.self_attn.v_proj"), kv_dim, h)?,
+            attn_v_bias: bias("self_attn.v_proj.bias")?,
+            attn_o: proj(&format!("{p}.self_attn.o_proj"), h, q_dim)?,
+            ffn_gate: proj(&format!("{p}.mlp.gate_proj"), inter, h)?,
+            ffn_up: proj(&format!("{p}.mlp.up_proj"), inter, h)?,
+            ffn_down: proj(&format!("{p}.mlp.down_proj"), h, inter)?,
+            attn_norm_gain: gain("input_layernorm.weight")?,
+            ffn_norm_gain: gain("post_attention_layernorm.weight")?,
+        };
+        let extras = Qwen3LayerExtras {
+            q_norm_gain: gain("self_attn.q_norm.weight")?,
+            k_norm_gain: gain("self_attn.k_norm.weight")?,
+        };
+        Ok((layer, extras))
     }
 }
 

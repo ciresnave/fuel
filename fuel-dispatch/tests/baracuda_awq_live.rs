@@ -112,37 +112,48 @@ fn run(rows: usize, ic: usize, oc: usize, group: usize, split_k: i32) {
     let x: Vec<f16> = (0..rows * ic)
         .map(|i| f16::from_f32(((i * 5) % 17) as f32 * 0.1 - 0.8))
         .collect();
-    let out = {
-        let buf = CudaStorageBytes::alloc(&dev, rows * oc * 2).expect("alloc");
-        Arc::new(RwLock::new(Storage::new(
-            BackendStorage::Cuda(buf),
-            DType::F16,
-        )))
+    let launch = || -> Vec<u8> {
+        let out = {
+            let buf = CudaStorageBytes::alloc(&dev, rows * oc * 2).expect("alloc");
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Cuda(buf),
+                DType::F16,
+            )))
+        };
+        kernel(
+            &[
+                upload(&dev, bytemuck::cast_slice(&x), DType::F16),
+                upload(&dev, bytemuck::cast_slice(&w), DType::U32),
+                upload(&dev, bytemuck::cast_slice(&z), DType::U32),
+                upload(&dev, bytemuck::cast_slice(&s), DType::F16),
+            ],
+            &mut [out.clone()],
+            &[],
+            &OpParams::AwqMatmul {
+                batch: 1,
+                m: rows,
+                n: oc,
+                k: ic,
+                group_size: group,
+                split_k_iters: split_k,
+            },
+        )
+        .expect("awq kernel call");
+        match &out.read().unwrap().inner {
+            BackendStorage::Cuda(c) => c.to_cpu_bytes().expect("d2h"),
+            _ => panic!("output not on CUDA"),
+        }
     };
-    kernel(
-        &[
-            upload(&dev, bytemuck::cast_slice(&x), DType::F16),
-            upload(&dev, bytemuck::cast_slice(&w), DType::U32),
-            upload(&dev, bytemuck::cast_slice(&z), DType::U32),
-            upload(&dev, bytemuck::cast_slice(&s), DType::F16),
-        ],
-        &mut [out.clone()],
-        &[],
-        &OpParams::AwqMatmul {
-            batch: 1,
-            m: rows,
-            n: oc,
-            k: ic,
-            group_size: group,
-            split_k_iters: split_k,
-        },
-    )
-    .expect("awq kernel call");
-
-    let got_bytes = match &out.read().unwrap().inner {
-        BackendStorage::Cuda(c) => c.to_cpu_bytes().expect("d2h"),
-        _ => panic!("output not on CUDA"),
-    };
+    let got_bytes = launch();
+    // The FKC contract declares `same_hardware_bitwise` (author-declared, not
+    // audited). This is the run-to-run half of that claim on this device: a
+    // second launch on identical inputs must reproduce every output byte. It
+    // does not cover other hardware or other drivers.
+    assert_eq!(
+        launch(),
+        got_bytes,
+        "rows={rows} ic={ic} oc={oc} g={group}: two launches on identical inputs differ"
+    );
     let got: &[f16] = bytemuck::cast_slice(&got_bytes);
     assert_eq!(got.len(), rows * oc);
     let want = reference(&p, &x, rows, 0.0);
@@ -180,4 +191,70 @@ fn awq_matmul_f16_matches_the_dequantise_then_matmul_reference() {
     run(1, 256, 64, 128, 8);
     run(17, 512, 128, 64, 8);
     run(130, 256, 64, 128, 8);
+}
+
+/// Shapes the kernel cannot run are a typed `Err` from the wrapper, before any
+/// launch: `n % 64`, `split_k_iters > 0`, `k % (32 * split_k_iters)`,
+/// `group_size` in {64, 128}, `k % group_size`. The operands are those of a
+/// VALID 256x64 problem, so a wrapper that skipped the check and launched would
+/// read buffers that do not match the claimed shape; the control row proves the
+/// same buffers run when the parameters are honest.
+#[test]
+fn awq_matmul_f16_refuses_unrunnable_shapes_before_launch() {
+    fuel_test_support::require_gpu_run_lock();
+    let dev = CudaDevice::new(0).expect("cuda device");
+    let mut table = KernelBindingTable::new();
+    register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
+    let kernel = table
+        .lookup(OpKind::AwqMatmul, &KEY, BackendId::Cuda)
+        .expect("AwqMatmul F16 binding must be registered on CUDA");
+    let p = problem(256, 64, 128);
+    let (w, z, s, _) = kernel_buffers(&p);
+    let x: Vec<f16> = vec![f16::from_f32(0.5); 4 * 256];
+    let try_call = |n: usize, k: usize, group: usize, split_k: i32| {
+        let out = CudaStorageBytes::alloc(&dev, 4 * 128 * 2).expect("alloc");
+        let out = Arc::new(RwLock::new(Storage::new(
+            BackendStorage::Cuda(out),
+            DType::F16,
+        )));
+        kernel(
+            &[
+                upload(&dev, bytemuck::cast_slice(&x), DType::F16),
+                upload(&dev, bytemuck::cast_slice(&w), DType::U32),
+                upload(&dev, bytemuck::cast_slice(&z), DType::U32),
+                upload(&dev, bytemuck::cast_slice(&s), DType::F16),
+            ],
+            &mut [out],
+            &[],
+            &OpParams::AwqMatmul {
+                batch: 1,
+                m: 4,
+                n,
+                k,
+                group_size: group,
+                split_k_iters: split_k,
+            },
+        )
+    };
+    try_call(64, 256, 128, 8).expect("control: the honest parameters run");
+    for (what, n, k, group, split_k) in [
+        ("n=96 (not a multiple of 64)", 96, 256, 128, 8),
+        ("split_k_iters=0", 64, 256, 128, 0),
+        ("split_k_iters=-1", 64, 256, 128, -1),
+        (
+            "k=256 with split_k_iters=7 (256 % 224 != 0)",
+            64,
+            256,
+            128,
+            7,
+        ),
+        ("group_size=96", 64, 256, 96, 8),
+        ("k=200 (not a multiple of group_size)", 64, 200, 128, 1),
+    ] {
+        assert!(
+            try_call(n, k, group, split_k).is_err(),
+            "{what}: expected Err, the wrapper accepted it"
+        );
+    }
 }

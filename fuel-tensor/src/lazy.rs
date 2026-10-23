@@ -8382,7 +8382,7 @@ pub enum WeightStorage {
     },
     /// An AWQ 4-bit linear (HuggingFace `*-AWQ`, GEMM version) in the
     /// `AWQ_MATMUL` kernel layout, as graph-independent host buffers. The
-    /// graph sees it through [`Tensor::awq_matmul`]-style fused-op operands
+    /// graph sees it through `NodeHandle::awq_matmul` operands
     /// built in `apply_linear`; it has no plain `const_like` form.
     Awq(Arc<crate::awq::AwqHostWeight>),
     /// Base weight wrapped with a trainable LoRA (Low-Rank Adaptation)
