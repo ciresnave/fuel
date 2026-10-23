@@ -931,6 +931,349 @@ impl Qwen3Weights {
     }
 }
 
+// ---- Paged-storage decode (PagedDecodeModel Stage 2) -------------------------
+
+/// One layer's paged-attention bindings: the pool K/V placeholders, the RoPE
+/// tables, the page table and the per-row write targets. Bundled so the layer
+/// builder stays under clippy's argument limit.
+struct Qwen3PagedLayerInputs<'a> {
+    pool: &'a fuel_tensor::kv_block_pool_device::DeviceKvPool,
+    k_pool_ph: &'a Tensor,
+    v_pool_ph: &'a Tensor,
+    rope_cos: &'a Tensor,
+    rope_sin: &'a Tensor,
+    block_table: &'a Tensor,
+    context_lens: &'a Tensor,
+    writes: &'a [(fuel_kv_pool::PhysBlockId, usize)],
+    scale: f32,
+}
+
+impl Qwen3Model {
+    /// Everything a paged step can reject WITHOUT touching the pool, checked
+    /// first: the paged forward appends to the sessions before it builds the
+    /// graph, so a late failure would leave them advanced with no valid KV
+    /// behind the new slot (validate inputs, mutate state last).
+    fn check_paged_step(
+        &self,
+        who: &str,
+        tokens: &[u32],
+        pool: &fuel_tensor::kv_block_pool_device::DeviceKvPool,
+    ) -> Result<()> {
+        let cfg = &self.config;
+        let err = |m: String| Err(fuel_ir::error::Error::Msg(format!("{who}: {m}")).bt());
+        // Paged attention attends the whole prefix: it has no window. A config
+        // whose plan windows any layer would silently attend too much.
+        if cfg.use_sliding_window && cfg.sliding_window.is_some() && cfg.max_window_layers > 0 {
+            return err("sliding-window attention is not supported by paged decode".into());
+        }
+        if !cfg.head_dim.is_multiple_of(2) {
+            return err(format!("head_dim {} must be even for RoPE", cfg.head_dim));
+        }
+        let w = &self.weights;
+        if w.layers.len() != cfg.num_hidden_layers || w.layer_extras.len() != cfg.num_hidden_layers
+        {
+            return err(format!(
+                "weights have {} layers / {} extras for num_hidden_layers {}",
+                w.layers.len(),
+                w.layer_extras.len(),
+                cfg.num_hidden_layers,
+            ));
+        }
+        if let Some(&t) = tokens.iter().find(|&&t| t as usize >= cfg.vocab_size) {
+            return err(format!(
+                "token {t} out of range for vocab {}",
+                cfg.vocab_size
+            ));
+        }
+        let act_dtype = pool.dtype();
+        if !matches!(act_dtype, DType::F32 | DType::BF16 | DType::F16) {
+            return err(format!(
+                "unsupported pool dtype {act_dtype:?} (expected F32/BF16/F16)"
+            ));
+        }
+        let g = pool.geometry();
+        if g.n_layers != cfg.num_hidden_layers
+            || g.n_kv_heads != cfg.num_key_value_heads
+            || g.head_dim != cfg.head_dim
+        {
+            return err(format!(
+                "pool geometry (layers {}, kv heads {}, head_dim {}) does not match the model ({}, {}, {})",
+                g.n_layers,
+                g.n_kv_heads,
+                g.head_dim,
+                cfg.num_hidden_layers,
+                cfg.num_key_value_heads,
+                cfg.head_dim,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Single-token **paged** forward: feeds `token` into `session`'s blocks of
+    /// the shared `pool`, attends via `Op::PagedAttn`, returns last-position
+    /// logits. The B = 1 case of [`Self::forward_paged_step_batched`] (uniform
+    /// positions are a bit-identical special case of the per-row path).
+    ///
+    /// Dense configs only: a config that windows any layer is a typed `Err`.
+    /// Correctness slice, not a speed one: `Op::PagedAttn` has no fused CUDA
+    /// kernel, so attention runs on CPU with D2H copies (Lightbulb nsys:
+    /// ~6.2 GB/token).
+    pub fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        session: fuel_kv_pool::SessionHandle,
+    ) -> Result<Vec<f32>> {
+        let mut rows = self.forward_paged_step_batched(&[token], pool, &[session])?;
+        rows.pop().ok_or_else(|| {
+            fuel_ir::error::Error::Msg("forward_paged_step: batched step returned no row".into())
+                .bt()
+        })
+    }
+
+    /// Plan-once entry required by `PagedDecodeModel`. Qwen3 has no held-plan
+    /// paged graph (GAP-359), so every plan setting re-plans the token via
+    /// [`Self::forward_paged_step`] -- the documented `Replan` behaviour, and
+    /// numerically identical. Any held session is dropped so nothing stale
+    /// lingers.
+    pub fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        session: fuel_kv_pool::SessionHandle,
+        _max_blocks_cap: usize,
+        _plan: fuel_tensor::inference_context::PagedDecodePlan,
+        decode_session: &mut Option<fuel_tensor::inference_context::PagedDecodeSession>,
+    ) -> Result<Vec<f32>> {
+        *decode_session = None;
+        self.forward_paged_step(token, pool, session)
+    }
+
+    /// Batched (`B = K`) paged forward: one decode step over K sessions in a
+    /// single model pass, each at its OWN position (ragged batches supported:
+    /// per-row RoPE + per-row slot). Returns one `[vocab_size]` logits row per
+    /// session, in `sessions` order. Mirrors
+    /// `LlamaModel::forward_paged_step_batched_inv_freq`, with Qwen3's
+    /// attention (biased Q/K/V, per-head QK-norm before RoPE, `q_dim`
+    /// decoupled from `hidden_size`).
+    pub fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        sessions: &[fuel_kv_pool::SessionHandle],
+    ) -> Result<Vec<Vec<f32>>> {
+        const WHO: &str = "Qwen3Model::forward_paged_step_batched";
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let k = tokens.len();
+        if k == 0 || k != sessions.len() {
+            return Err(fuel_ir::error::Error::Msg(format!(
+                "{WHO}: {} tokens for {} sessions (need equal, >= 1)",
+                k,
+                sessions.len(),
+            ))
+            .bt());
+        }
+        self.check_paged_step(WHO, tokens, pool)?;
+        let act_dtype = pool.dtype();
+        let dev = pool.device().clone();
+        let block_size = pool.geometry().block_size;
+
+        let mut positions = Vec::with_capacity(k);
+        for &s in sessions {
+            let p = pool.core().filled_tokens(s).ok_or_else(|| {
+                fuel_ir::error::Error::Msg(format!("{WHO}: unknown session")).bt()
+            })?;
+            positions.push(p);
+        }
+
+        // Atomicity + capacity pre-check: one block per boundary-crossing
+        // session plus one per shared frontier block copy-on-write will split,
+        // verified BEFORE any session is mutated.
+        let mut needed = 0usize;
+        for (bi, &s) in sessions.iter().enumerate() {
+            let pos_b = positions[bi];
+            if pos_b % block_size == 0 {
+                needed += 1;
+            } else {
+                let frontier = pool
+                    .core()
+                    .resident_block(s, pos_b / block_size)
+                    .ok_or_else(|| {
+                        fuel_ir::error::Error::Msg(format!("{WHO}: frontier block not resident"))
+                            .bt()
+                    })?;
+                if pool.core().block_refcount(frontier) > 1 {
+                    needed += 1;
+                }
+            }
+        }
+        let free = pool.core().free_blocks();
+        if needed > free {
+            return Err(fuel_ir::error::Error::Msg(format!(
+                "{WHO}: batch needs {needed} blocks, {free} free"
+            ))
+            .bt());
+        }
+
+        let mut writes: Vec<(fuel_kv_pool::PhysBlockId, usize)> = Vec::with_capacity(k);
+        for (bi, &s) in sessions.iter().enumerate() {
+            let pos_b = positions[bi];
+            pool.core_mut().append(s, 1).map_err(|e| {
+                fuel_ir::error::Error::Msg(format!("{WHO}: block append failed: {e:?}")).bt()
+            })?;
+            let phys = pool.ensure_writable_block(s, pos_b / block_size)?;
+            writes.push((phys, pos_b % block_size));
+        }
+        let pt = pool.materialize_block_table(sessions).map_err(|e| {
+            fuel_ir::error::Error::Msg(format!("{WHO}: block-table materialize failed: {e:?}")).bt()
+        })?;
+
+        // Embed K tokens -> [K, 1, hidden] (f32 table; cast to the activation dtype).
+        let embed = Tensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+            &dev,
+        )?;
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[k]))?;
+        let mut h = embed
+            .index_select(0, &token_ids)?
+            .reshape(Shape::from_dims(&[k, 1, cfg.hidden_size]))?
+            .to_dtype(act_dtype)?;
+
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const_batched(cfg.rope_theta, &positions, cfg.head_dim);
+        let scale = (1.0_f64 / (cfg.head_dim as f64).sqrt()) as f32;
+        let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape())?;
+        let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())?;
+
+        let mut cache = fuel_dispatch::pipelined::StorageCache::new();
+        for (li, (layer, extras)) in weights
+            .layers
+            .iter()
+            .zip(weights.layer_extras.iter())
+            .enumerate()
+        {
+            let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
+            let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
+            let k_arc = pool.k_pool(li).ok_or_else(|| {
+                fuel_ir::error::Error::Msg(format!("{WHO}: no K pool buffer for layer {li}")).bt()
+            })?;
+            let v_arc = pool.v_pool(li).ok_or_else(|| {
+                fuel_ir::error::Error::Msg(format!("{WHO}: no V pool buffer for layer {li}")).bt()
+            })?;
+            cache.insert(k_ph.graph_tensor().id(), Arc::clone(k_arc));
+            cache.insert(v_ph.graph_tensor().id(), Arc::clone(v_arc));
+            h = self.apply_layer_paged_batched(
+                &h,
+                layer,
+                extras,
+                &Qwen3PagedLayerInputs {
+                    pool,
+                    k_pool_ph: &k_ph,
+                    v_pool_ph: &v_ph,
+                    rope_cos: &rope_cos,
+                    rope_sin: &rope_sin,
+                    block_table: &block_table,
+                    context_lens: &context_lens,
+                    writes: &writes,
+                    scale,
+                },
+            )?;
+        }
+
+        let h_norm = h.rms_norm_affine(Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
+        let logits = self.apply_lm_head(&h_norm)?; // [K, 1, vocab]
+        let logits_flat = logits
+            .reshape(Shape::from_dims(&[k * cfg.vocab_size]))?
+            .to_dtype(DType::F32)?;
+        let flat = fuel_tensor::pipelined_bridge::realize_one_as_with_initial::<f32>(
+            logits_flat.graph_tensor().graph(),
+            logits_flat.graph_tensor().id(),
+            &dev,
+            cache,
+        )?;
+        Ok(flat.chunks(cfg.vocab_size).map(|c| c.to_vec()).collect())
+    }
+
+    /// One Qwen3 layer of the paged step: the prefill layer's projections,
+    /// QK-norm and FFN, with RoPE per row and the KV write + attention replaced
+    /// by `DeviceKvPool::build_decode_attn_batched`.
+    fn apply_layer_paged_batched(
+        &self,
+        x: &Tensor,
+        layer: &LayerWeights,
+        extras: &Qwen3LayerExtras,
+        p: &Qwen3PagedLayerInputs<'_>,
+    ) -> Result<Tensor> {
+        let cfg = &self.config;
+        let batch = x.shape().dims()[0];
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let act_dtype = x.dtype();
+
+        let x_norm = x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, q_dim)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
+        let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
+        let v_h = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
+
+        // Per-head QK-norm BEFORE RoPE -- the order the prefill path uses.
+        let q = q.rms_norm_affine(Arc::clone(&extras.q_norm_gain), cfg.rms_norm_eps)?;
+        let k = k.rms_norm_affine(Arc::clone(&extras.k_norm_gain), cfg.rms_norm_eps)?;
+        let q_r = q
+            .to_dtype(DType::F32)?
+            .rope_batched(p.rope_cos, p.rope_sin)?
+            .to_dtype(act_dtype)?;
+        let k_r = k
+            .to_dtype(DType::F32)?
+            .rope_batched(p.rope_cos, p.rope_sin)?
+            .to_dtype(act_dtype)?;
+
+        let attn = p.pool.build_decode_attn_batched(
+            p.k_pool_ph,
+            p.v_pool_ph,
+            &q_r,
+            &k_r,
+            &v_h,
+            p.block_table,
+            p.context_lens,
+            p.writes,
+            p.scale,
+        )?;
+        let merged = attn
+            .permute([0, 2, 1, 3_usize])?
+            .reshape(Shape::from_dims(&[batch, 1, q_dim]))?;
+        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?;
+
+        let h1 = x.add(&attn_out)?;
+        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let swiglu = gate.silu().mul(&up)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        h1.add(&ffn_out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -992,6 +1335,221 @@ mod tests {
             final_norm_gain,
             output,
         }
+    }
+
+    // ---- Paged decode (PagedDecodeModel Stage 2) ----
+
+    /// GQA + biased Q/K/V, dense (no window), with QK-norm gains that are NOT
+    /// all ones -- so a paged forward that skipped or mis-ordered QK-norm
+    /// cannot match the prefill oracle.
+    fn paged_model(qk_gain: f32) -> Qwen3Model {
+        let cfg = Qwen3Config {
+            use_sliding_window: false,
+            sliding_window: None,
+            max_window_layers: 0,
+            ..mixed_window_cfg()
+        };
+        let mut weights = tiny_weights(&cfg);
+        for (li, ex) in weights.layer_extras.iter_mut().enumerate() {
+            let gain = |off: f32| -> Arc<[f32]> {
+                Arc::from(
+                    (0..cfg.head_dim)
+                        .map(|d| 1.0 + qk_gain * (off + li as f32 + d as f32 * 0.37))
+                        .collect::<Vec<_>>(),
+                )
+            };
+            ex.q_norm_gain = gain(0.5);
+            ex.k_norm_gain = gain(-0.3);
+        }
+        Qwen3Model {
+            config: cfg,
+            weights,
+        }
+    }
+
+    fn paged_pool(m: &Qwen3Model) -> fuel_tensor::kv_block_pool_device::DeviceKvPool {
+        let c = &m.config;
+        let geom = fuel_kv_pool::KvGeometry {
+            n_layers: c.num_hidden_layers,
+            num_blocks: 16,
+            block_size: 4,
+            n_kv_heads: c.num_key_value_heads,
+            head_dim: c.head_dim,
+            elem_size: 4,
+        };
+        fuel_tensor::kv_block_pool_device::DeviceKvPool::new(
+            geom,
+            DType::F32,
+            &fuel_tensor::Device::cpu(),
+        )
+        .unwrap()
+    }
+
+    const PAGED_SEQ: [u32; 7] = [1, 2, 3, 4, 5, 6, 7];
+
+    fn full_last(m: &Qwen3Model, all: &[u32]) -> Vec<f32> {
+        let v = m.config.vocab_size;
+        let full = m.forward(all, 0).unwrap().realize_f32();
+        full[(all.len() - 1) * v..].to_vec()
+    }
+
+    fn max_diff(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len());
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// Parity tolerance (measured: paged == prefill bit-for-bit on CPU f32) and
+    /// the floor for the QK-norm-gain separation (measured 4.2e-3).
+    const PAGED_TOL: f32 = 1e-6;
+    const PAGED_SEPARATION: f32 = 1e-3;
+
+    #[test]
+    fn paged_decode_matches_full_prefix_forward() {
+        let m = paged_model(0.4);
+        let want = full_last(&m, &PAGED_SEQ);
+        let mut pool = paged_pool(&m);
+        let s = pool.core_mut().open();
+        let mut got = Vec::new();
+        for &t in &PAGED_SEQ {
+            got = m.forward_paged_step(t, &mut pool, s).unwrap();
+        }
+        let d = max_diff(&got, &want);
+        assert!(d < PAGED_TOL, "paged decode diverged: max |diff| {d}");
+    }
+
+    /// Retained sabotage sibling: the same architecture with all-ones QK-norm
+    /// gains must NOT match the gain-bearing oracle, or the parity test above
+    /// would pass with QK-norm dropped.
+    #[test]
+    fn paged_decode_without_qk_norm_gains_diverges_from_the_oracle() {
+        let m = paged_model(0.4);
+        let flat = paged_model(0.0);
+        let want = full_last(&m, &PAGED_SEQ);
+        let mut pool = paged_pool(&flat);
+        let s = pool.core_mut().open();
+        let mut got = Vec::new();
+        for &t in &PAGED_SEQ {
+            got = flat.forward_paged_step(t, &mut pool, s).unwrap();
+        }
+        let d = max_diff(&got, &want);
+        assert!(d > PAGED_SEPARATION, "gains are not discriminating: {d}");
+    }
+
+    /// Ragged batch: two sessions at DIFFERENT positions in one batched step
+    /// each match their own full-prefix oracle (per-row RoPE + per-row slot).
+    #[test]
+    fn batched_paged_decode_ragged_rows_match_their_oracles() {
+        let m = paged_model(0.4);
+        let a: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
+        let b: Vec<u32> = vec![9, 8, 7];
+        let mut pool = paged_pool(&m);
+        let (sa, sb) = (pool.core_mut().open(), pool.core_mut().open());
+        for &t in &a[..a.len() - 1] {
+            m.forward_paged_step(t, &mut pool, sa).unwrap();
+        }
+        for &t in &b[..b.len() - 1] {
+            m.forward_paged_step(t, &mut pool, sb).unwrap();
+        }
+        let rows = m
+            .forward_paged_step_batched(&[a[a.len() - 1], b[b.len() - 1]], &mut pool, &[sa, sb])
+            .unwrap();
+        for (row, seq) in rows.iter().zip([&a, &b]) {
+            let d = max_diff(row, &full_last(&m, seq));
+            assert!(d < PAGED_TOL, "ragged row diverged: max |diff| {d}");
+        }
+    }
+
+    /// Every plan setting re-plans (GAP-359) and so equals the single step.
+    #[test]
+    fn persistent_paged_entry_equals_the_single_step() {
+        use fuel_tensor::inference_context::PagedDecodePlan;
+        let m = paged_model(0.4);
+        let want = full_last(&m, &PAGED_SEQ);
+        let mut pool = paged_pool(&m);
+        let s = pool.core_mut().open();
+        let mut ds = None;
+        let mut got = Vec::new();
+        for &t in &PAGED_SEQ {
+            got = m
+                .forward_paged_step_persistent(
+                    t,
+                    &mut pool,
+                    s,
+                    4,
+                    PagedDecodePlan::PlanOnce,
+                    &mut ds,
+                )
+                .unwrap();
+        }
+        assert!(
+            ds.is_none(),
+            "no held session: the plan is re-built per token"
+        );
+        assert!(max_diff(&got, &want) < PAGED_TOL);
+    }
+
+    /// Validate-first: each rejected input is a typed Err naming the cause, and
+    /// the session has not advanced.
+    #[test]
+    fn paged_forwards_reject_bad_inputs_before_touching_the_pool() {
+        let m = paged_model(0.4);
+        let mut pool = paged_pool(&m);
+        let s = pool.core_mut().open();
+        let filled =
+            |p: &fuel_tensor::kv_block_pool_device::DeviceKvPool| p.core().filled_tokens(s);
+        assert_eq!(filled(&pool), Some(0));
+
+        let e = m
+            .forward_paged_step(m.config.vocab_size as u32, &mut pool, s)
+            .unwrap_err();
+        assert!(format!("{e}").contains("out of range"), "got: {e}");
+
+        let windowed = Qwen3Model {
+            config: Qwen3Config {
+                use_sliding_window: true,
+                sliding_window: Some(4),
+                max_window_layers: 1,
+                ..m.config.clone()
+            },
+            weights: m.weights.clone(),
+        };
+        let e = windowed.forward_paged_step(1, &mut pool, s).unwrap_err();
+        assert!(format!("{e}").contains("sliding-window"), "got: {e}");
+
+        let odd = Qwen3Model {
+            config: Qwen3Config {
+                head_dim: 3,
+                ..m.config.clone()
+            },
+            weights: m.weights.clone(),
+        };
+        let e = odd.forward_paged_step(1, &mut pool, s).unwrap_err();
+        assert!(format!("{e}").contains("head_dim 3"), "got: {e}");
+
+        let e = m
+            .forward_paged_step_batched(&[1, 2], &mut pool, &[s])
+            .unwrap_err();
+        assert!(
+            format!("{e}").contains("2 tokens for 1 sessions"),
+            "got: {e}"
+        );
+
+        let mut other = m.clone();
+        other.config.num_key_value_heads = 1;
+        let e = other.forward_paged_step(1, &mut pool, s).unwrap_err();
+        assert!(format!("{e}").contains("pool geometry"), "got: {e}");
+
+        assert_eq!(
+            filled(&pool),
+            Some(0),
+            "a rejected input advanced the session"
+        );
+        // CONTROL: the unmodified model still decodes on the same session.
+        m.forward_paged_step(1, &mut pool, s).unwrap();
+        assert_eq!(filled(&pool), Some(1));
     }
 
     /// GAP-279: Qwen3 architecturally decouples `head_dim` from

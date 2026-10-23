@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.3 - 2026-10-23
+
+### Added
+
+- `fuel-transformers`/`fuel-inference`: `Qwen3Model` and `QuantizedQwen3Model` implement `PagedDecodeModel` (single-step and ragged batched paged decode, validate-first). A correctness slice, not a speed one: there is no fused CUDA `PagedAttn` kernel, so paged attention runs on CPU with D2H copies. Dense configs only (a sliding-window config is a typed `Err`) and the plan-once entry re-plans every token: GAP-359.
+
 ## v0.22.2 - 2026-10-23
 
 ### Added

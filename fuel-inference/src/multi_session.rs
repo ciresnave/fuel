@@ -358,9 +358,8 @@ impl DecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
 
 /// `Qwen3Model` — QK-Norm'd attention, no RoPE-scaling wrapper layer (unlike
 /// `Llama3Model`'s relationship to `LlamaModel`, there is no further-scaled
-/// Qwen3 variant to lose precision against here). Implements the CORE trait
-/// only: the paged surface is a separate `forward_paged_step*` threading
-/// job, same scope boundary as `Llama3Model`.
+/// Qwen3 variant to lose precision against here). Its paged surface is the
+/// separate `impl PagedDecodeModel` below.
 impl DecodeModel for fuel::lazy_qwen3::Qwen3Model {
     fn n_layers(&self) -> usize {
         self.config.num_hidden_layers
@@ -509,6 +508,87 @@ impl PagedDecodeModel for fuel::lazy_llama_full::Llama3Model {
 /// `QuantizedLlama3Model` delegates the paged surface to its scaling-aware
 /// inner `Llama3Model` (never `inner.inner`, which would drop the scaling).
 impl PagedDecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
+    fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+    ) -> fuel::Result<Vec<f32>> {
+        PagedDecodeModel::forward_paged_step(self.inner(), token, pool, session)
+    }
+    fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut DeviceKvPool,
+        sessions: &[SessionHandle],
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        PagedDecodeModel::forward_paged_step_batched(self.inner(), tokens, pool, sessions)
+    }
+    fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+        max_blocks_cap: usize,
+        plan: PagedDecodePlan,
+        decode_session: &mut Option<PagedDecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        PagedDecodeModel::forward_paged_step_persistent(
+            self.inner(),
+            token,
+            pool,
+            session,
+            max_blocks_cap,
+            plan,
+            decode_session,
+        )
+    }
+}
+
+/// `Qwen3Model`'s paged surface is its own implementation (it is not a wrapper
+/// over `LlamaModel`): `Qwen3Model::forward_paged_step*` carry Qwen3's attention
+/// (biased Q/K/V, QK-norm before RoPE, `q_dim` decoupled from `hidden_size`).
+/// Dense configs only; the plan-once entry re-plans (GAP-359).
+impl PagedDecodeModel for fuel::lazy_qwen3::Qwen3Model {
+    fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+    ) -> fuel::Result<Vec<f32>> {
+        fuel::lazy_qwen3::Qwen3Model::forward_paged_step(self, token, pool, session)
+    }
+    fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut DeviceKvPool,
+        sessions: &[SessionHandle],
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        fuel::lazy_qwen3::Qwen3Model::forward_paged_step_batched(self, tokens, pool, sessions)
+    }
+    fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+        max_blocks_cap: usize,
+        plan: PagedDecodePlan,
+        decode_session: &mut Option<PagedDecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        fuel::lazy_qwen3::Qwen3Model::forward_paged_step_persistent(
+            self,
+            token,
+            pool,
+            session,
+            max_blocks_cap,
+            plan,
+            decode_session,
+        )
+    }
+}
+
+/// `QuantizedQwen3Model` delegates the paged surface to its inner `Qwen3Model`.
+impl PagedDecodeModel for fuel::lazy_quantized_qwen3::QuantizedQwen3Model {
     fn forward_paged_step(
         &self,
         token: u32,
