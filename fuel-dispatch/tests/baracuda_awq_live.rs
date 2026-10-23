@@ -25,7 +25,7 @@ use fuel_dispatch::{
     dispatch::register_cuda_kernels,
     kernel::{KernelBindingTable, OpParams},
 };
-use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
+use fuel_ir::{DType, Result, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 use half::f16;
 
@@ -193,6 +193,65 @@ fn awq_matmul_f16_matches_the_dequantise_then_matmul_reference() {
     run(130, 256, 64, 128, 8);
 }
 
+/// A VALID 256x64 problem's operands on the device, to be launched with
+/// parameters that may disagree with them.
+struct RefusalHarness {
+    dev: CudaDevice,
+    kernel: fuel_dispatch::kernel::KernelRef,
+    w: Vec<u32>,
+    z: Vec<u32>,
+    s: Vec<f16>,
+    x: Vec<f16>,
+}
+
+impl RefusalHarness {
+    fn new() -> Self {
+        let dev = CudaDevice::new(0).expect("cuda device");
+        let mut table = KernelBindingTable::new();
+        register_cuda_kernels(&mut table);
+        register_baracuda_cuda_kernels(&mut table);
+        let kernel = table
+            .lookup(OpKind::AwqMatmul, &KEY, BackendId::Cuda)
+            .expect("AwqMatmul F16 binding must be registered on CUDA");
+        let (w, z, s, _) = kernel_buffers(&problem(256, 64, 128));
+        Self {
+            dev,
+            kernel,
+            w,
+            z,
+            s,
+            x: vec![f16::from_f32(0.5); 4 * 256],
+        }
+    }
+
+    fn call(&self, n: usize, k: usize, group_size: usize, split_k_iters: i32) -> Result<()> {
+        let out = CudaStorageBytes::alloc(&self.dev, 4 * 128 * 2).expect("alloc");
+        let out = Arc::new(RwLock::new(Storage::new(
+            BackendStorage::Cuda(out),
+            DType::F16,
+        )));
+        let up = |b: &[u8], dt| upload(&self.dev, b, dt);
+        (self.kernel)(
+            &[
+                up(bytemuck::cast_slice(&self.x), DType::F16),
+                up(bytemuck::cast_slice(&self.w), DType::U32),
+                up(bytemuck::cast_slice(&self.z), DType::U32),
+                up(bytemuck::cast_slice(&self.s), DType::F16),
+            ],
+            &mut [out],
+            &[],
+            &OpParams::AwqMatmul {
+                batch: 1,
+                m: 4,
+                n,
+                k,
+                group_size,
+                split_k_iters,
+            },
+        )
+    }
+}
+
 /// Shapes the kernel cannot run are a typed `Err` from the wrapper, before any
 /// launch: `n % 64`, `split_k_iters > 0`, `k % (32 * split_k_iters)`,
 /// `group_size` in {64, 128}, `k % group_size`. The operands are those of a
@@ -202,58 +261,19 @@ fn awq_matmul_f16_matches_the_dequantise_then_matmul_reference() {
 #[test]
 fn awq_matmul_f16_refuses_unrunnable_shapes_before_launch() {
     fuel_test_support::require_gpu_run_lock();
-    let dev = CudaDevice::new(0).expect("cuda device");
-    let mut table = KernelBindingTable::new();
-    register_cuda_kernels(&mut table);
-    register_baracuda_cuda_kernels(&mut table);
-    let kernel = table
-        .lookup(OpKind::AwqMatmul, &KEY, BackendId::Cuda)
-        .expect("AwqMatmul F16 binding must be registered on CUDA");
-    let p = problem(256, 64, 128);
-    let (w, z, s, _) = kernel_buffers(&p);
-    let x: Vec<f16> = vec![f16::from_f32(0.5); 4 * 256];
-    let try_call = |n: usize, k: usize, group: usize, split_k: i32| {
-        let out = CudaStorageBytes::alloc(&dev, 4 * 128 * 2).expect("alloc");
-        let out = Arc::new(RwLock::new(Storage::new(
-            BackendStorage::Cuda(out),
-            DType::F16,
-        )));
-        kernel(
-            &[
-                upload(&dev, bytemuck::cast_slice(&x), DType::F16),
-                upload(&dev, bytemuck::cast_slice(&w), DType::U32),
-                upload(&dev, bytemuck::cast_slice(&z), DType::U32),
-                upload(&dev, bytemuck::cast_slice(&s), DType::F16),
-            ],
-            &mut [out],
-            &[],
-            &OpParams::AwqMatmul {
-                batch: 1,
-                m: 4,
-                n,
-                k,
-                group_size: group,
-                split_k_iters: split_k,
-            },
-        )
-    };
-    try_call(64, 256, 128, 8).expect("control: the honest parameters run");
+    let h = RefusalHarness::new();
+    h.call(64, 256, 128, 8)
+        .expect("control: the honest parameters run");
     for (what, n, k, group, split_k) in [
         ("n=96 (not a multiple of 64)", 96, 256, 128, 8),
         ("split_k_iters=0", 64, 256, 128, 0),
         ("split_k_iters=-1", 64, 256, 128, -1),
-        (
-            "k=256 with split_k_iters=7 (256 % 224 != 0)",
-            64,
-            256,
-            128,
-            7,
-        ),
+        ("k=256, split_k_iters=7 (256 % 224 != 0)", 64, 256, 128, 7),
         ("group_size=96", 64, 256, 96, 8),
         ("k=200 (not a multiple of group_size)", 64, 200, 128, 1),
     ] {
         assert!(
-            try_call(n, k, group, split_k).is_err(),
+            h.call(n, k, group, split_k).is_err(),
             "{what}: expected Err, the wrapper accepted it"
         );
     }

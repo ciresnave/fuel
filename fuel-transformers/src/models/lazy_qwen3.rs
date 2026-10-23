@@ -792,6 +792,9 @@ impl DecodeBackbone for Qwen3Model {
 
 // ---- HuggingFace safetensors loader ----------------------------------------
 
+/// An optional per-channel bias vector.
+type Bias = Option<Arc<[f32]>>;
+
 impl Qwen3Weights {
     /// Load Qwen3 weights from HF safetensors (e.g. `Qwen/Qwen3-7B`).
     /// HF naming follows LLaMA + per-head QK-norm:
@@ -881,32 +884,24 @@ impl Qwen3Weights {
         proj: &impl Fn(&str, usize, usize) -> Result<WeightStorage>,
     ) -> Result<(LayerWeights, Qwen3LayerExtras)> {
         use fuel_tensor::lazy::load_tensor_as_f32;
-        let h = cfg.hidden_size;
-        let q_dim = cfg.num_attention_heads * cfg.head_dim;
-        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
-        let inter = cfg.intermediate_size;
         let p = format!("model.layers.{i}");
         let gain = |name: &str| -> Result<Arc<[f32]>> {
             Ok(Arc::from(load_tensor_as_f32(st, &format!("{p}.{name}"))?))
         };
-        let bias = |name: &str| -> Result<Option<Arc<[f32]>>> {
-            if cfg.attention_bias {
-                gain(name).map(Some)
-            } else {
-                Ok(None)
-            }
-        };
+        let (attn_q, attn_k, attn_v, attn_o) = Self::load_attn_projections(cfg, &p, proj)?;
+        let (attn_q_bias, attn_k_bias, attn_v_bias) = Self::load_qkv_biases(st, cfg, &p)?;
+        let (ffn_gate, ffn_up, ffn_down) = Self::load_ffn_projections(cfg, &p, proj)?;
         let layer = LayerWeights {
-            attn_q: proj(&format!("{p}.self_attn.q_proj"), q_dim, h)?,
-            attn_q_bias: bias("self_attn.q_proj.bias")?,
-            attn_k: proj(&format!("{p}.self_attn.k_proj"), kv_dim, h)?,
-            attn_k_bias: bias("self_attn.k_proj.bias")?,
-            attn_v: proj(&format!("{p}.self_attn.v_proj"), kv_dim, h)?,
-            attn_v_bias: bias("self_attn.v_proj.bias")?,
-            attn_o: proj(&format!("{p}.self_attn.o_proj"), h, q_dim)?,
-            ffn_gate: proj(&format!("{p}.mlp.gate_proj"), inter, h)?,
-            ffn_up: proj(&format!("{p}.mlp.up_proj"), inter, h)?,
-            ffn_down: proj(&format!("{p}.mlp.down_proj"), h, inter)?,
+            attn_q,
+            attn_q_bias,
+            attn_k,
+            attn_k_bias,
+            attn_v,
+            attn_v_bias,
+            attn_o,
+            ffn_gate,
+            ffn_up,
+            ffn_down,
             attn_norm_gain: gain("input_layernorm.weight")?,
             ffn_norm_gain: gain("post_attention_layernorm.weight")?,
         };
@@ -915,6 +910,55 @@ impl Qwen3Weights {
             k_norm_gain: gain("self_attn.k_norm.weight")?,
         };
         Ok((layer, extras))
+    }
+
+    fn load_attn_projections(
+        cfg: &Qwen3Config,
+        p: &str,
+        proj: &impl Fn(&str, usize, usize) -> Result<WeightStorage>,
+    ) -> Result<(WeightStorage, WeightStorage, WeightStorage, WeightStorage)> {
+        let h = cfg.hidden_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        Ok((
+            proj(&format!("{p}.self_attn.q_proj"), q_dim, h)?,
+            proj(&format!("{p}.self_attn.k_proj"), kv_dim, h)?,
+            proj(&format!("{p}.self_attn.v_proj"), kv_dim, h)?,
+            proj(&format!("{p}.self_attn.o_proj"), h, q_dim)?,
+        ))
+    }
+
+    fn load_ffn_projections(
+        cfg: &Qwen3Config,
+        p: &str,
+        proj: &impl Fn(&str, usize, usize) -> Result<WeightStorage>,
+    ) -> Result<(WeightStorage, WeightStorage, WeightStorage)> {
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+        Ok((
+            proj(&format!("{p}.mlp.gate_proj"), inter, h)?,
+            proj(&format!("{p}.mlp.up_proj"), inter, h)?,
+            proj(&format!("{p}.mlp.down_proj"), h, inter)?,
+        ))
+    }
+
+    /// The Q/K/V biases, present only when `cfg.attention_bias`.
+    fn load_qkv_biases(
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
+        cfg: &Qwen3Config,
+        p: &str,
+    ) -> Result<(Bias, Bias, Bias)> {
+        use fuel_tensor::lazy::load_tensor_as_f32;
+        if !cfg.attention_bias {
+            return Ok((None, None, None));
+        }
+        let bias = |name: &str| -> Result<Bias> {
+            Ok(Some(Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.{name}.bias"),
+            )?)))
+        };
+        Ok((bias("q_proj")?, bias("k_proj")?, bias("v_proj")?))
     }
 }
 
