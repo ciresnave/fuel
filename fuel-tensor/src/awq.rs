@@ -471,7 +471,7 @@ mod tests {
     }
 
     /// The in-memory safetensors slice described above (the file is read whole,
-    /// with no mmap and no `unsafe`), or `None` after declaring the skip.
+    /// read whole, with no memory mapping), or `None` after declaring the skip.
     fn real_slice_bytes() -> Option<Vec<u8>> {
         let file = checkpoint_file()?;
         let bytes = std::fs::read(&file).expect("read model.safetensors");
