@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.9 - 2026-10-23
+
+### Changed
+
+- Docs only: `docs/method-rules.md` gains three architect-approved entries with their `CLAUDE.md` pointers (`an-error-count-is-a-count-of-surfaces-not-causes`, `a-hook-you-route-around-on-a-guess-is-a-hook-you-have-not-read`, `a-name-search-is-structurally-blind-across-a-seam`); GAP-366 narrowed to the six drafts still awaiting the architect; ROADMAP frontier item 41 schedules the adoption of unpopped 0.22.0
+
 ## v0.22.8 - 2026-10-23
 
 ### Changed
