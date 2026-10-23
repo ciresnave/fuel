@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.8 - 2026-10-23
+
+### Changed
+
+- Docs only: `docs/gaps.md` rows GAP-360..366 and notes on GAP-287/302/303 for eleven stale open issues, and ROADMAP frontier item 40 (Gated DeltaNet)
+
 ## v0.22.7 - 2026-10-23
 
 ### Added
