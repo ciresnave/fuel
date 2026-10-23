@@ -45,7 +45,7 @@
 //! loader from the generator.
 //!
 //! **Open follow-up, no longer gated on approval:** drive the seam end-to-end
-//! against the real `BaracudaSynthesizer` (`baracuda-cuda-emit`, exact-pinned,
+//! against the real `BaracudaSynthesizer` (`baracuda-cuda-seam`, exact-pinned,
 //! `--features seam,nvrtc`) — the first time Fuel's JIT path would meet a real
 //! generator. The marquee region is `PagedAttn`'s dense recipe, which no GPU
 //! backend implements as a fused op.
@@ -567,13 +567,13 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
 /// keys `vec_width = 1` and picks the **Scalar** schedule → a `baracuda_gen_
 /// ..._scalar` kernel that `load_synth_kernel` handles today (the vectorized /
 /// strided ABIs are the documented loader follow-up). Gated behind `jit-synth`
-/// (= jit + cuda + baracuda-cuda-emit{seam,nvrtc}); run with
+/// (= jit + cuda + baracuda-cuda-seam{nvrtc}); run with
 /// `cargo test -p fuel-dispatch --features jit-synth -- --ignored`.
 #[test]
 #[ignore]
 #[cfg(feature = "jit-synth")]
 fn live_baracuda_synthesizer_full_loop_scalar() {
-    use baracuda_cuda_emit::seam::BaracudaSynthesizer;
+    use baracuda_cuda_seam::BaracudaSynthesizer;
     use fuel_kernel_seam::{JitBudget, JitRequest, JitResponse, Synthesizer};
 
     let device = dev();
@@ -782,7 +782,7 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
 #[ignore]
 #[cfg(feature = "jit-synth")]
 fn live_baracuda_synthesizer_paged_attn_dense_region() {
-    use baracuda_cuda_emit::seam::BaracudaSynthesizer;
+    use baracuda_cuda_seam::BaracudaSynthesizer;
     use fuel_graph::registry::{FusedOpParams, FusedOps};
     use fuel_graph::{Graph, Node, NodeId, Op};
 

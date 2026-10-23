@@ -247,19 +247,19 @@ criterion = { version = "0.8", default-features = false }
 # 173/173 live CUDA parity). The whole workspace moved to alpha.77 in lockstep
 # (also carries kernelgen breadth: base_offset/where-select/hetero-dropout/
 # argsort/topk/im2col — all off-key, no STRUCTURE_KEY_VERSION bump).
-baracuda-types         = { version = "0.0.1-alpha.147", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.147" }
-baracuda-cuda-sys      = { version = "0.0.1-alpha.147" }
-baracuda-driver        = { version = "0.0.1-alpha.147" }
+baracuda-types         = { version = "0.0.1-alpha.158", features = ["half-crate", "f8-crate"] }
+baracuda-core          = { version = "0.0.1-alpha.158" }
+baracuda-cuda-sys      = { version = "0.0.1-alpha.158" }
+baracuda-driver        = { version = "0.0.1-alpha.158" }
 baracuda-runtime       = { version = "0.0.1-alpha.147" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.147" }
-baracuda-cublas        = { version = "0.0.1-alpha.147" }
+baracuda-cublas-sys    = { version = "0.0.1-alpha.158" }
+baracuda-cublas        = { version = "0.0.1-alpha.158" }
 baracuda-cudnn-sys     = { version = "0.0.1-alpha.147" }
 baracuda-cudnn         = { version = "0.0.1-alpha.147", features = ["half-crate"] }
 baracuda-curand-sys    = { version = "0.0.1-alpha.147" }
 baracuda-curand        = { version = "0.0.1-alpha.147" }
-baracuda-nvrtc-sys     = { version = "0.0.1-alpha.147" }
-baracuda-nvrtc         = { version = "0.0.1-alpha.147" }
+baracuda-nvrtc-sys     = { version = "0.0.1-alpha.153" }
+baracuda-nvrtc         = { version = "0.0.1-alpha.153" }
 # The live JIT synthesizer (BaracudaSynthesizer, the fuel-kernel-seam Synthesizer
 # impl). Was an EXACT pin (only the `seam` module surface deemed
 # supported/stable, generator internals treated as alpha-fluid) — retired
@@ -318,10 +318,14 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.147" }
 # project's version" carve-out). `0.11.0` answers "which Unpopped does this
 # work with", not "which baracuda snapshot is this" — it is not comparable to
 # the other `baracuda-*` pins' alpha numbers in the same way.
-baracuda-cuda-emit     = { version = "0.11.0" }
-baracuda-nccl-sys      = { version = "0.0.1-alpha.147" }
-baracuda-nccl          = { version = "0.0.1-alpha.147", features = ["half-crate"] }
-baracuda-cutlass       = { version = "0.0.1-alpha.147" }
+# 2026-10-23: the Fuel kernel-seam `BaracudaSynthesizer` left `baracuda-cuda-emit` (its `seam` feature is
+# gone from 0.20 on) for `baracuda-cuda-seam`, which depends on `baracuda-cuda-emit` 0.22 and the published
+# `fuel-kernel-seam{,-types}` 0.23. It is an alpha prerelease, so it is pinned exactly (a caret on a
+# prerelease would not float to the next alpha anyway). Fuel names only the seam crate; emit comes with it.
+baracuda-cuda-seam     = { version = "=0.0.1-alpha.161" }
+baracuda-nccl-sys      = { version = "0.0.1-alpha.158" }
+baracuda-nccl          = { version = "0.0.1-alpha.158", features = ["half-crate"] }
+baracuda-cutlass       = { version = "0.0.1-alpha.158" }
 # baracuda alpha.26 — new ML kernel facade. Fuel uses `baracuda-kernels-sys`
 # (raw extern "C") rather than the safe `baracuda-kernels` Plan-based wrapper
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
@@ -332,10 +336,13 @@ baracuda-cutlass       = { version = "0.0.1-alpha.147" }
 # registration-based TargetId impl; 0.11.0 was the old fixed-index one).
 # Adopted at alpha.116 with every other baracuda-* pin (PM, 2026-10-16: one family,
 # one alpha); the crates do not have to share a number, but nothing here needs them apart.
+# Bumped to alpha.158 (2026-10-23, ROADMAP row 41a): the first alpha whose `unpopped-vocab` is 0.22,
+# which `baracuda-cuda-seam` (alpha.161, the `jit-synth` synthesizer) requires; two vocab versions in one graph
+# made `TargetId` two types. Crates with no alpha.158 stay at their latest (nvrtc .153; cudnn, curand, runtime .147).
 # Bumped to alpha.147 (2026-10-22): the first alpha with the padded OC-major AWQ layout
 # (baracuda#219; the Marlin repack was wrong alpha.64-alpha.145), for ROADMAP row 31.
-baracuda-kernels-types = { version = "0.0.1-alpha.147" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.147", features = [
+baracuda-kernels-types = { version = "0.0.1-alpha.158" }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.158", features = [
     "cudnn",
     "sm89",
     # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.
@@ -438,20 +445,15 @@ tokio = "1"
 inherits = "release"
 debug = true
 
-# Unify the kernel-seam crates across the seam boundary. `baracuda-cuda-emit`
-# (crates.io, under fuel-dispatch's `jit-synth` feature) depends on the PUBLISHED
-# fuel-kernel-seam / -types (a caret `0.10.x` requirement), while the workspace uses its own path members
-# ⚠️ AT 0.11.0 THIS PATCH DOES NOT APPLY: 0.11.0 does not satisfy cuda-emit's `^0.10.3`, so
-# Cargo.lock carries the registry 0.10.3 seam crates for cuda-emit and a `jit-synth` build sees two copies of the seam crates until
-# baracuda-cuda-emit requires `^0.11` (CI does not build `jit-synth`). 0.11.0 is a BREAKING bump:
-# fuel-kernel-seam-types moved the SeamHello handshake out to fuel-kernel-seam-announce.
-# of the same crates — cargo treats path and registry as different sources, so
-# without this patch there would be two incompatible copies and `BaracudaSynthesizer`
-# would impl a `Synthesizer` trait distinct from the one fuel-dispatch calls. The
-# members ARE the source of the published seam crates (the envelope is frozen; 0.10.4
-# adds OpAttrs::region_key, GAP-332); once cuda-emit requires `^0.11` its caret requirement accepts them,
-# so redirecting the registry deps to them is the correct unification. Inert unless
-# `jit-synth` pulls cuda-emit (no other crate depends on the registry seam crates).
+# Unify the kernel-seam crates across the seam boundary. `baracuda-cuda-seam` (crates.io, under
+# fuel-dispatch's `jit-synth` feature) depends on the PUBLISHED fuel-kernel-seam / -types
+# (`0.23.0`), while the workspace uses its own path members of the same crates. Cargo treats
+# path and registry as different sources, so without this patch there would be two incompatible
+# copies and `BaracudaSynthesizer` would impl a `Synthesizer` trait distinct from the one
+# fuel-dispatch calls. The members ARE the source of the published seam crates, and the
+# workspace version (0.23.x) satisfies the caret requirement, so redirecting the registry deps
+# to them is the correct unification. Inert unless `jit-synth` pulls the seam crate (no other
+# crate depends on the registry seam crates).
 [patch.crates-io]
 fuel-kernel-seam = { path = "./fuel-kernel-seam" }
 fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types" }
