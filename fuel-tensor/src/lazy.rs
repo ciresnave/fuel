@@ -8380,6 +8380,11 @@ pub enum WeightStorage {
         in_features: usize,
         out_features: usize,
     },
+    /// An AWQ 4-bit linear (HuggingFace `*-AWQ`, GEMM version) in the
+    /// `AWQ_MATMUL` kernel layout, as graph-independent host buffers. The
+    /// graph sees it through [`Tensor::awq_matmul`]-style fused-op operands
+    /// built in `apply_linear`; it has no plain `const_like` form.
+    Awq(Arc<crate::awq::AwqHostWeight>),
     /// Base weight wrapped with a trainable LoRA (Low-Rank Adaptation)
     /// update: effective weight `W_eff = base + (alpha / rank) · A · B`
     /// where `A` has shape `[in_features, rank]` and `B` has shape
@@ -8415,6 +8420,7 @@ impl WeightStorage {
                 out_features,
                 ..
             } => *in_features * *out_features,
+            Self::Awq(w) => w.ic * w.oc,
             Self::WithLoRA {
                 in_features,
                 out_features,
@@ -8431,6 +8437,8 @@ impl WeightStorage {
             // reinterpreted). Callers that care about the "actual"
             // quantization type should match on the variant directly.
             Self::Q4_0 { .. } => fuel_ir::DType::U32,
+            // AWQ surfaces as U32 for the same reason (packed nibbles).
+            Self::Awq(_) => fuel_ir::DType::U32,
             // WithLoRA exposes the base's dtype (the LoRA adapter is
             // always F32 but activations are typed by the base weight).
             Self::WithLoRA { base, .. } => base.dtype(),
@@ -8460,6 +8468,12 @@ impl WeightStorage {
                 // Arc-clone the precomputed u32 view; no byte copy.
                 anchor.const_u32_like(Arc::clone(words), Shape::from_dims(&[words.len()]))
             }
+            Self::Awq(_) => Err(fuel_ir::Error::Msg(
+                "WeightStorage::Awq::const_like is not supported — an AWQ weight is three operands \
+                 (weight, zeros, scales), applied via apply_linear."
+                    .into(),
+            )
+            .bt()),
             Self::WithLoRA { .. } => Err(fuel_ir::Error::Msg(
                 "WeightStorage::WithLoRA::const_like is not supported \
                  — the base + LoRA update must be applied via \
@@ -8565,6 +8579,18 @@ impl WeightStorage {
                     in_features,
                     out_features,
                 )
+            }
+            Self::Awq(w) => {
+                if w.ic != in_features || w.oc != out_features {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "WeightStorage::Awq shape mismatch: stored [{}, {}], requested [{in_features}, {out_features}]",
+                        w.ic, w.oc,
+                    ))
+                    .bt());
+                }
+                // 8 is AutoAWQ's default launch tuning; the decompose path
+                // ignores it.
+                w.matmul(x, 8)
             }
             Self::WithLoRA {
                 base,

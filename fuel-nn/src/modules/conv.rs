@@ -395,6 +395,13 @@ impl Conv2d {
                 )
                 .bt());
             }
+            WeightStorage::Awq(_) => {
+                return Err(fuel_ir::error::Error::Msg(
+                    "Conv2d::absorb_bn: AWQ weights cannot be folded with a following BatchNorm (no lossless host f32 view)."
+                        .into(),
+                )
+                .bt());
+            }
             WeightStorage::WithLoRA { .. } => {
                 return Err(fuel_ir::error::Error::Msg(
                     "Conv2d::absorb_bn: LoRA-wrapped weights cannot be \
@@ -436,7 +443,9 @@ impl Conv2d {
                 WeightStorage::BF16(Arc::from(as_bf16))
             }
             // The Q4_0 / WithLoRA arms returned early above.
-            WeightStorage::Q4_0 { .. } | WeightStorage::WithLoRA { .. } => unreachable!(),
+            WeightStorage::Q4_0 { .. } | WeightStorage::Awq(_) | WeightStorage::WithLoRA { .. } => {
+                unreachable!()
+            }
         };
 
         Conv2d::new(

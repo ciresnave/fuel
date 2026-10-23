@@ -1,6 +1,18 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.23.0 - 2026-10-23
+
+### Breaking
+
+- `fuel-tensor`: `WeightStorage` gains a variant, `Awq(Arc<AwqHostWeight>)` (it is not `#[non_exhaustive]`, so an exhaustive `match` on it in downstream code no longer compiles; `fuel-nn`'s `Conv2d::absorb_bn` is updated in this change)
+
+### Added
+
+- `fuel-tensor`: `awq::AwqHostWeight`, a graph-independent AWQ linear in the kernel layout (`from_hf_buffers`, `load`, `matmul`), applied by `WeightStorage::apply_linear`
+- `fuel-transformers`: `Qwen3Weights::load_awq_from_mmapped` loads a HuggingFace `*-AWQ` Qwen3 checkpoint; `load_from_mmapped` and it share one body
+- ROADMAP row 31c: `tests/qwen3_awq_oracle.rs` runs `Orion-zhen/Qwen3-0.6B-AWQ` end to end and compares 16 greedy tokens with the independent HF/AutoAWQ reference (reads the checkpoint from `FUEL_QWEN3_AWQ_DIR`; a `Hardware::Hub` skip when absent). GAP-367 records the missing CPU `AWQ_MATMUL` binding
+
 ## v0.22.10 - 2026-10-23
 
 ### Removed
