@@ -274,11 +274,8 @@ impl DecodeModel for LlamaModel {
 /// `Llama3Model` is a thin wrapper over [`LlamaModel`] that differs only in its
 /// RoPE frequencies, so it reaches the same decode path with its own
 /// frequencies threaded down — see `Llama3Model::forward_with_kv_context_
-/// persistent`. It implements the CORE trait only: the paged surface would need
-/// the same override threaded through `forward_paged_step*`, which is a separate
-/// tier of work, and [`PagedDecodeModel`] existing as a supertrait is what makes
-/// that a compile error here rather than a runtime surprise in the paged
-/// scheduler.
+/// persistent`. Its paged surface (`impl PagedDecodeModel` below) threads the
+/// same frequencies through `forward_paged_step*`.
 impl DecodeModel for fuel::lazy_llama_full::Llama3Model {
     fn n_layers(&self) -> usize {
         self.inner.config.n_layers
@@ -456,6 +453,89 @@ impl PagedDecodeModel for LlamaModel {
     ) -> fuel::Result<Vec<f32>> {
         LlamaModel::forward_paged_step_persistent(
             self,
+            token,
+            pool,
+            session,
+            max_blocks_cap,
+            plan,
+            decode_session,
+        )
+    }
+}
+
+/// `Llama3Model` reaches the paged path with its own (llama3-scaled) RoPE
+/// frequencies threaded down -- `Llama3Model::forward_paged_step*` call
+/// `LlamaModel::forward_paged_step*_inv_freq`. A plain delegation to
+/// `self.inner` would run unscaled RoPE: slightly wrong long-context attention,
+/// not an error.
+impl PagedDecodeModel for fuel::lazy_llama_full::Llama3Model {
+    fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+    ) -> fuel::Result<Vec<f32>> {
+        fuel::lazy_llama_full::Llama3Model::forward_paged_step(self, token, pool, session)
+    }
+    fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut DeviceKvPool,
+        sessions: &[SessionHandle],
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        fuel::lazy_llama_full::Llama3Model::forward_paged_step_batched(self, tokens, pool, sessions)
+    }
+    fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+        max_blocks_cap: usize,
+        plan: PagedDecodePlan,
+        decode_session: &mut Option<PagedDecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        fuel::lazy_llama_full::Llama3Model::forward_paged_step_persistent(
+            self,
+            token,
+            pool,
+            session,
+            max_blocks_cap,
+            plan,
+            decode_session,
+        )
+    }
+}
+
+/// `QuantizedLlama3Model` delegates the paged surface to its scaling-aware
+/// inner `Llama3Model` (never `inner.inner`, which would drop the scaling).
+impl PagedDecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
+    fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+    ) -> fuel::Result<Vec<f32>> {
+        PagedDecodeModel::forward_paged_step(self.inner(), token, pool, session)
+    }
+    fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut DeviceKvPool,
+        sessions: &[SessionHandle],
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        PagedDecodeModel::forward_paged_step_batched(self.inner(), tokens, pool, sessions)
+    }
+    fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+        max_blocks_cap: usize,
+        plan: PagedDecodePlan,
+        decode_session: &mut Option<PagedDecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        PagedDecodeModel::forward_paged_step_persistent(
+            self.inner(),
             token,
             pool,
             session,

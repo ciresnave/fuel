@@ -6995,6 +6995,59 @@ impl Tensor {
         (rope_cos, rope_sin)
     }
 
+    /// [`Self::rope_tables_const`] with caller-supplied inverse frequencies
+    /// (`inv_freq.len() == head_dim / 2`) in place of the ones derived from
+    /// `theta` -- the scaled-RoPE (llama3 / yarn / linear) entry. Delegates the
+    /// host math to [`fuel_graph::build_rope_tables_with_inv_freq`].
+    pub fn rope_tables_const_with_inv_freq(
+        &self,
+        inv_freq: &[f64],
+        start_pos: usize,
+        seq: usize,
+        head_dim: usize,
+    ) -> (Self, Self) {
+        let (cos_data, sin_data) =
+            fuel_graph::build_rope_tables_with_inv_freq(inv_freq, start_pos, seq, head_dim);
+        let rope_shape = Shape::from_dims(&[seq, head_dim]);
+        // GAP-003: same non-local proof as `rope_tables_const` -- the length
+        // lives in `build_rope_tables_with_inv_freq`, which has no error channel.
+        let rope_cos = self.const_f32_like(cos_data, rope_shape.clone()).expect(
+            "rope tables: build_rope_tables_with_inv_freq must return seq*head_dim elements",
+        );
+        let rope_sin = self.const_f32_like(sin_data, rope_shape).expect(
+            "rope tables: build_rope_tables_with_inv_freq must return seq*head_dim elements",
+        );
+        (rope_cos, rope_sin)
+    }
+
+    /// [`Self::rope_tables_const_batched`] with caller-supplied inverse
+    /// frequencies (`inv_freq.len() == head_dim / 2`).
+    pub fn rope_tables_const_batched_with_inv_freq(
+        &self,
+        inv_freq: &[f64],
+        positions: &[usize],
+        head_dim: usize,
+    ) -> (Self, Self) {
+        let b = positions.len();
+        let mut cos_data = Vec::with_capacity(b * head_dim);
+        let mut sin_data = Vec::with_capacity(b * head_dim);
+        for &pos in positions {
+            let (c, s) = fuel_graph::build_rope_tables_with_inv_freq(inv_freq, pos, 1, head_dim);
+            cos_data.extend_from_slice(&c);
+            sin_data.extend_from_slice(&s);
+        }
+        let shape = Shape::from_dims(&[b, 1, 1, head_dim]);
+        // GAP-003: `b` IS `positions.len()` (local); the per-position length
+        // lives in `build_rope_tables_with_inv_freq` (not local).
+        let rope_cos = self
+            .const_f32_like(cos_data, shape.clone())
+            .expect("batched rope tables: b IS positions.len() (local); build_rope_tables_with_inv_freq must yield head_dim per position (not local)");
+        let rope_sin = self
+            .const_f32_like(sin_data, shape)
+            .expect("batched rope tables: b IS positions.len() (local); build_rope_tables_with_inv_freq must yield head_dim per position (not local)");
+        (rope_cos, rope_sin)
+    }
+
     /// Rotary position embedding with **per-batch-row** tables.
     ///
     /// `self` is `[B, H, 1, D]`; `cos`/`sin` are `[B, 1, 1, D]` (row `b` holds the

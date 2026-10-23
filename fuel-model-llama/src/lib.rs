@@ -908,12 +908,18 @@ impl LlamaModel {
     /// Same math as the contiguous forward up to the attention reduction order
     /// (paged gathers-then-dense-SDPAs where contiguous slices a fixed-capacity
     /// buffer) — ε-close, the bar the batched arm already uses.
-    pub fn forward_paged_step(
+    ///
+    /// `rope_inv_freq` replaces the frequencies derived from `rope_base`
+    /// (`len == head_dim / 2`; `None` = default RoPE) -- the scaled-RoPE entry
+    /// ([`Self::forward_paged_step`] passes `None`).
+    pub fn forward_paged_step_inv_freq(
         &self,
         token: u32,
         pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
         session: fuel_kv_pool::SessionHandle,
+        rope_inv_freq: Option<&[f64]>,
     ) -> fuel_ir::error::Result<Vec<f32>> {
+        self.check_paged_rope("forward_paged_step", rope_inv_freq)?;
         let cfg = &self.config;
         let weights = &self.weights;
         // The activation dtype IS the pool dtype (BF16-throughout decode, Phase D
@@ -971,7 +977,10 @@ impl LlamaModel {
             .to_dtype(act_dtype)?;
 
         // RoPE tables at this token's absolute position (seq = 1).
-        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, tok_pos, 1, cfg.head_dim);
+        let (rope_cos, rope_sin) = match rope_inv_freq {
+            Some(inv) => h.rope_tables_const_with_inv_freq(inv, tok_pos, 1, cfg.head_dim),
+            None => h.rope_tables_const(cfg.rope_base, tok_pos, 1, cfg.head_dim),
+        };
         let scale = (1.0f64 / (cfg.head_dim as f64).sqrt()) as f32;
 
         // block_table / context_lens for this session (single-row batch).
@@ -1065,7 +1074,11 @@ impl LlamaModel {
     /// [`Self::forward_paged_step`] (the pre-plan-once behavior, now an explicit
     /// opt-OUT); `PlanOnce` — **the driver default** — builds-once / rebinds as
     /// above.
-    pub fn forward_paged_step_persistent(
+    ///
+    /// `rope_inv_freq`: as [`Self::forward_paged_step_inv_freq`]. It is constant
+    /// per model, so the held session needs no invalidation key for it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_paged_step_persistent_inv_freq(
         &self,
         token: u32,
         pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
@@ -1073,7 +1086,9 @@ impl LlamaModel {
         max_blocks_cap: usize,
         plan: fuel_tensor::inference_context::PagedDecodePlan,
         decode_session: &mut Option<fuel_tensor::inference_context::PagedDecodeSession>,
+        rope_inv_freq: Option<&[f64]>,
     ) -> fuel_ir::error::Result<Vec<f32>> {
+        self.check_paged_rope("forward_paged_step_persistent", rope_inv_freq)?;
         // Runtime flag (`plan`). `Replan` is the pre-plan-once path: drop any
         // held session (so nothing stale lingers across a flag flip) and re-plan
         // this token via `forward_paged_step`. `PlanOnce` builds-once / rebinds
@@ -1084,7 +1099,7 @@ impl LlamaModel {
             fuel_tensor::inference_context::PagedDecodePlan::Replan
         ) {
             *decode_session = None;
-            return self.forward_paged_step(token, pool, session);
+            return self.forward_paged_step_inv_freq(token, pool, session, rope_inv_freq);
         }
         let cfg = &self.config;
         let act_dtype = pool.dtype();
@@ -1128,13 +1143,21 @@ impl LlamaModel {
                 session,
                 max_blocks_cap,
                 decode_session,
+                rope_inv_freq,
             );
         }
 
         // Subsequent token: re-bind data + skip optimize.
         let res = {
             let s = decode_session.as_ref().expect("session is_some");
-            self.rebind_and_realize_paged_prebuilt(token, pool, session, max_blocks_cap, s)
+            self.rebind_and_realize_paged_prebuilt(
+                token,
+                pool,
+                session,
+                max_blocks_cap,
+                s,
+                rope_inv_freq,
+            )
         };
         match res {
             Ok(logits) => Ok(logits),
@@ -1142,7 +1165,7 @@ impl LlamaModel {
                 // Stale cached generation — drop the session and re-plan this
                 // token via the D1 paged path; the session rebuilds next token.
                 *decode_session = None;
-                self.forward_paged_step(token, pool, session)
+                self.forward_paged_step_inv_freq(token, pool, session, rope_inv_freq)
             }
             Err(e) => Err(e),
         }
@@ -1201,12 +1224,15 @@ impl LlamaModel {
         linear: usize,
         pt: &fuel_tensor::kv_block_pool_device::PageTableHost,
         use_device_offset: bool,
+        rope_inv_freq: Option<&[f64]>,
     ) -> fuel_ir::error::Result<fuel_tensor::inference_context::PagedDecodeTokenData> {
         let cfg = &self.config;
         let upload = fuel_tensor::pipelined_bridge::upload_host_buffer_to_device;
         let token_ids = upload(dev, fuel_ir::HostBuffer::U32(vec![token]))?;
-        let (cos_data, sin_data) =
-            fuel_graph::build_rope_tables(cfg.rope_base, tok_pos, 1, cfg.head_dim);
+        let (cos_data, sin_data) = match rope_inv_freq {
+            Some(inv) => fuel_graph::build_rope_tables_with_inv_freq(inv, tok_pos, 1, cfg.head_dim),
+            None => fuel_graph::build_rope_tables(cfg.rope_base, tok_pos, 1, cfg.head_dim),
+        };
         let rope_cos = upload(dev, fuel_ir::HostBuffer::F32(cos_data))?;
         let rope_sin = upload(dev, fuel_ir::HostBuffer::F32(sin_data))?;
         let block_table = upload(dev, fuel_ir::HostBuffer::U32(pt.block_table.clone()))?;
@@ -1226,6 +1252,81 @@ impl LlamaModel {
         })
     }
 
+    /// [`Self::forward_paged_step`] for a model with default (unscaled) RoPE.
+    ///
+    /// (Declared ahead of the persistent/batched wrappers below; the scaled
+    /// entry is [`Self::forward_paged_step_inv_freq`].)
+    pub fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        session: fuel_kv_pool::SessionHandle,
+    ) -> fuel_ir::error::Result<Vec<f32>> {
+        self.forward_paged_step_inv_freq(token, pool, session, None)
+    }
+
+    /// [`Self::forward_paged_step_persistent`] with default (unscaled) RoPE.
+    pub fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        session: fuel_kv_pool::SessionHandle,
+        max_blocks_cap: usize,
+        plan: fuel_tensor::inference_context::PagedDecodePlan,
+        decode_session: &mut Option<fuel_tensor::inference_context::PagedDecodeSession>,
+    ) -> fuel_ir::error::Result<Vec<f32>> {
+        self.forward_paged_step_persistent_inv_freq(
+            token,
+            pool,
+            session,
+            max_blocks_cap,
+            plan,
+            decode_session,
+            None,
+        )
+    }
+
+    /// [`Self::forward_paged_step_batched`] with default (unscaled) RoPE.
+    pub fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        sessions: &[fuel_kv_pool::SessionHandle],
+    ) -> fuel_ir::error::Result<Vec<Vec<f32>>> {
+        self.forward_paged_step_batched_inv_freq(tokens, pool, sessions, None)
+    }
+
+    /// Reject a RoPE configuration the table builders would assert on, BEFORE
+    /// the paged forwards touch the pool: an odd `head_dim`, or an
+    /// `inv_freq` whose length is not `head_dim / 2`. The builders panic on
+    /// both, and by then the session has already grown by a slot with no valid
+    /// KV behind it (a retry would read that slot as part of the prefix), so the
+    /// check has to come first: validate inputs, mutate state last.
+    fn check_paged_rope(
+        &self,
+        who: &str,
+        rope_inv_freq: Option<&[f64]>,
+    ) -> fuel_ir::error::Result<()> {
+        let head_dim = self.config.head_dim;
+        if !head_dim.is_multiple_of(2) {
+            return Err(fuel_ir::Error::Msg(format!(
+                "{who}: head_dim {head_dim} must be even for RoPE",
+            ))
+            .bt());
+        }
+        if let Some(inv) = rope_inv_freq
+            && inv.len() != head_dim / 2
+        {
+            return Err(fuel_ir::Error::Msg(format!(
+                "{who}: rope_inv_freq has {} entries, expected head_dim/2 = {}",
+                inv.len(),
+                head_dim / 2,
+            ))
+            .bt());
+        }
+        Ok(())
+    }
+
     /// Build the held paged decode-step graph with STABLE re-bindable data
     /// Consts, optimize it ONCE via `prebuild_optimized_env_capturing_cache`,
     /// populate `decode_session`, and return the first token's logits. Only
@@ -1237,6 +1338,7 @@ impl LlamaModel {
         session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
         decode_session: &mut Option<fuel_tensor::inference_context::PagedDecodeSession>,
+        rope_inv_freq: Option<&[f64]>,
     ) -> fuel_ir::error::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -1352,8 +1454,15 @@ impl LlamaModel {
         let graph = logits_root.graph_tensor().graph().clone();
 
         // ---- Bind the per-token DATA + realize + optimize ONCE. ----
-        let data =
-            self.build_paged_token_data(&dev, token, tok_pos, linear, &pt, use_device_offset)?;
+        let data = self.build_paged_token_data(
+            &dev,
+            token,
+            tok_pos,
+            linear,
+            &pt,
+            use_device_offset,
+            rope_inv_freq,
+        )?;
         cache.insert(token_ids_node, std::sync::Arc::clone(&data.token_ids));
         cache.insert(rope_cos_node, std::sync::Arc::clone(&data.rope_cos));
         cache.insert(rope_sin_node, std::sync::Arc::clone(&data.rope_sin));
@@ -1414,14 +1523,22 @@ impl LlamaModel {
         session: fuel_kv_pool::SessionHandle,
         max_blocks_cap: usize,
         decode_session: &fuel_tensor::inference_context::PagedDecodeSession,
+        rope_inv_freq: Option<&[f64]>,
     ) -> fuel_ir::error::Result<Vec<f32>> {
         let dev = pool.device().clone();
         // Source of truth for the offset carrier = what the graph was built
         // with (its offset_node presence), so build + rebind never disagree.
         let use_device_offset = decode_session.offset_node().is_some();
         let (tok_pos, linear, pt) = Self::advance_paged_session(pool, session, max_blocks_cap)?;
-        let data =
-            self.build_paged_token_data(&dev, token, tok_pos, linear, &pt, use_device_offset)?;
+        let data = self.build_paged_token_data(
+            &dev,
+            token,
+            tok_pos,
+            linear,
+            &pt,
+            use_device_offset,
+            rope_inv_freq,
+        )?;
         let sym_env = decode_session.per_token_sym_env(linear)?;
         decode_session.realize_token(&dev, data, &sym_env)
     }
@@ -1445,12 +1562,16 @@ impl LlamaModel {
     /// floor, with FEWER GPU kernels. See `forward_paged_step`'s note for the full
     /// account (the PC-2 test asserts argmax parity, invariant to placement — it
     /// never backed either answer; measurement, not reading, settled it).
-    pub fn forward_paged_step_batched(
+    ///
+    /// `rope_inv_freq`: as [`Self::forward_paged_step_inv_freq`].
+    pub fn forward_paged_step_batched_inv_freq(
         &self,
         tokens: &[u32],
         pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
         sessions: &[fuel_kv_pool::SessionHandle],
+        rope_inv_freq: Option<&[f64]>,
     ) -> fuel_ir::error::Result<Vec<Vec<f32>>> {
+        self.check_paged_rope("forward_paged_step_batched", rope_inv_freq)?;
         let cfg = &self.config;
         let weights = &self.weights;
         let k = tokens.len();
@@ -1562,8 +1683,10 @@ impl LlamaModel {
 
         // Per-row RoPE: one position per session -> [K,1,1,head_dim] tables.
         // block_table [K, max_blk], context_lens [K] (both already ragged).
-        let (rope_cos, rope_sin) =
-            h.rope_tables_const_batched(cfg.rope_base, &positions, cfg.head_dim);
+        let (rope_cos, rope_sin) = match rope_inv_freq {
+            Some(inv) => h.rope_tables_const_batched_with_inv_freq(inv, &positions, cfg.head_dim),
+            None => h.rope_tables_const_batched(cfg.rope_base, &positions, cfg.head_dim),
+        };
         let scale = (1.0f64 / (cfg.head_dim as f64).sqrt()) as f32;
         let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape())?;
         let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())?;
@@ -9416,6 +9539,72 @@ mod generate_tests {
         steps: Vec<PagedGateStep>,
         /// arm-A session `realize_count` at the end (== rebinds served).
         final_hits_a: usize,
+    }
+
+    /// Sourcery on #456: a malformed RoPE configuration must be a typed `Err`
+    /// raised BEFORE the paged forwards grow the session -- not a panic after
+    /// `append`. Born red: with the check removed these panic in
+    /// `build_rope_tables_with_inv_freq` (wrong length) or leave the session
+    /// advanced.
+    #[test]
+    fn paged_forwards_reject_malformed_rope_before_touching_the_pool() {
+        use fuel_tensor::inference_context::PagedDecodePlan;
+        let (model, geom, dev) = paged_gate_fixture();
+        let mut pool =
+            fuel_tensor::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev).unwrap();
+        let s = pool.core_mut().open();
+        let bad = [1.0_f64]; // head_dim 4 needs 2 entries
+        let filled =
+            |pool: &fuel_tensor::kv_block_pool_device::DeviceKvPool| pool.core().filled_tokens(s);
+        assert_eq!(filled(&pool), Some(0), "control: fresh session is empty");
+
+        let e = model
+            .forward_paged_step_inv_freq(1, &mut pool, s, Some(&bad))
+            .expect_err("wrong-length inv_freq must be an Err");
+        assert!(format!("{e}").contains("rope_inv_freq"), "got: {e}");
+        assert_eq!(filled(&pool), Some(0), "single step advanced the session");
+
+        let mut ds = None;
+        let e = model
+            .forward_paged_step_persistent_inv_freq(
+                1,
+                &mut pool,
+                s,
+                4,
+                PagedDecodePlan::PlanOnce,
+                &mut ds,
+                Some(&bad),
+            )
+            .expect_err("persistent: wrong-length inv_freq must be an Err");
+        assert!(format!("{e}").contains("rope_inv_freq"), "got: {e}");
+        assert_eq!(filled(&pool), Some(0), "persistent advanced the session");
+
+        let e = model
+            .forward_paged_step_batched_inv_freq(&[1], &mut pool, &[s], Some(&bad))
+            .expect_err("batched: wrong-length inv_freq must be an Err");
+        assert!(format!("{e}").contains("rope_inv_freq"), "got: {e}");
+        assert_eq!(filled(&pool), Some(0), "batched advanced the session");
+
+        // Odd head_dim, with and without a supplied vector.
+        let odd = LlamaModel {
+            config: LlamaConfig {
+                head_dim: 3,
+                ..model.config.clone()
+            },
+            weights: model.weights.clone(),
+        };
+        let e = odd
+            .forward_paged_step_inv_freq(1, &mut pool, s, None)
+            .expect_err("odd head_dim must be an Err");
+        assert!(format!("{e}").contains("head_dim 3"), "got: {e}");
+        assert_eq!(filled(&pool), Some(0), "odd head_dim advanced the session");
+
+        // CONTROL: a well-formed vector on the same session still decodes.
+        let ok = [1.0_f64, 0.01];
+        model
+            .forward_paged_step_inv_freq(1, &mut pool, s, Some(&ok))
+            .expect("control: well-formed inv_freq decodes");
+        assert_eq!(filled(&pool), Some(1));
     }
 
     /// Build the tiny CPU f32 model + block geometry shared by the gate tests.
