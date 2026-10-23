@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.10 - 2026-10-23
+
+### Removed
+
+- `fuel-tensor`: the committed slice of `Orion-zhen/Qwen3-0.6B-AWQ` (added in 0.22.5 with the AWQ loader). That checkpoint is GPL-3.0, not Apache-2.0 as its provenance note said, so no part of it is kept in the repository (git history was rewritten to drop it). The two real-bytes tests now cut the same slice in memory from `$FUEL_QWEN3_AWQ_DIR/model.safetensors` and declare a `Hardware::Hub` skip when it is absent (fatal under `FUEL_REQUIRE_HUB`). It was never in a published crate: fuel-tensor 0.22.4 is the newest on crates.io
+
 ## v0.22.9 - 2026-10-23
 
 ### Changed

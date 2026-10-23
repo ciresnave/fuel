@@ -420,17 +420,78 @@ mod tests {
         );
     }
 
-    /// REAL BYTES. `slice.safetensors` is rows 0..256 / output columns 0..64 of
-    /// `model.layers.0.mlp.gate_proj` of `Orion-zhen/Qwen3-0.6B-AWQ` (see
-    /// `tests/fixtures/awq_qwen3_0_6b/PROVENANCE.md`), an AutoAWQ GEMM checkpoint.
+    /// REAL BYTES, read at test time and never committed: the checkpoint
+    /// `Orion-zhen/Qwen3-0.6B-AWQ` is GPL-3.0, so none of its weights live in
+    /// this repository. `FUEL_QWEN3_AWQ_DIR` names a directory holding its
+    /// `model.safetensors`; when unset the test declares a [`Hardware::Hub`]
+    /// skip, which is fatal under `FUEL_REQUIRE_HUB` (armed on the self-hosted
+    /// runner). The slice is rows 0..256 / output columns 0..64 of
+    /// `model.layers.0.mlp.gate_proj`, re-cut in memory under the tensor prefix
+    /// `l`, an AutoAWQ GEMM checkpoint.
     /// Decides whether `qzeros` is the logical zero-point as stored (AutoAWQ) or
     /// the logical zero minus one (GPTQ v1): trained weights are roughly
     /// zero-centred, so the mean of `q - z` in code units is ~0 for the right
     /// reading and ~-1 for a zero stored minus one. The decode here is written
     /// independently of `awq_repack`.
-    fn real_slice() -> (Vec<u8>, Vec<u8>, Vec<f16>) {
-        let bytes = include_bytes!("../tests/fixtures/awq_qwen3_0_6b/slice.safetensors");
-        let st = safetensors::SafeTensors::deserialize(bytes).unwrap();
+    /// The in-memory safetensors slice described above, or `None` after
+    /// declaring the skip.
+    fn real_slice_bytes() -> Option<Vec<u8>> {
+        use fuel_test_support::hardware::{Hardware, Missing, skip};
+        let Some(dir) = std::env::var_os("FUEL_QWEN3_AWQ_DIR") else {
+            skip(
+                Hardware::Hub,
+                Missing::device(
+                    "FUEL_QWEN3_AWQ_DIR is not set (Orion-zhen/Qwen3-0.6B-AWQ, GPL-3.0, \
+                     never committed)",
+                ),
+            );
+            return None;
+        };
+        let file = std::path::Path::new(&dir).join("model.safetensors");
+        if !file.is_file() {
+            skip(
+                Hardware::Hub,
+                Missing::device(format!("{} does not exist", file.display())),
+            );
+            return None;
+        }
+        // SAFETY: the checkpoint is read-only for the life of the test process.
+        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&file) }
+            .expect("mmap model.safetensors");
+        let prefix = "model.layers.0.mlp.gate_proj";
+        // Leading `rows` rows of the first `cols` columns of a row-major tensor.
+        let cut = |name: &str, rows: usize, cols: usize, elem: usize| -> Vec<u8> {
+            let view = st.get(&format!("{prefix}.{name}")).expect(name);
+            let stride = view.shape()[1] * elem;
+            let data = view.data();
+            let mut out = Vec::with_capacity(rows * cols * elem);
+            for r in 0..rows {
+                out.extend_from_slice(&data[r * stride..r * stride + cols * elem]);
+            }
+            out
+        };
+        let qw = cut("qweight", 256, 8, 4);
+        let qz = cut("qzeros", 2, 8, 4);
+        let sc = cut("scales", 2, 64, 2);
+        let mut t: HashMap<String, TensorView<'_>> = HashMap::new();
+        t.insert(
+            "l.qweight".into(),
+            TensorView::new(safetensors::Dtype::I32, vec![256, 8], &qw).unwrap(),
+        );
+        t.insert(
+            "l.qzeros".into(),
+            TensorView::new(safetensors::Dtype::I32, vec![2, 8], &qz).unwrap(),
+        );
+        t.insert(
+            "l.scales".into(),
+            TensorView::new(safetensors::Dtype::F16, vec![2, 64], &sc).unwrap(),
+        );
+        Some(safetensors::serialize(&t, None::<HashMap<String, String>>).unwrap())
+    }
+
+    fn real_slice() -> Option<(Vec<u8>, Vec<u8>, Vec<f16>)> {
+        let bytes = real_slice_bytes()?;
+        let st = safetensors::SafeTensors::deserialize(&bytes).unwrap();
         let words = |k: &str| -> Vec<u32> {
             st.tensor(k)
                 .unwrap()
@@ -462,16 +523,18 @@ mod tests {
             .iter()
             .map(|c| f16::from_bits(u16::from_le_bytes(*c)))
             .collect();
-        (
+        Some((
             unpack(&words("l.qweight"), 256),
             unpack(&words("l.qzeros"), 2),
             scales,
-        )
+        ))
     }
 
     #[test]
     fn real_checkpoint_zeros_are_stored_as_is_not_minus_one() {
-        let (q, z, _) = real_slice();
+        let Some((q, z, _)) = real_slice() else {
+            return;
+        };
         let mean_shift = |shift: f64| -> f64 {
             let mut sum = 0.0;
             for i in 0..256 {
@@ -492,9 +555,11 @@ mod tests {
 
     #[test]
     fn real_checkpoint_slice_loads_and_matches_the_as_is_reference() {
-        let (q, z, s) = real_slice();
-        let bytes = include_bytes!("../tests/fixtures/awq_qwen3_0_6b/slice.safetensors");
-        let st = safetensors::SafeTensors::deserialize(bytes).unwrap();
+        let Some((q, z, s)) = real_slice() else {
+            return;
+        };
+        let bytes = real_slice_bytes().expect("the slice was available a line ago");
+        let st = safetensors::SafeTensors::deserialize(&bytes).unwrap();
         let w = load_awq_layer(&st, "l", 256, 64, 128, &Device::cpu()).unwrap();
         let x: Vec<f32> = (0..256)
             .map(|i| ((i * 5) % 17) as f32 * 0.1 - 0.8)
