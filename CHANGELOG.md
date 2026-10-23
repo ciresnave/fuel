@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.2 - 2026-10-23
+
+### Added
+
+- `fuel-inference`: `PagedSessionScheduler::session_new_tokens(id)`, the per-session incremental-token accessor `SessionScheduler` already had, so a streaming serving loop can read each token the tick it is produced instead of only at `reap_finished`.
+
 ## v0.22.1 - 2026-10-23
 
 ### Added
