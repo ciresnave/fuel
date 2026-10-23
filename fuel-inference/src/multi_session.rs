@@ -358,9 +358,8 @@ impl DecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
 
 /// `Qwen3Model` — QK-Norm'd attention, no RoPE-scaling wrapper layer (unlike
 /// `Llama3Model`'s relationship to `LlamaModel`, there is no further-scaled
-/// Qwen3 variant to lose precision against here). Implements the CORE trait
-/// only: the paged surface is a separate `forward_paged_step*` threading
-/// job, same scope boundary as `Llama3Model`.
+/// Qwen3 variant to lose precision against here). Its paged surface is the
+/// separate `impl PagedDecodeModel` below.
 impl DecodeModel for fuel::lazy_qwen3::Qwen3Model {
     fn n_layers(&self) -> usize {
         self.config.num_hidden_layers
@@ -509,6 +508,87 @@ impl PagedDecodeModel for fuel::lazy_llama_full::Llama3Model {
 /// `QuantizedLlama3Model` delegates the paged surface to its scaling-aware
 /// inner `Llama3Model` (never `inner.inner`, which would drop the scaling).
 impl PagedDecodeModel for fuel::lazy_quantized_llama::QuantizedLlama3Model {
+    fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+    ) -> fuel::Result<Vec<f32>> {
+        PagedDecodeModel::forward_paged_step(self.inner(), token, pool, session)
+    }
+    fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut DeviceKvPool,
+        sessions: &[SessionHandle],
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        PagedDecodeModel::forward_paged_step_batched(self.inner(), tokens, pool, sessions)
+    }
+    fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+        max_blocks_cap: usize,
+        plan: PagedDecodePlan,
+        decode_session: &mut Option<PagedDecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        PagedDecodeModel::forward_paged_step_persistent(
+            self.inner(),
+            token,
+            pool,
+            session,
+            max_blocks_cap,
+            plan,
+            decode_session,
+        )
+    }
+}
+
+/// `Qwen3Model`'s paged surface is its own implementation (it is not a wrapper
+/// over `LlamaModel`): `Qwen3Model::forward_paged_step*` carry Qwen3's attention
+/// (biased Q/K/V, QK-norm before RoPE, `q_dim` decoupled from `hidden_size`).
+/// Dense configs only; the plan-once entry re-plans (GAP-359).
+impl PagedDecodeModel for fuel::lazy_qwen3::Qwen3Model {
+    fn forward_paged_step(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+    ) -> fuel::Result<Vec<f32>> {
+        fuel::lazy_qwen3::Qwen3Model::forward_paged_step(self, token, pool, session)
+    }
+    fn forward_paged_step_batched(
+        &self,
+        tokens: &[u32],
+        pool: &mut DeviceKvPool,
+        sessions: &[SessionHandle],
+    ) -> fuel::Result<Vec<Vec<f32>>> {
+        fuel::lazy_qwen3::Qwen3Model::forward_paged_step_batched(self, tokens, pool, sessions)
+    }
+    fn forward_paged_step_persistent(
+        &self,
+        token: u32,
+        pool: &mut DeviceKvPool,
+        session: SessionHandle,
+        max_blocks_cap: usize,
+        plan: PagedDecodePlan,
+        decode_session: &mut Option<PagedDecodeSession>,
+    ) -> fuel::Result<Vec<f32>> {
+        fuel::lazy_qwen3::Qwen3Model::forward_paged_step_persistent(
+            self,
+            token,
+            pool,
+            session,
+            max_blocks_cap,
+            plan,
+            decode_session,
+        )
+    }
+}
+
+/// `QuantizedQwen3Model` delegates the paged surface to its inner `Qwen3Model`.
+impl PagedDecodeModel for fuel::lazy_quantized_qwen3::QuantizedQwen3Model {
     fn forward_paged_step(
         &self,
         token: u32,
@@ -2699,6 +2779,88 @@ mod tests {
             DecodeModel::supports_batched_decode(&m),
             DecodeModel::supports_batched_decode(m.inner()),
         );
+    }
+
+    /// The quantized wrapper's `PagedDecodeModel` impl (a delegation to its inner
+    /// `Qwen3Model`) must agree with the wrapper's OWN full-prefix forward over
+    /// the same Q4_0 weights, for the single-step, persistent and batched entries.
+    #[test]
+    fn quantized_qwen3_paged_decode_matches_its_full_prefix_forward() {
+        use fuel::lazy_quantized_qwen3::QuantizedQwen3Model;
+
+        let cfg = fuel::lazy_qwen3::Qwen3Config {
+            hidden_size: 32,
+            intermediate_size: 64,
+            num_attention_heads: 8,
+            head_dim: 4,
+            ..qwen3_tiny_cfg()
+        };
+        let m = QuantizedQwen3Model::from_f32_bake(cfg.clone(), qwen3_tiny_weights(&cfg, 5150))
+            .expect("Q4_0 bake");
+        let seq = [1u32, 2, 3, 4, 5, 6];
+        let full = m.forward(&seq, 0).unwrap().realize_f32();
+        let want = &full[(seq.len() - 1) * cfg.vocab_size..];
+        let max_diff = |a: &[f32]| {
+            assert_eq!(a.len(), want.len());
+            a.iter()
+                .zip(want)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        let new_pool = || {
+            DeviceKvPool::new(
+                fuel::kv_block_pool::KvGeometry {
+                    n_layers: cfg.num_hidden_layers,
+                    num_blocks: 16,
+                    block_size: 4,
+                    n_kv_heads: cfg.num_key_value_heads,
+                    head_dim: cfg.head_dim,
+                    elem_size: 4,
+                },
+                DType::F32,
+                &Device::cpu(),
+            )
+            .unwrap()
+        };
+
+        let mut pool = new_pool();
+        let s = pool.core_mut().open();
+        let mut got = Vec::new();
+        for &t in &seq {
+            got = PagedDecodeModel::forward_paged_step(&m, t, &mut pool, s).unwrap();
+        }
+        let d = max_diff(&got);
+        assert!(d < 1e-4, "single-step paged diverged: {d}");
+
+        let mut pool = new_pool();
+        let s = pool.core_mut().open();
+        let mut ds = None;
+        for &t in &seq {
+            got = PagedDecodeModel::forward_paged_step_persistent(
+                &m,
+                t,
+                &mut pool,
+                s,
+                4,
+                PagedDecodePlan::PlanOnce,
+                &mut ds,
+            )
+            .unwrap();
+        }
+        let d = max_diff(&got);
+        assert!(d < 1e-4, "persistent paged diverged: {d}");
+
+        let mut pool = new_pool();
+        let sessions = [pool.core_mut().open(), pool.core_mut().open()];
+        let mut rows = Vec::new();
+        for &t in &seq {
+            rows = PagedDecodeModel::forward_paged_step_batched(&m, &[t, t], &mut pool, &sessions)
+                .unwrap();
+        }
+        for row in &rows {
+            let d = max_diff(row);
+            assert!(d < 1e-4, "batched paged diverged: {d}");
+        }
     }
 
     #[test]
