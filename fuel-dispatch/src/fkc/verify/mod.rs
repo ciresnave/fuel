@@ -69,6 +69,8 @@
 //! cos/sin tables).
 
 mod accept_coverage;
+#[cfg(all(feature = "dev-tools", any(feature = "cuda", feature = "vulkan")))]
+mod accuracy_common;
 mod bit_stability;
 mod exact_ref;
 #[cfg(feature = "cuda")]
@@ -83,6 +85,8 @@ mod probe_recipes;
 pub(crate) mod seed_cpu_ledger;
 #[cfg(feature = "cuda")]
 pub(crate) mod seed_cuda_ledger;
+#[cfg(all(feature = "cuda", feature = "dev-tools"))]
+pub(crate) mod seed_cuda_matmul_accuracy;
 #[cfg(feature = "vulkan")]
 pub(crate) mod seed_vulkan_ledger;
 #[cfg(all(feature = "vulkan", feature = "dev-tools"))]

@@ -22,6 +22,20 @@ pub fn seed_cuda_ledger() {
     verify::seed_cuda_ledger::run_seed_cuda_ledger();
 }
 
+/// Earn the CUDA f32 matmul's `max_relative`/`max_absolute` ledger records (ROADMAP row 39).
+/// Needs a live CUDA device.
+#[cfg(feature = "cuda")]
+pub fn seed_cuda_matmul_accuracy() {
+    verify::seed_cuda_matmul_accuracy::run_seed_cuda_matmul_accuracy();
+}
+
+/// Measure the CUDA f32 accuracy claim and print; writes nothing (ROADMAP row 39). Needs a live
+/// CUDA device.
+#[cfg(feature = "cuda")]
+pub fn check_cuda_accuracy() {
+    verify::seed_cuda_matmul_accuracy::run_check_cuda_accuracy();
+}
+
 /// Re-seed the Vulkan half of the verified ledger. Needs a live Vulkan device.
 #[cfg(feature = "vulkan")]
 pub fn seed_vulkan_ledger() {
