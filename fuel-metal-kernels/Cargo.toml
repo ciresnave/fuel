@@ -10,6 +10,11 @@ categories = ["science"]
 license = "MIT OR Apache-2.0"
 
 
+# docs.rs builds on Linux, where this crate is empty; document it for an Apple target.
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
 [dependencies]
 half             = { workspace = true }
 once_cell        = { workspace = true }

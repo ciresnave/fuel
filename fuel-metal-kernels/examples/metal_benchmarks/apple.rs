@@ -115,7 +115,7 @@ pub struct Args {
     task: Task,
 }
 
-fn main() -> Result<()> {
+pub fn main() -> Result<()> {
     let args = Args::parse();
     match args.task {
         Task::Gemm => {
