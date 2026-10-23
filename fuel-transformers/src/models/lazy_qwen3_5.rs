@@ -110,40 +110,40 @@ impl Qwen3_5Config {
     }
 
     fn validate(&self) -> Result<()> {
-        let bad = |msg: String| Err(Error::Msg(format!("Qwen3_5Config: {msg}")).bt());
+        self.validate_counts()?;
+        self.validate_linear_heads()?;
+        self.validate_nonzero()
+    }
+
+    fn validate_counts(&self) -> Result<()> {
         if self.layer_types.len() != self.num_hidden_layers {
-            return bad(format!(
+            return Err(cfg_err(format!(
                 "layer_types has {} entries for {} layers",
                 self.layer_types.len(),
                 self.num_hidden_layers
-            ));
-        }
-        if self.linear_num_key_heads == 0
-            || !self
-                .linear_num_value_heads
-                .is_multiple_of(self.linear_num_key_heads)
-        {
-            return bad(format!(
-                "linear_num_value_heads ({}) must be a positive multiple of linear_num_key_heads ({})",
-                self.linear_num_value_heads, self.linear_num_key_heads
-            ));
-        }
-        if self.num_key_value_heads == 0
-            || !self
-                .num_attention_heads
-                .is_multiple_of(self.num_key_value_heads)
-        {
-            return bad(format!(
-                "num_attention_heads ({}) must be a positive multiple of num_key_value_heads ({})",
-                self.num_attention_heads, self.num_key_value_heads
-            ));
+            )));
         }
         if !(self.partial_rotary_factor > 0.0 && self.partial_rotary_factor <= 1.0) {
-            return bad(format!(
+            return Err(cfg_err(format!(
                 "partial_rotary_factor {} is outside (0, 1]",
                 self.partial_rotary_factor
-            ));
+            )));
         }
+        Ok(())
+    }
+
+    /// Each key head is shared by `value_heads / key_heads` value heads, so the ratio must be whole.
+    fn validate_linear_heads(&self) -> Result<()> {
+        let (nk, nv) = (self.linear_num_key_heads, self.linear_num_value_heads);
+        if nk == 0 || !nv.is_multiple_of(nk) {
+            return Err(cfg_err(format!(
+                "linear_num_value_heads ({nv}) must be a positive multiple of linear_num_key_heads ({nk})"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_nonzero(&self) -> Result<()> {
         for (name, v) in [
             ("hidden_size", self.hidden_size),
             ("head_dim", self.head_dim),
@@ -152,11 +152,15 @@ impl Qwen3_5Config {
             ("linear_conv_kernel_dim", self.linear_conv_kernel_dim),
         ] {
             if v == 0 {
-                return bad(format!("{name} is zero"));
+                return Err(cfg_err(format!("{name} is zero")));
             }
         }
         Ok(())
     }
+}
+
+fn cfg_err(text: String) -> fuel_ir::error::Error {
+    Error::Msg(format!("Qwen3_5Config: {text}")).bt()
 }
 
 #[derive(serde::Deserialize)]
@@ -224,7 +228,11 @@ impl Raw {
             tie_word_embeddings,
             max_position_embeddings: self.max_position_embeddings,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: self.num_key_value_heads,
+            // The shared GQA rule (GAP-282): rejects a kv-head count that does not divide the heads.
+            num_key_value_heads: fuel_loaders::hf_config::num_key_value_heads(
+                Some(self.num_key_value_heads),
+                self.num_attention_heads,
+            )?,
             head_dim: self.head_dim,
             attn_output_gate: self.attn_output_gate,
             rope_theta: self.rope_parameters.rope_theta,
@@ -308,6 +316,9 @@ pub struct Qwen3_5Weights {
 }
 
 type St = fuel_loaders::safetensors::MmapedSafetensors;
+
+/// `(conv1d_weight, a_log, dt_bias, norm_gain)` of a Gated DeltaNet layer.
+type GdnVectors = (Arc<[f32]>, Arc<[f32]>, Arc<[f32]>, Arc<[f32]>);
 
 fn msg(text: String) -> fuel_ir::error::Error {
     Error::Msg(text).bt()
@@ -402,17 +413,9 @@ impl Qwen3_5Weights {
     fn load_layer(st: &St, cfg: &Qwen3_5Config, p: &str, i: usize) -> Result<Qwen3_5Layer> {
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
-        let mixer = match cfg.layer_types[i] {
-            Qwen3_5LayerKind::LinearAttention => Qwen3_5Mixer::GatedDeltaNet(
-                Self::load_gated_delta_net(st, cfg, &format!("{p}.linear_attn"))?,
-            ),
-            Qwen3_5LayerKind::FullAttention => Qwen3_5Mixer::FullAttention(
-                Self::load_full_attention(st, cfg, &format!("{p}.self_attn"))?,
-            ),
-        };
         Ok(Qwen3_5Layer {
             input_norm_gain: zero_centred_gain(st, &format!("{p}.input_layernorm.weight"), h)?,
-            mixer,
+            mixer: Self::load_mixer(st, cfg, p, cfg.layer_types[i])?,
             post_attn_norm_gain: zero_centred_gain(
                 st,
                 &format!("{p}.post_attention_layernorm.weight"),
@@ -424,33 +427,56 @@ impl Qwen3_5Weights {
         })
     }
 
+    fn load_mixer(
+        st: &St,
+        cfg: &Qwen3_5Config,
+        p: &str,
+        kind: Qwen3_5LayerKind,
+    ) -> Result<Qwen3_5Mixer> {
+        Ok(match kind {
+            Qwen3_5LayerKind::LinearAttention => Qwen3_5Mixer::GatedDeltaNet(
+                Self::load_gated_delta_net(st, cfg, &format!("{p}.linear_attn"))?,
+            ),
+            Qwen3_5LayerKind::FullAttention => Qwen3_5Mixer::FullAttention(
+                Self::load_full_attention(st, cfg, &format!("{p}.self_attn"))?,
+            ),
+        })
+    }
+
     fn load_gated_delta_net(st: &St, cfg: &Qwen3_5Config, p: &str) -> Result<GatedDeltaNetWeights> {
         let h = cfg.hidden_size;
         let nv = cfg.linear_num_value_heads;
-        let conv_dim = cfg.linear_conv_dim();
-        let conv_name = format!("{p}.conv1d.weight");
-        expect_shape(st, &conv_name, &[conv_dim, 1, cfg.linear_conv_kernel_dim])?;
+        let (qkv, z) = (cfg.linear_conv_dim(), cfg.linear_value_dim());
+        let (conv1d_weight, a_log, dt_bias, norm_gain) = Self::load_gdn_vectors(st, cfg, p)?;
         Ok(GatedDeltaNetWeights {
-            in_proj_qkv: projection(st, &format!("{p}.in_proj_qkv.weight"), conv_dim, h)?,
-            in_proj_z: projection(
-                st,
-                &format!("{p}.in_proj_z.weight"),
-                cfg.linear_value_dim(),
-                h,
-            )?,
+            in_proj_qkv: projection(st, &format!("{p}.in_proj_qkv.weight"), qkv, h)?,
+            in_proj_z: projection(st, &format!("{p}.in_proj_z.weight"), z, h)?,
             in_proj_a: projection(st, &format!("{p}.in_proj_a.weight"), nv, h)?,
             in_proj_b: projection(st, &format!("{p}.in_proj_b.weight"), nv, h)?,
-            conv1d_weight: Arc::from(load_tensor_as_f32(st, &conv_name)?),
-            a_log: vector(st, &format!("{p}.A_log"), nv)?,
-            dt_bias: vector(st, &format!("{p}.dt_bias"), nv)?,
-            norm_gain: vector(st, &format!("{p}.norm.weight"), cfg.linear_value_head_dim)?,
-            out_proj: projection(
-                st,
-                &format!("{p}.out_proj.weight"),
-                h,
-                cfg.linear_value_dim(),
-            )?,
+            conv1d_weight,
+            a_log,
+            dt_bias,
+            norm_gain,
+            out_proj: projection(st, &format!("{p}.out_proj.weight"), h, z)?,
         })
+    }
+
+    /// The conv kernel and the per-head vectors of a Gated DeltaNet layer:
+    /// `(conv1d_weight, a_log, dt_bias, norm_gain)`.
+    fn load_gdn_vectors(st: &St, cfg: &Qwen3_5Config, p: &str) -> Result<GdnVectors> {
+        let nv = cfg.linear_num_value_heads;
+        let conv_name = format!("{p}.conv1d.weight");
+        expect_shape(
+            st,
+            &conv_name,
+            &[cfg.linear_conv_dim(), 1, cfg.linear_conv_kernel_dim],
+        )?;
+        Ok((
+            Arc::from(load_tensor_as_f32(st, &conv_name)?),
+            vector(st, &format!("{p}.A_log"), nv)?,
+            vector(st, &format!("{p}.dt_bias"), nv)?,
+            vector(st, &format!("{p}.norm.weight"), cfg.linear_value_head_dim)?,
+        ))
     }
 
     fn load_full_attention(st: &St, cfg: &Qwen3_5Config, p: &str) -> Result<FullAttentionWeights> {
@@ -581,6 +607,10 @@ mod tests {
             "\"linear_num_value_heads\": 24",
         );
         assert!(Qwen3_5Config::from_hf_json_str(&bad_heads).is_err());
+        // The shared GQA rule (GAP-282): 8 query heads cannot be grouped over 3 kv heads.
+        let bad_gqa =
+            CONFIG_0_8B.replace("\"num_key_value_heads\": 2", "\"num_key_value_heads\": 3");
+        assert!(Qwen3_5Config::from_hf_json_str(&bad_gqa).is_err());
         let bad_kind = CONFIG_0_8B.replacen("full_attention", "sliding_attention", 1);
         assert!(Qwen3_5Config::from_hf_json_str(&bad_kind).is_err());
         assert!(Qwen3_5Config::from_hf_json_str("not json").is_err());

@@ -100,26 +100,32 @@ fn mean(xs: &[f32]) -> f64 {
     xs.iter().map(|&x| x as f64).sum::<f64>() / xs.len() as f64
 }
 
-#[test]
-fn the_loader_reads_exactly_the_language_model_tensors_of_the_real_checkpoint() {
-    let Some(dir) = checkpoint_dir() else { return };
-    let cfg = Qwen3_5Config::from_hf_json_str(
+fn load_config(dir: &std::path::Path) -> Qwen3_5Config {
+    Qwen3_5Config::from_hf_json_str(
         &std::fs::read_to_string(dir.join("config.json")).expect("config.json"),
     )
-    .expect("config parses");
-    let st = unsafe {
-        fuel_loaders::safetensors::MmapedSafetensors::new(safetensors_file(&dir).unwrap())
-    }
-    .expect("mmap");
+    .expect("config parses")
+}
 
-    // Independent accounting: the names the config implies vs the names in the file.
+fn open_checkpoint(dir: &std::path::Path) -> fuel_loaders::safetensors::MmapedSafetensors {
+    let file = safetensors_file(dir).expect("checked by checkpoint_dir");
+    // SAFETY: the file is a read-only checkpoint this test does not modify, and it is mapped for
+    // the duration of the test only.
+    unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(file) }.expect("mmap")
+}
+
+/// Independent accounting: the names the config implies vs the names in the file.
+fn assert_tensor_accounting(
+    st: &fuel_loaders::safetensors::MmapedSafetensors,
+    cfg: &Qwen3_5Config,
+) {
     let in_file: BTreeSet<String> = st
         .tensors()
         .into_iter()
         .map(|(n, _)| n)
         .filter(|n| n.starts_with(PREFIX))
         .collect();
-    let expected = expected_names(&cfg);
+    let expected = expected_names(cfg);
     let missing: Vec<_> = expected.difference(&in_file).collect();
     let unread: Vec<_> = in_file.difference(&expected).collect();
     println!(
@@ -139,6 +145,29 @@ fn the_loader_reads_exactly_the_language_model_tensors_of_the_real_checkpoint() 
             .iter()
             .any(|(n, _)| n.starts_with("model.visual."))
     );
+}
+
+/// Spot values read from the same file by an independent script (means over the whole tensor):
+/// layers.0.input_layernorm mean 0.238 (so 1.238 folded), final norm 3.309 (4.309),
+/// linear_attn.A_log mean -1.979 (kept as is), linear_attn.norm mean 0.952 (not folded).
+fn assert_spot_values(model: &Qwen3_5Model) {
+    let l0 = &model.weights.layers[0];
+    assert!((mean(&l0.input_norm_gain) - 1.238).abs() < 0.005);
+    assert!((mean(&model.weights.final_norm_gain) - 4.309).abs() < 0.005);
+    let Qwen3_5Mixer::GatedDeltaNet(g) = &l0.mixer else {
+        panic!("layer 0 is a Gated DeltaNet layer");
+    };
+    assert!((mean(&g.a_log) - (-1.979)).abs() < 0.005);
+    assert!((mean(&g.norm_gain) - 0.952).abs() < 0.005);
+    assert_eq!(g.conv1d_weight.len(), 6144 * 4);
+}
+
+#[test]
+fn the_loader_reads_exactly_the_language_model_tensors_of_the_real_checkpoint() {
+    let Some(dir) = checkpoint_dir() else { return };
+    let cfg = load_config(&dir);
+    let st = open_checkpoint(&dir);
+    assert_tensor_accounting(&st, &cfg);
 
     let weights = Qwen3_5Weights::load_from_mmapped(&st, &cfg).expect("loads, shapes checked");
     let model = Qwen3_5Model {
@@ -160,19 +189,7 @@ fn the_loader_reads_exactly_the_language_model_tensors_of_the_real_checkpoint() 
         );
         assert!(ok, "mixer variant disagrees with layer_types");
     }
-
-    // Spot values read from the same file by an independent script (means over the whole
-    // tensor): layers.0.input_layernorm mean 0.238 (so 1.238 folded), final norm 3.309 (4.309),
-    // linear_attn.A_log mean -1.979 (kept as is), linear_attn.norm mean 0.952 (not folded).
-    let l0 = &model.weights.layers[0];
-    assert!((mean(&l0.input_norm_gain) - 1.238).abs() < 0.005);
-    assert!((mean(&model.weights.final_norm_gain) - 4.309).abs() < 0.005);
-    let Qwen3_5Mixer::GatedDeltaNet(g) = &l0.mixer else {
-        panic!("layer 0 is a Gated DeltaNet layer");
-    };
-    assert!((mean(&g.a_log) - (-1.979)).abs() < 0.005);
-    assert!((mean(&g.norm_gain) - 0.952).abs() < 0.005);
-    assert_eq!(g.conv1d_weight.len(), 6144 * 4);
+    assert_spot_values(&model);
 
     // The forward pass is a typed refusal, not a wrong answer.
     let err = model.forward(&[1, 2, 3], 0).unwrap_err().to_string();
@@ -184,15 +201,9 @@ fn the_loader_reads_exactly_the_language_model_tensors_of_the_real_checkpoint() 
 #[test]
 fn a_config_that_disagrees_with_the_file_is_refused() {
     let Some(dir) = checkpoint_dir() else { return };
-    let mut cfg = Qwen3_5Config::from_hf_json_str(
-        &std::fs::read_to_string(dir.join("config.json")).expect("config.json"),
-    )
-    .expect("config parses");
+    let mut cfg = load_config(&dir);
     cfg.intermediate_size += 1;
-    let st = unsafe {
-        fuel_loaders::safetensors::MmapedSafetensors::new(safetensors_file(&dir).unwrap())
-    }
-    .expect("mmap");
+    let st = open_checkpoint(&dir);
     let err = Qwen3_5Weights::load_from_mmapped(&st, &cfg)
         .expect_err("must be refused")
         .to_string();
