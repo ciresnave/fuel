@@ -1959,10 +1959,12 @@ mod tests {
         // CPU coverage -- but this lint checks for a DIRECT
         // binding-table CPU registration of the fused op itself,
         // which AwqMatmul deliberately does not have yet. Reaching
-        // the real, measured CUDA kernel
+        // the CUDA kernel
         // (fuel-cuda-backend/src/baracuda/quant_w4a16.rs::awq_gemm_f16)
-        // is separate follow-on work named in the op's own module doc;
-        // a CPU binding-table wrapper is the same class of follow-up.
+        // is now registered in the binding table under
+        // (OpKind::AwqMatmul, Cuda) from kernel-contracts/cuda/awq_matmul.fkc.md,
+        // which this CPU-coverage lint does not look at; a CPU binding-table
+        // wrapper is the remaining follow-up for this entry.
         const KNOWN_GAPS: &[(FusedOpId, &str)] = &[(
             FusedOps::AWQ_MATMUL,
             "decompose-only in this increment; no direct CPU binding-table \

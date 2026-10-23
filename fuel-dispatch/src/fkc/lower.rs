@@ -287,6 +287,7 @@ pub(crate) fn lower_op_kind(s: &str, section: &str) -> Result<OpKind, FkcError> 
         "SelectiveScan" => Some(OpKind::SelectiveScan),
         "SsdChunkScan" => Some(OpKind::SsdChunkScan),
         "Nf4Matmul" => Some(OpKind::Nf4Matmul),
+        "AwqMatmul" => Some(OpKind::AwqMatmul),
         _ => None,
     };
     // NOTE: `OpKind` is `#[non_exhaustive]` in `fuel-core-types`, so a

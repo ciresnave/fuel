@@ -552,6 +552,12 @@ pub enum OpKind {
     /// activations' dtype. Geometry + `block_size` flow through
     /// `OpParams::Nf4Matmul`.
     Nf4Matmul,
+    /// AWQ (mit-han-lab) asymmetric int4 weight-only matmul. Four inputs
+    /// `[activations, weight, zeros, scales]` in baracuda's W4A16 kernel layout
+    /// — see `FusedOps::AWQ_MATMUL` for the full shape contract. Output
+    /// `[..., M, N]` matches the activations' dtype. Geometry, `group_size` and
+    /// `split_k_iters` flow through `OpParams::AwqMatmul`.
+    AwqMatmul,
     /// A **runtime-registered** (Tier-2, JIT-synthesized / import-time) fused
     /// op. Carries no static kernel family: the concrete op is named by the
     /// runtime `FusedOpId` on the graph node, and its kernel resolves from the
@@ -686,6 +692,7 @@ impl OpKind {
             OpKind::SelectiveScan => "selective_scan",
             OpKind::SsdChunkScan => "ssd_chunk_scan",
             OpKind::Nf4Matmul => "nf4_matmul",
+            OpKind::AwqMatmul => "awq_matmul",
             OpKind::RuntimeFused => "runtime_fused",
             OpKind::NonZeroIndices => "nonzero_indices",
         }
