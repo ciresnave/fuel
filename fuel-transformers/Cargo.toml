@@ -32,6 +32,7 @@ fuel-quantized = { workspace = true }
 # LlamaModel/PhiModel moved to their own crates (fuel-core dissolution) --
 # lazy_llama_full.rs/lazy_llama2c.rs/lazy_llava.rs/lazy_quantized_llama.rs still
 # wrap fuel-core's canonical LlamaModel directly.
+fuel-kv-pool = { workspace = true }
 fuel-model-llama = { workspace = true }
 fuel-model-phi = { workspace = true }
 half = { workspace = true }
