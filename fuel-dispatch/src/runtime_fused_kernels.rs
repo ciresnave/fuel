@@ -259,6 +259,10 @@ fn static_binding_table_bridge_over(
 pub(crate) fn static_fused_id_to_binding_table_op_kind(id: FusedOpId) -> Option<OpKind> {
     if id == FusedOps::FLASH_ATTN {
         Some(OpKind::FlashAttn)
+    } else if id == FusedOps::AWQ_MATMUL {
+        // CUDA F16 kernel registers under `(OpKind::AwqMatmul, .., Cuda)` from
+        // `kernel-contracts/cuda/awq_matmul.fkc.md` (ROADMAP row 31a).
+        Some(OpKind::AwqMatmul)
     } else {
         None
     }
@@ -700,5 +704,31 @@ mod tests {
             "not adopted on Cuda, and the static-id bridge must never rescue a \
              runtime id (it returns false immediately for any id.is_runtime())",
         );
+    }
+
+    /// The static-id bridge maps exactly the ids whose kernel registers into the
+    /// primitive binding table: FLASH_ATTN and AWQ_MATMUL. Controls: an id with no
+    /// such kernel (NF4_MATMUL, CPU-registry only) maps to `None`, and the bridge
+    /// answers from the binding table, not from the id alone.
+    #[test]
+    fn static_bridge_maps_awq_matmul_to_its_op_kind_and_only_when_bound() {
+        assert_eq!(
+            static_fused_id_to_binding_table_op_kind(FusedOps::AWQ_MATMUL),
+            Some(OpKind::AwqMatmul)
+        );
+        assert_eq!(
+            static_fused_id_to_binding_table_op_kind(FusedOps::FLASH_ATTN),
+            Some(OpKind::FlashAttn)
+        );
+        assert_eq!(
+            static_fused_id_to_binding_table_op_kind(FusedOps::NF4_MATMUL),
+            None
+        );
+        let empty = KernelBindingTable::new();
+        assert!(!fused_kernel_available_in(
+            &empty,
+            FusedOps::AWQ_MATMUL,
+            BackendId::Cuda
+        ));
     }
 }

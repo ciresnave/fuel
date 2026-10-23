@@ -272,7 +272,7 @@ fn _arch_sku_digits(sku: ArchSku) -> &'static str {
 /// signal rather than a wrong one.
 fn map_op_category(op_class: &str, n_inputs: usize) -> Option<OpCategory> {
     let cat = match op_class {
-        "MatMul" | "FusedLinear" | "QMatMul" | "Nf4Matmul" => OpCategory::Gemm,
+        "MatMul" | "FusedLinear" | "QMatMul" | "Nf4Matmul" | "AwqMatmul" => OpCategory::Gemm,
         "Conv2D" | "ConvTranspose2D" | "CausalConv1d" => OpCategory::Convolution,
         "FlashAttn" | "FlashAttnBackwardQ" | "FlashAttnBackwardK" | "FlashAttnBackwardV"
         | "PagedAttn" | "Rope" => OpCategory::Attention,

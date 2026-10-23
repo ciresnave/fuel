@@ -746,6 +746,22 @@ pub enum OpParams {
         block_size: usize,
     },
 
+    /// AwqMatmul execution parameters. 4 inputs: `activations [batch, m, k]`
+    /// (rank ≥ 2; leading dims flattened into `batch`), `weight [n, k/8]` U32,
+    /// `zeros [n, zeros_w]` U32, `scales [n, 8 * zeros_w]` F16 (baracuda W4A16
+    /// kernel layout). Output `[batch, m, n]` matching activations' dtype.
+    ///
+    /// `group_size` ∈ {64, 128}; `split_k_iters` is the CUDA launch-tuning
+    /// parameter (typically 8).
+    AwqMatmul {
+        batch: usize,
+        m: usize,
+        n: usize,
+        k: usize,
+        group_size: usize,
+        split_k_iters: i32,
+    },
+
     /// A **runtime fused op's** live scalar args (the `extract:` values from
     /// `FusedOpParams::Runtime { scalars }`), in the region's pattern
     /// pre-order — the same canonical slot order the synthesized kernel's

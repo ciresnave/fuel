@@ -779,6 +779,93 @@ pub mod conv1d {
 }
 
 // ===========================================================================
+// AwqMatmul — baracuda W4A16 AWQ GEMM (ROADMAP row 31a)
+// ===========================================================================
+//
+// Four inputs `[activations F16, weight U32, zeros U32, scales F16]` in the
+// kernel layout `fuel_quantized::awq_repack` produces; output `[batch*m, n]`
+// F16. F16 activations only (the kernel is fp16-only; BF16/F32 activations stay
+// on the decompose path). `awq_gemm_f16` takes the buffers in the kernel's own
+// argument order (scales before zeros) and enforces the kernel's constraints
+// (`n % 64`, `k % (32 * split_k_iters)`, sm_80+) through baracuda's
+// `can_implement`, returning `Err` rather than launching a misaligned problem.
+
+pub mod awq {
+    use super::*;
+    use fuel_cuda_backend::baracuda::quant_w4a16 as bk;
+
+    pub fn awq_matmul_f16(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 4 {
+            return Err(Error::Msg(format!(
+                "awq_matmul_f16: expected 4 inputs (activations, weight, zeros, scales), got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        if outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "awq_matmul_f16: expected 1 output, got {}",
+                outputs.len(),
+            ))
+            .bt());
+        }
+        let (batch, m, n, k, group_size, split_k_iters) = match params {
+            OpParams::AwqMatmul {
+                batch,
+                m,
+                n,
+                k,
+                group_size,
+                split_k_iters,
+            } => (*batch, *m, *n, *k, *group_size, *split_k_iters),
+            other => {
+                return Err(Error::Msg(format!(
+                    "awq_matmul_f16: expected OpParams::AwqMatmul, got {other:?}"
+                ))
+                .bt());
+            }
+        };
+        let group_size = i32::try_from(group_size).map_err(|_| {
+            Error::Msg(format!(
+                "awq_matmul_f16: group_size {group_size} overflows i32"
+            ))
+            .bt()
+        })?;
+        let a_guard = read_storage(&inputs[0])?;
+        let w_guard = read_storage(&inputs[1])?;
+        let z_guard = read_storage(&inputs[2])?;
+        let s_guard = read_storage(&inputs[3])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let a_cuda = cuda_input(&a_guard)?;
+        let w_cuda = cuda_input(&w_guard)?;
+        let z_cuda = cuda_input(&z_guard)?;
+        let s_cuda = cuda_input(&s_guard)?;
+        let rows = batch.checked_mul(m).ok_or_else(|| {
+            Error::Msg(format!("awq_matmul_f16: batch {batch} * m {m} overflows")).bt()
+        })?;
+        let result = bk::awq_gemm_f16(
+            a_cuda,
+            w_cuda,
+            s_cuda,
+            z_cuda,
+            rows,
+            k,
+            n,
+            group_size,
+            split_k_iters,
+        )?;
+        let out_cuda = cuda_output(&mut out_guard)?;
+        *out_cuda = result;
+        Ok(())
+    }
+}
+
+// ===========================================================================
 // ArgMaxDim / ArgMinDim — U32-output variants (alpha.28)
 // ===========================================================================
 //
@@ -3906,6 +3993,30 @@ fn register_cuda_causal_conv1d_from_contract(table: &mut KernelBindingTable) {
         .expect("CUDA causal_conv1d contract must register into the binding table");
 }
 
+/// The authored CUDA (baracuda) AWQ matmul kernel contract (`include_str!`), imported by
+/// [`register_cuda_awq_matmul_from_contract`] - the SOLE registration path.
+const CUDA_AWQ_MATMUL_CONTRACT: &str = include_str!("../kernel-contracts/cuda/awq_matmul.fkc.md");
+
+/// Register the CUDA AwqMatmul kernel (F16 activations; ROADMAP row 31a) FROM its FKC contract.
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_awq_matmul_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_AWQ_MATMUL_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA awq_matmul contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda awq_matmul contract declares no fused ops"
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA awq_matmul contract must register into the binding table");
+}
+
 // ===========================================================================
 // GROUP6 CUDA FKC families - contract registration.
 // ===========================================================================
@@ -4114,6 +4225,7 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     register_cuda_pad_from_contract(table);
     register_cuda_pad_backward_from_contract(table);
     register_cuda_causal_conv1d_from_contract(table);
+    register_cuda_awq_matmul_from_contract(table);
     register_cuda_indexing_from_contract(table);
 
     // ----- GROUP 6 MatMul facades (gemm_dense f32/f64/f16/bf16 + gemm_int
