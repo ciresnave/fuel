@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.7 - 2026-10-23
+
+### Added
+
+- `OpKind::AwqMatmul` with a CUDA F16 binding (`baracuda_dispatch::awq::awq_matmul_f16`, W4A16 AWQ GEMM) registered from the FKC contract `kernel-contracts/cuda/awq_matmul.fkc.md`; `AWQ_MATMUL` bridges to it in the runtime fused-kernel table (ROADMAP row 31a). F32 activations stay on the decompose path
+
 ## v0.22.6 - 2026-10-23
 
 ### Changed

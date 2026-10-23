@@ -3630,6 +3630,9 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::NF4_MATMUL => {
             Some(OpKind::Nf4Matmul)
         }
+        Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::AWQ_MATMUL => {
+            Some(OpKind::AwqMatmul)
+        }
         // Phase 3a (post-9c): Op::Alloc + Op::ZeroFill are structural
         // ops dispatched directly via `WorkItemKind::Alloc` /
         // `WorkItemKind::ZeroFill` (no binding-table lookup).
@@ -4192,6 +4195,59 @@ fn op_to_op_params(
                 n,
                 k,
                 block_size: *block_size,
+            }
+        }
+        // AwqMatmul: (batch, m, n, k) from activations [..., m, k] and the
+        // kernel-layout weight [n, k/8]; the padded zeros/scales widths are the
+        // op's own build-time invariant (checked by `awq_matmul`).
+        Op::Fused(
+            _,
+            fuel_graph::registry::FusedOpParams::AwqMatmul {
+                group_size,
+                split_k_iters,
+            },
+        ) => {
+            if node.inputs.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "AwqMatmul expects 4 inputs (activations, weight, zeros, scales), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let a_layout = input_layout(node.inputs[0]);
+            let w_layout = input_layout(node.inputs[1]);
+            let a_dims = a_layout.shape().dims();
+            let w_dims = w_layout.shape().dims();
+            if a_dims.len() < 2 {
+                return Err(Error::Msg(format!(
+                    "AwqMatmul: activations must be rank ≥ 2, got {a_dims:?}",
+                ))
+                .bt());
+            }
+            if w_dims.len() != 2 {
+                return Err(Error::Msg(format!(
+                    "AwqMatmul: weight must be rank 2 [n, k/8], got {w_dims:?}",
+                ))
+                .bt());
+            }
+            let m = a_dims[a_dims.len() - 2];
+            let k = a_dims[a_dims.len() - 1];
+            let n = w_dims[0];
+            let batch: usize = a_dims[..a_dims.len() - 2].iter().product::<usize>().max(1);
+            if k % 8 != 0 || w_dims[1] != k / 8 {
+                return Err(Error::Msg(format!(
+                    "AwqMatmul: weight second dim {} must equal k/8 for k={k} (a multiple of 8)",
+                    w_dims[1],
+                ))
+                .bt());
+            }
+            OpParams::AwqMatmul {
+                batch,
+                m,
+                n,
+                k,
+                group_size: *group_size,
+                split_k_iters: *split_k_iters,
             }
         }
         // Phase 7.6 step 3: SoftmaxLastDim flows through
