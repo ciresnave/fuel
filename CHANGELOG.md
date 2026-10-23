@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.5 - 2026-10-23
+
+### Added
+
+- `fuel-tensor`: `awq` module — `load_awq_layer` / `awq_from_hf_buffers` / `AwqWeight::matmul` load a HuggingFace `*-AWQ` (GEMM) layer into the `AWQ_MATMUL` kernel layout (ROADMAP row 31b)
+
 ## v0.22.4 - 2026-10-23
 
 ### Added
