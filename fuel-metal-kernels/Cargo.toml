@@ -10,11 +10,20 @@ categories = ["science"]
 license = "MIT OR Apache-2.0"
 
 
+# docs.rs builds on Linux, where this crate is empty; document it for an Apple target.
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
 [dependencies]
 half             = { workspace = true }
 once_cell        = { workspace = true }
 thiserror        = { workspace = true }
 tracing          = { workspace = true }
+
+# Apple-only: gated so `cargo publish` verification builds (to an empty crate)
+# on non-Apple hosts, matching fuel-metal-backend.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 objc2            = { workspace = true }
 objc2-metal      = { workspace = true }
 objc2-foundation = { workspace = true }
