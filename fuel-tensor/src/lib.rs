@@ -42,6 +42,7 @@
 // copy of this comment (unaffected by this move) for the full rationale.
 #![allow(clippy::identity_op)]
 
+pub mod awq;
 pub mod cuda_backend;
 pub mod decode_shape;
 pub mod device;
