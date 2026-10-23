@@ -795,6 +795,9 @@ impl DecodeBackbone for Qwen3Model {
 /// An optional per-channel bias vector.
 type Bias = Option<Arc<[f32]>>;
 
+/// A per-channel RmsNorm gain vector.
+type Gain = Arc<[f32]>;
+
 impl Qwen3Weights {
     /// Load Qwen3 weights from HF safetensors (e.g. `Qwen/Qwen3-7B`).
     /// HF naming follows LLaMA + per-head QK-norm:
@@ -883,14 +886,11 @@ impl Qwen3Weights {
         i: usize,
         proj: &impl Fn(&str, usize, usize) -> Result<WeightStorage>,
     ) -> Result<(LayerWeights, Qwen3LayerExtras)> {
-        use fuel_tensor::lazy::load_tensor_as_f32;
         let p = format!("model.layers.{i}");
-        let gain = |name: &str| -> Result<Arc<[f32]>> {
-            Ok(Arc::from(load_tensor_as_f32(st, &format!("{p}.{name}"))?))
-        };
         let (attn_q, attn_k, attn_v, attn_o) = Self::load_attn_projections(cfg, &p, proj)?;
         let (attn_q_bias, attn_k_bias, attn_v_bias) = Self::load_qkv_biases(st, cfg, &p)?;
         let (ffn_gate, ffn_up, ffn_down) = Self::load_ffn_projections(cfg, &p, proj)?;
+        let (attn_norm_gain, ffn_norm_gain, extras) = Self::load_norm_gains(st, &p)?;
         let layer = LayerWeights {
             attn_q,
             attn_q_bias,
@@ -902,14 +902,30 @@ impl Qwen3Weights {
             ffn_gate,
             ffn_up,
             ffn_down,
-            attn_norm_gain: gain("input_layernorm.weight")?,
-            ffn_norm_gain: gain("post_attention_layernorm.weight")?,
+            attn_norm_gain,
+            ffn_norm_gain,
+        };
+        Ok((layer, extras))
+    }
+
+    /// The layer's input/post-attention RmsNorm gains and the Q/K-norm gains.
+    fn load_norm_gains(
+        st: &fuel_loaders::safetensors::MmapedSafetensors,
+        p: &str,
+    ) -> Result<(Gain, Gain, Qwen3LayerExtras)> {
+        use fuel_tensor::lazy::load_tensor_as_f32;
+        let gain = |name: &str| -> Result<Gain> {
+            Ok(Arc::from(load_tensor_as_f32(st, &format!("{p}.{name}"))?))
         };
         let extras = Qwen3LayerExtras {
             q_norm_gain: gain("self_attn.q_norm.weight")?,
             k_norm_gain: gain("self_attn.k_norm.weight")?,
         };
-        Ok((layer, extras))
+        Ok((
+            gain("input_layernorm.weight")?,
+            gain("post_attention_layernorm.weight")?,
+            extras,
+        ))
     }
 
     fn load_attn_projections(

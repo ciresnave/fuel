@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.23.1 - 2026-10-23
+
+### Added
+
+- CI: an advisory, non-blocking CodeRipper `portfolio` job in `rust-ci.yml` (reusable workflow pinned to a coderipper commit SHA; not a required check)
+
+### Changed
+
+- `fuel-transformers`: `Qwen3Weights::load_layer` split further (`load_norm_gains`) to get under the cyclomatic-complexity limit; no behaviour change
+
 ## v0.23.0 - 2026-10-23
 
 ### Breaking
