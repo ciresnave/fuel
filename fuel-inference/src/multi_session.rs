@@ -1450,6 +1450,24 @@ pub struct PagedSessionScheduler<'m, M: PagedDecodeModel> {
     plan: PagedDecodePlan,
     /// Monotonic lifetime counters behind [`stats`](Self::stats).
     counters: PagedCounters,
+    /// Order in which `step` / `step_batched` visit ready sessions (default
+    /// [`PagedSchedulePolicy::AdmissionOrder`]). See [`set_policy`](Self::set_policy).
+    policy: PagedSchedulePolicy,
+}
+
+/// The order in which a [`PagedSessionScheduler`] visits the sessions that are
+/// ready in one quantum (prefill, then decode). Every session still advances once
+/// per `step`; the policy only decides who goes first, which matters to a host
+/// that drains a [`StepReport`] or runs out of pool blocks mid-quantum (the
+/// session served first is the one that finds the free blocks).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PagedSchedulePolicy {
+    /// Admission order (ascending [`SessionId`]) — the original behaviour.
+    #[default]
+    AdmissionOrder,
+    /// Highest [`set_priority`](PagedSessionScheduler::set_priority) first; ties
+    /// keep admission order.
+    Priority,
 }
 
 /// Lifetime counters of one [`PagedSessionScheduler`].
@@ -1499,7 +1517,7 @@ pub struct PagedSessionInfo {
     pub suspended: bool,
     /// The consumer-assigned priority
     /// ([`set_priority`](PagedSessionScheduler::set_priority)); the scheduler
-    /// never reads it.
+    /// reads it only under [`PagedSchedulePolicy::Priority`].
     pub priority: i32,
     /// Tokens generated so far.
     pub generated: usize,
@@ -1559,7 +1577,8 @@ struct PagedSession {
     /// multinomial, so a correctness test must compare logits, not tokens.
     captured_logits: Option<Vec<Vec<f32>>>,
     /// Opaque consumer-assigned priority, exposed through
-    /// [`PagedSessionInfo`]. The scheduler never orders by it.
+    /// [`PagedSessionInfo`]. The scheduler orders by it only under
+    /// [`PagedSchedulePolicy::Priority`].
     priority: i32,
 }
 
@@ -1593,7 +1612,19 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             next_id: 0,
             plan: PagedDecodePlan::PlanOnce,
             counters: PagedCounters::default(),
+            policy: PagedSchedulePolicy::default(),
         })
+    }
+
+    /// Choose how `step` / `step_batched` order the ready sessions. Default
+    /// [`PagedSchedulePolicy::AdmissionOrder`]; takes effect on the next quantum.
+    pub fn set_policy(&mut self, policy: PagedSchedulePolicy) {
+        self.policy = policy;
+    }
+
+    /// Current scheduling policy.
+    pub fn policy(&self) -> PagedSchedulePolicy {
+        self.policy
     }
 
     /// Change the decode planning mode. **The driver default is
@@ -1974,7 +2005,14 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
                 .unwrap_or(usize::MAX);
             by_pos.entry(pos).or_default().push(idx);
         }
-        for (_pos, group) in by_pos {
+        // Groups run in position order; under `Priority` the group holding the
+        // highest-priority session goes first (stable, so position breaks ties).
+        // Members of a group are already in policy order.
+        let mut groups: Vec<Vec<usize>> = by_pos.into_values().collect();
+        if self.policy == PagedSchedulePolicy::Priority {
+            groups.sort_by_key(|g| std::cmp::Reverse(self.sessions[g[0]].priority));
+        }
+        for group in groups {
             for chunk in group.chunks(max_batch.max(1)) {
                 if chunk.len() < 2 {
                     for &idx in chunk {
@@ -1992,12 +2030,15 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
     /// prompt token-by-token, then sample its first token. Errors isolate.
     fn prefill_pass(&mut self, report: &mut StepReport) {
         let model = self.model;
-        for idx in 0..self.sessions.len() {
-            if self.sessions[idx].phase != SessionPhase::Prefill
-                || self.sessions[idx].suspended.is_some()
-            {
-                continue;
-            }
+        let ready = self.in_policy_order(
+            (0..self.sessions.len())
+                .filter(|&i| {
+                    self.sessions[i].phase == SessionPhase::Prefill
+                        && self.sessions[i].suspended.is_none()
+                })
+                .collect(),
+        );
+        for idx in ready {
             let prompt = self.sessions[idx].tokens.clone();
             let handle = self.sessions[idx].handle;
             // Skip any leading tokens already resident from a spliced prefix
@@ -2028,14 +2069,26 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         }
     }
 
-    /// Indices of Decode-ready, non-suspended sessions (ascending).
+    /// Indices of Decode-ready, non-suspended sessions, in policy order.
     fn collect_decode_ready(&self) -> Vec<usize> {
-        (0..self.sessions.len())
-            .filter(|&i| {
-                self.sessions[i].phase == SessionPhase::Decode
-                    && self.sessions[i].suspended.is_none()
-            })
-            .collect()
+        self.in_policy_order(
+            (0..self.sessions.len())
+                .filter(|&i| {
+                    self.sessions[i].phase == SessionPhase::Decode
+                        && self.sessions[i].suspended.is_none()
+                })
+                .collect(),
+        )
+    }
+
+    /// Order `idxs` (ascending admission order on entry) by the scheduler's
+    /// policy. `Priority` is a STABLE sort on descending priority, so ties keep
+    /// admission order.
+    fn in_policy_order(&self, mut idxs: Vec<usize>) -> Vec<usize> {
+        if self.policy == PagedSchedulePolicy::Priority {
+            idxs.sort_by_key(|&i| std::cmp::Reverse(self.sessions[i].priority));
+        }
+        idxs
     }
 
     /// One serial decode-advance of session `idx` (last token → forward → sample).
@@ -2218,9 +2271,11 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             .map(|s| s.new_tokens.as_slice())
     }
 
-    /// Assign session `id` an opaque priority. Mechanism only: the scheduler
-    /// stores and reports it ([`session_infos`](Self::session_infos)) but never
-    /// orders by it; the consumer's policy does. `Err` for an unknown session.
+    /// Assign session `id` a priority (higher goes first). Stored and reported
+    /// ([`session_infos`](Self::session_infos)); it reorders `step` /
+    /// `step_batched` only under [`PagedSchedulePolicy::Priority`] (see
+    /// [`set_policy`](Self::set_policy)) and is ignored by the default policy.
+    /// `Err` for an unknown session.
     pub fn set_priority(&mut self, id: SessionId, priority: i32) -> fuel::Result<()> {
         let s = self
             .sessions
@@ -4064,9 +4119,10 @@ mod tests {
     }
 
     /// ROADMAP row 33: the stats snapshot and per-session listing track the
-    /// real lifecycle, and priority is stored but never reorders anything.
+    /// real lifecycle, and under the default policy priority is stored but never
+    /// reorders anything (the ordering arms are the `paged_scheduler_policy_*` tests).
     #[test]
-    fn paged_scheduler_stats_track_the_lifecycle_and_priority_is_inert() {
+    fn paged_scheduler_stats_track_the_lifecycle_and_default_policy_ignores_priority() {
         let model = tiny_model(9999);
         let mut s =
             PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
@@ -4104,6 +4160,101 @@ mod tests {
         assert_eq!(
             (st.reaped_total, st.finished, st.kv_bytes_resident),
             (2, 0, 0)
+        );
+    }
+
+    /// Admit three same-length sessions with priorities `[0, 1, 5]` under `policy`
+    /// and return `(ids, one step's StepReport.advanced)`. `max_new` is large
+    /// enough that the first quantum prefills AND decodes each session, so
+    /// `advanced` holds each id twice: the prefill pass, then the decode pass.
+    fn policy_probe(
+        policy: Option<PagedSchedulePolicy>,
+        batched: bool,
+        priorities: [i32; 3],
+    ) -> (Vec<SessionId>, Vec<SessionId>) {
+        let model = tiny_model(9999);
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        if let Some(p) = policy {
+            s.set_policy(p);
+        }
+        let mut ids = Vec::new();
+        for p in priorities {
+            let id = s
+                .add_session(&[1, 2, 3], SamplingStrategy::Greedy, None, 6)
+                .unwrap();
+            s.set_priority(id, p).unwrap();
+            ids.push(id);
+        }
+        let report = if batched { s.step_batched(8) } else { s.step() };
+        (ids, report.advanced)
+    }
+
+    /// Default policy is admission order and ignores priority (unchanged behaviour).
+    #[test]
+    fn paged_scheduler_policy_default_is_admission_order() {
+        let model = tiny_model(9999);
+        let s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        assert_eq!(s.policy(), PagedSchedulePolicy::AdmissionOrder);
+        for batched in [false, true] {
+            let (ids, adv) = policy_probe(None, batched, [0, 1, 5]);
+            let want: Vec<_> = ids.iter().chain(ids.iter()).copied().collect();
+            assert_eq!(
+                adv, want,
+                "default policy ignores priority (batched={batched})"
+            );
+        }
+    }
+
+    /// `Priority` visits the highest priority first in BOTH the prefill pass and
+    /// the decode pass, on the serial and the batched arm.
+    #[test]
+    fn paged_scheduler_policy_priority_orders_prefill_and_decode() {
+        for batched in [false, true] {
+            let (ids, adv) = policy_probe(Some(PagedSchedulePolicy::Priority), batched, [0, 1, 5]);
+            let hi_first = [ids[2], ids[1], ids[0]];
+            let want: Vec<_> = hi_first.iter().chain(hi_first.iter()).copied().collect();
+            assert_eq!(adv, want, "priority order (batched={batched})");
+        }
+    }
+
+    /// Equal priorities keep admission order under `Priority` (the sort is stable),
+    /// and only the strictly higher one jumps the queue.
+    #[test]
+    fn paged_scheduler_policy_priority_ties_keep_admission_order() {
+        for batched in [false, true] {
+            let (ids, adv) = policy_probe(Some(PagedSchedulePolicy::Priority), batched, [3, 3, 3]);
+            let want: Vec<_> = ids.iter().chain(ids.iter()).copied().collect();
+            assert_eq!(adv, want, "all-tied (batched={batched})");
+            let (ids, adv) = policy_probe(Some(PagedSchedulePolicy::Priority), batched, [3, 3, 4]);
+            let hi_first = [ids[2], ids[0], ids[1]];
+            let want: Vec<_> = hi_first.iter().chain(hi_first.iter()).copied().collect();
+            assert_eq!(adv, want, "one higher, rest tied (batched={batched})");
+        }
+    }
+
+    /// Ordering must not change what any session generates (T1 firewall): the
+    /// per-session token streams are identical under both policies.
+    #[test]
+    fn paged_scheduler_policy_does_not_change_outputs() {
+        let model = tiny_model(9999);
+        let run = |policy: PagedSchedulePolicy| {
+            let mut s =
+                PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu())
+                    .unwrap();
+            s.set_policy(policy);
+            for (i, p) in [0, 9, 4].into_iter().enumerate() {
+                let id = s
+                    .add_session(&[1, 2 + i as u32, 3], SamplingStrategy::Greedy, None, 5)
+                    .unwrap();
+                s.set_priority(id, p).unwrap();
+            }
+            s.run_to_completion()
+        };
+        assert_eq!(
+            run(PagedSchedulePolicy::AdmissionOrder),
+            run(PagedSchedulePolicy::Priority)
         );
     }
 

@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.22.4 - 2026-10-23
+
+### Added
+
+- `fuel-inference`: `PagedSchedulePolicy {AdmissionOrder, Priority}` with `PagedSessionScheduler::set_policy` / `policy`. Under `Priority`, `step` and `step_batched` visit ready sessions (prefill and decode) highest `set_priority` first, ties in admission order; `step_batched` runs the group holding the highest-priority session first. The default stays `AdmissionOrder`, so existing callers are unchanged, and per-session outputs are identical under both policies.
+
 ## v0.22.3 - 2026-10-23
 
 ### Added
