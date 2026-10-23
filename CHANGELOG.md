@@ -1,6 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.23.2 - 2026-10-23
+
+### Added
+
+- ROADMAP row 39 (first claim): the CUDA f32 `MatMul` now carries an earned numeric accuracy claim, `max_relative` and `max_absolute` 2e-4 (measured worst 3.8e-5 and 5.0e-5 over 12 shapes, k up to 4096, against an f64 host matmul, RTX 4070 Laptop). `fuel-dev-tools seed-cuda-accuracy` earns it, `check-cuda-accuracy` measures without writing; the helpers shared with the Vulkan seeder moved to `verify/accuracy_common.rs`
+- `kernel-contracts/cuda/gemm_dense.fkc.md` is split into `matmul_f32` (carries the claim) and `matmul` (F16, BF16, F64). One section fanned over four dtypes, so a numeric claim there would have needed a pass for each, and F16/BF16 cannot meet the f32 bound. The dtype list is part of the revision hash, so the four MatMul entries are re-keyed: the ledger gains 4 `bit_stable_on_same_hardware` passes at the new hashes plus the 2 accuracy passes (the old-hash records stay, now unused)
+
+### Changed
+
+- CI: the CodeRipper `portfolio` job is repinned to coderipper `a48fc6cc` (sweeps every workspace member)
+
 ## v0.23.1 - 2026-10-23
 
 ### Added

@@ -22,14 +22,120 @@ per-OpKind CUDA cost fn); precision is the author-declared `audited: false` -> U
 
 ---
 
-## matmul  (MatMul - {F32, F16, BF16, F64}, contiguous-only)
+## matmul_f32  (MatMul - F32, contiguous-only; carries the numeric accuracy claim)
+
+out=lhs@rhs Backs `OpKind::MatMul`. packed row-major (wrapper validates byte lengths), so contiguous (default caps); OpParams::Matmul. Output: fresh, contiguous, no aliasing.
+
+```fkc
+kernel: matmul_f32
+op_kind: MatMul
+blurb: "out=lhs@rhs (CUDA/baracuda) F32; contiguous-only; numeric accuracy claim earned (row 39)."
+backend: Cuda
+kernel_source: "baracuda"
+entry_point: "fuel_cuda_backend::fkc::matmul_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "same_as=out"
+    - name: rhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "same_as=out"
+  op_params: { variant: Matmul }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(lhs)
+      shape_rule: same_as(lhs)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths: []
+  in_place: false
+  alignment_bytes: 16
+  access_granularity_bits: 32
+
+cost:
+  provenance: judge_measured
+  class: cheap_elementwise
+  bytes_moved: "3 * n * dtype_bytes"
+  memory: { device_bytes: "n * dtype_bytes", host_bytes: 0, disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: 0.0002                  # MEASURED (row 39): worst 3.8e-5 over 12 shapes; see notes
+  max_absolute: 0.0002                  # MEASURED: worst 5.0e-5 over 12 shapes at unit-scale inputs; see notes
+  audited: true
+  notes: >
+    ACCURACY MEASURED 2026-10-23 (ROADMAP row 39, board 240 option D): the registered
+    kernel was driven through CudaInvoker over 12 shapes (M==1 decode GEMV, 1<M<32, M>=32,
+    k up to 4096; Qwen3-0.6B decode/prefill widths plus wider), inputs uniform [-1, 1),
+    against an f64 host matmul of the same f32 inputs. Worst |out-ref| = 4.95e-5
+    (M=127,N=1024,K=4096); worst |out-ref|/max(|ref|,1.0) = 3.85e-5 (ledger evidence,
+    `fuel-dev-tools seed-cuda-accuracy`, NVIDIA GeForce RTX 4070 Laptop GPU). The claim is
+    2e-4 for both (4x / 5x headroom). max_absolute is for unit-scale inputs only: it is not
+    scale-free. Not evidence about other inputs, the F16/BF16/F64 variants (a separate
+    section), k above 4096, or other GPUs/cuBLAS heuristics (the ledger has no device field;
+    the device name is in the record evidence).
+    Audited 2026-07-11 (task-cublas-audit; see
+    `.superpowers/sdd/task-cublas-audit-report.md` and
+    `docs/architecture/10-decisions-log.md` 2026-07-11 entry for full
+    evidence). Call mode: `cublasGemmEx` (batch==1) /
+    `cublasGemmStridedBatchedEx` (batch>1) under `CUBLAS_GEMM_DEFAULT`
+    heuristic algorithm selection, `CUBLAS_COMPUTE_32F` (true IEEE
+    binary32, NOT TF32), via baracuda-kernels-sys's
+    `gemm_dense_cublas_facade` (baracuda 0.0.1-alpha.77) and its
+    per-CUDA-context pooled cuBLAS handle (one handle bound to one
+    stream at a time via `cublasSetStream_v2`). NVIDIA's cuBLAS docs
+    (https://docs.nvidia.com/cuda/cublas/#results-reproducibility)
+    state bit-wise reproducibility across runs "by design" for a fixed
+    toolkit version + GPU architecture + SM count, provided a single
+    CUDA stream is active; the guarantee is explicitly NOT claimed
+    across toolkit versions or under multiple concurrently-active
+    streams sharing a handle's workspace (mitigated by
+    `CUBLAS_WORKSPACE_CONFIG` / per-stream workspace, not applicable
+    here — Fuel's decode graph and this audit both use one context/
+    stream per matmul sequence). Empirically verified on this exact
+    machine (RTX 4070, driver + CUDA 13.3 + baracuda alpha.77, git
+    f41137b4-derived crate) at 5 real decode-graph matmul shapes (Q/O
+    dim128 GEMV, KV-proj GQA-narrow, FFN up/down, batched attention
+    scores): (a) 150 repeat calls per shape, byte-identical to the
+    first call, zero deviations; (b) same, while a SECOND CUDA context/
+    stream concurrently launched >600 GEMMs in a tight loop (genuine
+    cross-stream contention, not same-stream serialization); (c) the
+    same golden output reproduced across 3 separate `cargo test`
+    process invocations (fresh cuBLAS handle each time). Every check
+    passed with zero deviation. Not claimed: bit-reproducibility across
+    a cuBLAS/CUDA/driver upgrade, or under >1 concurrently-active
+    stream sharing a single pooled handle's default workspace pool (a
+    real but narrower risk than the seed note implied — documented
+    above, not observed to actually break in this audit's 2-context
+    test, but NVIDIA's own docs decline to guarantee it, so this
+    contract does not claim it either).
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## matmul  (MatMul - {F16, BF16, F64}, contiguous-only)
 
 out=lhs@rhs Backs `OpKind::MatMul`. packed row-major (wrapper validates byte lengths), so contiguous (default caps); OpParams::Matmul. Output: fresh, contiguous, no aliasing.
 
 ```fkc
 kernel: matmul
 op_kind: MatMul
-blurb: "out=lhs@rhs (CUDA/baracuda) {F32, F16, BF16, F64}; contiguous-only; per-(op,dtype)."
+blurb: "out=lhs@rhs (CUDA/baracuda) {F16, BF16, F64}; contiguous-only; per-(op,dtype)."
 backend: Cuda
 kernel_source: "baracuda"
 entry_point: "fuel_cuda_backend::fkc::matmul"
@@ -38,12 +144,12 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: lhs
-      dtypes: [F32, F16, BF16, F64]
+      dtypes: [F16, BF16, F64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_as=out"
     - name: rhs
-      dtypes: [F32, F16, BF16, F64]
+      dtypes: [F16, BF16, F64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_as=out"
