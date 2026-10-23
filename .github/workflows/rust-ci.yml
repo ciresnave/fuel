@@ -1092,3 +1092,14 @@ jobs:
           fi
           echo "all measured candidates behave as recorded"
  
+
+  # CodeRipper portfolio check: ADVISORY and NON-BLOCKING (CireSnave, 2026-10-23:
+  # "Roll out advisory-only, non-blocking CodeRipper checks everywhere."). It is
+  # not a required status check, so a red here does not gate a merge; findings are
+  # triaged by rule on the ROADMAP, never silenced in this file. The reusable
+  # workflow is pinned to a commit SHA on coderipper's main, fixes the rule
+  # profile and the CodeRipper version, and builds this crate (build.rs runs).
+  portfolio:
+    permissions:
+      contents: read
+    uses: ciresnave/coderipper/.github/workflows/portfolio.yml@c665210ad0972cf3ddb7bc81bdd7800c3248a938
