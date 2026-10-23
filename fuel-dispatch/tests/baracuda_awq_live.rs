@@ -206,6 +206,7 @@ struct RefusalHarness {
 
 impl RefusalHarness {
     fn new() -> Self {
+        fuel_test_support::require_gpu_run_lock();
         let dev = CudaDevice::new(0).expect("cuda device");
         let mut table = KernelBindingTable::new();
         register_cuda_kernels(&mut table);
@@ -260,7 +261,6 @@ impl RefusalHarness {
 /// same buffers run when the parameters are honest.
 #[test]
 fn awq_matmul_f16_refuses_unrunnable_shapes_before_launch() {
-    fuel_test_support::require_gpu_run_lock();
     let h = RefusalHarness::new();
     h.call(64, 256, 128, 8)
         .expect("control: the honest parameters run");
