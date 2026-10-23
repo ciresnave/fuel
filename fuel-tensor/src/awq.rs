@@ -53,14 +53,25 @@ impl AwqWeight {
     /// activations' dtype.
     ///
     /// `split_k_iters` is a CUDA launch-tuning parameter (8 is AutoAWQ's
-    /// default); the decompose path ignores it.
-    pub fn matmul(&self, activations: &Tensor, split_k_iters: i32) -> Tensor {
-        Tensor::from_graph_tensor(activations.graph_tensor().awq_matmul(
-            self.weight.graph_tensor(),
-            self.zeros.graph_tensor(),
-            self.scales.graph_tensor(),
-            self.group_size,
-            split_k_iters,
+    /// default); the decompose path ignores it, so it is validated here rather
+    /// than left to a kernel launch: it must be positive. The kernel's own
+    /// constraints (`ic % (32 * split_k_iters) == 0`, `oc % 64 == 0`, sm_80+)
+    /// are baracuda's `can_implement`'s to enforce at launch.
+    pub fn matmul(&self, activations: &Tensor, split_k_iters: i32) -> Result<Tensor> {
+        if split_k_iters <= 0 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "AwqWeight::matmul: split_k_iters={split_k_iters} must be positive"
+            ))
+            .bt());
+        }
+        Ok(Tensor::from_graph_tensor(
+            activations.graph_tensor().awq_matmul(
+                self.weight.graph_tensor(),
+                self.zeros.graph_tensor(),
+                self.scales.graph_tensor(),
+                self.group_size,
+                split_k_iters,
+            ),
         ))
     }
 }
@@ -132,6 +143,41 @@ fn read_u32_words(
         .collect())
 }
 
+fn read_f16_scales(
+    st: &safetensors::SafeTensors,
+    key: &str,
+    groups: usize,
+    oc: usize,
+) -> Result<Vec<f16>> {
+    let view = st.tensor(key).map_err(|e| {
+        fuel_ir::Error::Msg(format!(
+            "load_awq_layer: tensor {key:?} not found in safetensors: {e}"
+        ))
+        .bt()
+    })?;
+    if view.dtype() != safetensors::Dtype::F16 {
+        return Err(fuel_ir::Error::Msg(format!(
+            "load_awq_layer: {key:?} dtype={:?}, expected F16",
+            view.dtype()
+        ))
+        .bt());
+    }
+    if view.shape() != [groups, oc] {
+        return Err(fuel_ir::Error::Msg(format!(
+            "load_awq_layer: {key:?} shape={:?}, expected [{groups}, {oc}]",
+            view.shape()
+        ))
+        .bt());
+    }
+    Ok(view
+        .data()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f16::from_bits(u16::from_le_bytes(*c)))
+        .collect())
+}
+
 /// Load one `WQLinear_GEMM` layer from a parsed safetensors view. `ic`/`oc` are
 /// the layer's logical input/output features (from the model config);
 /// `group_size` is `quantization_config.group_size`. Every tensor's dtype and
@@ -155,34 +201,7 @@ pub fn load_awq_layer(
     let groups = ic / group_size;
     let qweight = read_u32_words(st, &format!("{prefix}.qweight"), ic, oc / 8)?;
     let qzeros = read_u32_words(st, &format!("{prefix}.qzeros"), groups, oc / 8)?;
-    let scales_key = format!("{prefix}.scales");
-    let sview = st.tensor(&scales_key).map_err(|e| {
-        fuel_ir::Error::Msg(format!(
-            "load_awq_layer: tensor {scales_key:?} not found in safetensors: {e}"
-        ))
-        .bt()
-    })?;
-    if sview.dtype() != safetensors::Dtype::F16 {
-        return Err(fuel_ir::Error::Msg(format!(
-            "load_awq_layer: {scales_key:?} dtype={:?}, expected F16",
-            sview.dtype()
-        ))
-        .bt());
-    }
-    if sview.shape() != [groups, oc] {
-        return Err(fuel_ir::Error::Msg(format!(
-            "load_awq_layer: {scales_key:?} shape={:?}, expected [{groups}, {oc}]",
-            sview.shape()
-        ))
-        .bt());
-    }
-    let scales: Vec<f16> = sview
-        .data()
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|c| f16::from_bits(u16::from_le_bytes(*c)))
-        .collect();
+    let scales = read_f16_scales(st, &format!("{prefix}.scales"), groups, oc)?;
     awq_from_hf_buffers(&qweight, &qzeros, &scales, ic, oc, group_size, device)
 }
 
@@ -278,7 +297,7 @@ mod tests {
         );
         // No CPU kernel for the fused op: realize its decompose (the correctness
         // floor), as the lowering-only rule set rewrites it.
-        let y = w.matmul(&act, 8);
+        let y = w.matmul(&act, 8).unwrap();
         let graph = y.graph_tensor().graph().clone();
         let roots = fuel_graph::opt::RuleRegistry::lowering_only()
             .optimize_to_fixpoint(&graph, &[y.graph_tensor().id()]);
@@ -376,5 +395,135 @@ mod tests {
         let st = safetensors::SafeTensors::deserialize(&bad).unwrap();
         let e = load_awq_layer(&st, "l", IC, OC, GROUP, &Device::cpu()).err();
         assert!(e.is_some_and(|e| format!("{e}").contains("expected F16")));
+    }
+    #[test]
+    fn non_positive_split_k_iters_is_a_typed_error() {
+        let l = logical();
+        let bytes = checkpoint(&l, safetensors::Dtype::I32, safetensors::Dtype::F16);
+        let st = safetensors::SafeTensors::deserialize(&bytes).unwrap();
+        let w = load_awq_layer(&st, "l", IC, OC, GROUP, &Device::cpu()).unwrap();
+        let act = Tensor::from_graph_tensor(
+            w.weight
+                .graph_tensor()
+                .const_f32_like(vec![0.0f32; IC], Shape::from_dims(&[1, IC]))
+                .unwrap(),
+        );
+        for bad in [0, -1, i32::MIN] {
+            let Err(e) = w.matmul(&act, bad) else {
+                panic!("split_k_iters={bad} must be refused");
+            };
+            assert!(format!("{e}").contains("split_k_iters"), "{e}");
+        }
+        assert!(
+            w.matmul(&act, 1).is_ok(),
+            "control: a positive value is accepted"
+        );
+    }
+
+    /// REAL BYTES. `slice.safetensors` is rows 0..256 / output columns 0..64 of
+    /// `model.layers.0.mlp.gate_proj` of `Orion-zhen/Qwen3-0.6B-AWQ` (see
+    /// `tests/fixtures/awq_qwen3_0_6b/PROVENANCE.md`), an AutoAWQ GEMM checkpoint.
+    /// Decides whether `qzeros` is the logical zero-point as stored (AutoAWQ) or
+    /// the logical zero minus one (GPTQ v1): trained weights are roughly
+    /// zero-centred, so the mean of `q - z` in code units is ~0 for the right
+    /// reading and ~-1 for a zero stored minus one. The decode here is written
+    /// independently of `awq_repack`.
+    fn real_slice() -> (Vec<u8>, Vec<u8>, Vec<f16>) {
+        let bytes = include_bytes!("../tests/fixtures/awq_qwen3_0_6b/slice.safetensors");
+        let st = safetensors::SafeTensors::deserialize(bytes).unwrap();
+        let words = |k: &str| -> Vec<u32> {
+            st.tensor(k)
+                .unwrap()
+                .data()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect()
+        };
+        let unpack = |w: &[u32], rows: usize| -> Vec<u8> {
+            let mut out = vec![0u8; rows * 64];
+            for r in 0..rows {
+                for col in 0..8 {
+                    for i in 0..8 {
+                        out[r * 64 + col * 8 + HF_AWQ_PACK_ORDER[i]] =
+                            ((w[r * 8 + col] >> (4 * i)) & 0xF) as u8;
+                    }
+                }
+            }
+            out
+        };
+        let scales = st
+            .tensor("l.scales")
+            .unwrap()
+            .data()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| f16::from_bits(u16::from_le_bytes(*c)))
+            .collect();
+        (
+            unpack(&words("l.qweight"), 256),
+            unpack(&words("l.qzeros"), 2),
+            scales,
+        )
+    }
+
+    #[test]
+    fn real_checkpoint_zeros_are_stored_as_is_not_minus_one() {
+        let (q, z, _) = real_slice();
+        let mean_shift = |shift: f64| -> f64 {
+            let mut sum = 0.0;
+            for i in 0..256 {
+                for o in 0..64 {
+                    sum += f64::from(q[i * 64 + o]) - (f64::from(z[(i / 128) * 64 + o]) + shift);
+                }
+            }
+            sum / (256.0 * 64.0)
+        };
+        let as_is = mean_shift(0.0);
+        assert!(as_is.abs() < 0.35, "mean(q - z) = {as_is}, expected ~0");
+        // Sabotage siblings: reading the stored zero as (logical - 1) or
+        // (logical + 1) moves the mean by a full code, so the bound above
+        // discriminates the three readings.
+        assert!(mean_shift(1.0) < -0.65, "plus-one reading should be ~-1");
+        assert!(mean_shift(-1.0) > 0.65, "minus-one reading should be ~+1");
+    }
+
+    #[test]
+    fn real_checkpoint_slice_loads_and_matches_the_as_is_reference() {
+        let (q, z, s) = real_slice();
+        let bytes = include_bytes!("../tests/fixtures/awq_qwen3_0_6b/slice.safetensors");
+        let st = safetensors::SafeTensors::deserialize(bytes).unwrap();
+        let w = load_awq_layer(&st, "l", 256, 64, 128, &Device::cpu()).unwrap();
+        let x: Vec<f32> = (0..256)
+            .map(|i| ((i * 5) % 17) as f32 * 0.1 - 0.8)
+            .collect();
+        let act = Tensor::from_graph_tensor(
+            w.weight
+                .graph_tensor()
+                .const_f32_like(x.clone(), Shape::from_dims(&[1, 256]))
+                .unwrap(),
+        );
+        let y = w.matmul(&act, 8).unwrap();
+        let graph = y.graph_tensor().graph().clone();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[y.graph_tensor().id()]);
+        let got = crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &Device::cpu())
+            .unwrap();
+        for o in 0..64 {
+            let mut want = 0.0f64;
+            for i in 0..256 {
+                let g = i / 128;
+                want += f64::from(x[i])
+                    * (f64::from(q[i * 64 + o]) - f64::from(z[g * 64 + o]))
+                    * f64::from(s[g * 64 + o].to_f32());
+            }
+            assert!(
+                (f64::from(got[o]) - want).abs() <= 1e-3 * want.abs().max(1.0),
+                "col {o}: got {} want {want}",
+                got[o]
+            );
+        }
     }
 }
