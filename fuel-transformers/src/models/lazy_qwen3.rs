@@ -933,19 +933,104 @@ impl Qwen3Weights {
 
 // ---- Paged-storage decode (PagedDecodeModel Stage 2) -------------------------
 
-/// One layer's paged-attention bindings: the pool K/V placeholders, the RoPE
-/// tables, the page table and the per-row write targets. Bundled so the layer
-/// builder stays under clippy's argument limit.
+/// The per-step bindings shared by every layer of a paged step: the RoPE
+/// tables, the page table and the per-row write targets.
+struct Qwen3PagedStep {
+    rope_cos: Tensor,
+    rope_sin: Tensor,
+    block_table: Tensor,
+    context_lens: Tensor,
+    writes: Vec<(fuel_kv_pool::PhysBlockId, usize)>,
+    scale: f32,
+}
+
+/// One layer's paged-attention bindings: the pool K/V placeholders plus the
+/// step-wide [`Qwen3PagedStep`]. Bundled so the layer builder stays under
+/// clippy's argument limit.
 struct Qwen3PagedLayerInputs<'a> {
     pool: &'a fuel_tensor::kv_block_pool_device::DeviceKvPool,
     k_pool_ph: &'a Tensor,
     v_pool_ph: &'a Tensor,
-    rope_cos: &'a Tensor,
-    rope_sin: &'a Tensor,
-    block_table: &'a Tensor,
-    context_lens: &'a Tensor,
-    writes: &'a [(fuel_kv_pool::PhysBlockId, usize)],
-    scale: f32,
+    step: &'a Qwen3PagedStep,
+}
+
+/// What [`reserve_paged_slots`] reserved for one step.
+struct Qwen3PagedReservation {
+    positions: Vec<usize>,
+    writes: Vec<(fuel_kv_pool::PhysBlockId, usize)>,
+    pt: fuel_tensor::kv_block_pool_device::PageTableHost,
+}
+
+/// Reserve this step's KV slots: each session's position, the (block, slot)
+/// it will write, and the materialized page table. Capacity is verified
+/// BEFORE any session is mutated (one block per boundary-crossing session
+/// plus one per shared frontier block copy-on-write will split).
+fn reserve_paged_slots(
+    who: &str,
+    pool: &mut fuel_tensor::kv_block_pool_device::DeviceKvPool,
+    sessions: &[fuel_kv_pool::SessionHandle],
+) -> Result<Qwen3PagedReservation> {
+    let block_size = pool.geometry().block_size;
+    let mut positions = Vec::with_capacity(sessions.len());
+    for &s in sessions {
+        let p = pool
+            .core()
+            .filled_tokens(s)
+            .ok_or_else(|| fuel_ir::error::Error::Msg(format!("{who}: unknown session")).bt())?;
+        positions.push(p);
+    }
+    let needed = paged_blocks_needed(who, pool, sessions, &positions)?;
+    let free = pool.core().free_blocks();
+    if needed > free {
+        return Err(fuel_ir::error::Error::Msg(format!(
+            "{who}: batch needs {needed} blocks, {free} free"
+        ))
+        .bt());
+    }
+    let mut writes = Vec::with_capacity(sessions.len());
+    for (&s, &pos_b) in sessions.iter().zip(&positions) {
+        pool.core_mut().append(s, 1).map_err(|e| {
+            fuel_ir::error::Error::Msg(format!("{who}: block append failed: {e:?}")).bt()
+        })?;
+        let phys = pool.ensure_writable_block(s, pos_b / block_size)?;
+        writes.push((phys, pos_b % block_size));
+    }
+    let pt = pool.materialize_block_table(sessions).map_err(|e| {
+        fuel_ir::error::Error::Msg(format!("{who}: block-table materialize failed: {e:?}")).bt()
+    })?;
+    Ok(Qwen3PagedReservation {
+        positions,
+        writes,
+        pt,
+    })
+}
+
+/// Blocks the step must allocate: one per session at a block boundary, plus
+/// one per shared (refcount > 1) frontier block that copy-on-write will split.
+fn paged_blocks_needed(
+    who: &str,
+    pool: &fuel_tensor::kv_block_pool_device::DeviceKvPool,
+    sessions: &[fuel_kv_pool::SessionHandle],
+    positions: &[usize],
+) -> Result<usize> {
+    let block_size = pool.geometry().block_size;
+    let mut needed = 0usize;
+    for (&s, &pos_b) in sessions.iter().zip(positions) {
+        if pos_b % block_size == 0 {
+            needed += 1;
+            continue;
+        }
+        let frontier = pool
+            .core()
+            .resident_block(s, pos_b / block_size)
+            .ok_or_else(|| {
+                fuel_ir::error::Error::Msg(format!("{who}: frontier block not resident")).bt()
+            })?;
+        if pool.core().block_refcount(frontier) > 1 {
+            needed += 1;
+        }
+    }
+    Ok(needed)
 }
 
 impl Qwen3Model {
@@ -959,6 +1044,12 @@ impl Qwen3Model {
         tokens: &[u32],
         pool: &fuel_tensor::kv_block_pool_device::DeviceKvPool,
     ) -> Result<()> {
+        self.check_paged_config(who)?;
+        self.check_paged_inputs(who, tokens, pool)
+    }
+
+    /// The model-side half of [`Self::check_paged_step`]: config and weights.
+    fn check_paged_config(&self, who: &str) -> Result<()> {
         let cfg = &self.config;
         let err = |m: String| Err(fuel_ir::error::Error::Msg(format!("{who}: {m}")).bt());
         // Paged attention attends the whole prefix: it has no window. A config
@@ -979,6 +1070,18 @@ impl Qwen3Model {
                 cfg.num_hidden_layers,
             ));
         }
+        Ok(())
+    }
+
+    /// The call-side half of [`Self::check_paged_step`]: tokens and pool.
+    fn check_paged_inputs(
+        &self,
+        who: &str,
+        tokens: &[u32],
+        pool: &fuel_tensor::kv_block_pool_device::DeviceKvPool,
+    ) -> Result<()> {
+        let cfg = &self.config;
+        let err = |m: String| Err(fuel_ir::error::Error::Msg(format!("{who}: {m}")).bt());
         if let Some(&t) = tokens.iter().find(|&&t| t as usize >= cfg.vocab_size) {
             return err(format!(
                 "token {t} out of range for vocab {}",
@@ -1064,7 +1167,6 @@ impl Qwen3Model {
     ) -> Result<Vec<Vec<f32>>> {
         const WHO: &str = "Qwen3Model::forward_paged_step_batched";
         let cfg = &self.config;
-        let weights = &self.weights;
         let k = tokens.len();
         if k == 0 || k != sessions.len() {
             return Err(fuel_ir::error::Error::Msg(format!(
@@ -1077,112 +1179,28 @@ impl Qwen3Model {
         self.check_paged_step(WHO, tokens, pool)?;
         let act_dtype = pool.dtype();
         let dev = pool.device().clone();
-        let block_size = pool.geometry().block_size;
-
-        let mut positions = Vec::with_capacity(k);
-        for &s in sessions {
-            let p = pool.core().filled_tokens(s).ok_or_else(|| {
-                fuel_ir::error::Error::Msg(format!("{WHO}: unknown session")).bt()
-            })?;
-            positions.push(p);
-        }
-
-        // Atomicity + capacity pre-check: one block per boundary-crossing
-        // session plus one per shared frontier block copy-on-write will split,
-        // verified BEFORE any session is mutated.
-        let mut needed = 0usize;
-        for (bi, &s) in sessions.iter().enumerate() {
-            let pos_b = positions[bi];
-            if pos_b % block_size == 0 {
-                needed += 1;
-            } else {
-                let frontier = pool
-                    .core()
-                    .resident_block(s, pos_b / block_size)
-                    .ok_or_else(|| {
-                        fuel_ir::error::Error::Msg(format!("{WHO}: frontier block not resident"))
-                            .bt()
-                    })?;
-                if pool.core().block_refcount(frontier) > 1 {
-                    needed += 1;
-                }
-            }
-        }
-        let free = pool.core().free_blocks();
-        if needed > free {
-            return Err(fuel_ir::error::Error::Msg(format!(
-                "{WHO}: batch needs {needed} blocks, {free} free"
-            ))
-            .bt());
-        }
-
-        let mut writes: Vec<(fuel_kv_pool::PhysBlockId, usize)> = Vec::with_capacity(k);
-        for (bi, &s) in sessions.iter().enumerate() {
-            let pos_b = positions[bi];
-            pool.core_mut().append(s, 1).map_err(|e| {
-                fuel_ir::error::Error::Msg(format!("{WHO}: block append failed: {e:?}")).bt()
-            })?;
-            let phys = pool.ensure_writable_block(s, pos_b / block_size)?;
-            writes.push((phys, pos_b % block_size));
-        }
-        let pt = pool.materialize_block_table(sessions).map_err(|e| {
-            fuel_ir::error::Error::Msg(format!("{WHO}: block-table materialize failed: {e:?}")).bt()
-        })?;
+        let Qwen3PagedReservation {
+            positions,
+            writes,
+            pt,
+        } = reserve_paged_slots(WHO, pool, sessions)?;
 
         // Embed K tokens -> [K, 1, hidden] (f32 table; cast to the activation dtype).
-        let embed = Tensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &dev,
-        )?;
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[k]))?;
-        let mut h = embed
-            .index_select(0, &token_ids)?
-            .reshape(Shape::from_dims(&[k, 1, cfg.hidden_size]))?
-            .to_dtype(act_dtype)?;
-
+        let h = self.embed_paged_tokens(tokens, &dev, act_dtype)?;
         let (rope_cos, rope_sin) =
             h.rope_tables_const_batched(cfg.rope_theta, &positions, cfg.head_dim);
-        let scale = (1.0_f64 / (cfg.head_dim as f64).sqrt()) as f32;
-        let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape())?;
-        let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())?;
+        let step = Qwen3PagedStep {
+            rope_cos,
+            rope_sin,
+            block_table: h.const_u32_like(pt.block_table.clone(), pt.block_table_shape())?,
+            context_lens: h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape())?,
+            writes,
+            scale: (1.0_f64 / (cfg.head_dim as f64).sqrt()) as f32,
+        };
+        let (h, cache) = self.run_paged_layers(WHO, h, pool, &step)?;
 
-        let mut cache = fuel_dispatch::pipelined::StorageCache::new();
-        for (li, (layer, extras)) in weights
-            .layers
-            .iter()
-            .zip(weights.layer_extras.iter())
-            .enumerate()
-        {
-            let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
-            let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
-            let k_arc = pool.k_pool(li).ok_or_else(|| {
-                fuel_ir::error::Error::Msg(format!("{WHO}: no K pool buffer for layer {li}")).bt()
-            })?;
-            let v_arc = pool.v_pool(li).ok_or_else(|| {
-                fuel_ir::error::Error::Msg(format!("{WHO}: no V pool buffer for layer {li}")).bt()
-            })?;
-            cache.insert(k_ph.graph_tensor().id(), Arc::clone(k_arc));
-            cache.insert(v_ph.graph_tensor().id(), Arc::clone(v_arc));
-            h = self.apply_layer_paged_batched(
-                &h,
-                layer,
-                extras,
-                &Qwen3PagedLayerInputs {
-                    pool,
-                    k_pool_ph: &k_ph,
-                    v_pool_ph: &v_ph,
-                    rope_cos: &rope_cos,
-                    rope_sin: &rope_sin,
-                    block_table: &block_table,
-                    context_lens: &context_lens,
-                    writes: &writes,
-                    scale,
-                },
-            )?;
-        }
-
-        let h_norm = h.rms_norm_affine(Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
+        let h_norm =
+            h.rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)?;
         let logits = self.apply_lm_head(&h_norm)?; // [K, 1, vocab]
         let logits_flat = logits
             .reshape(Shape::from_dims(&[k * cfg.vocab_size]))?
@@ -1196,6 +1214,73 @@ impl Qwen3Model {
         Ok(flat.chunks(cfg.vocab_size).map(|c| c.to_vec()).collect())
     }
 
+    /// Embed `tokens` -> `[K, 1, hidden]` in the activation dtype.
+    fn embed_paged_tokens(
+        &self,
+        tokens: &[u32],
+        dev: &fuel_tensor::Device,
+        act_dtype: DType,
+    ) -> Result<Tensor> {
+        let cfg = &self.config;
+        let embed = Tensor::from_f32(
+            self.weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
+            dev,
+        )?;
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[tokens.len()]))?;
+        embed
+            .index_select(0, &token_ids)?
+            .reshape(Shape::from_dims(&[tokens.len(), 1, cfg.hidden_size]))?
+            .to_dtype(act_dtype)
+    }
+
+    /// Run every layer of the paged step, binding each layer's K/V pool buffers
+    /// to fresh placeholders. Returns the hidden state and the storage cache
+    /// that feeds those placeholders at realize time.
+    fn run_paged_layers(
+        &self,
+        who: &str,
+        mut h: Tensor,
+        pool: &fuel_tensor::kv_block_pool_device::DeviceKvPool,
+        step: &Qwen3PagedStep,
+    ) -> Result<(Tensor, fuel_dispatch::pipelined::StorageCache)> {
+        let act_dtype = pool.dtype();
+        let mut cache = fuel_dispatch::pipelined::StorageCache::new();
+        for (li, (layer, extras)) in self
+            .weights
+            .layers
+            .iter()
+            .zip(self.weights.layer_extras.iter())
+            .enumerate()
+        {
+            let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
+            let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
+            let (k_arc, v_arc) = match (pool.k_pool(li), pool.v_pool(li)) {
+                (Some(k), Some(v)) => (k, v),
+                _ => {
+                    return Err(fuel_ir::error::Error::Msg(format!(
+                        "{who}: no K/V pool buffer for layer {li}"
+                    ))
+                    .bt());
+                }
+            };
+            cache.insert(k_ph.graph_tensor().id(), Arc::clone(k_arc));
+            cache.insert(v_ph.graph_tensor().id(), Arc::clone(v_arc));
+            h = self.apply_layer_paged_batched(
+                &h,
+                layer,
+                extras,
+                &Qwen3PagedLayerInputs {
+                    pool,
+                    k_pool_ph: &k_ph,
+                    v_pool_ph: &v_ph,
+                    step,
+                },
+            )?;
+        }
+        Ok((h, cache))
+    }
+
     /// One Qwen3 layer of the paged step: the prefill layer's projections,
     /// QK-norm and FFN, with RoPE per row and the KV write + attention replaced
     /// by `DeviceKvPool::build_decode_attn_batched`.
@@ -1207,39 +1292,10 @@ impl Qwen3Model {
         p: &Qwen3PagedLayerInputs<'_>,
     ) -> Result<Tensor> {
         let cfg = &self.config;
-        let batch = x.shape().dims()[0];
-        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
-        let act_dtype = x.dtype();
-
         let x_norm = x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
-        let q = layer
-            .attn_q
-            .apply_linear(&x_norm, cfg.hidden_size, q_dim)?
-            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer
-            .attn_k
-            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
-            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer
-            .attn_v
-            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
-            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
-        let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
-        let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
-        let v_h = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
-
-        // Per-head QK-norm BEFORE RoPE -- the order the prefill path uses.
-        let q = q.rms_norm_affine(Arc::clone(&extras.q_norm_gain), cfg.rms_norm_eps)?;
-        let k = k.rms_norm_affine(Arc::clone(&extras.k_norm_gain), cfg.rms_norm_eps)?;
-        let q_r = q
-            .to_dtype(DType::F32)?
-            .rope_batched(p.rope_cos, p.rope_sin)?
-            .to_dtype(act_dtype)?;
-        let k_r = k
-            .to_dtype(DType::F32)?
-            .rope_batched(p.rope_cos, p.rope_sin)?
-            .to_dtype(act_dtype)?;
+        let (q, k, v_h) = self.paged_qkv_heads(&x_norm, layer)?;
+        let (q_r, k_r) = self.paged_qk_norm_rope(q, k, extras, p.step)?;
 
         let attn = p.pool.build_decode_attn_batched(
             p.k_pool_ph,
@@ -1247,17 +1303,72 @@ impl Qwen3Model {
             &q_r,
             &k_r,
             &v_h,
-            p.block_table,
-            p.context_lens,
-            p.writes,
-            p.scale,
+            &p.step.block_table,
+            &p.step.context_lens,
+            &p.step.writes,
+            p.step.scale,
         )?;
         let merged = attn
             .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, 1, q_dim]))?;
+            .reshape(Shape::from_dims(&[x.shape().dims()[0], 1, q_dim]))?;
         let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?;
-
         let h1 = x.add(&attn_out)?;
+        let ffn_out = self.paged_ffn(&h1, layer)?;
+        h1.add(&ffn_out)
+    }
+
+    /// Biased Q/K/V projections split into heads.
+    fn paged_qkv_heads(
+        &self,
+        x_norm: &Tensor,
+        layer: &LayerWeights,
+    ) -> Result<(Tensor, Tensor, Tensor)> {
+        let cfg = &self.config;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let q = layer
+            .attn_q
+            .apply_linear(x_norm, cfg.hidden_size, q_dim)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        Ok((
+            q.split_heads(cfg.num_attention_heads, cfg.head_dim)?,
+            k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?,
+            v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?,
+        ))
+    }
+
+    /// Per-head QK-norm BEFORE RoPE -- the order the prefill path uses --
+    /// then per-row RoPE in f32, cast back to the activation dtype.
+    fn paged_qk_norm_rope(
+        &self,
+        q: Tensor,
+        k: Tensor,
+        extras: &Qwen3LayerExtras,
+        step: &Qwen3PagedStep,
+    ) -> Result<(Tensor, Tensor)> {
+        let cfg = &self.config;
+        let act_dtype = q.dtype();
+        let q = q.rms_norm_affine(Arc::clone(&extras.q_norm_gain), cfg.rms_norm_eps)?;
+        let k = k.rms_norm_affine(Arc::clone(&extras.k_norm_gain), cfg.rms_norm_eps)?;
+        let rope = |t: Tensor| -> Result<Tensor> {
+            t.to_dtype(DType::F32)?
+                .rope_batched(&step.rope_cos, &step.rope_sin)?
+                .to_dtype(act_dtype)
+        };
+        Ok((rope(q)?, rope(k)?))
+    }
+
+    /// The SwiGLU feed-forward block (without the residual add).
+    fn paged_ffn(&self, h1: &Tensor, layer: &LayerWeights) -> Result<Tensor> {
+        let cfg = &self.config;
         let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
         let gate = layer
             .ffn_gate
@@ -1266,11 +1377,9 @@ impl Qwen3Model {
             .ffn_up
             .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        let ffn_out =
-            layer
-                .ffn_down
-                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
-        h1.add(&ffn_out)
+        layer
+            .ffn_down
+            .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)
     }
 }
 
