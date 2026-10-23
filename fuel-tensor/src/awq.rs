@@ -433,16 +433,15 @@ mod tests {
     /// zero-centred, so the mean of `q - z` in code units is ~0 for the right
     /// reading and ~-1 for a zero stored minus one. The decode here is written
     /// independently of `awq_repack`.
-    /// The in-memory safetensors slice described above, or `None` after
+    /// The checkpoint file named by `FUEL_QWEN3_AWQ_DIR`, or `None` after
     /// declaring the skip.
-    fn real_slice_bytes() -> Option<Vec<u8>> {
+    fn checkpoint_file() -> Option<std::path::PathBuf> {
         use fuel_test_support::hardware::{Hardware, Missing, skip};
         let Some(dir) = std::env::var_os("FUEL_QWEN3_AWQ_DIR") else {
             skip(
                 Hardware::Hub,
                 Missing::device(
-                    "FUEL_QWEN3_AWQ_DIR is not set (Orion-zhen/Qwen3-0.6B-AWQ, GPL-3.0, \
-                     never committed)",
+                    "FUEL_QWEN3_AWQ_DIR is not set (Orion-zhen/Qwen3-0.6B-AWQ, GPL-3.0, never committed)",
                 ),
             );
             return None;
@@ -455,32 +454,41 @@ mod tests {
             );
             return None;
         }
-        // SAFETY: the checkpoint is read-only for the life of the test process.
-        let st = unsafe { fuel_loaders::safetensors::MmapedSafetensors::new(&file) }
-            .expect("mmap model.safetensors");
-        let prefix = "model.layers.0.mlp.gate_proj";
-        // Leading `rows` rows of the first `cols` columns of a row-major tensor.
-        let cut = |name: &str, rows: usize, cols: usize, elem: usize| -> Vec<u8> {
-            let view = st.get(&format!("{prefix}.{name}")).expect(name);
-            let stride = view.shape()[1] * elem;
-            let data = view.data();
-            let mut out = Vec::with_capacity(rows * cols * elem);
-            for r in 0..rows {
-                out.extend_from_slice(&data[r * stride..r * stride + cols * elem]);
-            }
-            out
-        };
-        let qw = cut("qweight", 256, 8, 4);
-        let qz = cut("qzeros", 2, 8, 4);
-        let sc = cut("scales", 2, 64, 2);
+        Some(file)
+    }
+
+    /// Leading `rows` rows of the first `cols` columns of a row-major tensor.
+    fn cut(st: &safetensors::SafeTensors<'_>, name: &str, rows: usize, cols: usize) -> Vec<u8> {
+        let view = st.tensor(name).expect(name);
+        let elem = view.dtype().bitsize() / 8;
+        let stride = view.shape()[1] * elem;
+        let data = view.data();
+        let mut out = Vec::with_capacity(rows * cols * elem);
+        for r in 0..rows {
+            out.extend_from_slice(&data[r * stride..r * stride + cols * elem]);
+        }
+        out
+    }
+
+    /// The in-memory safetensors slice described above (the file is read whole,
+    /// with no mmap and no `unsafe`), or `None` after declaring the skip.
+    fn real_slice_bytes() -> Option<Vec<u8>> {
+        let file = checkpoint_file()?;
+        let bytes = std::fs::read(&file).expect("read model.safetensors");
+        let st = safetensors::SafeTensors::deserialize(&bytes).expect("parse model.safetensors");
+        let p = "model.layers.0.mlp.gate_proj";
+        let qw = cut(&st, &format!("{p}.qweight"), 256, 8);
+        let qz = cut(&st, &format!("{p}.qzeros"), 2, 8);
+        let sc = cut(&st, &format!("{p}.scales"), 2, 64);
         let mut t: HashMap<String, TensorView<'_>> = HashMap::new();
+        let i32s = safetensors::Dtype::I32;
         t.insert(
             "l.qweight".into(),
-            TensorView::new(safetensors::Dtype::I32, vec![256, 8], &qw).unwrap(),
+            TensorView::new(i32s, vec![256, 8], &qw).unwrap(),
         );
         t.insert(
             "l.qzeros".into(),
-            TensorView::new(safetensors::Dtype::I32, vec![2, 8], &qz).unwrap(),
+            TensorView::new(i32s, vec![2, 8], &qz).unwrap(),
         );
         t.insert(
             "l.scales".into(),
