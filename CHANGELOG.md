@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## Unreleased
+
+### Added
+
+- `fuel-transformers`/`fuel-inference`: `Llama3Model` and `QuantizedLlama3Model` implement `PagedDecodeModel`, with the llama3-scaled RoPE frequencies threaded through the paged forwards (`LlamaModel::forward_paged_step{,_persistent,_batched}_inv_freq`, `Tensor::rope_tables_const{,_batched}_with_inv_freq`). A correctness slice, not a speed one: there is no fused CUDA `PagedAttn` kernel, so paged attention runs on CPU with D2H copies.
+
 ## v0.22.0 - 2026-10-22
 
 ### Changed

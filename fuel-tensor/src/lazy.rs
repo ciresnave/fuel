@@ -7011,12 +7011,12 @@ impl Tensor {
         let rope_shape = Shape::from_dims(&[seq, head_dim]);
         // GAP-003: same non-local proof as `rope_tables_const` -- the length
         // lives in `build_rope_tables_with_inv_freq`, which has no error channel.
-        let rope_cos = self
-            .const_f32_like(cos_data, rope_shape.clone())
-            .expect("rope tables: build_rope_tables_with_inv_freq must return seq*head_dim elements");
-        let rope_sin = self
-            .const_f32_like(sin_data, rope_shape)
-            .expect("rope tables: build_rope_tables_with_inv_freq must return seq*head_dim elements");
+        let rope_cos = self.const_f32_like(cos_data, rope_shape.clone()).expect(
+            "rope tables: build_rope_tables_with_inv_freq must return seq*head_dim elements",
+        );
+        let rope_sin = self.const_f32_like(sin_data, rope_shape).expect(
+            "rope tables: build_rope_tables_with_inv_freq must return seq*head_dim elements",
+        );
         (rope_cos, rope_sin)
     }
 

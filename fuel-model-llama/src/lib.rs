@@ -1228,9 +1228,7 @@ impl LlamaModel {
         let upload = fuel_tensor::pipelined_bridge::upload_host_buffer_to_device;
         let token_ids = upload(dev, fuel_ir::HostBuffer::U32(vec![token]))?;
         let (cos_data, sin_data) = match rope_inv_freq {
-            Some(inv) => {
-                fuel_graph::build_rope_tables_with_inv_freq(inv, tok_pos, 1, cfg.head_dim)
-            }
+            Some(inv) => fuel_graph::build_rope_tables_with_inv_freq(inv, tok_pos, 1, cfg.head_dim),
             None => fuel_graph::build_rope_tables(cfg.rope_base, tok_pos, 1, cfg.head_dim),
         };
         let rope_cos = upload(dev, fuel_ir::HostBuffer::F32(cos_data))?;

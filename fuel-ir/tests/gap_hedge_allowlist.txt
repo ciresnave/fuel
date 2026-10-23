@@ -127,7 +127,6 @@ fuel-graph/src/run.rs	/// approved temporary fix). The flat executable dispatch 
 fuel-graph/src/run.rs	/// them). A naive concatenation of all runs would execute every arm.
 fuel-inference/src/chunked_prefill.rs	/// Returns the number of chunks remaining (not yet yielded).
 fuel-inference/src/multi_session.rs	/// - `Prefill`: the prompt has not yet been run through the model. The next
-fuel-inference/src/multi_session.rs	/// persistent`. It implements the CORE trait only: the paged surface would need
 fuel-inference/src/scheduler.rs	//! budget.  A naive approach admits every request immediately, which can cause
 fuel-ir/src/dispatch.rs	/// not a tiled FlashAttention-2 kernel — naive on CPU). Inputs
 fuel-ir/src/dlpack/sidecar.rs	/// Sentinel block id meaning "unmapped / not yet allocated".

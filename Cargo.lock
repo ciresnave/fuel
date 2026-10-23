@@ -2473,6 +2473,7 @@ dependencies = [
  "fuel-graph",
  "fuel-hardware",
  "fuel-ir",
+ "fuel-kv-pool",
  "fuel-loaders",
  "fuel-model-llama",
  "fuel-model-phi",

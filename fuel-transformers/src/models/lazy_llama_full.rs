@@ -1281,9 +1281,14 @@ mod tests {
     // ---- Paged decode with scaled RoPE (PagedDecodeModel Stage 1) ----
 
     /// Paged-vs-oracle tolerance. Paged attention gathers-then-SDPAs, so it is
-    /// epsilon-close (not bit-equal) to the full-prefix forward; the negative
-    /// control below pins the scaled/unscaled separation far above this.
-    const PAGED_TOL: f32 = 5e-5;
+    /// only guaranteed epsilon-close to the full-prefix forward (measured: 0 on
+    /// CPU f32 here); the negative control pins the scaled/unscaled separation
+    /// far above this.
+    const PAGED_TOL: f32 = 1e-6;
+
+    /// Floor for the unscaled-vs-scaled separation (measured 1.06e-4 on this
+    /// fixture at the pinned seed; parity itself measured exactly 0).
+    const PAGED_SEPARATION: f32 = 5e-5;
 
     fn paged_pool(cfg: &LlamaConfig) -> fuel_tensor::kv_block_pool_device::DeviceKvPool {
         let geom = fuel_kv_pool::KvGeometry {
@@ -1361,7 +1366,10 @@ mod tests {
             m.forward_paged_step(t, pool, s).unwrap()
         });
         let d = max_abs_diff(&got, &want);
-        assert!(d < PAGED_TOL, "scaled paged decode diverged: max |diff| {d}");
+        assert!(
+            d < PAGED_TOL,
+            "scaled paged decode diverged: max |diff| {d}"
+        );
     }
 
     /// Retained sabotage sibling: paged decode through the UNSCALED inner path
@@ -1377,7 +1385,7 @@ mod tests {
         });
         let d = max_abs_diff(&got, &want);
         assert!(
-            d > 10.0 * PAGED_TOL,
+            d > PAGED_SEPARATION,
             "unscaled paged decode is indistinguishable from the scaled oracle (max |diff| {d})",
         );
     }

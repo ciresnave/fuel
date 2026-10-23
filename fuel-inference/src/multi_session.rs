@@ -483,9 +483,7 @@ impl PagedDecodeModel for fuel::lazy_llama_full::Llama3Model {
         pool: &mut DeviceKvPool,
         sessions: &[SessionHandle],
     ) -> fuel::Result<Vec<Vec<f32>>> {
-        fuel::lazy_llama_full::Llama3Model::forward_paged_step_batched(
-            self, tokens, pool, sessions,
-        )
+        fuel::lazy_llama_full::Llama3Model::forward_paged_step_batched(self, tokens, pool, sessions)
     }
     fn forward_paged_step_persistent(
         &self,
