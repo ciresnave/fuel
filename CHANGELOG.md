@@ -9,7 +9,8 @@ This documents the main changes to the `fuel` workspace.
 
 ### Changed
 
-- ROADMAP row 41a: `fuel-dispatch`'s `jit-synth` feature uses `baracuda-cuda-seam` (`=0.0.1-alpha.161`) for `BaracudaSynthesizer`, which left `baracuda-cuda-emit` in 0.20; the baracuda family moves to alpha.158 (nvrtc alpha.153; cudnn, curand, runtime stay at alpha.147, their latest), so one `unpopped-vocab` (0.22.0) is in the graph. Verified: `jit_synth_kernel_live` 6/6 on the RTX 4070 run serially (two of the six, which assert on process-global slot state, failed in one parallel run; the baseline on `main` was not measured), `fuel-dispatch` lib 818 passed under `gpu-run`, `baracuda_awq_live` 2/2
+- ROADMAP row 41a: `fuel-dispatch`'s `jit-synth` feature uses `baracuda-cuda-seam` (`=0.0.1-alpha.161`) for `BaracudaSynthesizer`, which left `baracuda-cuda-emit` in 0.20; the baracuda family moves to alpha.158 (nvrtc alpha.153; cudnn, curand, runtime stay at alpha.147, their latest), so one `unpopped-vocab` (0.22.0) is in the graph. Verified: `jit_synth_kernel_live` 6/6 on the RTX 4070 in 6 of 6 default (parallel) runs (`main` cannot build `jit-synth` at all at `3002b4e1`: two `unpopped_vocab` versions, so there is no baseline; before the fix below 5 of 5 parallel runs failed 1-3 of the 6 tests), `fuel-dispatch` lib 818 passed under `gpu-run`, `baracuda_awq_live` 2/2
+- `fuel-dispatch/tests/jit_synth_kernel_live.rs`: the six live tests share the process-global JIT slot bank and kernel binding table (slot reclamation asserts on the whole bank; adoption binds by signature and saw another test's kernel as `Ambiguous`), so each now takes a process-wide lock on its first line and holds it until its thread ends
 - `fuel-kernel-seam` names `unpopped-vocab` directly because `baracuda-kernels-types` only re-exports `ElementKind`, `OperandDesc`, `ArchSku`, `TargetId` from it: the published seam crate carries no baracuda dependency
 
 ## v0.23.3 - 2026-10-23

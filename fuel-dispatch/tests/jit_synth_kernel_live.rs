@@ -69,6 +69,29 @@ use fuel_kernel_seam::{
 };
 use fuel_memory::{BackendStorage, Storage};
 
+/// These tests share the process-global JIT slot bank and kernel binding table (the slot
+/// reclamation test asserts on the whole bank; the adoption test binds by signature and sees
+/// another test's kernel as `Ambiguous`), so they cannot run on parallel threads: measured on the
+/// RTX 4070, 3 of 3 parallel runs failed 2-3 of the 6 tests, and serially 6 of 6 pass. The first
+/// `dev()` call on a test's thread takes this lock and the thread keeps it until it exits, which
+/// is when the test ends, so the tests run one after another whatever `--test-threads` says.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    static HELD: std::cell::RefCell<Option<std::sync::MutexGuard<'static, ()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn serialise_this_test() {
+    HELD.with(|held| {
+        let mut held = held.borrow_mut();
+        if held.is_none() {
+            // A test that panicked while holding the lock poisons it; the data is `()`.
+            *held = Some(SERIAL.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+    });
+}
+
 /// Acquire CUDA device 0 for a live test.
 ///
 /// GAP-224: asserts the machine-wide GPU mutex is held (`require_gpu_run_lock`) —
@@ -83,6 +106,7 @@ use fuel_memory::{BackendStorage, Storage};
 /// (intended), rather than passing green.
 fn dev() -> CudaDevice {
     fuel_test_support::require_gpu_run_lock();
+    serialise_this_test();
     fuel_test_support::required_ok("CUDA device 0", CudaDevice::new(0))
 }
 
@@ -266,6 +290,7 @@ got: {got:?}",
 #[test]
 #[ignore]
 fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
+    serialise_this_test();
     let device = dev();
 
     let artifact = SynthArtifact {
@@ -366,6 +391,7 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
 #[test]
 #[ignore]
 fn jit_kernel_refuses_operands_on_a_foreign_cuda_context() {
+    serialise_this_test();
     let (dev1, dev2) = (dev(), dev());
     assert_ne!(
         dev1.id(),
@@ -472,6 +498,7 @@ fn mul_scalar_slot_region() -> PatternNode {
 #[test]
 #[ignore]
 fn jit_scalar_param_kernel_launches_with_live_value() {
+    serialise_this_test();
     let device = dev();
 
     let source = mul_param_cuda_source();
@@ -573,6 +600,7 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
 #[ignore]
 #[cfg(feature = "jit-synth")]
 fn live_baracuda_synthesizer_full_loop_scalar() {
+    serialise_this_test();
     use baracuda_cuda_seam::BaracudaSynthesizer;
     use fuel_kernel_seam::{JitBudget, JitRequest, JitResponse, Synthesizer};
 
@@ -782,6 +810,7 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
 #[ignore]
 #[cfg(feature = "jit-synth")]
 fn live_baracuda_synthesizer_paged_attn_dense_region() {
+    serialise_this_test();
     use baracuda_cuda_seam::BaracudaSynthesizer;
     use fuel_graph::registry::{FusedOpParams, FusedOps};
     use fuel_graph::{Graph, Node, NodeId, Op};
@@ -897,6 +926,7 @@ fn live_baracuda_synthesizer_paged_attn_dense_region() {
 #[test]
 #[ignore]
 fn jit_slot_reclamation_frees_dead_device_slots_but_not_live_ones() {
+    serialise_this_test();
     use fuel_cuda_backend::{DeviceId, is_device_live};
     use fuel_dispatch::jit_cuda_load::{
         clear_slots_for_tests, reclaim_dead_slots_for_tests, slot_device_ids_for_tests,
