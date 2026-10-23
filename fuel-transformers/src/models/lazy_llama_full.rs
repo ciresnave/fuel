@@ -1433,6 +1433,40 @@ mod tests {
         }
     }
 
+    /// Sourcery on #456: an odd `head_dim` is a typed `Err` from the Llama3 paged
+    /// entries (all three), never a panic in the table builder, and the pool is
+    /// untouched.
+    #[test]
+    fn llama3_paged_forwards_decline_odd_head_dim() {
+        use fuel_tensor::inference_context::PagedDecodePlan;
+        let good = scaled_llama3(Some(llama3_scaling()));
+        let mut pool = paged_pool(&good.inner.config);
+        let s = pool.core_mut().open();
+        let mut odd_cfg = good.inner.config.clone();
+        odd_cfg.head_dim = 15;
+        let odd = Llama3Model::new(
+            LlamaModel {
+                config: odd_cfg,
+                weights: good.inner.weights.clone(),
+            },
+            Some(llama3_scaling()),
+            None,
+        );
+        let msg = |e: fuel_ir::Error| format!("{e}");
+        let e = odd.forward_paged_step(1, &mut pool, s).unwrap_err();
+        assert!(msg(e).contains("head_dim 15"));
+        let e = odd
+            .forward_paged_step_batched(&[1], &mut pool, &[s])
+            .unwrap_err();
+        assert!(msg(e).contains("head_dim 15"));
+        let mut ds = None;
+        let e = odd
+            .forward_paged_step_persistent(1, &mut pool, s, 4, PagedDecodePlan::PlanOnce, &mut ds)
+            .unwrap_err();
+        assert!(msg(e).contains("head_dim 15"));
+        assert_eq!(pool.core().filled_tokens(s), Some(0), "pool was touched");
+    }
+
     /// GAP-281: an odd `head_dim` must DECLINE, not panic. `half = head_dim / 2`
     /// truncates silently otherwise, so it is a CONFIG property.
     ///
