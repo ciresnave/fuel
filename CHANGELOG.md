@@ -1,6 +1,24 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.23.0 - 2026-10-23
+
+### Breaking
+
+- `fuel-tensor`: `WeightStorage` gains a variant, `Awq(Arc<AwqHostWeight>)` (it is not `#[non_exhaustive]`, so an exhaustive `match` on it in downstream code no longer compiles; `fuel-nn`'s `Conv2d::absorb_bn` is updated in this change)
+
+### Added
+
+- `fuel-tensor`: `awq::AwqHostWeight`, a graph-independent AWQ linear in the kernel layout (`from_hf_buffers`, `load`, `matmul`), applied by `WeightStorage::apply_linear`
+- `fuel-transformers`: `Qwen3Weights::load_awq_from_mmapped` loads a HuggingFace `*-AWQ` Qwen3 checkpoint; `load_from_mmapped` and it share one body
+- ROADMAP row 31c: `tests/qwen3_awq_oracle.rs` runs `Orion-zhen/Qwen3-0.6B-AWQ` end to end and compares 16 greedy tokens with the independent HF/AutoAWQ reference (reads the checkpoint from `FUEL_QWEN3_AWQ_DIR`; a `Hardware::Hub` skip when absent). GAP-367 records the missing CPU `AWQ_MATMUL` binding
+
+### Fixed
+
+- `fuel-cuda-backend`: `awq_gemm_f16` now calls `awq_can_implement_f16` before any allocation or launch (it was already rejected by baracuda's `_run`, which repeats the check; measured on the RTX 4070: `n=96`, `split_k_iters` 0 and -1, `k=256` with `split_k_iters=7`, `group_size=96` and `k=200` all return `Err`, and the honest control runs). The sm_80+ requirement is not a shape check and is not enforced there
+- Corrected overclaims about AWQ on CUDA (contract, wrapper comment, `fused.rs` KNOWN_GAPS text, `OpParams::AwqMatmul` doc, the 0.22.7 entry below): only F16 activations are bound, and an F32/BF16 `AWQ_MATMUL` fails with `NoBackendForOp` unless explicitly lowered to its decompose first (GAP-367)
+- `fuel-dispatch/tests/baracuda_awq_live.rs`: a refusal test for the shapes above, and a run-to-run determinism check (two launches on identical inputs must match byte for byte) behind the contract's `same_hardware_bitwise` claim
+
 ## v0.22.10 - 2026-10-23
 
 ### Removed
@@ -23,7 +41,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Added
 
-- `OpKind::AwqMatmul` with a CUDA F16 binding (`baracuda_dispatch::awq::awq_matmul_f16`, W4A16 AWQ GEMM) registered from the FKC contract `kernel-contracts/cuda/awq_matmul.fkc.md`; `AWQ_MATMUL` bridges to it in the runtime fused-kernel table (ROADMAP row 31a). F32 activations stay on the decompose path
+- `OpKind::AwqMatmul` with a CUDA F16 binding (`baracuda_dispatch::awq::awq_matmul_f16`, W4A16 AWQ GEMM) registered from the FKC contract `kernel-contracts/cuda/awq_matmul.fkc.md`; `AWQ_MATMUL` bridges to it in the runtime fused-kernel table (ROADMAP row 31a). Only F16 activations are bound: F32/BF16 AWQ is reachable only through an explicit lowering to the op's decompose (GAP-367)
 
 ## v0.22.6 - 2026-10-23
 

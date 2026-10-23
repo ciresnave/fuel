@@ -746,8 +746,9 @@ pub enum OpParams {
         block_size: usize,
     },
 
-    /// AwqMatmul execution parameters. 4 inputs: `activations [batch, m, k]`
-    /// (rank ≥ 2; leading dims flattened into `batch`), `weight [n, k/8]` U32,
+    /// AwqMatmul execution parameters. 4 inputs: `activations [..., m, k]`
+    /// (rank ≥ 2; every leading dim is flattened into `batch`, so the CUDA
+    /// wrapper runs a GEMM of `batch * m` rows), `weight [n, k/8]` U32,
     /// `zeros [n, zeros_w]` U32, `scales [n, 8 * zeros_w]` F16 (baracuda W4A16
     /// kernel layout). Output `[batch, m, n]` matching activations' dtype.
     ///

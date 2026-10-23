@@ -27,6 +27,8 @@ use crate::lazy::Tensor;
 use fuel_ir::{Result, Shape};
 use fuel_quantized::awq_repack::repack_hf_awq_for_kernel;
 use half::f16;
+use safetensors::tensor::TensorView;
+use std::sync::Arc;
 
 /// An AWQ-quantized linear weight, materialized as the three `Tensor` inputs
 /// [`fuel_graph::NodeHandle::awq_matmul`] expects (kernel layout), plus the
@@ -104,18 +106,7 @@ pub fn awq_from_hf_buffers(
     })
 }
 
-fn read_u32_words(
-    st: &safetensors::SafeTensors,
-    key: &str,
-    rows: usize,
-    cols: usize,
-) -> Result<Vec<u32>> {
-    let view = st.tensor(key).map_err(|e| {
-        fuel_ir::Error::Msg(format!(
-            "load_awq_layer: tensor {key:?} not found in safetensors: {e}"
-        ))
-        .bt()
-    })?;
+fn read_u32_words(view: TensorView<'_>, key: &str, rows: usize, cols: usize) -> Result<Vec<u32>> {
     if !matches!(
         view.dtype(),
         safetensors::Dtype::I32 | safetensors::Dtype::U32
@@ -143,18 +134,7 @@ fn read_u32_words(
         .collect())
 }
 
-fn read_f16_scales(
-    st: &safetensors::SafeTensors,
-    key: &str,
-    groups: usize,
-    oc: usize,
-) -> Result<Vec<f16>> {
-    let view = st.tensor(key).map_err(|e| {
-        fuel_ir::Error::Msg(format!(
-            "load_awq_layer: tensor {key:?} not found in safetensors: {e}"
-        ))
-        .bt()
-    })?;
+fn read_f16_scales(view: TensorView<'_>, key: &str, groups: usize, oc: usize) -> Result<Vec<f16>> {
     if view.dtype() != safetensors::Dtype::F16 {
         return Err(fuel_ir::Error::Msg(format!(
             "load_awq_layer: {key:?} dtype={:?}, expected F16",
@@ -191,6 +171,24 @@ pub fn load_awq_layer(
     group_size: usize,
     device: &Device,
 ) -> Result<AwqWeight> {
+    let (qweight, qzeros, scales) = read_hf_layer(
+        |key| {
+            st.tensor(key).map_err(|e| {
+                fuel_ir::Error::Msg(format!(
+                    "load_awq_layer: tensor {key:?} not found in safetensors: {e}"
+                ))
+                .bt()
+            })
+        },
+        prefix,
+        ic,
+        oc,
+        group_size,
+    )?;
+    awq_from_hf_buffers(&qweight, &qzeros, &scales, ic, oc, group_size, device)
+}
+
+fn check_geometry(ic: usize, oc: usize, group_size: usize) -> Result<()> {
     if group_size == 0 || !ic.is_multiple_of(group_size) || !oc.is_multiple_of(8) {
         return Err(fuel_ir::Error::Msg(format!(
             "load_awq_layer: ic={ic} must be a multiple of group_size={group_size} \
@@ -198,11 +196,125 @@ pub fn load_awq_layer(
         ))
         .bt());
     }
+    Ok(())
+}
+
+/// Fetch and validate the three tensors of one `WQLinear_GEMM` layer through
+/// `get`, which resolves a full tensor key to its view (a parsed
+/// `SafeTensors`, or a memory-mapped file). Returns the HF-layout buffers.
+fn read_hf_layer<'a>(
+    get: impl Fn(&str) -> Result<TensorView<'a>>,
+    prefix: &str,
+    ic: usize,
+    oc: usize,
+    group_size: usize,
+) -> Result<(Vec<u32>, Vec<u32>, Vec<f16>)> {
+    check_geometry(ic, oc, group_size)?;
     let groups = ic / group_size;
-    let qweight = read_u32_words(st, &format!("{prefix}.qweight"), ic, oc / 8)?;
-    let qzeros = read_u32_words(st, &format!("{prefix}.qzeros"), groups, oc / 8)?;
-    let scales = read_f16_scales(st, &format!("{prefix}.scales"), groups, oc)?;
-    awq_from_hf_buffers(&qweight, &qzeros, &scales, ic, oc, group_size, device)
+    let (kw, kz, ks) = (
+        format!("{prefix}.qweight"),
+        format!("{prefix}.qzeros"),
+        format!("{prefix}.scales"),
+    );
+    let qweight = read_u32_words(get(&kw)?, &kw, ic, oc / 8)?;
+    let qzeros = read_u32_words(get(&kz)?, &kz, groups, oc / 8)?;
+    let scales = read_f16_scales(get(&ks)?, &ks, groups, oc)?;
+    Ok((qweight, qzeros, scales))
+}
+
+/// An AWQ linear weight as host buffers in the kernel layout, bound to no
+/// graph: what a model's weight set stores (`WeightStorage::Awq`) so the same
+/// weights can be placed on any graph or device. The matmul builds its
+/// constants on the activations' graph.
+#[derive(Debug, Clone)]
+pub struct AwqHostWeight {
+    /// `[OC, IC/8]` U32, sequential nibble order.
+    pub weight: Arc<[u32]>,
+    /// `[OC, zeros_w]` U32.
+    pub zeros: Arc<[u32]>,
+    /// `[OC, 8 * zeros_w]` F16.
+    pub scales: Arc<[f16]>,
+    /// Words per `zeros` row.
+    pub zeros_w: usize,
+    /// Output features.
+    pub oc: usize,
+    /// Input features.
+    pub ic: usize,
+    /// Quantization group size (64 or 128).
+    pub group_size: usize,
+}
+
+impl AwqHostWeight {
+    /// Repack HF-layout buffers (`qweight [IC, OC/8]`, `qzeros [IC/g, OC/8]`,
+    /// `scales [IC/g, OC]`) into the kernel layout.
+    pub fn from_hf_buffers(
+        qweight: &[u32],
+        qzeros: &[u32],
+        scales: &[f16],
+        ic: usize,
+        oc: usize,
+        group_size: usize,
+    ) -> Result<Self> {
+        let b =
+            repack_hf_awq_for_kernel(qweight, qzeros, scales, ic, oc, group_size).map_err(|e| {
+                fuel_ir::Error::Msg(format!("AwqHostWeight::from_hf_buffers: {e}")).bt()
+            })?;
+        Ok(Self {
+            weight: Arc::from(b.weight),
+            zeros: Arc::from(b.zeros),
+            scales: Arc::from(b.scales),
+            zeros_w: b.zeros_w,
+            oc,
+            ic,
+            group_size,
+        })
+    }
+
+    /// Read one `WQLinear_GEMM` layer (`{prefix}.qweight/.qzeros/.scales`)
+    /// through `get`, validating every dtype and shape against the geometry.
+    pub fn load<'a>(
+        get: impl Fn(&str) -> Result<TensorView<'a>>,
+        prefix: &str,
+        ic: usize,
+        oc: usize,
+        group_size: usize,
+    ) -> Result<Self> {
+        let (qweight, qzeros, scales) = read_hf_layer(get, prefix, ic, oc, group_size)?;
+        Self::from_hf_buffers(&qweight, &qzeros, &scales, ic, oc, group_size)
+    }
+
+    /// `activations @ dequant(weight)ᵀ` via the fused `AWQ_MATMUL` op, with the
+    /// weight constants built on `activations`' graph. Output `[..., M, OC]` in
+    /// the activations' dtype. `split_k_iters` must be positive (see
+    /// [`AwqWeight::matmul`]).
+    pub fn matmul(&self, activations: &Tensor, split_k_iters: i32) -> Result<Tensor> {
+        if split_k_iters <= 0 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "AwqHostWeight::matmul: split_k_iters={split_k_iters} must be positive"
+            ))
+            .bt());
+        }
+        let g = activations.graph_tensor();
+        let weight = g.const_u32_like(
+            Arc::clone(&self.weight),
+            Shape::from_dims(&[self.oc, self.ic / 8]),
+        )?;
+        let zeros = g.const_u32_like(
+            Arc::clone(&self.zeros),
+            Shape::from_dims(&[self.oc, self.zeros_w]),
+        )?;
+        let scales = g.const_f16_like(
+            Arc::clone(&self.scales),
+            Shape::from_dims(&[self.oc, 8 * self.zeros_w]),
+        )?;
+        Ok(Tensor::from_graph_tensor(g.awq_matmul(
+            &weight,
+            &zeros,
+            &scales,
+            self.group_size,
+            split_k_iters,
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -303,6 +415,86 @@ mod tests {
             .optimize_to_fixpoint(&graph, &[y.graph_tensor().id()]);
         crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &Device::cpu())
             .expect("realize lowered awq_matmul")
+    }
+
+    fn host_weight(bytes: &[u8]) -> AwqHostWeight {
+        let st = safetensors::SafeTensors::deserialize(bytes).unwrap();
+        AwqHostWeight::load(
+            |k| {
+                st.tensor(k)
+                    .map_err(|e| fuel_ir::Error::Msg(format!("{k}: {e}")).bt())
+            },
+            "l",
+            IC,
+            OC,
+            GROUP,
+        )
+        .unwrap()
+    }
+
+    fn realize_lowered(y: &Tensor) -> Vec<f32> {
+        let graph = y.graph_tensor().graph().clone();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[y.graph_tensor().id()]);
+        crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &Device::cpu())
+            .expect("realize lowered awq_matmul")
+    }
+
+    /// `WeightStorage::Awq` through `apply_linear` (the path every model
+    /// projection takes) equals the f64 reference, takes activations of any
+    /// leading rank, and refuses a geometry that is not the stored one.
+    #[test]
+    fn weight_storage_awq_apply_linear_matches_the_reference() {
+        use crate::lazy::WeightStorage;
+        let l = logical();
+        let w = WeightStorage::Awq(Arc::new(host_weight(&checkpoint(
+            &l,
+            safetensors::Dtype::I32,
+            safetensors::Dtype::F16,
+        ))));
+        assert_eq!(w.elem_count(), IC * OC);
+        let m = 3;
+        let x: Vec<f32> = (0..m * IC)
+            .map(|i| ((i * 5) % 17) as f32 * 0.1 - 0.8)
+            .collect();
+        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
+        // [1, m, IC]: the rank-3 shape a transformer feeds a projection.
+        let act = anchor
+            .const_f32_like(x.clone(), Shape::from_dims(&[1, m, IC]))
+            .unwrap();
+        let got = realize_lowered(&w.apply_linear(&act, IC, OC).unwrap());
+        let want = reference(&l, &x, m);
+        assert_eq!(got.len(), m * OC);
+        for (g, w) in got.iter().zip(&want) {
+            assert!(
+                (f64::from(*g) - w).abs() <= 1e-3 * w.abs().max(1.0),
+                "{g} vs {w}"
+            );
+        }
+        // Refusals: a wrong requested geometry is a typed error, and so is a
+        // plain `const_like` (an AWQ weight is three operands).
+        assert!(w.apply_linear(&act, IC, OC + 8).is_err());
+        assert!(w.const_like(&act, Shape::from_dims(&[IC, OC])).is_err());
+    }
+
+    #[test]
+    fn host_weight_refuses_a_non_positive_split_k() {
+        let l = logical();
+        let w = host_weight(&checkpoint(
+            &l,
+            safetensors::Dtype::I32,
+            safetensors::Dtype::F16,
+        ));
+        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
+        let act = anchor
+            .const_f32_like(vec![0.0; IC], Shape::from_dims(&[1, IC]))
+            .unwrap();
+        assert!(w.matmul(&act, 0).is_err());
+        assert!(w.matmul(&act, -1).is_err());
+        assert!(
+            w.matmul(&act, 1).is_ok(),
+            "control: a positive value is accepted"
+        );
     }
 
     #[test]

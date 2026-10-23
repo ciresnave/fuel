@@ -13,8 +13,9 @@ provider:
 CUDA (baracuda `baracuda_kernels_int4_awq_gemm_f16_run`, the vendored mit-han-lab llm-awq kernel)
 weight-only int4 GEMM. One section, one key: `[F16, U32, U32, F16, F16]` (inputs then output, sec 3.2) =
 `activations`, `weight`, `zeros`, `scales`, `out`. Per-dtype (single-dtype `entry_point` resolved AS-IS).
-Activations and output are F16 only: the kernel is fp16-only, so BF16/F32 activations are served by the
-op's `decompose` (dequantize-then-matmul), not by this binding.
+Activations and output are F16 only: the kernel is fp16-only. BF16/F32 activations have NO binding here; they
+are served only if the caller first lowers the op through its `decompose` (dequantize-then-matmul), which
+production realize does not do by itself (an unlowered F32/BF16 `AWQ_MATMUL` fails with `NoBackendForOp`, GAP-367).
 
 ---
 
@@ -33,8 +34,10 @@ contract does not declare an FDX quant descriptor (the packing is the op's own l
 family), so nothing in the importer can tell a mis-packed buffer from a packed one. The only defence is the
 build-time shape check in `NodeHandle::awq_matmul` and the repack module.
 
-Kernel constraints (baracuda `can_implement`; a violation is a hard `Err`, never a launch): `group_size` in
-{64, 128}; `N % 64 == 0`; `K % group_size == 0`; `K % (32 * split_k_iters) == 0`; sm_80 or newer.
+Kernel constraints (baracuda `can_implement`, called before any allocation or launch; a violation is a hard
+`Err`): `group_size` in {64, 128}; `N % 64 == 0`; `K % group_size == 0`; `split_k_iters > 0`;
+`K % (32 * split_k_iters) == 0`. The kernel also needs sm_80 or newer, which is NOT a shape check: an older
+device fails at the launch.
 
 ```fkc
 kernel: awq_matmul_f16

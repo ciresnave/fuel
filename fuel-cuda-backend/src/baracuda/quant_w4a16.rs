@@ -146,9 +146,6 @@ pub fn awq_gemm_f16(
 ) -> Result<CudaStorageBytes> {
     let device = in_feats.device().clone();
     let out_bytes = m * oc * std::mem::size_of::<half::f16>();
-    if out_bytes == 0 {
-        return CudaStorageBytes::alloc(&device, 0);
-    }
     let m_i32 = i32::try_from(m).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
         op: "int4_awq_gemm_f16",
         dim_index: 0,
@@ -164,6 +161,17 @@ pub fn awq_gemm_f16(
         dim_index: 2,
         dim_value: oc,
     })?;
+    // Validate BEFORE any device allocation or launch: `group_size` in {64, 128},
+    // `oc % 64`, `ic % group_size`, `split_k_iters > 0`, `ic % (32 *
+    // split_k_iters)`. (baracuda's `_run` repeats this check, so a violation was
+    // already an `Err`; doing it here fails earlier, with this op's name, and
+    // does not depend on the launcher's order of checks.) The device must also
+    // be sm_80 or newer; that is not a shape property, so an older device
+    // surfaces as the launcher's launch error, not here.
+    awq_can_implement_f16(m_i32, ic_i32, oc_i32, group_size, split_k_iters)?;
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
     let ws_bytes = unsafe {
         sys::baracuda_kernels_int4_awq_gemm_f16_workspace_bytes(m_i32, oc_i32, split_k_iters)
     };

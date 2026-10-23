@@ -1952,14 +1952,14 @@ mod tests {
         // allowlisted id, the `has_cpu` check below fails loudly
         // rather than silently granting double coverage.
         //
-        // AwqMatmul (fuel-graph's AWQ weight-only GEMM op) ships
-        // decompose-only in this increment: its dequant-then-matmul
-        // decompose already provides correctness on every backend via
-        // existing primitive ops, which independently carry their own
-        // CPU coverage -- but this lint checks for a DIRECT
-        // binding-table CPU registration of the fused op itself,
-        // which AwqMatmul deliberately does not have yet. Reaching
-        // the CUDA kernel
+        // AwqMatmul (fuel-graph's AWQ weight-only GEMM op) has no CPU
+        // binding: its dequant-then-matmul decompose is built from
+        // primitive ops that carry their own CPU coverage, but REALIZE
+        // DOES NOT LOWER AN UNBOUND FUSED OP ON ITS OWN (GAP-367), so an
+        // AWQ graph realizes on CPU only after an explicit lowering
+        // (`RuleRegistry::lowering_only`). This lint checks for a DIRECT
+        // binding-table CPU registration of the fused op itself, which
+        // AwqMatmul does not have. Reaching the CUDA kernel
         // (fuel-cuda-backend/src/baracuda/quant_w4a16.rs::awq_gemm_f16)
         // is now registered in the binding table under
         // (OpKind::AwqMatmul, Cuda) from kernel-contracts/cuda/awq_matmul.fkc.md,
@@ -1967,9 +1967,8 @@ mod tests {
         // wrapper is the remaining follow-up for this entry.
         const KNOWN_GAPS: &[(FusedOpId, &str)] = &[(
             FusedOps::AWQ_MATMUL,
-            "decompose-only in this increment; no direct CPU binding-table \
-             registration yet -- see fuel-graph/src/registry/awq_matmul.rs's \
-             module doc for the follow-on dispatch-wiring work",
+            "no CPU binding-table registration (GAP-367): realizes on CPU \
+             only after an explicit lowering to its decompose",
         )];
 
         let meta = default_registry();

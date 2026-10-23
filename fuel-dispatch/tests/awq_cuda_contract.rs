@@ -73,7 +73,8 @@ fn awq_contract_registers_one_cuda_binding_with_the_four_input_f16_key() {
             BackendId::Cuda,
         )
         .expect("executor-shaped lookup resolves");
-    // Sabotage sibling: an F32-activation key is NOT served (decompose path).
+    // Sabotage sibling: an F32-activation key is NOT bound (it is served only
+    // by an explicit lowering to the decompose; GAP-367).
     assert!(
         table
             .lookup(
@@ -82,7 +83,7 @@ fn awq_contract_registers_one_cuda_binding_with_the_four_input_f16_key() {
                 BackendId::Cuda,
             )
             .is_err(),
-        "F32 activations must stay on the decompose path"
+        "F32 activations have no CUDA binding; they need an explicit lowering"
     );
 }
 
