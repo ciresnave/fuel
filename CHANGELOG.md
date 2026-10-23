@@ -1,6 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.24.0 - 2026-10-23
+
+### Breaking
+
+- `fuel-kernel-seam` depends on `unpopped-vocab` 0.22 instead of `baracuda-kernels-types`, so the types in its public API (`OperandDesc`, `ArchSku`, `TargetId`) are `unpopped-vocab` 0.22's: a consumer on an older vocabulary no longer type-checks against it
+
+### Changed
+
+- ROADMAP row 41a: `fuel-dispatch`'s `jit-synth` feature uses `baracuda-cuda-seam` (`=0.0.1-alpha.161`) for `BaracudaSynthesizer`, which left `baracuda-cuda-emit` in 0.20; the baracuda family moves to alpha.158 (nvrtc alpha.153; cudnn, curand, runtime stay at alpha.147, their latest), so one `unpopped-vocab` (0.22.0) is in the graph. Verified: `jit_synth_kernel_live` 6/6 on the RTX 4070 run serially (two of the six, which assert on process-global slot state, failed in one parallel run; the baseline on `main` was not measured), `fuel-dispatch` lib 818 passed under `gpu-run`, `baracuda_awq_live` 2/2
+- `fuel-kernel-seam` names `unpopped-vocab` directly because `baracuda-kernels-types` only re-exports `ElementKind`, `OperandDesc`, `ArchSku`, `TargetId` from it: the published seam crate carries no baracuda dependency
+
 ## v0.23.3 - 2026-10-23
 
 ### Added

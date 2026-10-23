@@ -10,8 +10,10 @@
 
 # The envelope bridges the two halves of the seam: Fuel's region grammar
 # (fuel-kernel-seam-types) and the synthesizer's operand projection
-# (baracuda-kernels-types::OperandDesc, the structure_key input). Light by
-# design — no fuel-graph — so a synthesizer backend depends on it cheaply.
+# (unpopped-vocab's OperandDesc, the structure_key input). Light by design — no fuel-graph — so a
+# synthesizer backend depends on it cheaply. The vocabulary types are DEFINED in unpopped-vocab
+# (baracuda-kernels-types only re-exports them), so this crate depends on unpopped-vocab directly:
+# a dependency on baracuda-kernels-types made baracuda's own graph carry two copies of it.
 [dependencies]
-    baracuda-kernels-types = { workspace = true }
+    unpopped-vocab         = { workspace = true }
     fuel-kernel-seam-types = { workspace = true }

@@ -341,6 +341,9 @@ baracuda-cutlass       = { version = "0.0.1-alpha.158" }
 # made `TargetId` two types. Crates with no alpha.158 stay at their latest (nvrtc .153; cudnn, curand, runtime .147).
 # Bumped to alpha.147 (2026-10-22): the first alpha with the padded OC-major AWQ layout
 # (baracuda#219; the Marlin repack was wrong alpha.64-alpha.145), for ROADMAP row 31.
+# The vocabulary crate baracuda-kernels-types re-exports (ElementKind, OperandDesc, ArchSku, TargetId ...).
+# fuel-kernel-seam names it directly so the published seam crate carries no baracuda dependency.
+unpopped-vocab         = { version = "0.22.0" }
 baracuda-kernels-types = { version = "0.0.1-alpha.158" }
 baracuda-kernels-sys   = { version = "0.0.1-alpha.158", features = [
     "cudnn",

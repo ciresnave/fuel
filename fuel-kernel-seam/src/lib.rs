@@ -22,8 +22,8 @@
 //! a `SynthArtifact` — import its FKC contract, load + bind the kernel, register
 //! the Tier-2 runtime fused-op — lives Fuel-side, in the dispatch layer, not here.
 
-use baracuda_kernels_types::{ArchSku, OperandDesc, TargetId};
 use fuel_kernel_seam_types::PatternNode;
+use unpopped_vocab::{ArchSku, OperandDesc, TargetId};
 
 /// A request to synthesize a kernel for a Fuel-chosen region (§5.2).
 ///
@@ -175,10 +175,10 @@ pub trait Synthesizer: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use baracuda_kernels_types::ElementKind;
     use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use unpopped_vocab::ElementKind;
 
     fn relu_add() -> PatternNode {
         PatternNode::Op {
