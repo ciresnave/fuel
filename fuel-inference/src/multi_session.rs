@@ -2125,6 +2125,19 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         reaped
     }
 
+    /// The GENERATED tail (excludes the prompt) produced so far by session `id`,
+    /// or `None` if `id` is unknown (including after `reap_finished`). Mirror of
+    /// [`SessionScheduler::session_new_tokens`]: `step()`'s `StepReport.advanced`
+    /// says WHICH sessions produced a token this tick, and this is where a
+    /// streaming caller reads the token VALUE without waiting for
+    /// `reap_finished`. Read-only.
+    pub fn session_new_tokens(&self, id: SessionId) -> Option<&[u32]> {
+        self.sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.new_tokens.as_slice())
+    }
+
     /// Assign session `id` an opaque priority. Mechanism only: the scheduler
     /// stores and reports it ([`session_infos`](Self::session_infos)) but never
     /// orders by it; the consumer's policy does. `Err` for an unknown session.
@@ -3139,6 +3152,72 @@ mod tests {
             out[0].1.len(),
             prompt.len() + 5,
             "prompt + 5 generated tokens"
+        );
+    }
+
+    /// Streaming accessor parity with `SessionScheduler::session_new_tokens`: a
+    /// paged serving loop must read each token the tick it is produced, not
+    /// only at `reap_finished` (swapping schedulers must not break streaming).
+    /// The tail strictly grows on every non-finishing tick, each earlier tail
+    /// stays an unchanged prefix, the last mid-generation tail is a prefix of
+    /// the reaped tokens, and an unknown id is `None`.
+    #[test]
+    fn paged_session_new_tokens_arrive_per_tick_before_the_session_finishes() {
+        let model = tiny_model(4242);
+        let prompt = [1u32, 2, 3];
+        let max_new = 4;
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let id = s
+            .add_session(&prompt, SamplingStrategy::Greedy, None, max_new)
+            .unwrap();
+        assert_eq!(
+            s.session_new_tokens(id),
+            Some(&[][..]),
+            "nothing generated yet"
+        );
+        assert_eq!(
+            s.session_new_tokens(SessionId(id.0 + 1000)),
+            None,
+            "an unknown id must be None, not an empty slice"
+        );
+
+        let mut prev: Vec<u32> = Vec::new();
+        let mut mid_ticks = 0;
+        loop {
+            let report = s.step();
+            if report.finished.contains(&id) {
+                break;
+            }
+            let tail = s.session_new_tokens(id).unwrap().to_vec();
+            assert!(
+                tail.len() > prev.len() && tail.starts_with(&prev),
+                "tail must strictly grow and extend the previous one: {tail:?} after {prev:?}"
+            );
+            assert!(
+                tail.len() < max_new,
+                "full budget reached before `finished`"
+            );
+            mid_ticks += 1;
+            prev = tail;
+        }
+        assert!(
+            mid_ticks > 0,
+            "no mid-generation tick observed: not streaming"
+        );
+
+        let reaped = s.reap_finished();
+        assert_eq!(reaped.len(), 1);
+        assert_eq!(reaped[0].1.len(), prompt.len() + max_new);
+        assert_eq!(
+            reaped[0].1[prompt.len()..prompt.len() + prev.len()],
+            prev[..],
+            "mid-generation tail must be a byte-identical prefix of the final tokens"
+        );
+        assert_eq!(
+            s.session_new_tokens(id),
+            None,
+            "a reaped session is unknown again"
         );
     }
 
