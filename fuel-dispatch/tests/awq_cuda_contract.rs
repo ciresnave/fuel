@@ -89,8 +89,7 @@ fn awq_contract_registers_one_cuda_binding_with_the_four_input_f16_key() {
 #[test]
 fn a_misspelled_entry_point_is_refused_not_silently_dropped() {
     let err = import_bundle_str(CONTRACT, &Link("fuel_cuda_backend::fkc::awq_matmul_f32"))
-        .err()
-        .expect("an unresolved entry point must be an error");
+        .expect_err("an unresolved entry point must be an error");
     assert!(
         format!("{err}").contains("awq_matmul_f16"),
         "error should name the unresolved symbol: {err}"

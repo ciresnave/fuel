@@ -8,8 +8,12 @@
 //! `g % 8` of word `g / 8`; scales entry `g`), independently of
 //! `fuel_quantized::awq_repack`, so a layout error in either would show here.
 //!
+//! Not `#[ignore]`d: the file is `cfg(feature = "cuda")`, so no CI leg builds it,
+//! and `require_gpu_run_lock` plus `CudaDevice::new` fail loudly without the
+//! wrapper or a device.
+//!
 //! Run: `pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-dispatch
-//! --features cuda --test baracuda_awq_live -- --ignored` (sm_80+ required).
+//! --features cuda --test baracuda_awq_live` (sm_80+ required).
 
 #![cfg(feature = "cuda")]
 
@@ -94,6 +98,7 @@ fn reference(p: &Problem, x: &[f16], rows: usize, zero_bias: f64) -> Vec<f64> {
 }
 
 fn run(rows: usize, ic: usize, oc: usize, group: usize, split_k: i32) {
+    fuel_test_support::require_gpu_run_lock();
     let dev = CudaDevice::new(0).expect("cuda device");
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
@@ -169,7 +174,6 @@ fn run(rows: usize, ic: usize, oc: usize, group: usize, split_k: i32) {
 }
 
 #[test]
-#[ignore = "live GPU (sm_80+): run through scripts/gpu-run.ps1"]
 fn awq_matmul_f16_matches_the_dequantise_then_matmul_reference() {
     // group 128 and 64; M below, at and above the kernel's 128-row tile; a
     // ragged M that is not a multiple of anything.
