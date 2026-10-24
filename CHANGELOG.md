@@ -5,7 +5,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Added
 
-- ROADMAP row 39: `verify/accuracy_attention.rs` measures the registered f16 CUDA `FlashAttn` decode kernel (`flash_decoding`) against an f64 reference of the same f16 inputs: worst 1.2e-4 absolute and relative on the RTX 4070 Laptop over 5 cases (GQA, `k_len < sk`), inside the 1e-3 default bound. Evidence only: no ledger record is written, no claim added. The live test is `#[ignore]` (run via `scripts/gpu-run.ps1`); `the_measurement_sees_a_perturbed_output` is the retained sabotage sibling
+- ROADMAP row 39: `verify/accuracy_attention.rs` measures the registered f16 CUDA `FlashAttn` decode kernel (`flash_decoding`) against an f64 reference of the same f16 inputs: worst 1.2e-4 absolute and relative on the RTX 4070 Laptop over 5 cases (GQA, `k_len < sk`), inside the 1e-3 default bound. Evidence only: no ledger record is written, no claim added. The live test needs a CUDA device and the `gpu-run` lock (it skips without a device); `the_measurement_sees_a_perturbed_output` is the retained sabotage sibling
 
 ### Changed
 

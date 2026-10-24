@@ -2,6 +2,8 @@
 //! Measures the registered CUDA `FlashAttn` decode kernel (`flash_decoding`, f16) against an
 //! `f64` host attention of the same f16 inputs (ROADMAP row 39).
 //!
+//! (Compiled for tests only: nothing outside them uses it.)
+//!
 //! This is evidence, not a claim: nothing here writes the ledger. It replaces the test the
 //! `flash-attn` contract cites for its `max_absolute: 0.001` (`flash_attn_tests.rs`, which lived
 //! in the dissolved `fuel-flash-attn-cuda` crate and exists nowhere now). The dense `flash-attn`
@@ -41,18 +43,46 @@ fn to_f16(shape: Vec<usize>, vals: &[f32]) -> (HostTensor, Vec<f32>) {
 
 /// Decode an f16 kernel output to `f32`.
 pub(crate) fn f16s(t: &HostTensor) -> Vec<f32> {
-    let halves: Vec<f16> = t
-        .bytes
-        .chunks_exact(2)
-        .map(|c| f16::from_bits(u16::from_le_bytes([c[0], c[1]])))
-        .collect();
-    halves.iter().map(|h| h.to_f32()).collect()
+    t.bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f16::from_bits(u16::from_le_bytes(*c)).to_f32())
+        .collect()
 }
 
-/// `f64` single-query attention over the live prefix `[0, k_len)` of a `[b, hkv, sk, d]` cache:
-/// `softmax(q . k * scale) . v` per query head, query head `h` reading kv head `h / (hq / hkv)`.
-/// Returns `[b, hq, d]`.
-#[allow(clippy::too_many_arguments)]
+/// One query head of [`reference_decode`]: `softmax(qrow . k * scale) . v` over the first
+/// `k_len` rows of the kv head starting at element `base`, accumulated into `cell` (`[d]`).
+fn attend_head(
+    cell: &mut [f64],
+    qrow: &[f32],
+    (k, v): (&[f32], &[f32]),
+    base: usize,
+    k_len: usize,
+    scale: f64,
+) {
+    let d = cell.len();
+    let dot = |krow: &[f32]| -> f64 {
+        scale
+            * qrow
+                .iter()
+                .zip(krow)
+                .map(|(a, b)| *a as f64 * *b as f64)
+                .sum::<f64>()
+    };
+    let scores: Vec<f64> = (0..k_len).map(|j| dot(&k[base + j * d..][..d])).collect();
+    let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let exps: Vec<f64> = scores.iter().map(|s| (s - max).exp()).collect();
+    let total: f64 = exps.iter().sum();
+    for (j, w) in exps.iter().enumerate() {
+        for (c, x) in cell.iter_mut().zip(&v[base + j * d..][..d]) {
+            *c += w / total * *x as f64;
+        }
+    }
+}
+
+/// `f64` single-query attention over the live prefix `[0, k_len)` of a `[b, hkv, sk, d]` cache,
+/// query head `h` reading kv head `h / (hq / hkv)`. Returns `[b, hq, d]`.
 pub(crate) fn reference_decode(
     q: &[f32],
     k: &[f32],
@@ -62,31 +92,10 @@ pub(crate) fn reference_decode(
 ) -> Vec<f64> {
     let group = hq / hkv;
     let mut out = vec![0.0; b * hq * d];
-    for bi in 0..b {
-        for h in 0..hq {
-            let qrow = &q[(bi * hq + h) * d..][..d];
-            let base = (bi * hkv + h / group) * sk * d;
-            let scores: Vec<f64> = (0..k_len)
-                .map(|j| {
-                    let krow = &k[base + j * d..][..d];
-                    scale
-                        * qrow
-                            .iter()
-                            .zip(krow)
-                            .map(|(a, b)| *a as f64 * *b as f64)
-                            .sum::<f64>()
-                })
-                .collect();
-            let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let exps: Vec<f64> = scores.iter().map(|s| (s - max).exp()).collect();
-            let total: f64 = exps.iter().sum();
-            let cell = &mut out[(bi * hq + h) * d..][..d];
-            for (j, w) in exps.iter().enumerate() {
-                for (c, x) in cell.iter_mut().zip(&v[base + j * d..][..d]) {
-                    *c += w / total * *x as f64;
-                }
-            }
-        }
+    for (row, cell) in out.chunks_exact_mut(d).enumerate() {
+        let (bi, h) = (row / hq, row % hq);
+        let base = (bi * hkv + h / group) * sk * d;
+        attend_head(cell, &q[row * d..][..d], (k, v), base, k_len, scale);
     }
     out
 }
@@ -222,12 +231,16 @@ mod tests {
     }
 
     /// Live: the registered f16 decode kernel against the `f64` reference, within the default
-    /// bound. Run through `scripts/gpu-run.ps1`.
+    /// bound. Needs a CUDA device and the `gpu-run` lock; skips (fatal under the hardware policy) without a device.
     #[test]
-    #[ignore = "live GPU: run via scripts/gpu-run.ps1 with --features cuda,dev-tools"]
     fn flash_decoding_f16_is_within_the_default_bound() {
         fuel_test_support::require_gpu_run_lock();
-        let device = fuel_test_support::required_ok("CUDA device 0", CudaDevice::new(0));
+        let Ok(device) = CudaDevice::new(0) else {
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
+        };
         let table = entry_table();
         let entry = find_entry(&table, OpKind::FlashAttn, &[DType::F16; 4], BackendId::Cuda)
             .expect("f16 flash_decoding entry");
