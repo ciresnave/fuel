@@ -12,6 +12,10 @@ This documents the main changes to the `fuel` workspace.
 
 - Equivalence, run before the deletion on the 31-file local corpus (`C:\Models\gguf-corpus`): `Content::open` and the old `Content::read` agreed on the magic, the whole metadata map, the tensor-info table, the unsupported-tensor table and the data offset for 30 files; the 31st is the v1 file. The agreement is frozen as `fuel-loaders/tests/fixtures/gguf_corpus_digests.json` (hashes produced by the old reader) and checked by `tests/gguf_corpus_equivalence.rs`; the four known metadata-decode differences (duplicate keys keep the first, a trailing NUL is kept, a bool byte 2..=255 is accepted, a non-UTF-8 key or tensor name is refused) do not occur on any of the 30. The hand-built `gguf_open_mlmf_adapter.rs` tests now assert absolute values instead of comparing with the deleted reader
 
+### Known
+
+- `--features jit-synth` does not compile at 0.25.0: `baracuda-cuda-seam =0.1.0-alpha.2` requires `fuel-kernel-seam ^0.24`, and the workspace seam crates are now 0.25.0. It returns with `baracuda-cuda-seam` alpha.3 (on `^0.25`) and the pin bump in 0.25.1. This is the cost of the seam crates sharing the workspace version (`docs/design-notes/2026-10-24-seam-crate-versioning.md`)
+
 ### Fixed
 
 - CI: the advisory CodeRipper `portfolio` job is repinned to coderipper `30e012b7`
