@@ -1,6 +1,26 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.0 - 2026-10-24
+
+### Breaking
+
+- MLMF move, slice D (ROADMAP row 42; CireSnave 2026-10-24: "Move any loading/saving portions to MLMF."): fuel's own GGUF parser is deleted. `fuel_formats::gguf::{Content, read_string, VersionedMagic::read, Value::read}` and `fuel_loaders::quantized::gguf_file::Content::read` no longer exist. The one reader is `Content::open(path)` / the new `Content::from_bytes(bytes, path)` over `mlmf-gguf`; `MmapedContent::from_path` and `from_gguf_bytes` use it. `fuel-formats` keeps the wire types (`Value`, `ValueType`, `TensorInfo`, `VersionedMagic`) and the writer; `fuel-tensor-tools` and the `gguf-tokenizer` example are repointed
+- **GGUF v1 files are no longer readable** (32-bit counts, written by llama.cpp before mid-2023; `mlmf-gguf` refuses them on purpose and fuel keeps no second parser): a typed error that names "GGUF v1" and says to re-export the model with a current llama.cpp (PM ruling 2026-10-24)
+
+### Changed
+
+- Equivalence, run before the deletion on the 31-file local corpus (`C:\Models\gguf-corpus`): `Content::open` and the old `Content::read` agreed on the magic, the whole metadata map, the tensor-info table, the unsupported-tensor table and the data offset for 30 files; the 31st is the v1 file. The agreement is frozen as `fuel-loaders/tests/fixtures/gguf_corpus_digests.json` (hashes produced by the old reader) and checked by `tests/gguf_corpus_equivalence.rs`; the four known metadata-decode differences (duplicate keys keep the first, a trailing NUL is kept, a bool byte 2..=255 is accepted, a non-UTF-8 key or tensor name is refused) do not occur on any of the 30. The hand-built `gguf_open_mlmf_adapter.rs` tests now assert absolute values instead of comparing with the deleted reader
+
+### Known
+
+- `--features jit-synth` does not compile at 0.25.0: `baracuda-cuda-seam =0.1.0-alpha.2` requires `fuel-kernel-seam ^0.24`, and the workspace seam crates are now 0.25.0. It returns with `baracuda-cuda-seam` alpha.3 (on `^0.25`) and the pin bump in 0.25.1. This is the cost of the seam crates sharing the workspace version (`docs/design-notes/2026-10-24-seam-crate-versioning.md`)
+
+### Fixed
+
+- CI: the advisory CodeRipper `portfolio` job is repinned to coderipper `30e012b7`
+- GAP-205 closed by deletion (the old parser panicked on `general.alignment = 0`, made unbounded allocations from declared lengths, lossily decoded names and kept the last of duplicate keys); GAP-345 (the `open` vs `read` parity differences) closed with it
+
 ## v0.24.5 - 2026-10-24
 
 ### Changed

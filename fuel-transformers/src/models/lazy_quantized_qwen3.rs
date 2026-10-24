@@ -282,9 +282,7 @@ impl QuantizedQwen3Model {
     /// data).
     pub fn from_gguf_bytes(bytes: &[u8], cfg: &Qwen3Config) -> Result<Self> {
         use fuel_loaders::quantized::gguf_file::Content;
-        use std::io::Cursor;
-        let mut cursor = Cursor::new(bytes);
-        let content = Content::read(&mut cursor)?;
+        let content = Content::from_bytes(bytes, std::path::Path::new("<in-memory GGUF>"))?;
         Self::from_gguf_content_and_bytes(&content, bytes, cfg)
     }
 

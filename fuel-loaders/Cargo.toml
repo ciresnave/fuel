@@ -48,3 +48,4 @@
     byteorder = { workspace = true }
     tempfile  = { workspace = true }
     fuel-test-support = { path = "../fuel-test-support" }
+    serde_json = { workspace = true }

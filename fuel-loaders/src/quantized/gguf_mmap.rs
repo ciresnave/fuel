@@ -24,7 +24,6 @@ use fuel_ir::error::Result;
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -61,8 +60,7 @@ impl MmapedContent {
         // of this struct, and we never mutate the mapped region.
         let mmap = unsafe { Mmap::map(&file)? };
         let mmap = Arc::new(mmap);
-        let mut cursor = Cursor::new(&mmap[..]);
-        let content = Content::read(&mut cursor)?;
+        let content = Content::from_bytes(&mmap[..], &path_buf)?;
         progress.emit(&ProgressEvent::MetadataParsed {
             format: "gguf",
             tensor_count: content.tensor_infos.len(),

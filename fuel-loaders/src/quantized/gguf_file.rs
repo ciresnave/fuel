@@ -1,61 +1,71 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! GGUF file format — fuel-core's metadata view.
+//! GGUF file format — fuel's metadata view.
 //!
-//! Wire-format parsing (magic, KV metadata, tensor-info table, value
-//! decode/encode) lives in [`fuel_formats::gguf`]. This file re-exports
-//! that surface and wraps the parsed header in a fuel-core [`Content`].
+//! The wire-format TYPES (`VersionedMagic`, `ValueType`, `Value`, `TensorInfo`) and the writer live
+//! in [`fuel_formats::gguf`]; this file re-exports them and wraps the parsed header in a
+//! [`Content`]. READING a GGUF is `mlmf-gguf`'s job (MLMF move, slice D, 2026-10-24: CireSnave,
+//! "Move any loading/saving portions to MLMF"): [`Content::open`] maps a file and
+//! [`Content::from_bytes`] parses bytes the caller already holds (what `MmapedContent` does). The
+//! byte-stream parser `Content::read` that used to sit beside them is deleted, and with it
+//! GAP-205 (a panic on `general.alignment = 0`, unbounded allocations, lossy names, last-wins
+//! duplicate keys).
+//!
+//! GGUF **v1** (32-bit counts, written by llama.cpp before mid-2023) is not readable: `mlmf-gguf`
+//! refuses it on purpose and fuel keeps no second parser, so it is a typed error that says to
+//! re-export the model.
 //!
 //! B6 removed the eager half: `Content::tensor`, `Content::tensor_from_mmap`,
 //! and the free `write` function all built or consumed the eager `QTensor`.
 //! Reading tensor *bytes* needs none of that — take the `TensorInfo` from
 //! [`Content::tensor_infos`] plus [`Content::tensor_data_offset`] and slice the
-//! backing mmap yourself. That is what the lazy loaders already do; see
-//! `fuel-core/src/lazy_quantized_llama.rs` and its siblings.
+//! backing mmap yourself. That is what the lazy loaders already do.
 //!
-//! # [`Content::open`] — the MLMF-backed constructor
-//!
-//! Added for the fuel-core dissolution's MLMF repoint (CireSnave: "fuel
-//! should use MLMF for loading and saving"). ADDITIVE ONLY — [`Content::read`]
-//! above is untouched, still backed by `fuel-formats`' own byte-stream
-//! parser, and stays the entry point for a caller that only has a
-//! `Read + Seek`, not a `Path`.
-//!
-//! `open` exists as a second constructor rather than a `read` rewrite
-//! because MLMF's parsers (`mlmf_gguf::{parse_header, GgufMetadata::parse,
-//! parse_tensors}`) are byte-SLICE-based, not stream-based, and
-//! `parse_tensors` range-checks every tensor's declared byte range against
-//! `bytes.len()` — so handing it anything shorter than the real file
-//! (a growable probe buffer, say) makes every tensor look like it runs
-//! past the end of a truncated "file" that only exists in this read. The
-//! correct byte slice is the real file's full length, which is exactly
-//! what [`mlmf_source_file::FileSource`]'s mmap gives for free: the OS
-//! pages in only what the parsers actually touch (header + KV metadata +
-//! tensor-info table), never the multi-GB tensor-data region, matching
-//! `Content::read`'s own "never touches tensor data" discipline without
-//! needing stream support MLMF's parsers don't have.
+//! MLMF's parsers are byte-SLICE-based, and `parse_tensors` range-checks every tensor's declared
+//! byte range against `bytes.len()`, so the slice must be the real file's full length: the mmap
+//! of [`mlmf_source_file::FileSource`] (or `MmapedContent`'s own) gives that for free, and the OS
+//! pages in only what the parsers touch (header, KV metadata, tensor-info table), never the
+//! multi-GB tensor-data region.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek};
 use std::path::Path;
 
 use fuel_ir::error::{Error, Result};
 
 pub use fuel_formats::gguf::{
-    DEFAULT_ALIGNMENT, TensorInfo, Value, ValueType, VersionedMagic, read_string, write_string,
+    DEFAULT_ALIGNMENT, TensorInfo, Value, ValueType, VersionedMagic, write_string,
 };
+
+/// GGUF v1 (32-bit counts, early-2023 llama.cpp) is refused by `mlmf-gguf` on purpose, and fuel
+/// keeps no second parser (MLMF slice D, PM ruling 2026-10-24). Say so, and say what to do: the
+/// stock "version 1 is not supported" message does not.
+fn refuse_v1(bytes: &[u8], path: &Path) -> Result<()> {
+    let is_gguf = bytes.get(..4) == Some(b"GGUF".as_slice());
+    let version = bytes
+        .get(4..8)
+        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        .map(u32::from_le_bytes);
+    if is_gguf && version == Some(1) {
+        return Err(Error::Msg(
+            "gguf: GGUF v1 files (32-bit counts, written by llama.cpp before mid-2023) are not \
+             supported; re-export the model with a current llama.cpp"
+                .to_string(),
+        )
+        .with_path(path));
+    }
+    Ok(())
+}
 
 /// Parsed GGUF header: metadata, the tensor-info table, and the byte
 /// offset at which tensor data begins.
 ///
-/// Field shape mirrors [`fuel_formats::gguf::Content`].
+/// The parsed header: what the deleted `fuel_formats::gguf::Content` carried, field for field.
 #[derive(Debug)]
 pub struct Content {
     pub magic: VersionedMagic,
     pub metadata: HashMap<String, Value>,
     pub tensor_infos: HashMap<String, TensorInfo>,
     /// Tensors whose ggml type code fuel cannot represent, by name with the
-    /// raw code (GAP-211). Same contract as
-    /// [`fuel_formats::gguf::Content::unsupported_tensors`]: the file opens,
+    /// raw code (GAP-211). The file opens,
     /// the tensor is absent from `tensor_infos`, and loading it is a typed
     /// error from [`Content::missing_tensor_error`].
     pub unsupported_tensors: HashMap<String, u32>,
@@ -75,26 +85,13 @@ impl Content {
         }
     }
 
-    /// The original byte-stream constructor. UNCHANGED — still
-    /// `fuel-formats`' own parser, never touches tensor data.
-    pub fn read<R: Read + Seek>(reader: &mut R) -> Result<Self> {
-        let parsed = fuel_formats::gguf::Content::read(reader)?;
-        Ok(Self {
-            magic: parsed.magic,
-            metadata: parsed.metadata,
-            tensor_infos: parsed.tensor_infos,
-            unsupported_tensors: parsed.unsupported_tensors,
-            tensor_data_offset: parsed.tensor_data_offset,
-        })
-    }
-
     /// Parse `path` via MLMF's mmap-backed GGUF reader
     /// (`mlmf_source_file::FileSource` + `mlmf_gguf`'s staged parsers).
     ///
-    /// Behavior-equal to [`Content::read`] on a well-formed file (pinned by
-    /// `gguf_open_matches_read` in this module's tests), with three
-    /// differences this crate's two typed-Err disciplines force, not
-    /// optional choices:
+    /// Behavior-equal to the deleted `Content::read` on a well-formed file (recorded in
+    /// `tests/fixtures/gguf_corpus_digests.json`, checked by `tests/gguf_corpus_equivalence.rs`
+    /// on the 30 readable files of the local corpus), with three differences this crate's two
+    /// typed-Err disciplines force, not optional choices:
     ///
     /// - A metadata key this build's index could not fully walk
     ///   (`!meta.index_complete()`) is a typed [`Error`], never a partial
@@ -173,30 +170,46 @@ impl Content {
     pub fn open(path: &Path) -> Result<Self> {
         use mlmf_core::ByteSource as _;
 
-        let origin = path.display().to_string();
-
         let source = mlmf_source_file::FileSource::open(path)
             .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
-        let bytes = source.as_bytes();
+        Self::from_bytes(source.as_bytes(), path)
+    }
+
+    /// Parse the whole GGUF file `bytes` with MLMF's staged parsers: what [`Content::open`] does
+    /// after mapping `path`, for a caller that already holds the mapping (`MmapedContent`).
+    /// `path` is used only to name the file in errors. `bytes` must be the real file's full
+    /// length: `parse_tensors` range-checks every tensor against it.
+    pub fn from_bytes(bytes: &[u8], path: &Path) -> Result<Self> {
+        refuse_v1(bytes, path)?;
+        let origin = path.display().to_string();
+        let gguf_err = |e: mlmf_gguf::GgufError| Error::Msg(format!("gguf: {e}")).with_path(path);
 
         let mut cursor = mlmf_gguf::cursor::Cursor::new(bytes);
-        let header = mlmf_gguf::parse_header(&mut cursor)
-            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
-        let (meta, _meta_report) = mlmf_gguf::GgufMetadata::parse(bytes, &origin)
-            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
-        let (tensors, tensors_report) = mlmf_gguf::parse_tensors(bytes, &meta, &origin)
-            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
+        let header = mlmf_gguf::parse_header(&mut cursor).map_err(gguf_err)?;
+        let (meta, _meta_report) =
+            mlmf_gguf::GgufMetadata::parse(bytes, &origin).map_err(gguf_err)?;
+        let (tensors, tensors_report) =
+            mlmf_gguf::parse_tensors(bytes, &meta, &origin).map_err(gguf_err)?;
+        Self::from_parsed(&header, &meta, &tensors, &tensors_report, path)
+    }
 
-        let metadata = decode_metadata(&meta, path)?;
+    /// Turn MLMF's parsed header, metadata and tensor directory into fuel's [`Content`],
+    /// applying fuel's two typed-error disciplines (see [`Content::open`]).
+    fn from_parsed(
+        header: &mlmf_gguf::Header,
+        meta: &mlmf_gguf::GgufMetadata<'_>,
+        tensors: &mlmf_gguf::GgufTensors<'_>,
+        tensors_report: &mlmf_core::Report,
+        path: &Path,
+    ) -> Result<Self> {
+        let metadata = decode_metadata(meta, path)?;
         check_alignment_agrees(&metadata, meta.alignment(), path)?;
         let mut unsupported_tensors =
-            check_all_tensors_resolved(&tensors, &tensors_report, &header, path)?;
-        let (tensor_infos, more_unsupported) = build_tensor_infos(&tensors, path)?;
+            check_all_tensors_resolved(tensors, tensors_report, header, path)?;
+        let (tensor_infos, more_unsupported) = build_tensor_infos(tensors, path)?;
         unsupported_tensors.extend(more_unsupported);
-        let magic = resolve_magic(header.version, path)?;
-
         Ok(Self {
-            magic,
+            magic: resolve_magic(header.version, path)?,
             metadata,
             tensor_infos,
             unsupported_tensors,

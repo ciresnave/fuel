@@ -29,29 +29,6 @@ fn imatrix_parses_from_in_memory_cursor() {
 }
 
 #[test]
-fn gguf_minimal_header_parses_from_in_memory_cursor() {
-    use fuel_formats::gguf::{Content, VersionedMagic};
-
-    // Build a minimal GGUF v3 header with zero metadata and zero
-    // tensors — enough to exercise the parser without any QTensor /
-    // Device coupling.
-    let mut buf = Vec::new();
-    // Magic: 0x46554747 (`GGUF` little-endian) ; Version: 3
-    buf.write_u32::<LittleEndian>(0x46554747).unwrap();
-    buf.write_u32::<LittleEndian>(3).unwrap();
-    // tensor_count (u64 for v2/v3): 0
-    buf.write_u64::<LittleEndian>(0).unwrap();
-    // metadata_kv_count (u64 for v2/v3): 0
-    buf.write_u64::<LittleEndian>(0).unwrap();
-
-    let mut cursor = Cursor::new(buf);
-    let content = Content::read(&mut cursor).unwrap();
-    assert_eq!(content.magic, VersionedMagic::GgufV3);
-    assert_eq!(content.tensor_infos.len(), 0);
-    assert_eq!(content.metadata.len(), 0);
-}
-
-#[test]
 fn safetensors_parses_from_in_memory_buffer() {
     use fuel_formats::safetensors::SafeTensors;
 
