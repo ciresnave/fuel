@@ -27,7 +27,7 @@ use fuel_ir::probe::BackendId;
 
 use super::accuracy_attention::{bf16s, f16s, measure_flash_decoding};
 use super::accuracy_common::{
-    Claim, OpAccuracy, f32s, find_entry, measure_matmul, measure_rms_norm, measure_softmax,
+    Claim, OpAccuracy, Runner, f32s, find_entry, measure_matmul, measure_rms_norm, measure_softmax,
 };
 use super::accuracy_elementwise::{BINARY_SPECS, UNARY_SPECS, measure_binary, measure_unary};
 use super::accuracy_half::{measure_half_matmul, measure_half_rms_norm, measure_half_softmax};
@@ -144,6 +144,18 @@ pub(crate) const SOFTMAX_F32_CLAIM: Claim = Claim {
     max_relative: 1.0e-5,
     max_absolute: 1.0e-5,
 };
+/// ONE CUDA device for the whole process. baracuda's cuBLAS handle pool is keyed by the context
+/// ADDRESS (fixed in baracuda alpha.16), so dropping a context and creating the next can revive a
+/// handle bound to the dead one: `status 5` from `gemm_dense_{f16,bf16}` (GAP-370). Every
+/// measurement shares this device's context.
+fn shared_device() -> Result<CudaDevice, VerifyError> {
+    static DEVICE: std::sync::OnceLock<Result<CudaDevice, String>> = std::sync::OnceLock::new();
+    DEVICE
+        .get_or_init(|| CudaDevice::new(0).map_err(|e| format!("no CUDA device: {e}")))
+        .clone()
+        .map_err(VerifyError::Backend)
+}
+
 /// The CUDA device's marketing name, from the driver's own tool; `"unknown"` when it cannot be
 /// read. The hardware is evidence for the claim, so a guess is worse than a gap.
 fn device_name() -> String {
@@ -163,8 +175,7 @@ fn device_name() -> String {
 pub(crate) fn measure_cuda_f32_accuracy() -> Result<(String, Vec<OpAccuracy>), VerifyError> {
     let mut table = KernelBindingTable::new();
     crate::baracuda_dispatch::register_baracuda_cuda_kernels(&mut table);
-    let device =
-        CudaDevice::new(0).map_err(|e| VerifyError::Backend(format!("no CUDA device: {e}")))?;
+    let device = shared_device()?;
     let run = |entry: &BindingEntry, params: OpParams, inputs: &[HostTensor], shape: Vec<usize>| {
         let inv = CudaInvoker::new(device.clone(), DType::F32, shape).with_params(params);
         Ok(f32s(&inv.invoke(entry, inputs)?))
@@ -224,8 +235,7 @@ fn measure_cuda_half_attention(dtype: DType) -> Result<OpAccuracy, VerifyError> 
     use crate::ranker::filters::DEFAULT_ACCURACY_BOUND;
     let mut table = KernelBindingTable::new();
     crate::baracuda_dispatch::register_baracuda_cuda_kernels(&mut table);
-    let device =
-        CudaDevice::new(0).map_err(|e| VerifyError::Backend(format!("no CUDA device: {e}")))?;
+    let device = shared_device()?;
     let run = |entry: &BindingEntry, params: OpParams, inputs: &[HostTensor], shape: Vec<usize>| {
         let inv = CudaInvoker::new(device.clone(), dtype, shape).with_params(params);
         let out = inv.invoke(entry, inputs)?;
@@ -243,34 +253,47 @@ fn measure_cuda_half_attention(dtype: DType) -> Result<OpAccuracy, VerifyError> 
     measure_flash_decoding(&run, entry, dtype, bound)
 }
 
+/// Decode a half-precision kernel output (F16 or BF16) to `f32`.
+fn decode_half(dtype: DType, t: &HostTensor) -> Vec<f32> {
+    if dtype == DType::BF16 {
+        bf16s(t)
+    } else {
+        f16s(t)
+    }
+}
+
+/// The three decode-path ops of `dtype` through `run`, against `bound`.
+fn measure_half_ops(
+    run: &Runner,
+    table: &KernelBindingTable,
+    dtype: DType,
+    bound: Claim,
+) -> Result<Vec<OpAccuracy>, VerifyError> {
+    let entry =
+        |op: OpKind, arity: usize| find_entry(table, op, &vec![dtype; arity], BackendId::Cuda);
+    Ok(vec![
+        measure_half_matmul(run, entry(OpKind::MatMul, 3)?, dtype, bound)?,
+        measure_half_rms_norm(run, entry(OpKind::RmsNormLastDim, 2)?, dtype, bound)?,
+        measure_half_softmax(run, entry(OpKind::SoftmaxLastDim, 2)?, dtype, bound)?,
+    ])
+}
+
 /// The registered f16 or bf16 CUDA `MatMul`, `RmsNormLastDim` and `SoftmaxLastDim` against the
 /// default placement bound. Evidence only, like [`measure_cuda_half_attention`].
 fn measure_cuda_half_decode_ops(dtype: DType) -> Result<Vec<OpAccuracy>, VerifyError> {
     use crate::ranker::filters::DEFAULT_ACCURACY_BOUND;
     let mut table = KernelBindingTable::new();
     crate::baracuda_dispatch::register_baracuda_cuda_kernels(&mut table);
-    let device =
-        CudaDevice::new(0).map_err(|e| VerifyError::Backend(format!("no CUDA device: {e}")))?;
+    let device = shared_device()?;
     let run = |entry: &BindingEntry, params: OpParams, inputs: &[HostTensor], shape: Vec<usize>| {
         let inv = CudaInvoker::new(device.clone(), dtype, shape).with_params(params);
-        let out = inv.invoke(entry, inputs)?;
-        Ok(if dtype == DType::BF16 {
-            bf16s(&out)
-        } else {
-            f16s(&out)
-        })
+        Ok(decode_half(dtype, &inv.invoke(entry, inputs)?))
     };
     let bound = Claim {
         max_relative: DEFAULT_ACCURACY_BOUND.max_relative,
         max_absolute: DEFAULT_ACCURACY_BOUND.max_absolute,
     };
-    let entry =
-        |op: OpKind, arity: usize| find_entry(&table, op, &vec![dtype; arity], BackendId::Cuda);
-    Ok(vec![
-        measure_half_matmul(&run, entry(OpKind::MatMul, 3)?, dtype, bound)?,
-        measure_half_rms_norm(&run, entry(OpKind::RmsNormLastDim, 2)?, dtype, bound)?,
-        measure_half_softmax(&run, entry(OpKind::SoftmaxLastDim, 2)?, dtype, bound)?,
-    ])
+    measure_half_ops(&run, &table, dtype, bound)
 }
 
 fn records(name: &str, ops: &[OpAccuracy]) -> Vec<LedgerRecord> {
@@ -353,8 +376,8 @@ pub(crate) fn run_check_cuda_accuracy() {
     // floor at k >= 4096, GAP-369). The numbers are the evidence a later claim starts from.
     for d in [DType::F16, DType::BF16] {
         println!("[row-39] dtype {d:?} decode-path ops");
-        // A launch failure in the half gemm is reproducible by shape (GAP-370): report it and go
-        // on, since this evidence is not asserted.
+        // A half gemm launch failure (GAP-370; the shared device avoids the known cause) is
+        // reported, and the run goes on, since this evidence is not asserted.
         match measure_cuda_half_decode_ops(d) {
             Ok(ops) => print_run(&name, &ops),
             Err(e) => println!("[row-39] {d:?} decode-path ops NOT MEASURED (GAP-370): {e:?}"),
