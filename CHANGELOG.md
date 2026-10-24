@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.1 - 2026-10-24
+
+### Changed
+
+- CI: the advisory CodeRipper `portfolio.yml` caller is repinned to `d14a22b6` (installs coderipper 0.9.14; the previous pin installed 0.9.6)
+
 ## v0.25.0 - 2026-10-24
 
 ### Breaking
