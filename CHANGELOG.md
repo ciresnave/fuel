@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.15 - 2026-10-24
+
+### Added
+
+- ROADMAP row 34: `fuel-cpu-backend/examples/half_matvec_speed.rs` times the m = 1 CPU matmul with f32, bf16 and f16 weights. Measured at `origin/main@ac29b53c`, release, median of 15, three Qwen3-0.6B projection shapes: bf16 0.22-0.36 ms, f16 0.19-0.28 ms, `matmul_f32` 3.5-5.2 ms. Example and ROADMAP text only; no kernel change.
+
 ## v0.25.14 - 2026-10-24
 
 ### Changed
