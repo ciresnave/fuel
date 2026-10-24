@@ -30,6 +30,7 @@ use super::accuracy_common::{
     Claim, OpAccuracy, f32s, find_entry, measure_matmul, measure_rms_norm, measure_softmax,
 };
 use super::accuracy_elementwise::{BINARY_SPECS, UNARY_SPECS, measure_binary, measure_unary};
+use super::accuracy_half::{measure_half_matmul, measure_half_rms_norm, measure_half_softmax};
 use super::accuracy_reduce::{Fold, measure_reduce};
 use super::bit_stability::{HostTensor, KernelInvoker, VerifyError};
 use super::invoker_cuda::CudaInvoker;
@@ -242,6 +243,36 @@ fn measure_cuda_half_attention(dtype: DType) -> Result<OpAccuracy, VerifyError> 
     measure_flash_decoding(&run, entry, dtype, bound)
 }
 
+/// The registered f16 or bf16 CUDA `MatMul`, `RmsNormLastDim` and `SoftmaxLastDim` against the
+/// default placement bound. Evidence only, like [`measure_cuda_half_attention`].
+fn measure_cuda_half_decode_ops(dtype: DType) -> Result<Vec<OpAccuracy>, VerifyError> {
+    use crate::ranker::filters::DEFAULT_ACCURACY_BOUND;
+    let mut table = KernelBindingTable::new();
+    crate::baracuda_dispatch::register_baracuda_cuda_kernels(&mut table);
+    let device =
+        CudaDevice::new(0).map_err(|e| VerifyError::Backend(format!("no CUDA device: {e}")))?;
+    let run = |entry: &BindingEntry, params: OpParams, inputs: &[HostTensor], shape: Vec<usize>| {
+        let inv = CudaInvoker::new(device.clone(), dtype, shape).with_params(params);
+        let out = inv.invoke(entry, inputs)?;
+        Ok(if dtype == DType::BF16 {
+            bf16s(&out)
+        } else {
+            f16s(&out)
+        })
+    };
+    let bound = Claim {
+        max_relative: DEFAULT_ACCURACY_BOUND.max_relative,
+        max_absolute: DEFAULT_ACCURACY_BOUND.max_absolute,
+    };
+    let entry =
+        |op: OpKind, arity: usize| find_entry(&table, op, &vec![dtype; arity], BackendId::Cuda);
+    Ok(vec![
+        measure_half_matmul(&run, entry(OpKind::MatMul, 3)?, dtype, bound)?,
+        measure_half_rms_norm(&run, entry(OpKind::RmsNormLastDim, 2)?, dtype, bound)?,
+        measure_half_softmax(&run, entry(OpKind::SoftmaxLastDim, 2)?, dtype, bound)?,
+    ])
+}
+
 fn records(name: &str, ops: &[OpAccuracy]) -> Vec<LedgerRecord> {
     ops.iter()
         .flat_map(|o| o.records(BACKEND, HARNESS, name))
@@ -317,6 +348,18 @@ pub(crate) fn run_check_cuda_accuracy() {
         .map(|d| measure_cuda_half_attention(d).expect("cuda half attention measurement runs"))
         .collect();
     print_run(&name, &attention);
+    // Printed, NOT asserted: no half-precision claim is earned (bf16 rounding alone exceeds the
+    // 1e-3 bound for MatMul and RmsNormLastDim; the f16/bf16 tiled gemm is far past its rounding
+    // floor at k >= 4096, GAP-369). The numbers are the evidence a later claim starts from.
+    for d in [DType::F16, DType::BF16] {
+        println!("[row-39] dtype {d:?} decode-path ops");
+        // A launch failure in the half gemm is reproducible by shape (GAP-370): report it and go
+        // on, since this evidence is not asserted.
+        match measure_cuda_half_decode_ops(d) {
+            Ok(ops) => print_run(&name, &ops),
+            Err(e) => println!("[row-39] {d:?} decode-path ops NOT MEASURED (GAP-370): {e:?}"),
+        }
+    }
     let failing = records(&name, &ops)
         .into_iter()
         .chain(records(&name, &attention))

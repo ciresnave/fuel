@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.12 - 2026-10-24
+
+### Added
+
+- ROADMAP row 39: `verify/accuracy_half.rs` measures the registered f16 and bf16 CUDA `MatMul`, `RmsNormLastDim` and `SoftmaxLastDim` against an f64 reference of the same half-rounded inputs; `fuel-dev-tools check-cuda-accuracy` prints them (not asserted). RTX 4070 Laptop worst relative error: f16 rms 4.9e-4, f16 softmax 2.1e-4, bf16 rms 3.9e-3, bf16 softmax 8.7e-4; half `MatMul` sits at its output-rounding floor (f16 4.9e-4, bf16 3.9e-3) except `m >= 32, n = 1024, k >= 4096` (f16 1.5e-2, bf16 1.2e-1: cuBLAS split-K reducing in half precision, GAP-369). The half gemm also fails with `status 5` launch failures at `m=31 n=512 k=2048` in 4 of 6 labelled runs (GAP-370). No claim is earned, no contract or ledger change
+
+### Changed
+
+- Nothing in the published crates' behaviour changes: the measurements are dev-tool code
+
 ## v0.25.11 - 2026-10-24
 
 ### Changed
