@@ -160,7 +160,7 @@ precision:
   bit_stable_on_same_hardware: false   # online-softmax + warp reductions: scheduler-dependent FADD order
   max_ulp: ~
   max_relative: ~
-  max_absolute: 0.001            # F32-reference: < 1e-5 acausal, < 1e-3 softcap (flash_attn_tests.rs:113,151); pessimistic bound 1e-3
+  max_absolute: 0.001            # UNBACKED: no test or ledger record measures this. It cited flash_attn_tests.rs of the dissolved fuel-flash-attn-cuda crate, which exists nowhere, and this contract binds no kernel (fuel_flash_attn_cuda is not a crate). Pessimistic bound 1e-3. Measured evidence for the registered CUDA FlashAttn: accuracy_attention.rs (decode, f16)
   audited: true
   notes: "FlashAttention-v2 f16/bf16 inputs, fp32 internal accumulation + fp32 LSE; tanh softcap before softmax. Validated vs fp32 reference: < 1e-5 acausal, < 1e-3 softcap. Not bit-stable cross-hardware (warp reduction order)."
 
@@ -290,7 +290,7 @@ precision:
   bit_stable_on_same_hardware: false   # online-softmax + warp reductions: scheduler-dependent
   max_ulp: ~
   max_relative: ~
-  max_absolute: 0.001            # same FA2 numerics as flash-attn; F32-reference < 1e-5 acausal / < 1e-3 softcap
+  max_absolute: 0.001            # UNBACKED, same as flash-attn above (same FA2 numerics claimed, nothing measured; binds no kernel)
   audited: true
   notes: "FlashAttention-v2 f16/bf16 inputs, fp32 internal accumulation + fp32 LSE; identical numerics to flash-attn over packed ragged sequences. Not bit-stable cross-hardware (warp reduction order)."
 
