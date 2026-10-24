@@ -151,7 +151,13 @@ fn build_cuda_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> {
         | OpKind::MulElementwise
         | OpKind::DivElementwise
         | OpKind::MaximumElementwise
-        | OpKind::MinimumElementwise => {
+        | OpKind::MinimumElementwise
+        // Pow / Rem share the binary calling convention; the claim is byte-identity across
+        // repeats, so a NaN with a stable payload (pow of a negative base) is stable. Absent
+        // only because nobody listed them: without a pass their F32 entries could not carry
+        // the numeric claim (row 39).
+        | OpKind::PowElementwise
+        | OpKind::RemElementwise => {
             let a = ht(dt, vec![4], &fill_deterministic(4, seed))?;
             let b = ht(dt, vec![4], &fill_deterministic(4, seed ^ 0x9E37_79B9))?;
             Some(Probe {
