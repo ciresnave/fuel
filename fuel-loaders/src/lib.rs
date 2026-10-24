@@ -21,6 +21,7 @@
 //! the same shim pattern already used for `dtype`/`layout`/`shape`/`backend`/`storage` from the
 //! earlier B0 extraction — existing `fuel_core::` / `fuel::` import paths keep compiling.
 
+pub mod awq;
 pub mod hf_config;
 pub mod model_progress;
 pub mod quantized;

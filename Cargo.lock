@@ -2180,8 +2180,10 @@ dependencies = [
  "fuel-ir",
  "fuel-quantized",
  "memmap2",
+ "mlmf-awq",
  "mlmf-core",
  "mlmf-gguf",
+ "mlmf-safetensors",
  "mlmf-source-file",
  "safetensors",
  "tempfile",
@@ -3616,6 +3618,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mlmf-awq"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2ad43f4734fb79a27cc8bd9db3067bfa49c3ef7ea734fd9fd3596c3249dbae8"
+dependencies = [
+ "mlmf-core",
+ "serde_json",
+]
+
+[[package]]
 name = "mlmf-core"
 version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3643,6 +3655,16 @@ checksum = "c1c1d73e38d2669eb29921a3b5fa3dff5631aeb10136eb0848fa7931dffbe3f5"
 dependencies = [
  "mlmf-core",
  "mlmf-ggml",
+]
+
+[[package]]
+name = "mlmf-safetensors"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c82dc53cf282d51c16f2ca4670490fe6a745532007a8a869477daa05962933c5"
+dependencies = [
+ "mlmf-core",
+ "serde_json",
 ]
 
 [[package]]

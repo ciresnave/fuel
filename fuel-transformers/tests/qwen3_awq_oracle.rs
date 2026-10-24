@@ -107,22 +107,11 @@ fn checkpoint_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// `quantization_config.group_size`, after refusing every quantization this
-/// loader does not read (a different method, bit width, packing or zero-point
-/// convention would load as plausible garbage).
-fn awq_group_size(config_json: &str) -> usize {
-    let v: serde_json::Value = serde_json::from_str(config_json).expect("config.json");
-    let q = &v["quantization_config"];
-    assert_eq!(q["quant_method"], "awq", "not an AWQ checkpoint: {q}");
-    assert_eq!(q["bits"], 4, "only 4-bit AWQ is read: {q}");
-    assert_eq!(q["version"], "gemm", "only the GEMM packing is read: {q}");
-    assert_eq!(q["zero_point"], true, "only zero-point AWQ is read: {q}");
-    q["group_size"].as_u64().expect("group_size") as usize
-}
-
 fn load(dir: &Path) -> Qwen3Model {
     let config_json = std::fs::read_to_string(dir.join("config.json")).expect("config.json");
-    let group = awq_group_size(&config_json);
+    // MLMF slice A: the group size and the refusals of other AWQ variants are `mlmf-awq`'s, through
+    // `fuel_loaders::awq` (equivalence with the hand parser this replaced: `qwen3_awq_mlmf_slice_a.rs`).
+    let group = fuel_loaders::awq::awq_group_size(config_json.as_bytes()).expect("AWQ config");
     let config = Qwen3Config::from_hf_json_str(&config_json).expect("Qwen3Config");
     // SAFETY: the file is read-only for the lifetime of the test process.
     let st =
