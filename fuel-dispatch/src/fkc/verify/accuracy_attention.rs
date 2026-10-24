@@ -13,7 +13,7 @@
 
 use fuel_ir::DType;
 use fuel_ir::dispatch::OpKind;
-use half::f16;
+use half::{bf16, f16};
 
 use super::accuracy_common::{Claim, OpAccuracy, Runner, case, scaled};
 use super::bit_stability::{HostTensor, VerifyError};
@@ -51,14 +51,26 @@ pub(crate) const DECODE_CASES: &[Geometry] = &[
     geo(1, 8, 8, 2048, 128, 2048),
 ];
 
-/// Round to f16, as the kernel's input does, and return the bytes and the rounded values.
-fn to_f16(shape: Vec<usize>, vals: &[f32]) -> (HostTensor, Vec<f32>) {
-    let halves: Vec<f16> = vals.iter().map(|&v| f16::from_f32(v)).collect();
-    let rounded = halves.iter().map(|h| h.to_f32()).collect();
+/// Round to `dtype` (F16 or BF16), as the kernel's input does, and return the bytes and the
+/// rounded values.
+fn to_half(dtype: DType, shape: Vec<usize>, vals: &[f32]) -> (HostTensor, Vec<f32>) {
+    let (bytes, rounded): (Vec<u8>, Vec<f32>) = if dtype == DType::BF16 {
+        let h: Vec<bf16> = vals.iter().map(|&v| bf16::from_f32(v)).collect();
+        (
+            bytemuck::cast_slice(&h).to_vec(),
+            h.iter().map(|x| x.to_f32()).collect(),
+        )
+    } else {
+        let h: Vec<f16> = vals.iter().map(|&v| f16::from_f32(v)).collect();
+        (
+            bytemuck::cast_slice(&h).to_vec(),
+            h.iter().map(|x| x.to_f32()).collect(),
+        )
+    };
     let tensor = HostTensor {
-        dtype: DType::F16,
+        dtype,
         shape,
-        bytes: bytemuck::cast_slice(&halves).to_vec(),
+        bytes,
     };
     (tensor, rounded)
 }
@@ -70,6 +82,16 @@ pub(crate) fn f16s(t: &HostTensor) -> Vec<f32> {
         .0
         .iter()
         .map(|c| f16::from_bits(u16::from_le_bytes(*c)).to_f32())
+        .collect()
+}
+
+/// Decode a bf16 kernel output to `f32`.
+pub(crate) fn bf16s(t: &HostTensor) -> Vec<f32> {
+    t.bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| bf16::from_bits(u16::from_le_bytes(*c)).to_f32())
         .collect()
 }
 
@@ -129,11 +151,12 @@ pub(crate) fn reference_decode(
     out
 }
 
-/// Measure the f16 `flash_decoding` kernel in `entry` over [`DECODE_CASES`], inputs uniform in
-/// `[-1, 1)` rounded to f16. `run` decodes the f16 output to `f32`.
+/// Measure the `flash_decoding` kernel in `entry` (`dtype`: F16 or BF16) over [`DECODE_CASES`],
+/// inputs uniform in `[-1, 1)` rounded to `dtype`. `run` decodes the kernel output to `f32`.
 pub(crate) fn measure_flash_decoding(
     run: &Runner,
     entry: &BindingEntry,
+    dtype: DType,
     claim: Claim,
 ) -> Result<OpAccuracy, VerifyError> {
     let mut cases = Vec::new();
@@ -147,10 +170,10 @@ pub(crate) fn measure_flash_decoding(
             k_len,
         } = g;
         let seed = 0xA000 + idx as u64 * 3;
-        let (qt, q) = to_f16(vec![b, hq, 1, d], &scaled(b * hq * d, seed, 1.0));
+        let (qt, q) = to_half(dtype, vec![b, hq, 1, d], &scaled(b * hq * d, seed, 1.0));
         let kv_len = b * hkv * sk * d;
-        let (kt, k) = to_f16(vec![b, hkv, sk, d], &scaled(kv_len, seed + 1, 1.0));
-        let (vt, v) = to_f16(vec![b, hkv, sk, d], &scaled(kv_len, seed + 2, 1.0));
+        let (kt, k) = to_half(dtype, vec![b, hkv, sk, d], &scaled(kv_len, seed + 1, 1.0));
+        let (vt, v) = to_half(dtype, vec![b, hkv, sk, d], &scaled(kv_len, seed + 2, 1.0));
         let scale = 1.0 / (d as f64).sqrt();
         let params = OpParams::FlashAttn {
             b,
@@ -176,12 +199,12 @@ pub(crate) fn measure_flash_decoding(
     }
     Ok(OpAccuracy::new(
         OpKind::FlashAttn,
-        &[DType::F16; 4],
+        &[dtype; 4],
         claim,
         entry,
         cases,
-        "f64 softmax(q.k * scale).v of the same f16 inputs",
-        "uniform [-1, 1) rounded to f16",
+        "f64 softmax(q.k * scale).v of the same half-precision inputs",
+        "uniform [-1, 1) rounded to the kernel dtype",
     ))
 }
 
@@ -257,13 +280,13 @@ mod tests {
                 Ok(out)
             }
         };
-        let exact = measure_flash_decoding(&host(0.0), entry, BOUND).expect("measures");
+        let exact = measure_flash_decoding(&host(0.0), entry, DType::F16, BOUND).expect("measures");
         assert!(
             exact.worst_abs < 1.0e-3,
             "rounding only: {}",
             exact.worst_abs
         );
-        let off = measure_flash_decoding(&host(0.5), entry, BOUND).expect("measures");
+        let off = measure_flash_decoding(&host(0.5), entry, DType::F16, BOUND).expect("measures");
         assert!(off.worst_abs >= 0.4, "perturbation seen: {}", off.worst_abs);
     }
 }
