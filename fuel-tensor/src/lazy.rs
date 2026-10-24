@@ -8362,6 +8362,7 @@ pub type ConvWeightBias = (Arc<[f32]>, Arc<[f32]>);
 /// [`WeightStorage::const_like`] to emit a [`Tensor`] `Const`
 /// node with the right dtype.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum WeightStorage {
     F32(Arc<[f32]>),
     BF16(Arc<[half::bf16]>),

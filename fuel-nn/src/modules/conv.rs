@@ -413,6 +413,15 @@ impl Conv2d {
                 )
                 .bt());
             }
+            // `WeightStorage` is `#[non_exhaustive]`: a variant added later has no host f32 view
+            // here until someone writes one.
+            _ => {
+                return Err(fuel_ir::error::Error::Msg(
+                    "Conv2d::absorb_bn: this weight storage has no host f32 view to fold a BatchNorm into."
+                        .into(),
+                )
+                .bt());
+            }
         };
         debug_assert_eq!(weight_f32.len(), c_out * per_out);
 
@@ -449,7 +458,7 @@ impl Conv2d {
                 WeightStorage::F16(Arc::from(as_f16))
             }
             // The Q4_0 / WithLoRA arms returned early above.
-            WeightStorage::Q4_0 { .. } | WeightStorage::Awq(_) | WeightStorage::WithLoRA { .. } => {
+            _ => {
                 unreachable!()
             }
         };
