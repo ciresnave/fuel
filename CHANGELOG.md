@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.24.3 - 2026-10-24
+
+### Added
+
+- MLMF move, slice A (ROADMAP row 42): `fuel_loaders::awq::{awq_group_size, locate_awq_layers}`, AWQ configuration parsing and packed-layer discovery over `mlmf-awq` and `mlmf-safetensors` (one safetensors file; sharded AWQ is not merged yet). The oracle `qwen3_awq_oracle.rs` uses it instead of its own hand parser, which is deleted. Equivalence on the real `Orion-zhen/Qwen3-0.6B-AWQ` checkpoint, checked before the deletion (`fuel-transformers/tests/qwen3_awq_mlmf_slice_a.rs`): 196 layers located = the 196 projections `load_awq_from_mmapped` reads, every `(out, in)` equal, group size 128
+
+### Changed
+
+- `fuel-loaders`: `mlmf-core`, `mlmf-gguf`, `mlmf-source-file` 0.5.10 -> 0.5.11 (the `Content::open` adapter tests still pass 6 of 6)
+
 ## v0.24.2 - 2026-10-24
 
 ### Changed
