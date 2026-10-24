@@ -1,6 +1,13 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.24.4 - 2026-10-24
+
+### Changed
+
+- MLMF move, slice B (ROADMAP row 42): `fuel_loaders::safetensors::{MmapedSafetensors, BufferedSafetensors}` read the header and tensor directory with `mlmf-safetensors` instead of the upstream `safetensors` deserializer. The public API and the `safetensors::TensorView` it returns are unchanged (226 files reference the type). Equivalence, run against the old reader first and again after the swap (`fuel-loaders/tests/safetensors_equivalence.rs`): identical tensor names, dtypes, shapes and bytes for all 15 dtypes plus an empty and a scalar tensor, two-shard last-wins routing, and the real Qwen3-0.6B-AWQ (702 tensors) and Qwen3.5-0.8B (488 tensors) checkpoints; a flipped byte is caught
+- Two known differences: a tensor whose dtype `mlmf-safetensors` cannot resolve is unreachable by `get` (the error names it) where the old reader returned a view; and the upstream reader's contiguity validation of the data region is not replicated (each tensor's range is still checked to lie inside the file, so a truncated file is still refused at open)
+
 ## v0.24.3 - 2026-10-24
 
 ### Added
