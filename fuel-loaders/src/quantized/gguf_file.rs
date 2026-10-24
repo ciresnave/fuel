@@ -65,8 +65,7 @@ pub struct Content {
     pub metadata: HashMap<String, Value>,
     pub tensor_infos: HashMap<String, TensorInfo>,
     /// Tensors whose ggml type code fuel cannot represent, by name with the
-    /// raw code (GAP-211). Same contract as
-    /// [`fuel_formats::gguf::Content::unsupported_tensors`]: the file opens,
+    /// raw code (GAP-211). The file opens,
     /// the tensor is absent from `tensor_infos`, and loading it is a typed
     /// error from [`Content::missing_tensor_error`].
     pub unsupported_tensors: HashMap<String, u32>,
@@ -181,27 +180,36 @@ impl Content {
     /// `path` is used only to name the file in errors. `bytes` must be the real file's full
     /// length: `parse_tensors` range-checks every tensor against it.
     pub fn from_bytes(bytes: &[u8], path: &Path) -> Result<Self> {
-        let origin = path.display().to_string();
         refuse_v1(bytes, path)?;
+        let origin = path.display().to_string();
+        let gguf_err = |e: mlmf_gguf::GgufError| Error::Msg(format!("gguf: {e}")).with_path(path);
 
         let mut cursor = mlmf_gguf::cursor::Cursor::new(bytes);
-        let header = mlmf_gguf::parse_header(&mut cursor)
-            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
-        let (meta, _meta_report) = mlmf_gguf::GgufMetadata::parse(bytes, &origin)
-            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
-        let (tensors, tensors_report) = mlmf_gguf::parse_tensors(bytes, &meta, &origin)
-            .map_err(|e| Error::Msg(format!("gguf: {e}")).with_path(path))?;
+        let header = mlmf_gguf::parse_header(&mut cursor).map_err(gguf_err)?;
+        let (meta, _meta_report) =
+            mlmf_gguf::GgufMetadata::parse(bytes, &origin).map_err(gguf_err)?;
+        let (tensors, tensors_report) =
+            mlmf_gguf::parse_tensors(bytes, &meta, &origin).map_err(gguf_err)?;
+        Self::from_parsed(&header, &meta, &tensors, &tensors_report, path)
+    }
 
-        let metadata = decode_metadata(&meta, path)?;
+    /// Turn MLMF's parsed header, metadata and tensor directory into fuel's [`Content`],
+    /// applying fuel's two typed-error disciplines (see [`Content::open`]).
+    fn from_parsed(
+        header: &mlmf_gguf::Header,
+        meta: &mlmf_gguf::GgufMetadata<'_>,
+        tensors: &mlmf_gguf::GgufTensors<'_>,
+        tensors_report: &mlmf_core::Report,
+        path: &Path,
+    ) -> Result<Self> {
+        let metadata = decode_metadata(meta, path)?;
         check_alignment_agrees(&metadata, meta.alignment(), path)?;
         let mut unsupported_tensors =
-            check_all_tensors_resolved(&tensors, &tensors_report, &header, path)?;
-        let (tensor_infos, more_unsupported) = build_tensor_infos(&tensors, path)?;
+            check_all_tensors_resolved(tensors, tensors_report, header, path)?;
+        let (tensor_infos, more_unsupported) = build_tensor_infos(tensors, path)?;
         unsupported_tensors.extend(more_unsupported);
-        let magic = resolve_magic(header.version, path)?;
-
         Ok(Self {
-            magic,
+            magic: resolve_magic(header.version, path)?,
             metadata,
             tensor_infos,
             unsupported_tensors,
