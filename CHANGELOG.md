@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.4 - 2026-10-24
+
+### Changed
+
+- Docs only: sha256 digests and re-verified licences for the `bnb_double_quant` fixtures, a new `qwen3_0_6b_cpu_reference.PROVENANCE.md`, and the seam-crate versioning proposal (`docs/design-notes/2026-10-24-seam-crate-versioning.md`)
+
 ## v0.25.3 - 2026-10-24
 
 ### Added
