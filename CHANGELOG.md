@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.9 - 2026-10-24
+
+### Changed
+
+- Changelog text only: the CUDA accuracy claims of 0.23.2 (`matmul_f32`), 0.24.1 (`rms_f32`, `softmax_f32`), 0.25.3 (elementwise) and 0.25.6 (reductions) now say they are hook-backed, not CI-backed (ROADMAP row 43). No code, contract or ledger change
+
 ## v0.25.8 - 2026-10-24
 
 ### Added
@@ -21,7 +27,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Added
 
-- ROADMAP row 39: the CUDA f32 axis reductions carry earned numeric accuracy claims (RTX 4070 Laptop; ledger 1819 -> 1843 records: 8 accuracy records and the first `bit_stable` passes of all 16 reduce entries). `max` and `min` claim 0 (measured exact), `mean` 1e-5 relative and absolute (measured worst 7.5e-8), `sum` 1e-4 relative and absolute (measured worst 4.3e-5 absolute, 3.2e-6 relative, over 65536-element rows). `reduce.fkc.md` is split into an F32 section per op (carries the claim) and the F16/BF16/F64 remainder. The claims hold only over the measured inputs (uniform [-1, 1)) and the nine layouts in `verify/accuracy_reduce.rs` (last, first and middle axis, several axes, full reduction, with and without `keepdim`); `the_measurement_sees_a_perturbed_output` there is the retained sabotage sibling
+- ROADMAP row 39: the CUDA f32 axis reductions carry earned numeric accuracy claims (RTX 4070 Laptop; ledger 1819 -> 1843 records: 8 accuracy records and the first `bit_stable` passes of all 16 reduce entries). `max` and `min` claim 0 (measured exact), `mean` 1e-5 relative and absolute (measured worst 7.5e-8), `sum` 1e-4 relative and absolute (measured worst 4.3e-5 absolute, 3.2e-6 relative, over 65536-element rows). `reduce.fkc.md` is split into an F32 section per op (carries the claim) and the F16/BF16/F64 remainder. The claims hold only over the measured inputs (uniform [-1, 1)) and the nine layouts in `verify/accuracy_reduce.rs` (last, first and middle axis, several axes, full reduction, with and without `keepdim`); `the_measurement_sees_a_perturbed_output` there is the retained sabotage sibling These claims are hook-backed, not CI-backed: only `fuel-dev-tools check-cuda-accuracy` (needs a GPU) checks them, until ROADMAP row 43 runs it on the self-hosted runner.
 
 ## v0.25.4 - 2026-10-24
 
@@ -33,7 +39,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Added
 
-- ROADMAP row 39: the 22 CUDA f32 elementwise unary kernels and the 8 binary ones carry earned numeric accuracy claims (measured on the RTX 4070 Laptop; ledger 1643 -> 1819 records). The exact ops (`neg`, `abs`, `relu`, `step`, `sign`, `floor`, `ceil`, `round`, `maximum`, `minimum`) claim 0; the rest claim 1e-5 relative and absolute, except `exp_f32` at 1e-5 relative and 1e-4 absolute (its results reach 148; measured abs 1.8e-5). Every claim is inside `DEFAULT_ACCURACY_BOUND`. `unary.fkc.md` and `binary.fkc.md` are split into an F32 section per op (carries the claim) and the F16/BF16/F64 remainder, as `norm.fkc.md` was in 0.24.1
+- ROADMAP row 39: the 22 CUDA f32 elementwise unary kernels and the 8 binary ones carry earned numeric accuracy claims (measured on the RTX 4070 Laptop; ledger 1643 -> 1819 records). The exact ops (`neg`, `abs`, `relu`, `step`, `sign`, `floor`, `ceil`, `round`, `maximum`, `minimum`) claim 0; the rest claim 1e-5 relative and absolute, except `exp_f32` at 1e-5 relative and 1e-4 absolute (its results reach 148; measured abs 1.8e-5). Every claim is inside `DEFAULT_ACCURACY_BOUND`. `unary.fkc.md` and `binary.fkc.md` are split into an F32 section per op (carries the claim) and the F16/BF16/F64 remainder, as `norm.fkc.md` was in 0.24.1 These claims are hook-backed, not CI-backed: only `fuel-dev-tools check-cuda-accuracy` (needs a GPU) checks them, until ROADMAP row 43 runs it on the self-hosted runner.
 - The claims hold only over the measured inputs: `exp` over [-10, 5), `pow` with base [0.5, 4) and exponent [-3, 3), shapes (1,1) (1,1000) (1,3072) (448,1024) (4,8192) plus edge values. `verify/accuracy_elementwise.rs` holds the specs and f64 references; `the_measurement_sees_a_perturbed_output` is the retained sabotage sibling
 - `seed_cuda_ledger` builds `bit_stable` probes for `PowElementwise` and `RemElementwise`, so their F32 entries earn `bit_stable` passes
 
@@ -96,7 +102,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Added
 
-- ROADMAP row 39: the CUDA f32 `RmsNormLastDim` (`rms_f32`) and `SoftmaxLastDim` (`softmax_f32`) carry earned numeric accuracy claims, `max_relative` = `max_absolute` = 1e-5 (measured worst 2.4e-7 abs / 1.6e-7 rel and 7.9e-8, over the decode and prefill shapes, RTX 4070 Laptop; ledger 1631 -> 1643: +4 accuracy records and +8 `bit_stable` passes at the re-keyed hashes). `norm.fkc.md` and `softmax.fkc.md` are split into an F32 section (carries the claim) and the F16/BF16/F64 section, as `gemm_dense.fkc.md` was in 0.23.2. `fuel-dev-tools seed-cuda-accuracy` / `check-cuda-accuracy` now cover MatMul, RmsNorm and Softmax
+- ROADMAP row 39: the CUDA f32 `RmsNormLastDim` (`rms_f32`) and `SoftmaxLastDim` (`softmax_f32`) carry earned numeric accuracy claims, `max_relative` = `max_absolute` = 1e-5 (measured worst 2.4e-7 abs / 1.6e-7 rel and 7.9e-8, over the decode and prefill shapes, RTX 4070 Laptop; ledger 1631 -> 1643: +4 accuracy records and +8 `bit_stable` passes at the re-keyed hashes). `norm.fkc.md` and `softmax.fkc.md` are split into an F32 section (carries the claim) and the F16/BF16/F64 section, as `gemm_dense.fkc.md` was in 0.23.2. `fuel-dev-tools seed-cuda-accuracy` / `check-cuda-accuracy` now cover MatMul, RmsNorm and Softmax These claims are hook-backed, not CI-backed: only `fuel-dev-tools check-cuda-accuracy` (needs a GPU) checks them, until ROADMAP row 43 runs it on the self-hosted runner.
 - `verify/accuracy_common.rs` now holds the measurement functions, so the Vulkan and CUDA seeders run the same code through a `Runner` (the Vulkan numbers are unchanged: matmul 2.3e-4 / 8.8e-5, rms 2.3e-7, softmax 5.8e-8, rope 1.2e-7)
 
 ### Fixed
@@ -125,7 +131,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Added
 
-- ROADMAP row 39 (first claim): the CUDA f32 `MatMul` now carries an earned numeric accuracy claim, `max_relative` and `max_absolute` 2e-4 (measured worst 3.8e-5 and 5.0e-5 over 12 shapes, k up to 4096, against an f64 host matmul, RTX 4070 Laptop). `fuel-dev-tools seed-cuda-accuracy` earns it, `check-cuda-accuracy` measures without writing; the helpers shared with the Vulkan seeder moved to `verify/accuracy_common.rs`
+- ROADMAP row 39 (first claim): the CUDA f32 `MatMul` now carries an earned numeric accuracy claim, `max_relative` and `max_absolute` 2e-4 (measured worst 3.8e-5 and 5.0e-5 over 12 shapes, k up to 4096, against an f64 host matmul, RTX 4070 Laptop). `fuel-dev-tools seed-cuda-accuracy` earns it, `check-cuda-accuracy` measures without writing; the helpers shared with the Vulkan seeder moved to `verify/accuracy_common.rs` These claims are hook-backed, not CI-backed: only `fuel-dev-tools check-cuda-accuracy` (needs a GPU) checks them, until ROADMAP row 43 runs it on the self-hosted runner.
 - `kernel-contracts/cuda/gemm_dense.fkc.md` is split into `matmul_f32` (carries the claim) and `matmul` (F16, BF16, F64). One section fanned over four dtypes, so a numeric claim there would have needed a pass for each, and F16/BF16 cannot meet the f32 bound. The dtype list is part of the revision hash, so the four MatMul entries are re-keyed: the ledger gains 4 `bit_stable_on_same_hardware` passes at the new hashes plus the 2 accuracy passes (the old-hash records stay, now unused)
 
 ### Changed
