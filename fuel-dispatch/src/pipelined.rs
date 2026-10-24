@@ -11411,6 +11411,86 @@ mod tests {
         assert_eq!(result_f32, vec![1.0, 2.0, 3.0, 4.0]);
     }
 
+    /// E2E (ROADMAP row 34): a mixed `[F32, W, F32]` matmul (f32 activation, half weight) runs on
+    /// the CPU through the NATIVE kernel, with the weight left half-width: the output is f32 and
+    /// equals the f64 matmul over the widened weights to f32 accumulation error. The weight is
+    /// rounded to its stored half type first.
+    fn mixed_cpu_matmul_matches_f64(weight_dtype: DType) {
+        let (m, n, k) = (3_usize, 5_usize, 7_usize);
+        let a: Vec<f32> = (0..m * k)
+            .map(|i| ((i * 37 % 19) as f32 - 9.0) / 8.0)
+            .collect();
+        let w_f32: Vec<f32> = (0..k * n)
+            .map(|i| ((i * 53 % 23) as f32 - 11.0) / 10.0)
+            .collect();
+        let (w_storage, widened): (_, Vec<f32>) = if weight_dtype == DType::BF16 {
+            let h: Vec<half::bf16> = w_f32.iter().map(|&x| half::bf16::from_f32(x)).collect();
+            let wide = h.iter().map(|x| x.to_f32()).collect();
+            (fuel_memory::from_slice_cpu(&h), wide)
+        } else {
+            let h: Vec<half::f16> = w_f32.iter().map(|&x| half::f16::from_f32(x)).collect();
+            let wide = h.iter().map(|x| x.to_f32()).collect();
+            (fuel_memory::from_slice_cpu(&h), wide)
+        };
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (l_id, r_id, mm_id) = {
+            let mut g = graph.write().unwrap();
+            let l = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[m, k]),
+                dtype: DType::F32,
+            });
+            let r = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[k, n]),
+                dtype: weight_dtype,
+            });
+            let mm = g.push(Node {
+                op: Op::MatMul,
+                inputs: vec![l, r],
+                shape: Shape::from_dims(&[m, n]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(mm, BackendId::Cpu);
+            (l, r, mm)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(l_id, Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&a))));
+        inputs.insert(r_id, Arc::new(RwLock::new(w_storage)));
+        let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
+        let guard = result_arc.read().unwrap();
+        assert_eq!(guard.dtype, DType::F32);
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let got: &[f32] = c.as_slice().unwrap();
+        for i in 0..m {
+            for j in 0..n {
+                let want: f64 = (0..k)
+                    .map(|kk| a[i * k + kk] as f64 * widened[kk * n + j] as f64)
+                    .sum();
+                let err = (got[i * n + j] as f64 - want).abs();
+                assert!(
+                    err < 1e-5,
+                    "{weight_dtype:?} [{i},{j}]: got {}, want {want}",
+                    got[i * n + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pipelined_realize_mixed_f32_bf16_matmul_is_native_on_cpu() {
+        mixed_cpu_matmul_matches_f64(DType::BF16);
+    }
+
+    #[test]
+    fn pipelined_realize_mixed_f32_f16_matmul_is_native_on_cpu() {
+        mixed_cpu_matmul_matches_f64(DType::F16);
+    }
+
     /// E2E: F16 sum-reduce — verifies bf16/f16 reduction dispatch
     /// works through the executor.
     #[test]

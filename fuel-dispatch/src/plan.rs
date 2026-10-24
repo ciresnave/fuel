@@ -1954,13 +1954,15 @@ mod tests {
     /// Regression: a plan-time binding miss reports the REAL registered coverage,
     /// not a hardcoded `[]`. Reproduces the observed `llama-lazy` failure — an
     /// F32-activation × BF16-weight (mixed-precision) matmul, which the CPU
-    /// backend has no kernel for (it registers uniform `[T,T,T]` only) — against
+    /// backend had no kernel for then (it served uniform `[T,T,T]` only; since
+    /// ROADMAP row 34 it serves that key natively, so the test now uses an
+    /// F64 weight, a key no CPU kernel serves) — against
     /// the fully-populated production binding table. Before the fix,
     /// `missing_binding_error` returned empty lists, so a mixed-precision gap
     /// surfaced as the maximally-misleading "available backends: []" (it cost two
     /// people an investigation + a wrong hypothesis). Now it lists Cpu + the
     /// uniform matmul combos, so a reader sees `[F32,F32,F32]` present and
-    /// `[F32,BF16,F32]` absent and diagnoses it immediately.
+    /// the mixed key absent and diagnoses it immediately.
     #[test]
     fn plan_time_miss_reports_real_coverage_not_empty() {
         let bindings = crate::dispatch::global_bindings(); // self-seeded, populated
@@ -1971,12 +1973,13 @@ mod tests {
             shape: Shape::from_dims(&[2, 3]),
             dtype: DType::F32,
         });
-        // BF16 weight → the matmul dtype key becomes the mixed [F32, BF16, F32].
+        // F64 weight → the matmul dtype key becomes the mixed [F32, F64, F32], which no CPU kernel
+        // serves (the [F32, BF16, F32] / [F32, F16, F32] keys have native kernels since row 34).
         let rhs = g.push(Node {
             op: Op::Const,
             inputs: vec![],
             shape: Shape::from_dims(&[3, 2]),
-            dtype: DType::BF16,
+            dtype: DType::F64,
         });
         let mm = g.push(Node {
             op: Op::MatMul,
@@ -1999,8 +2002,8 @@ mod tests {
                 assert_eq!(op, OpKind::MatMul);
                 assert_eq!(
                     dtypes,
-                    vec![DType::F32, DType::BF16, DType::F32],
-                    "the mixed-precision key (F32 activation, BF16 weight)",
+                    vec![DType::F32, DType::F64, DType::F32],
+                    "the mixed-precision key (F32 activation, F64 weight)",
                 );
                 // The fix: the diagnostic is TRUTHFUL, not a hardcoded empty stub.
                 assert!(

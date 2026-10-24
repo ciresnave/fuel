@@ -36591,5 +36591,43 @@
       "op": "MeanReduce",
       "reference": "f64 sum / count of the same f32 inputs"
     }
+  },
+  {
+    "kernel_ref": "MatMul",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F16",
+      "F32"
+    ],
+    "kernel_revision_hash": 8698291357597289008,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792869808",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "gap-207/seed_cpu_ledger::primitive",
+      "output_seeded": false,
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "MatMul",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "BF16",
+      "F32"
+    ],
+    "kernel_revision_hash": 7047754032354405202,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792869808",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "gap-207/seed_cpu_ledger::primitive",
+      "output_seeded": false,
+      "repeat_calls": 16
+    }
   }
 ]

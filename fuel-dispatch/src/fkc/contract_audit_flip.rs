@@ -705,7 +705,7 @@ components = [\"rustfmt\"]
             ),
             (
                 "seed_cpu_ledger.rs",
-                "expected all 623 contract-derived entries backed WITHOUT the fill",
+                "expected all 625 contract-derived entries backed WITHOUT the fill",
                 "the count backed by contract + record rather than by \
                  `fill_unset_cpu_precision`. This is the number the whole program \
                  exists to move; unpinned, the fill could come back unnoticed.",

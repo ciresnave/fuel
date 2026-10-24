@@ -2017,7 +2017,7 @@ mod tests {
     /// ## Result, measured 2026-08-26
     ///
     /// ```text
-    /// contract-derived CPU entries : 623
+    /// contract-derived CPU entries : 625
     /// production CPU entries       : 659
     /// production-only (orphans)    : 36
     /// contract-only (missing)      : 0
@@ -2029,7 +2029,7 @@ mod tests {
     /// QMatMul 1, Tril 6, Triu 6.
     ///
     /// **So `fill_unset_cpu_precision` is NOT redundant, and its scope is now
-    /// exactly bounded: it supplies NOTHING for the 623 entries a contract
+    /// exactly bounded: it supplies NOTHING for the 625 entries a contract
     /// covers (0 disagreements), and it fabricates a
     /// `PRIMITIVE_DETERMINISTIC_CPU` claim for 36 registrations that have NO
     /// CONTRACT AT ALL.** Retiring it is therefore a contract-authoring
@@ -2264,7 +2264,7 @@ mod tests {
         // entries' worth of sections, (b) conv's 20, (c) the four small non-conv
         // surfaces' 20, (d) FlashAttn's 8, (e) the three backwards' 24 and
         // (f) PagedAttn's 8, `nothing` must be ZERO and the backed count the
-        // full 623.
+        // full 625.
         //
         // ⚠️ THIS PIN IS NOW A RATCHET RATHER THAN A PROGRESS MARKER, and it
         // still discriminates: a new registration lands in `nothing` until a
@@ -2302,8 +2302,8 @@ mod tests {
         );
         assert_eq!(
             total - nothing,
-            623,
-            "expected all 623 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
+            625,
+            "expected all 625 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
         );
         assert_eq!(
             neither, nothing,

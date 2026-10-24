@@ -1,6 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.13 - 2026-10-24
+
+### Added
+
+- ROADMAP row 34: native CPU mixed-precision matmul kernels `matmul_f32_bf16` and `matmul_f32_f16` (f32 activation x half weight -> f32; the weight widens to f32 as it is read, f32 accumulate), registered at `[F32, BF16, F32]` and `[F32, F16, F32]` from `kernel-contracts/cpu/matmul.fkc.md`, with a bit-stability ledger record each. Worst error 0.021 of the f32 accumulation bound against an f64 reference of the widened weight (four shapes, `fuel-cpu-backend/tests/matmul_f32_by_half.rs`)
+
+### Changed
+
+- `NodeHandle::matmul` accepts an F32 lhs with an F16 rhs (was F32 x BF16 only)
+- `optimize_graph` plans a CPU `[F32, BF16, F32]` / `[F32, F16, F32]` matmul natively: it no longer inserts a `Cast(F32)` on the weight, so a half weight stays half-width in memory instead of becoming a resident f32 copy. The `Cast` fallback for a backend WITHOUT the native key is unchanged and still tested
+
 ## v0.25.12 - 2026-10-24
 
 ### Added

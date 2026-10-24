@@ -4381,11 +4381,11 @@ impl NodeHandle {
         );
         // Mixed-precision matmul: activations stay in their native
         // dtype while weights can live as a lower-precision type on
-        // device. Currently supported: (F32 × BF16) → F32 for bf16-
-        // quantized LLM serving. Other heterogeneous combinations
-        // are rejected.
+        // device. Currently supported: (F32 × BF16) and (F32 × F16) →
+        // F32 for half-precision LLM serving (ROADMAP row 34). Other
+        // heterogeneous combinations are rejected.
         let dtypes_ok = self.dtype() == other.dtype()
-            || (self.dtype() == DType::F32 && other.dtype() == DType::BF16);
+            || (self.dtype() == DType::F32 && matches!(other.dtype(), DType::BF16 | DType::F16));
         assert!(
             dtypes_ok,
             "matmul: unsupported dtype combination: lhs={:?}, rhs={:?}",

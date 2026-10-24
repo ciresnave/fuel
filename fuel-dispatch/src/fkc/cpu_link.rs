@@ -919,6 +919,9 @@ pub static CPU_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("matmul", "f16", matmul_f16_cpu_wrapper),
     ep!("matmul", "i8", matmul_i8_cpu_wrapper),
     ep!("matmul", "u8", matmul_u8_cpu_wrapper),
+    // Mixed f32 activation x half weight -> f32 (ROADMAP row 34) - key [F32, W, F32].
+    ep!("matmul", "f32_bf16", matmul_f32_bf16_cpu_wrapper),
+    ep!("matmul", "f32_f16", matmul_f32_f16_cpu_wrapper),
     // Fused matmul + bias-add — key [T, T, T, T].
     ep!("fused_linear", "f32", fused_linear_f32_cpu_wrapper),
     ep!("fused_linear", "f64", fused_linear_f64_cpu_wrapper),
