@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.7 - 2026-10-24
+
+### Changed
+
+- Dependencies: `libc` 0.2.190 -> 0.2.191 (lockfile only; supersedes dependabot #470)
+
 ## v0.25.6 - 2026-10-24
 
 ### Added
