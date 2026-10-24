@@ -73,6 +73,8 @@ mod accept_coverage;
 mod accuracy_common;
 #[cfg(all(feature = "dev-tools", feature = "cuda"))]
 mod accuracy_elementwise;
+#[cfg(all(feature = "dev-tools", feature = "cuda"))]
+mod accuracy_reduce;
 mod bit_stability;
 mod exact_ref;
 #[cfg(feature = "cuda")]

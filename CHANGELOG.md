@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.6 - 2026-10-24
+
+### Added
+
+- ROADMAP row 39: the CUDA f32 axis reductions carry earned numeric accuracy claims (RTX 4070 Laptop; ledger 1819 -> 1843 records: 8 accuracy records and the first `bit_stable` passes of all 16 reduce entries). `max` and `min` claim 0 (measured exact), `mean` 1e-5 relative and absolute (measured worst 7.5e-8), `sum` 1e-4 relative and absolute (measured worst 4.3e-5 absolute, 3.2e-6 relative, over 65536-element rows). `reduce.fkc.md` is split into an F32 section per op (carries the claim) and the F16/BF16/F64 remainder. The claims hold only over the measured inputs (uniform [-1, 1)) and the nine layouts in `verify/accuracy_reduce.rs` (last, first and middle axis, several axes, full reduction, with and without `keepdim`); `the_measurement_sees_a_perturbed_output` there is the retained sabotage sibling
+
 ## v0.25.4 - 2026-10-24
 
 ### Changed

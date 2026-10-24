@@ -29913,9 +29913,9 @@
           "rel": 1.4112424666368195e-9
         },
         {
-          "abs": 7.214630264734674e-10,
+          "abs": 7.214630264734671e-10,
           "case": "rows=16 cols=2048",
-          "rel": 7.214630264734674e-10
+          "rel": 7.214630264734671e-10
         },
         {
           "abs": 3.417362274237001e-10,
@@ -29973,9 +29973,9 @@
           "rel": 1.4112424666368195e-9
         },
         {
-          "abs": 7.214630264734674e-10,
+          "abs": 7.214630264734671e-10,
           "case": "rows=16 cols=2048",
-          "rel": 7.214630264734674e-10
+          "rel": 7.214630264734671e-10
         },
         {
           "abs": 3.417362274237001e-10,
@@ -30032,7 +30032,7 @@
         {
           "abs": 1.1920928955078125e-7,
           "case": "outer=1 seq=64 hd=128",
-          "rel": 1.1884657026625206e-7
+          "rel": 1.188465702662521e-7
         },
         {
           "abs": 1.1920928955078125e-7,
@@ -30084,7 +30084,7 @@
         {
           "abs": 1.1920928955078125e-7,
           "case": "outer=1 seq=64 hd=128",
-          "rel": 1.1884657026625206e-7
+          "rel": 1.188465702662521e-7
         },
         {
           "abs": 1.1920928955078125e-7,
@@ -32317,13 +32317,285 @@
     "backend": "Cuda",
     "dtypes": [
       "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 16879633630118804052,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 13653961819439043898,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 9478397465031969205,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 4038098764275641095,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 13653961819439043898,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6283316935015104461,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 3234884808432804058,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 3234884808432804058,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 1664221653380427698,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 3234884808432804058,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 9165929410560399245,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 9478397465031969205,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 4038098764275641095,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 4038098764275641095,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 9478397465031969205,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 13653961819439043898,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792836964",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
       "F32",
       "F32"
     ],
     "kernel_revision_hash": 5124112487312979967,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32409,7 +32681,7 @@
     "kernel_revision_hash": 5124112487312979967,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32494,7 +32766,7 @@
     "kernel_revision_hash": 17088852178257783666,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32564,7 +32836,7 @@
     "kernel_revision_hash": 17088852178257783666,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32634,7 +32906,7 @@
     "kernel_revision_hash": 1735191071223723436,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32694,7 +32966,7 @@
     "kernel_revision_hash": 1735191071223723436,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32754,7 +33026,7 @@
     "kernel_revision_hash": 13094233403210290556,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32804,7 +33076,7 @@
     "kernel_revision_hash": 13094233403210290556,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32854,7 +33126,7 @@
     "kernel_revision_hash": 8636777766987522638,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32904,7 +33176,7 @@
     "kernel_revision_hash": 8636777766987522638,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -32954,7 +33226,7 @@
     "kernel_revision_hash": 2597392809728023644,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33004,7 +33276,7 @@
     "kernel_revision_hash": 2597392809728023644,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33054,7 +33326,7 @@
     "kernel_revision_hash": 4336920715150085572,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33104,7 +33376,7 @@
     "kernel_revision_hash": 4336920715150085572,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33154,7 +33426,7 @@
     "kernel_revision_hash": 2898125999326284721,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33204,7 +33476,7 @@
     "kernel_revision_hash": 2898125999326284721,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33254,7 +33526,7 @@
     "kernel_revision_hash": 8834011092426758313,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33304,7 +33576,7 @@
     "kernel_revision_hash": 8834011092426758313,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33354,7 +33626,7 @@
     "kernel_revision_hash": 15502899337066222768,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33404,7 +33676,7 @@
     "kernel_revision_hash": 15502899337066222768,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33454,7 +33726,7 @@
     "kernel_revision_hash": 3583896803925004088,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33504,7 +33776,7 @@
     "kernel_revision_hash": 3583896803925004088,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33554,7 +33826,7 @@
     "kernel_revision_hash": 5228530641033302105,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33604,7 +33876,7 @@
     "kernel_revision_hash": 5228530641033302105,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33654,7 +33926,7 @@
     "kernel_revision_hash": 2546265306169628633,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33704,7 +33976,7 @@
     "kernel_revision_hash": 2546265306169628633,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33754,7 +34026,7 @@
     "kernel_revision_hash": 8478024506027498528,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33804,7 +34076,7 @@
     "kernel_revision_hash": 8478024506027498528,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33854,7 +34126,7 @@
     "kernel_revision_hash": 4023402343734102881,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33904,7 +34176,7 @@
     "kernel_revision_hash": 4023402343734102881,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -33954,7 +34226,7 @@
     "kernel_revision_hash": 6309779980680993808,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34004,7 +34276,7 @@
     "kernel_revision_hash": 6309779980680993808,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34054,7 +34326,7 @@
     "kernel_revision_hash": 525023599559185228,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34104,7 +34376,7 @@
     "kernel_revision_hash": 525023599559185228,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34154,7 +34426,7 @@
     "kernel_revision_hash": 2727367701686823239,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34204,7 +34476,7 @@
     "kernel_revision_hash": 2727367701686823239,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34254,7 +34526,7 @@
     "kernel_revision_hash": 17621493112964812530,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34304,7 +34576,7 @@
     "kernel_revision_hash": 17621493112964812530,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34354,7 +34626,7 @@
     "kernel_revision_hash": 17674997261223046670,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34404,7 +34676,7 @@
     "kernel_revision_hash": 17674997261223046670,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34454,7 +34726,7 @@
     "kernel_revision_hash": 3883077047295912676,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34504,7 +34776,7 @@
     "kernel_revision_hash": 3883077047295912676,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34554,7 +34826,7 @@
     "kernel_revision_hash": 6548309430729237841,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34604,7 +34876,7 @@
     "kernel_revision_hash": 6548309430729237841,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34654,7 +34926,7 @@
     "kernel_revision_hash": 2101020056781025338,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34704,7 +34976,7 @@
     "kernel_revision_hash": 2101020056781025338,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34754,7 +35026,7 @@
     "kernel_revision_hash": 8009758815143645289,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34804,7 +35076,7 @@
     "kernel_revision_hash": 8009758815143645289,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34854,7 +35126,7 @@
     "kernel_revision_hash": 13713440066114356501,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34904,7 +35176,7 @@
     "kernel_revision_hash": 13713440066114356501,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -34955,7 +35227,7 @@
     "kernel_revision_hash": 4546452310776874192,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35006,7 +35278,7 @@
     "kernel_revision_hash": 4546452310776874192,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35057,7 +35329,7 @@
     "kernel_revision_hash": 579897999062082389,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35108,7 +35380,7 @@
     "kernel_revision_hash": 579897999062082389,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35159,7 +35431,7 @@
     "kernel_revision_hash": 7090932532982458585,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35210,7 +35482,7 @@
     "kernel_revision_hash": 7090932532982458585,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35261,7 +35533,7 @@
     "kernel_revision_hash": 6636046338466600872,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35312,7 +35584,7 @@
     "kernel_revision_hash": 6636046338466600872,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35363,7 +35635,7 @@
     "kernel_revision_hash": 5902236080238710049,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35414,7 +35686,7 @@
     "kernel_revision_hash": 5902236080238710049,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35465,7 +35737,7 @@
     "kernel_revision_hash": 5715285371390623555,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35516,7 +35788,7 @@
     "kernel_revision_hash": 5715285371390623555,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35567,7 +35839,7 @@
     "kernel_revision_hash": 2897287223794456625,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35618,7 +35890,7 @@
     "kernel_revision_hash": 2897287223794456625,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35669,7 +35941,7 @@
     "kernel_revision_hash": 17531809644770015931,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35720,7 +35992,7 @@
     "kernel_revision_hash": 17531809644770015931,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792827561",
+    "verified_at": "epoch:1792837132",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -35758,6 +36030,566 @@
       "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
       "op": "RemElementwise",
       "reference": "f64 Python-style modulo"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6283316935015104461,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792837132",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0001,
+      "cases": [
+        {
+          "abs": 1.0728836059570312e-6,
+          "case": "shape=[1, 1024] dims=[1] keepdim=false",
+          "rel": 9.515813219811796e-7
+        },
+        {
+          "abs": 6.794929504394531e-6,
+          "case": "shape=[16, 3072] dims=[1] keepdim=false",
+          "rel": 1.4891873174851294e-6
+        },
+        {
+          "abs": 6.079673767089844e-6,
+          "case": "shape=[448, 1024] dims=[1] keepdim=true",
+          "rel": 3.2186508178710938e-6
+        },
+        {
+          "abs": 0.000012755393981933594,
+          "case": "shape=[4, 8192] dims=[1] keepdim=false",
+          "rel": 3.1723012820150017e-7
+        },
+        {
+          "abs": 0.00002753734588623047,
+          "case": "shape=[1, 65536] dims=[1] keepdim=false",
+          "rel": 1.7118776759857845e-7
+        },
+        {
+          "abs": 0.000042557716369628906,
+          "case": "shape=[1024, 64] dims=[0] keepdim=false",
+          "rel": 2.3354956624089044e-6
+        },
+        {
+          "abs": 4.76837158203125e-6,
+          "case": "shape=[8, 64, 128] dims=[1] keepdim=false",
+          "rel": 1.3131884390391662e-6
+        },
+        {
+          "abs": 5.7220458984375e-6,
+          "case": "shape=[8, 64, 128] dims=[0, 2] keepdim=true",
+          "rel": 9.5367431640625e-7
+        },
+        {
+          "abs": 0.00001239776611328125,
+          "case": "shape=[8, 64, 128] dims=[0, 1, 2] keepdim=false",
+          "rel": 1.6407302966276303e-6
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 0.000042557716369628906,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SumReduce",
+      "reference": "f64 sum of the same f32 inputs"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6283316935015104461,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792837132",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0001,
+      "cases": [
+        {
+          "abs": 1.0728836059570312e-6,
+          "case": "shape=[1, 1024] dims=[1] keepdim=false",
+          "rel": 9.515813219811796e-7
+        },
+        {
+          "abs": 6.794929504394531e-6,
+          "case": "shape=[16, 3072] dims=[1] keepdim=false",
+          "rel": 1.4891873174851294e-6
+        },
+        {
+          "abs": 6.079673767089844e-6,
+          "case": "shape=[448, 1024] dims=[1] keepdim=true",
+          "rel": 3.2186508178710938e-6
+        },
+        {
+          "abs": 0.000012755393981933594,
+          "case": "shape=[4, 8192] dims=[1] keepdim=false",
+          "rel": 3.1723012820150017e-7
+        },
+        {
+          "abs": 0.00002753734588623047,
+          "case": "shape=[1, 65536] dims=[1] keepdim=false",
+          "rel": 1.7118776759857845e-7
+        },
+        {
+          "abs": 0.000042557716369628906,
+          "case": "shape=[1024, 64] dims=[0] keepdim=false",
+          "rel": 2.3354956624089044e-6
+        },
+        {
+          "abs": 4.76837158203125e-6,
+          "case": "shape=[8, 64, 128] dims=[1] keepdim=false",
+          "rel": 1.3131884390391662e-6
+        },
+        {
+          "abs": 5.7220458984375e-6,
+          "case": "shape=[8, 64, 128] dims=[0, 2] keepdim=true",
+          "rel": 9.5367431640625e-7
+        },
+        {
+          "abs": 0.00001239776611328125,
+          "case": "shape=[8, 64, 128] dims=[0, 1, 2] keepdim=false",
+          "rel": 1.6407302966276303e-6
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 3.2186508178710938e-6,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SumReduce",
+      "reference": "f64 sum of the same f32 inputs"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 16879633630118804052,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792837132",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "shape=[1, 1024] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[16, 3072] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[448, 1024] dims=[1] keepdim=true",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[4, 8192] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[1, 65536] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[1024, 64] dims=[0] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[0, 2] keepdim=true",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[0, 1, 2] keepdim=false",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MaxReduce",
+      "reference": "f64 max of the same f32 inputs"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 16879633630118804052,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792837132",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "shape=[1, 1024] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[16, 3072] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[448, 1024] dims=[1] keepdim=true",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[4, 8192] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[1, 65536] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[1024, 64] dims=[0] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[0, 2] keepdim=true",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[0, 1, 2] keepdim=false",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MaxReduce",
+      "reference": "f64 max of the same f32 inputs"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 1664221653380427698,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792837132",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "shape=[1, 1024] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[16, 3072] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[448, 1024] dims=[1] keepdim=true",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[4, 8192] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[1, 65536] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[1024, 64] dims=[0] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[0, 2] keepdim=true",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[0, 1, 2] keepdim=false",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MinReduce",
+      "reference": "f64 min of the same f32 inputs"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 1664221653380427698,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792837132",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "shape=[1, 1024] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[16, 3072] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[448, 1024] dims=[1] keepdim=true",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[4, 8192] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[1, 65536] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[1024, 64] dims=[0] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[1] keepdim=false",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[0, 2] keepdim=true",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "shape=[8, 64, 128] dims=[0, 1, 2] keepdim=false",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MinReduce",
+      "reference": "f64 min of the same f32 inputs"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 9165929410560399245,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792837132",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 1.0477378964424133e-9,
+          "case": "shape=[1, 1024] dims=[1] keepdim=false",
+          "rel": 1.0477378964424133e-9
+        },
+        {
+          "abs": 2.2118911147117615e-9,
+          "case": "shape=[16, 3072] dims=[1] keepdim=false",
+          "rel": 2.2118911147117615e-9
+        },
+        {
+          "abs": 5.9371814131736755e-9,
+          "case": "shape=[448, 1024] dims=[1] keepdim=true",
+          "rel": 5.9371814131736755e-9
+        },
+        {
+          "abs": 1.5570549294352531e-9,
+          "case": "shape=[4, 8192] dims=[1] keepdim=false",
+          "rel": 1.5570549294352531e-9
+        },
+        {
+          "abs": 4.2018655221909285e-10,
+          "case": "shape=[1, 65536] dims=[1] keepdim=false",
+          "rel": 4.2018655221909285e-10
+        },
+        {
+          "abs": 4.156026989221573e-8,
+          "case": "shape=[1024, 64] dims=[0] keepdim=false",
+          "rel": 4.156026989221573e-8
+        },
+        {
+          "abs": 7.450580596923828e-8,
+          "case": "shape=[8, 64, 128] dims=[1] keepdim=false",
+          "rel": 7.450580596923828e-8
+        },
+        {
+          "abs": 5.587935447692871e-9,
+          "case": "shape=[8, 64, 128] dims=[0, 2] keepdim=true",
+          "rel": 5.587935447692871e-9
+        },
+        {
+          "abs": 1.8917489796876907e-10,
+          "case": "shape=[8, 64, 128] dims=[0, 1, 2] keepdim=false",
+          "rel": 1.8917489796876907e-10
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 7.450580596923828e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MeanReduce",
+      "reference": "f64 sum / count of the same f32 inputs"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 9165929410560399245,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792837132",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 1.0477378964424133e-9,
+          "case": "shape=[1, 1024] dims=[1] keepdim=false",
+          "rel": 1.0477378964424133e-9
+        },
+        {
+          "abs": 2.2118911147117615e-9,
+          "case": "shape=[16, 3072] dims=[1] keepdim=false",
+          "rel": 2.2118911147117615e-9
+        },
+        {
+          "abs": 5.9371814131736755e-9,
+          "case": "shape=[448, 1024] dims=[1] keepdim=true",
+          "rel": 5.9371814131736755e-9
+        },
+        {
+          "abs": 1.5570549294352531e-9,
+          "case": "shape=[4, 8192] dims=[1] keepdim=false",
+          "rel": 1.5570549294352531e-9
+        },
+        {
+          "abs": 4.2018655221909285e-10,
+          "case": "shape=[1, 65536] dims=[1] keepdim=false",
+          "rel": 4.2018655221909285e-10
+        },
+        {
+          "abs": 4.156026989221573e-8,
+          "case": "shape=[1024, 64] dims=[0] keepdim=false",
+          "rel": 4.156026989221573e-8
+        },
+        {
+          "abs": 7.450580596923828e-8,
+          "case": "shape=[8, 64, 128] dims=[1] keepdim=false",
+          "rel": 7.450580596923828e-8
+        },
+        {
+          "abs": 5.587935447692871e-9,
+          "case": "shape=[8, 64, 128] dims=[0, 2] keepdim=true",
+          "rel": 5.587935447692871e-9
+        },
+        {
+          "abs": 1.8917489796876907e-10,
+          "case": "shape=[8, 64, 128] dims=[0, 1, 2] keepdim=false",
+          "rel": 1.8917489796876907e-10
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-1, 1)",
+      "measured_worst": 7.450580596923828e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MeanReduce",
+      "reference": "f64 sum / count of the same f32 inputs"
     }
   }
 ]

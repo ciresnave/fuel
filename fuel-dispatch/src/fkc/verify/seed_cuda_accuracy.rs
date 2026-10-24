@@ -29,6 +29,7 @@ use super::accuracy_common::{
     Claim, OpAccuracy, f32s, find_entry, measure_matmul, measure_rms_norm, measure_softmax,
 };
 use super::accuracy_elementwise::{BINARY_SPECS, UNARY_SPECS, measure_binary, measure_unary};
+use super::accuracy_reduce::{Fold, measure_reduce};
 use super::bit_stability::{HostTensor, KernelInvoker, VerifyError};
 use super::invoker_cuda::CudaInvoker;
 use super::ledger::LedgerRecord;
@@ -50,6 +51,7 @@ fn measured_ops() -> Vec<OpKind> {
     .into_iter()
     .chain(UNARY_CLAIMS.iter().map(|c| c.0))
     .chain(BINARY_CLAIMS.iter().map(|c| c.0))
+    .chain(REDUCE_CLAIMS.iter().map(|c| c.0))
     .collect()
 }
 
@@ -106,6 +108,15 @@ pub(crate) const BINARY_CLAIMS: &[(OpKind, &str, Claim)] = &[
     (OpKind::MinimumElementwise, "minimum_f32", both(0.0)),
     (OpKind::PowElementwise, "pow_f32", both(1.0e-5)),
     (OpKind::RemElementwise, "rem_f32", both(1.0e-5)),
+];
+
+/// `(op, f32 section, claim)` of each axis reduction; the contract is
+/// `kernel-contracts/cuda/reduce.fkc.md`.
+pub(crate) const REDUCE_CLAIMS: &[(OpKind, &str, Claim)] = &[
+    (OpKind::SumReduce, "sum_f32", both(1.0e-4)),
+    (OpKind::MaxReduce, "max_f32", both(0.0)),
+    (OpKind::MinReduce, "min_f32", both(0.0)),
+    (OpKind::MeanReduce, "mean_f32", both(1.0e-5)),
 ];
 
 fn claim_of(table: &[(OpKind, &str, Claim)], op: OpKind) -> Claim {
@@ -190,6 +201,15 @@ pub(crate) fn measure_cuda_f32_accuracy() -> Result<(String, Vec<OpAccuracy>), V
             e,
             spec,
             claim_of(BINARY_CLAIMS, spec.op),
+        )?);
+    }
+    for fold in [Fold::Sum, Fold::Max, Fold::Min, Fold::Mean] {
+        let e = entry(fold.op(), &[DType::F32; 2])?;
+        ops.push(measure_reduce(
+            &run,
+            e,
+            fold,
+            claim_of(REDUCE_CLAIMS, fold.op()),
         )?);
     }
     Ok((device_name(), ops))
@@ -308,6 +328,12 @@ mod tests {
             BINARY_CLAIMS
                 .iter()
                 .map(|&(op, k, c)| (binary, k, c, op, 3)),
+        );
+        let reduce = include_str!("../../../kernel-contracts/cuda/reduce.fkc.md");
+        v.extend(
+            REDUCE_CLAIMS
+                .iter()
+                .map(|&(op, k, c)| (reduce, k, c, op, 2)),
         );
         v
     }
