@@ -47,12 +47,24 @@ fn same(
     }
 }
 
+/// SAFETY (all four mapping calls in this file go through these two helpers): every file mapped
+/// here is a test file written to a temp dir, or a read-only checkpoint, that nothing modifies or
+/// truncates while the mapping is alive.
+fn open_one(p: &Path) -> fuel_ir::error::Result<MmapedSafetensors> {
+    // SAFETY: see above.
+    unsafe { MmapedSafetensors::new(p) }
+}
+
+fn open_many(paths: &[&Path]) -> fuel_ir::error::Result<MmapedSafetensors> {
+    // SAFETY: see above.
+    unsafe { MmapedSafetensors::multi(paths) }
+}
+
 fn via_mmap(paths: &[&Path]) -> BTreeMap<String, (Dtype, Vec<usize>, Vec<u8>)> {
-    // SAFETY: test files that are not modified while mapped.
     let st = if let [one] = paths {
-        unsafe { MmapedSafetensors::new(one) }
+        open_one(one)
     } else {
-        unsafe { MmapedSafetensors::multi(paths) }
+        open_many(paths)
     }
     .expect("mmap reader");
     let listed: BTreeMap<_, _> = st
@@ -190,18 +202,14 @@ fn a_missing_name_and_a_truncated_file_are_errors() {
     let path = dir.path().join("zoo.safetensors");
     let bytes = dtype_zoo();
     std::fs::write(&path, &bytes).unwrap();
-    // SAFETY: test file, not modified while mapped.
-    let st = unsafe { MmapedSafetensors::new(&path) }.unwrap();
+    let st = open_one(&path).unwrap();
     assert!(st.get("nope").is_err());
     let cut = dir.path().join("cut.safetensors");
     std::fs::write(&cut, &bytes[..bytes.len() - 10]).unwrap();
-    assert!(
-        unsafe { MmapedSafetensors::new(&cut) }.is_err(),
-        "a truncated file must be refused"
-    );
+    assert!(open_one(&cut).is_err(), "a truncated file must be refused");
     let junk = dir.path().join("junk.safetensors");
     std::fs::write(&junk, b"not a safetensors file at all").unwrap();
-    assert!(unsafe { MmapedSafetensors::new(&junk) }.is_err());
+    assert!(open_one(&junk).is_err());
 }
 
 fn real_checkpoint(var: &str, what: &str) -> Option<PathBuf> {
