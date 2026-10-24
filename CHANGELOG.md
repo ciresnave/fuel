@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.11 - 2026-10-24
+
+### Changed
+
+- `--features jit-synth` compiles again: `baracuda-cuda-seam` is pinned at `=0.1.0-alpha.15` (was `=0.1.0-alpha.2`), which requires `fuel-kernel-seam{,-types} ^0.25` and was built on 0.25.10. This closes the 0.25.0 "`jit-synth` does not compile" gap (ROADMAP row 41a). Verified on the RTX 4070 Laptop: `cargo test --no-run -p fuel-dispatch --features jit-synth` builds (0 compiler errors, `baracuda-cuda-seam@0.1.0-alpha.15` in the graph); `jit_synth_kernel_live --ignored` under `gpu-run` 6 passed, 0 failed
+
 ## v0.25.10 - 2026-10-24
 
 ### Added
@@ -68,7 +74,6 @@ This documents the main changes to the `fuel` workspace.
 
 ### Known
 
-- `--features jit-synth` does not compile at 0.25.0: `baracuda-cuda-seam =0.1.0-alpha.2` requires `fuel-kernel-seam ^0.24`, and the workspace seam crates are now 0.25.0. It returns with `baracuda-cuda-seam` alpha.3 (on `^0.25`) and the pin bump in 0.25.1. This is the cost of the seam crates sharing the workspace version (`docs/design-notes/2026-10-24-seam-crate-versioning.md`)
 
 ### Fixed
 
