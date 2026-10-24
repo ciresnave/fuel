@@ -36,6 +36,12 @@ fn refuse(text: String) -> Error {
 /// quantization the loaders here do not read: a different method, bit width, packing or
 /// zero-point convention would load as plausible garbage.
 pub fn awq_group_size(config_json: &[u8]) -> Result<usize> {
+    let cfg = parse_config(config_json)?;
+    check_variant(&cfg)?;
+    group_size_of(&cfg)
+}
+
+fn parse_config(config_json: &[u8]) -> Result<AwqConfig> {
     let cfg = AwqConfig::parse_from_model_config(config_json)
         .map_err(|e| refuse(format!("config.json: {e}")))?
         .ok_or_else(|| refuse("config.json has no AWQ `quantization_config`".to_string()))?;
@@ -45,34 +51,48 @@ pub fn awq_group_size(config_json: &[u8]) -> Result<usize> {
             cfg.malformed
         )));
     }
+    Ok(cfg)
+}
+
+/// The method, bit width, packing and zero-point convention must be exactly what the kernels read.
+fn check_variant(cfg: &AwqConfig) -> Result<()> {
     if cfg.quant_method.as_deref() != Some("awq") {
         return Err(refuse(format!(
             "quant_method is {:?}, not \"awq\" (a missing method is not accepted)",
             cfg.quant_method
         )));
     }
-    if cfg.bits != Some(BITS) {
-        return Err(refuse(format!(
-            "only {BITS}-bit AWQ is read, got bits {:?}",
-            cfg.bits
-        )));
-    }
-    if !cfg
-        .version
-        .as_deref()
-        .is_some_and(|v| v.eq_ignore_ascii_case("gemm"))
-    {
-        return Err(refuse(format!(
-            "only the GEMM packing is read, got version {:?}",
-            cfg.version
-        )));
-    }
+    check_packing(cfg)?;
     if cfg.zero_point != Some(true) {
         return Err(refuse(format!(
             "only zero-point AWQ is read, got zero_point {:?}",
             cfg.zero_point
         )));
     }
+    Ok(())
+}
+
+fn check_packing(cfg: &AwqConfig) -> Result<()> {
+    if cfg.bits != Some(BITS) {
+        return Err(refuse(format!(
+            "only {BITS}-bit AWQ is read, got bits {:?}",
+            cfg.bits
+        )));
+    }
+    let gemm = cfg
+        .version
+        .as_deref()
+        .is_some_and(|v| v.eq_ignore_ascii_case("gemm"));
+    if !gemm {
+        return Err(refuse(format!(
+            "only the GEMM packing is read, got version {:?}",
+            cfg.version
+        )));
+    }
+    Ok(())
+}
+
+fn group_size_of(cfg: &AwqConfig) -> Result<usize> {
     let group_size = cfg
         .group_size
         .filter(|g| *g > 0)
