@@ -14,6 +14,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Fixed
 
+- CI: the advisory CodeRipper `portfolio` job is repinned to coderipper `30e012b7`
 - GAP-205 closed by deletion (the old parser panicked on `general.alignment = 0`, made unbounded allocations from declared lengths, lossily decoded names and kept the last of duplicate keys); GAP-345 (the `open` vs `read` parity differences) closed with it
 
 ## v0.24.5 - 2026-10-24
