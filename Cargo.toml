@@ -96,7 +96,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.23.3"
+version = "0.24.0"
 edition = "2024"
 description = "Minimalist ML framework."
 repository = "https://github.com/ciresnave/fuel"
@@ -124,44 +124,44 @@ aocl-types = "0.1"
 onemkl = "0.2"
 anyhow = { version = "1", features = ["backtrace"] }
 byteorder = "1.4.3"
-fuel = { path = "./fuel", version = "0.23.3" }
-fuel-nn = { path = "./fuel-nn", version = "0.23.3" }
-fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.23.3" }
-fuel-conv = { path = "./fuel-conv", version = "0.23.3" }
-fuel-test-support = { path = "./fuel-test-support", version = "0.23.3" }
-fuel-ir = { path = "./fuel-ir", version = "0.23.3" }
-fuel-backend-contract = { path = "./fuel-backend-contract", version = "0.23.3" }
-fuel-cpu-kernels = { path = "./fuel-cpu-kernels", version = "0.23.3" }
-fuel-hardware = { path = "./fuel-hardware", version = "0.23.3" }
-fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0.23.3" }
-fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.23.3" }
-fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.23.3" }
-fuel-graph = { path = "./fuel-graph", version = "0.23.3" }
-fuel-kernel-seam-announce = { path = "./fuel-kernel-seam-announce", version = "0.23.3" }
-fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types", version = "0.23.3" }
-fuel-kernel-seam = { path = "./fuel-kernel-seam", version = "0.23.3" }
-fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.23.3" }
-fuel-dispatch = { path = "./fuel-dispatch", version = "0.23.3" }
-fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.23.3" }
-fuel-tensor = { path = "./fuel-tensor", version = "0.23.3" }
-fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.23.3" }
-fuel-kv-pool = { path = "./fuel-kv-pool", version = "0.23.3" }
-fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.23.3" }
-fuel-datasets = { path = "./fuel-datasets", version = "0.23.3" }
-fuel-formats = { path = "./fuel-formats", version = "0.23.3" }
-fuel-loaders = { path = "./fuel-loaders", version = "0.23.3" }
-fuel-model-llama = { path = "./fuel-model-llama", version = "0.23.3" }
-fuel-model-phi = { path = "./fuel-model-phi", version = "0.23.3" }
-fuel-inference = { path = "./fuel-inference", version = "0.23.3" }
-fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.23.3" }
-fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.23.3" }
-fuel-onnx = { path = "./fuel-onnx", version = "0.23.3" }
-fuel-parallel = { path = "./fuel-parallel", version = "0.23.3" }
-fuel-quantized = { path = "./fuel-quantized", version = "0.23.3" }
-fuel-memory = { path = "./fuel-memory", version = "0.23.3" }
-fuel-training = { path = "./fuel-training", version = "0.23.3" }
-fuel-transformers = { path = "./fuel-transformers", version = "0.23.3" }
-fuel-posttrain = { path = "./fuel-posttrain", version = "0.23.3" }
+fuel = { path = "./fuel", version = "0.24.0" }
+fuel-nn = { path = "./fuel-nn", version = "0.24.0" }
+fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.24.0" }
+fuel-conv = { path = "./fuel-conv", version = "0.24.0" }
+fuel-test-support = { path = "./fuel-test-support", version = "0.24.0" }
+fuel-ir = { path = "./fuel-ir", version = "0.24.0" }
+fuel-backend-contract = { path = "./fuel-backend-contract", version = "0.24.0" }
+fuel-cpu-kernels = { path = "./fuel-cpu-kernels", version = "0.24.0" }
+fuel-hardware = { path = "./fuel-hardware", version = "0.24.0" }
+fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0.24.0" }
+fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.24.0" }
+fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.24.0" }
+fuel-graph = { path = "./fuel-graph", version = "0.24.0" }
+fuel-kernel-seam-announce = { path = "./fuel-kernel-seam-announce", version = "0.24.0" }
+fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types", version = "0.24.0" }
+fuel-kernel-seam = { path = "./fuel-kernel-seam", version = "0.24.0" }
+fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.24.0" }
+fuel-dispatch = { path = "./fuel-dispatch", version = "0.24.0" }
+fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.24.0" }
+fuel-tensor = { path = "./fuel-tensor", version = "0.24.0" }
+fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.24.0" }
+fuel-kv-pool = { path = "./fuel-kv-pool", version = "0.24.0" }
+fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.24.0" }
+fuel-datasets = { path = "./fuel-datasets", version = "0.24.0" }
+fuel-formats = { path = "./fuel-formats", version = "0.24.0" }
+fuel-loaders = { path = "./fuel-loaders", version = "0.24.0" }
+fuel-model-llama = { path = "./fuel-model-llama", version = "0.24.0" }
+fuel-model-phi = { path = "./fuel-model-phi", version = "0.24.0" }
+fuel-inference = { path = "./fuel-inference", version = "0.24.0" }
+fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.24.0" }
+fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.24.0" }
+fuel-onnx = { path = "./fuel-onnx", version = "0.24.0" }
+fuel-parallel = { path = "./fuel-parallel", version = "0.24.0" }
+fuel-quantized = { path = "./fuel-quantized", version = "0.24.0" }
+fuel-memory = { path = "./fuel-memory", version = "0.24.0" }
+fuel-training = { path = "./fuel-training", version = "0.24.0" }
+fuel-transformers = { path = "./fuel-transformers", version = "0.24.0" }
+fuel-posttrain = { path = "./fuel-posttrain", version = "0.24.0" }
 clap = { version = "4", features = ["derive"] }
 criterion = { version = "0.8", default-features = false }
 # --- CUDA FFI layer: baracuda -----------------------------------------------
@@ -322,6 +322,9 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.153" }
 # gone from 0.20 on) for `baracuda-cuda-seam`, which depends on `baracuda-cuda-emit` 0.22 and the published
 # `fuel-kernel-seam{,-types}` 0.23. It is an alpha prerelease, so it is pinned exactly (a caret on a
 # prerelease would not float to the next alpha anyway). Fuel names only the seam crate; emit comes with it.
+# ⚠️ alpha.161 requires fuel-kernel-seam ^0.23.0 and this workspace is 0.24.0, so `--features jit-synth`
+# sees two seam crates (the registry 0.23.0 and the path member) and does not compile until baracuda
+# republishes this crate on ^0.24 (alpha.162); bump the pin then. Verified at 0.23.3 (6/6 live tests).
 baracuda-cuda-seam     = { version = "=0.0.1-alpha.161" }
 baracuda-nccl-sys      = { version = "0.0.1-alpha.158" }
 baracuda-nccl          = { version = "0.0.1-alpha.158", features = ["half-crate"] }
