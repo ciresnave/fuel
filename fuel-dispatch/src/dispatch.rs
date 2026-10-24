@@ -5506,6 +5506,16 @@ cpu_matmul_wrapper!(
     "matmul_f16"
 );
 cpu_matmul_wrapper!(
+    matmul_f32_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::matmul_f32_bf16,
+    "matmul_f32_bf16"
+);
+cpu_matmul_wrapper!(
+    matmul_f32_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::matmul_f32_f16,
+    "matmul_f32_f16"
+);
+cpu_matmul_wrapper!(
     matmul_i8_cpu_wrapper,
     fuel_cpu_backend::byte_kernels::matmul_i8,
     "matmul_i8"

@@ -932,8 +932,14 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         // `ht` covers those dtypes, so the only thing missing was the recipe.
         // 2x2x2 is the smallest shape that exercises an accumulation.
         OpKind::MatMul => {
-            let lhs = ht(dt, vec![2, 2], &fill_deterministic(4, seed))?;
-            let rhs = ht(dt, vec![2, 2], &fill_deterministic(4, seed ^ 0x3E3E))?;
+            // The key is `[lhs, rhs, out]`: uniform for the same-dtype kernels, mixed for the
+            // f32-activation x half-weight ones (`[F32, BF16, F32]`, ROADMAP row 34).
+            let (lhs_dt, rhs_dt, out_dt) = match dtypes {
+                [l, r, o] => (*l, *r, *o),
+                _ => (dt, dt, dt),
+            };
+            let lhs = ht(lhs_dt, vec![2, 2], &fill_deterministic(4, seed))?;
+            let rhs = ht(rhs_dt, vec![2, 2], &fill_deterministic(4, seed ^ 0x3E3E))?;
             Some(Probe {
                 inputs: vec![lhs, rhs],
                 params: OpParams::Matmul {
@@ -944,7 +950,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                     k: 2,
                     m_compute: MatmulM::All,
                 },
-                out_dtype: dt,
+                out_dtype: out_dt,
                 out_shape: vec![2, 2],
                 out_seed: None,
             })

@@ -251,6 +251,150 @@ determinism: same_hardware_bitwise
 
 ---
 
+## matmul_f32_bf16  (batched matmul, f32 activation x bf16 weight -> f32)
+
+Batched matrix multiply with an **f32 `lhs`** (activations) and a **bf16 `rhs`** (weights), writing
+f32 (`matmul_f32_by_half_kernel!`, ROADMAP row 34). Each weight element widens to f32 as it is read
+and the inner product accumulates in f32, so the weight stays half-width in memory and the result is
+the f32 matmul over the widened weight. Same GQA-divisible batch contract, contiguous-only layout,
+and `(i, k, j)` loop order as `matmul_bf16`. Key `[F32, BF16, F32]`; deterministic on the same hardware.
+
+```fkc
+kernel: matmul_f32_bf16
+op_kind: MatMul
+blurb: "Batched f32 x bf16 -> f32 matmul; weight widens on read, f32 accumulator; contiguous; GQA-divisible batch."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::matmul_f32_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "dim[-1]=k"
+    - name: rhs
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "dim[-2]=k"
+  op_params:
+    variant: Matmul
+    fields:
+      lhs_batch_dims: { kind: "Vec<usize>" }
+      rhs_batch_dims: { kind: "Vec<usize>", constraint: "per-axis == lhs_batch_dims OR GQA-divisible (lhs > rhs && lhs % rhs == 0)" }
+      m: { kind: usize, constraint: "== lhs.dim[-2]" }
+      n: { kind: usize, constraint: "== rhs.dim[-1]" }
+      k: { kind: usize, constraint: "== lhs.dim[-1] == rhs.dim[-2]" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)
+      shape_rule: matmul(lhs, rhs)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: gemm_like }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: judge_measured
+  class: gemm_like
+  flops: "2 * batch * m * n * k"
+
+precision:
+  bit_stable_on_same_hardware: true     # f32 accumulator, fixed (i,k,j) order
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "bf16 weight widened to f32 on read, f32 activation, f32 accumulator, f32 store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## matmul_f32_f16  (batched matmul, f32 activation x f16 weight -> f32)
+
+Batched matrix multiply with an **f32 `lhs`** (activations) and a **f16 `rhs`** (weights), writing
+f32 (`matmul_f32_by_half_kernel!`, ROADMAP row 34). Each weight element widens to f32 as it is read
+and the inner product accumulates in f32, so the weight stays half-width in memory and the result is
+the f32 matmul over the widened weight. Same GQA-divisible batch contract, contiguous-only layout,
+and `(i, k, j)` loop order as `matmul_f16`. Key `[F32, F16, F32]`; deterministic on the same hardware.
+
+```fkc
+kernel: matmul_f32_f16
+op_kind: MatMul
+blurb: "Batched f32 x f16 -> f32 matmul; weight widens on read, f32 accumulator; contiguous; GQA-divisible batch."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::matmul_f32_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "dim[-1]=k"
+    - name: rhs
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "dim[-2]=k"
+  op_params:
+    variant: Matmul
+    fields:
+      lhs_batch_dims: { kind: "Vec<usize>" }
+      rhs_batch_dims: { kind: "Vec<usize>", constraint: "per-axis == lhs_batch_dims OR GQA-divisible (lhs > rhs && lhs % rhs == 0)" }
+      m: { kind: usize, constraint: "== lhs.dim[-2]" }
+      n: { kind: usize, constraint: "== rhs.dim[-1]" }
+      k: { kind: usize, constraint: "== lhs.dim[-1] == rhs.dim[-2]" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)
+      shape_rule: matmul(lhs, rhs)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: gemm_like }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: judge_measured
+  class: gemm_like
+  flops: "2 * batch * m * n * k"
+
+precision:
+  bit_stable_on_same_hardware: true     # f32 accumulator, fixed (i,k,j) order
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "f16 weight widened to f32 on read, f32 activation, f32 accumulator, f32 store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
+
+determinism: same_hardware_bitwise
+```
+
+---
+
 ## matmul_f16  (batched matmul, f16 with f32 accumulator)
 
 Batched matrix multiply over f16 I/O with an **f32 accumulator** (`matmul_half_kernel!`,

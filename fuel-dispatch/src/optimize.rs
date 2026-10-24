@@ -1045,56 +1045,47 @@ mod tests {
         );
     }
 
-    /// Dtype-reconciliation: a mixed-precision `[F32, BF16, F32]` matmul (F32
-    /// activation × BF16 weight) — which no compiled-in backend serves natively in
-    /// a CPU-only build — is made runnable by inserting a `Cast(BF16→F32)` on the
-    /// weight, so the matmul becomes uniform `[F32, F32, F32]` (which CPU serves).
-    /// Born-red: before this pass, `optimize_graph` failed with `NoBackendForOp`
-    /// (the exact llama-lazy failure). This is the "f32 matmul after a Cast"
-    /// fallback the design assumed but never built.
+    /// Dtype-reconciliation declines on the REAL CPU table: the mixed-precision `[F32, BF16, F32]`
+    /// and `[F32, F16, F32]` matmuls (f32 activation x half weight) are served natively by the CPU
+    /// kernels `matmul_f32_bf16` / `matmul_f32_f16` (ROADMAP row 34), so `optimize_graph` plans them
+    /// as they are and inserts no `Cast`: the weight stays half-width instead of being promoted to a
+    /// resident f32 copy. Before row 34 this test asserted the opposite (a `Cast(F32)` on the
+    /// weight, the fallback that the local-table tests below still pin for a backend WITHOUT the
+    /// native key).
     #[test]
-    fn optimize_graph_reconciles_mixed_precision_matmul_via_cast() {
-        let bindings = crate::dispatch::global_bindings(); // real populated CPU table
-        let mut g = Graph::new();
-        let lhs = g.push(Node {
-            op: Op::Const,
-            inputs: vec![],
-            shape: Shape::from_dims(&[2, 3]),
-            dtype: DType::F32,
-        });
-        let rhs = g.push(Node {
-            op: Op::Const,
-            inputs: vec![],
-            shape: Shape::from_dims(&[3, 2]),
-            dtype: DType::BF16,
-        });
-        let mm = g.push(Node {
-            op: Op::MatMul,
-            inputs: vec![lhs, rhs],
-            shape: Shape::from_dims(&[2, 2]),
-            dtype: DType::F32,
-        });
+    fn optimize_graph_keeps_mixed_precision_matmul_native_on_cpu() {
+        for weight in [DType::BF16, DType::F16] {
+            let bindings = crate::dispatch::global_bindings(); // real populated CPU table
+            let mut g = Graph::new();
+            let lhs = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
+            });
+            let rhs = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: weight,
+            });
+            let mm = g.push(Node {
+                op: Op::MatMul,
+                inputs: vec![lhs, rhs],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
+            });
 
-        // Born-red baseline: without the fixup this errors with NoBackendForOp.
-        optimize_graph(&mut g, &[mm], &bindings, &cpu_opts())
-            .expect("mixed-precision matmul reconciled + optimized on CPU");
+            optimize_graph(&mut g, &[mm], &bindings, &cpu_opts())
+                .expect("mixed-precision matmul plans natively on CPU");
 
-        // The matmul's rhs is now a Cast(F32) of the original BF16 weight; lhs
-        // (already F32) is untouched.
-        let mm_inputs = g.node(mm).inputs.clone();
-        assert_eq!(mm_inputs[0], lhs, "lhs (already F32) untouched");
-        let cast_id = mm_inputs[1];
-        assert_ne!(cast_id, rhs, "rhs was rewired to a Cast");
-        assert!(
-            matches!(g.node(cast_id).op, Op::Cast(DType::F32)),
-            "rhs cast to F32"
-        );
-        assert_eq!(g.node(cast_id).dtype, DType::F32);
-        assert_eq!(
-            g.node(cast_id).inputs,
-            vec![rhs],
-            "cast reads the original BF16 weight"
-        );
+            assert_eq!(
+                g.node(mm).inputs,
+                vec![lhs, rhs],
+                "{weight:?}: no Cast, the CPU serves [F32, {weight:?}, F32] natively",
+            );
+            assert_eq!(g.node(rhs).dtype, weight, "the weight stays {weight:?}");
+        }
     }
 
     fn register_matmul(table: &mut KernelBindingTable, dtypes: &[DType], backend: BackendId) {

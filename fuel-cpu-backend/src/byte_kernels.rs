@@ -4952,6 +4952,116 @@ macro_rules! matmul_half_kernel {
 matmul_half_kernel!(matmul_bf16, half::bf16, "matmul_bf16");
 matmul_half_kernel!(matmul_f16, half::f16, "matmul_f16");
 
+/// Batched row-major matmul with an f32 activation (`lhs`) and a half-float weight (`rhs`,
+/// bf16 or f16), writing f32: the CPU kernel for the mixed `[F32, BF16, F32]` /
+/// `[F32, F16, F32]` keys (ROADMAP row 34). Each weight element widens to f32 as it is read and
+/// the inner product accumulates in f32, so the weight stays half-width in memory (no f32 copy
+/// of the weight) and the result is exactly the f32 matmul over the widened weight. Same
+/// GQA-divisible batch contract and `(i, k, j)` loop order as `matmul_half_kernel!`; the output
+/// is f32, so nothing narrows on store.
+macro_rules! matmul_f32_by_half_kernel {
+    ($name:ident, $W:ty, $type_name:literal) => {
+        pub fn $name(
+            lhs: &CpuStorageBytes,
+            rhs: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            lhs_batch_dims: &[usize],
+            rhs_batch_dims: &[usize],
+            m: usize,
+            n: usize,
+            k: usize,
+        ) -> Result<()> {
+            if lhs_batch_dims.len() != rhs_batch_dims.len() {
+                return Err(Error::Msg(format!(
+                    "{}: batch ranks must match (lhs={}, rhs={})",
+                    $type_name,
+                    lhs_batch_dims.len(),
+                    rhs_batch_dims.len(),
+                ))
+                .bt());
+            }
+            let batch_rank = lhs_batch_dims.len();
+            let mut n_rep: Vec<usize> = Vec::with_capacity(batch_rank);
+            for i in 0..batch_rank {
+                let la = lhs_batch_dims[i];
+                let ra = rhs_batch_dims[i];
+                if la == ra {
+                    n_rep.push(1);
+                } else if ra > 0 && la > ra && la.is_multiple_of(ra) {
+                    n_rep.push(la / ra);
+                } else {
+                    return Err(Error::Msg(format!(
+                        "{}: batch dim {i} disallowed combination (lhs={la}, rhs={ra})",
+                        $type_name,
+                    ))
+                    .bt());
+                }
+            }
+            let lhs_per_batch = m.saturating_mul(k);
+            let rhs_per_batch = k.saturating_mul(n);
+            let out_per_batch = m.saturating_mul(n);
+            let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
+            let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
+            let need_lhs = lhs_batch_count
+                .saturating_mul(lhs_per_batch)
+                .saturating_mul(std::mem::size_of::<f32>());
+            let need_rhs = rhs_batch_count
+                .saturating_mul(rhs_per_batch)
+                .saturating_mul(std::mem::size_of::<$W>());
+            let need_out = lhs_batch_count
+                .saturating_mul(out_per_batch)
+                .saturating_mul(std::mem::size_of::<f32>());
+            for (what, got, want) in [
+                ("lhs (f32)", lhs.len_bytes(), need_lhs),
+                ("rhs", rhs.len_bytes(), need_rhs),
+                ("out (f32)", out.len_bytes(), need_out),
+            ] {
+                if got != want {
+                    return Err(Error::Msg(format!(
+                        "{}: {what} bytes={got}, shape [{m}, {n}, {k}] needs {want}",
+                        $type_name,
+                    ))
+                    .bt());
+                }
+            }
+            let lhs_view: &[f32] = lhs.as_slice()?;
+            let rhs_view: &[$W] = rhs.as_slice()?;
+            let out_view: &mut [f32] = out.as_slice_mut()?;
+            out_view.fill(0.0);
+            let mut lhs_multi = vec![0usize; batch_rank];
+            for b in 0..lhs_batch_count {
+                let mut rem = b;
+                for d in (0..batch_rank).rev() {
+                    let s = lhs_batch_dims[d];
+                    lhs_multi[d] = rem % s;
+                    rem /= s;
+                }
+                let mut rhs_b = 0usize;
+                for d in 0..batch_rank {
+                    rhs_b = rhs_b * rhs_batch_dims[d] + lhs_multi[d] / n_rep[d];
+                }
+                let lhs_off = b * lhs_per_batch;
+                let rhs_off = rhs_b * rhs_per_batch;
+                let out_off = b * out_per_batch;
+                for i in 0..m {
+                    let out_row = &mut out_view[out_off + i * n..out_off + (i + 1) * n];
+                    for kk in 0..k {
+                        let a = lhs_view[lhs_off + i * k + kk];
+                        let w_row = &rhs_view[rhs_off + kk * n..rhs_off + (kk + 1) * n];
+                        for (o, w) in out_row.iter_mut().zip(w_row) {
+                            *o += a * w.to_f32();
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+}
+
+matmul_f32_by_half_kernel!(matmul_f32_bf16, half::bf16, "matmul_f32_bf16");
+matmul_f32_by_half_kernel!(matmul_f32_f16, half::f16, "matmul_f32_f16");
+
 /// Batched row-major matmul for 8-bit integer types (i8/u8) with i32
 /// accumulation and saturating cast on store. Mirrors baracuda's
 /// `gemm_{s8,u8}_rrr_sm80_run` contract: `alpha = 1`, `beta = 0`,
