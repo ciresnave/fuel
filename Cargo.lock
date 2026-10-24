@@ -455,15 +455,15 @@ dependencies = [
 
 [[package]]
 name = "baracuda-cuda-emit"
-version = "0.11.1"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b292a80fd8b1b015f5139d2ec79ff2c36e8cbc557fad1b7fd5aa5a84732ac93"
+checksum = "35a4f400d1faaa8f616a5c324cb3f5f239efee57fae7fa0f041305d4f4fcda6d"
 dependencies = [
  "baracuda-nvrtc",
  "fuel-kernel-seam 0.11.2",
  "fuel-kernel-seam-types 0.11.2",
  "unpopped",
- "unpopped-vocab 0.11.0",
+ "unpopped-vocab 0.14.4",
 ]
 
 [[package]]
@@ -5941,21 +5941,21 @@ checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
 name = "unpopped"
-version = "0.11.0"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d27e35dcc754285b753876b6e2db1ec4aacebb97ce73da55e9efc273d2199b2"
+checksum = "d9dc00d3dba890935057a1e6072425e8337ca3767164a3930da53bb5aaa96261"
 dependencies = [
  "libm",
  "serde",
  "serde_json",
- "unpopped-vocab 0.11.0",
+ "unpopped-vocab 0.14.4",
 ]
 
 [[package]]
 name = "unpopped-vocab"
-version = "0.11.0"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "919c9ac8b0e669d0691a218504929a6dd79abc7b46d163eebc949d75bc3db8b1"
+checksum = "bd6ea5514b8aad809e4f9d3ffe83843db62a178a115aed48ef1c915e51e44a91"
 dependencies = [
  "float8",
  "half",

@@ -318,7 +318,7 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.147" }
 # project's version" carve-out). `0.11.0` answers "which Unpopped does this
 # work with", not "which baracuda snapshot is this" — it is not comparable to
 # the other `baracuda-*` pins' alpha numbers in the same way.
-baracuda-cuda-emit     = { version = "0.11.0" }
+baracuda-cuda-emit     = { version = "0.14.3" }
 baracuda-nccl-sys      = { version = "0.0.1-alpha.147" }
 baracuda-nccl          = { version = "0.0.1-alpha.147", features = ["half-crate"] }
 baracuda-cutlass       = { version = "0.0.1-alpha.147" }
