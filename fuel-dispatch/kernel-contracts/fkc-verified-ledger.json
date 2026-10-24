@@ -29913,9 +29913,9 @@
           "rel": 1.4112424666368195e-9
         },
         {
-          "abs": 7.214630264734676e-10,
+          "abs": 7.214630264734674e-10,
           "case": "rows=16 cols=2048",
-          "rel": 7.214630264734676e-10
+          "rel": 7.214630264734674e-10
         },
         {
           "abs": 3.417362274237001e-10,
@@ -29973,9 +29973,9 @@
           "rel": 1.4112424666368195e-9
         },
         {
-          "abs": 7.214630264734676e-10,
+          "abs": 7.214630264734674e-10,
           "case": "rows=16 cols=2048",
-          "rel": 7.214630264734676e-10
+          "rel": 7.214630264734674e-10
         },
         {
           "abs": 3.417362274237001e-10,
@@ -30032,7 +30032,7 @@
         {
           "abs": 1.1920928955078125e-7,
           "case": "outer=1 seq=64 hd=128",
-          "rel": 1.1884657026625202e-7
+          "rel": 1.1884657026625206e-7
         },
         {
           "abs": 1.1920928955078125e-7,
@@ -30084,7 +30084,7 @@
         {
           "abs": 1.1920928955078125e-7,
           "case": "outer=1 seq=64 hd=128",
-          "rel": 1.1884657026625202e-7
+          "rel": 1.1884657026625206e-7
         },
         {
           "abs": 1.1920928955078125e-7,
@@ -30313,13 +30313,2017 @@
     "backend": "Cuda",
     "dtypes": [
       "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 4023402343734102881,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 1750499353587185251,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 1839715684666291827,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 12650070721560703479,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 6448076651549301069,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17621493112964812530,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 18352151671209143227,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 7196555346797845220,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 10814016708670161589,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 10572983406963670178,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 10814016708670161589,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 13241706208557477818,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 15026504722721852106,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 17409228384848634129,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 6582910902404350725,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 6182530074619815904,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 579897999062082389,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 15943026613435378591,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 1928514770824592290,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 15502899337066222768,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 37532052213063538,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 37532052213063538,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 14605441408742838445,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 9941121762746667977,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 18352151671209143227,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 15982550413738573050,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 6582910902404350725,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 17202873224365237977,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6636046338466600872,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 9792678343371161421,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 525023599559185228,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 9792678343371161421,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 18055620490389221592,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 10572983406963670178,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 4336920715150085572,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 13094233403210290556,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 18065724155975217629,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 5205300808671216777,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 17409228384848634129,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 15943026613435378591,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 6182530074619815904,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3583896803925004088,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8478024506027498528,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 5205300808671216777,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8636777766987522638,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 14605441408742838445,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 13241706208557477818,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6309779980680993808,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 9941121762746667977,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 4918372560643508433,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8009758815143645289,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 1839715684666291827,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 10814016708670161589,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 15943026613435378591,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 6582910902404350725,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 13241706208557477818,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 16333105833566395641,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 4546452310776874192,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2101020056781025338,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 4918372560643508433,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 15026504722721852106,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 12650070721560703479,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 15982550413738573050,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 18055620490389221592,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 18065724155975217629,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2546265306169628633,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 18352151671209143227,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 5205300808671216777,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5228530641033302105,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6548309430729237841,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17674997261223046670,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 6448076651549301069,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 17202873224365237977,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 37532052213063538,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 18055620490389221592,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 9941121762746667977,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 4918372560643508433,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 14605441408742838445,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 2380192344074974762,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5715285371390623555,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 17202873224365237977,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 9792678343371161421,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2898125999326284721,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 2380192344074974762,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 1750499353587185251,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 12650070721560703479,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5902236080238710049,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 1839715684666291827,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 6182530074619815904,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 16333105833566395641,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3883077047295912676,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 7090932532982458585,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 10572983406963670178,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2597392809728023644,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 15026504722721852106,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 2380192344074974762,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 1750499353587185251,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8834011092426758313,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 18065724155975217629,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 7196555346797845220,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2727367701686823239,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 1928514770824592290,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 16333105833566395641,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 1928514770824592290,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 7196555346797845220,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 6448076651549301069,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 15982550413738573050,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 17409228384848634129,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827419",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 7473219574694446665,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827527",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 14769178387635733363,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827527",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 7473219574694446665,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827527",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 14769178387635733363,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827527",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 7473219574694446665,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827527",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 14769178387635733363,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827527",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2897287223794456625,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827527",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17531809644770015931,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1792827527",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "capturedrun-4b/seed_cuda_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
       "F32",
       "F32"
     ],
     "kernel_revision_hash": 5124112487312979967,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792803768",
+    "verified_at": "epoch:1792827561",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -30405,7 +32409,7 @@
     "kernel_revision_hash": 5124112487312979967,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792803768",
+    "verified_at": "epoch:1792827561",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -30490,7 +32494,7 @@
     "kernel_revision_hash": 17088852178257783666,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792803768",
+    "verified_at": "epoch:1792827561",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -30560,7 +32564,7 @@
     "kernel_revision_hash": 17088852178257783666,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792803768",
+    "verified_at": "epoch:1792827561",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -30630,7 +32634,7 @@
     "kernel_revision_hash": 1735191071223723436,
     "claim": "max_absolute",
     "result": "pass",
-    "verified_at": "epoch:1792803768",
+    "verified_at": "epoch:1792827561",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -30690,7 +32694,7 @@
     "kernel_revision_hash": 1735191071223723436,
     "claim": "max_relative",
     "result": "pass",
-    "verified_at": "epoch:1792803768",
+    "verified_at": "epoch:1792827561",
     "protocol_version": 1,
     "evidence": {
       "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
@@ -30738,6 +32742,3022 @@
       "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
       "op": "SoftmaxLastDim",
       "reference": "f64 host exp(x - max) / sum"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 13094233403210290556,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "NegElementwise",
+      "reference": "f64 -x"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 13094233403210290556,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "NegElementwise",
+      "reference": "f64 -x"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8636777766987522638,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "AbsElementwise",
+      "reference": "f64 |x|"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8636777766987522638,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "AbsElementwise",
+      "reference": "f64 |x|"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2597392809728023644,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.8911523511633277e-6,
+          "case": "rows=1 cols=1000",
+          "rel": 5.808968664343851e-8
+        },
+        {
+          "abs": 1.9053368305321783e-6,
+          "case": "rows=1 cols=3072",
+          "rel": 5.865719598081482e-8
+        },
+        {
+          "abs": 1.9073331714025699e-6,
+          "case": "rows=448 cols=1024",
+          "rel": 5.957555159960654e-8
+        },
+        {
+          "abs": 1.9069548216066323e-6,
+          "case": "rows=4 cols=8192",
+          "rel": 5.91405409480534e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 1.9073331714025699e-6,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SqrElementwise",
+      "reference": "f64 x * x"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2597392809728023644,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.8911523511633277e-6,
+          "case": "rows=1 cols=1000",
+          "rel": 5.808968664343851e-8
+        },
+        {
+          "abs": 1.9053368305321783e-6,
+          "case": "rows=1 cols=3072",
+          "rel": 5.865719598081482e-8
+        },
+        {
+          "abs": 1.9073331714025699e-6,
+          "case": "rows=448 cols=1024",
+          "rel": 5.957555159960654e-8
+        },
+        {
+          "abs": 1.9069548216066323e-6,
+          "case": "rows=4 cols=8192",
+          "rel": 5.91405409480534e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 5.957555159960654e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SqrElementwise",
+      "reference": "f64 x * x"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 4336920715150085572,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 4.749276758531096e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 5.722610603453319e-8
+        },
+        {
+          "abs": 4.762270737757035e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 5.893117806434787e-8
+        },
+        {
+          "abs": 4.7682197568121865e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 5.9590258138505215e-8
+        },
+        {
+          "abs": 4.768251926634548e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 5.9487319236680164e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [0.01, 100) plus edges",
+      "measured_worst": 4.768251926634548e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SqrtElementwise",
+      "reference": "f64 sqrt"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 4336920715150085572,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 4.749276758531096e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 5.722610603453319e-8
+        },
+        {
+          "abs": 4.762270737757035e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 5.893117806434787e-8
+        },
+        {
+          "abs": 4.7682197568121865e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 5.9590258138505215e-8
+        },
+        {
+          "abs": 4.768251926634548e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 5.9487319236680164e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [0.01, 100) plus edges",
+      "measured_worst": 5.9590258138505215e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SqrtElementwise",
+      "reference": "f64 sqrt"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2898125999326284721,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.1877108097024802e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 5.827904204112121e-8
+        },
+        {
+          "abs": 1.190047593802035e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 5.789303959012321e-8
+        },
+        {
+          "abs": 1.1917652020798641e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 5.924445645377377e-8
+        },
+        {
+          "abs": 1.1891214724002452e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 5.9154558490117424e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "|x| uniform [0.25, 8), both signs, plus edges",
+      "measured_worst": 1.1917652020798641e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RecipElementwise",
+      "reference": "f64 1 / x"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2898125999326284721,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.1877108097024802e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 5.827904204112121e-8
+        },
+        {
+          "abs": 1.190047593802035e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 5.789303959012321e-8
+        },
+        {
+          "abs": 1.1917652020798641e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 5.924445645377377e-8
+        },
+        {
+          "abs": 1.1891214724002452e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 5.9154558490117424e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "|x| uniform [0.25, 8), both signs, plus edges",
+      "measured_worst": 5.924445645377377e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RecipElementwise",
+      "reference": "f64 1 / x"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8834011092426758313,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.00001417221486121889,
+          "case": "rows=1 cols=1000",
+          "rel": 1.155622031122447e-7
+        },
+        {
+          "abs": 0.000014303386933534057,
+          "case": "rows=1 cols=3072",
+          "rel": 1.2186318722607725e-7
+        },
+        {
+          "abs": 0.000017978985511035717,
+          "case": "rows=448 cols=1024",
+          "rel": 1.411541352382608e-7
+        },
+        {
+          "abs": 0.000014803677998997955,
+          "case": "rows=4 cols=8192",
+          "rel": 1.2770700736722567e-7
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-10, 5) plus edges",
+      "measured_worst": 0.000017978985511035717,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "ExpElementwise",
+      "reference": "f64 exp"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8834011092426758313,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.00001417221486121889,
+          "case": "rows=1 cols=1000",
+          "rel": 1.155622031122447e-7
+        },
+        {
+          "abs": 0.000014303386933534057,
+          "case": "rows=1 cols=3072",
+          "rel": 1.2186318722607725e-7
+        },
+        {
+          "abs": 0.000017978985511035717,
+          "case": "rows=448 cols=1024",
+          "rel": 1.411541352382608e-7
+        },
+        {
+          "abs": 0.000014803677998997955,
+          "case": "rows=4 cols=8192",
+          "rel": 1.2770700736722567e-7
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-10, 5) plus edges",
+      "measured_worst": 1.411541352382608e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "ExpElementwise",
+      "reference": "f64 exp"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 15502899337066222768,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 2.6408342446160304e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 5.945018591642307e-8
+        },
+        {
+          "abs": 2.676801758028091e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 6.692781748953606e-8
+        },
+        {
+          "abs": 2.6828155963443123e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 7.700363799814233e-8
+        },
+        {
+          "abs": 2.6621870397036673e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 7.371099633103424e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [0.01, 100) plus edges",
+      "measured_worst": 2.6828155963443123e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "LogElementwise",
+      "reference": "f64 ln"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 15502899337066222768,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 2.6408342446160304e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 5.945018591642307e-8
+        },
+        {
+          "abs": 2.676801758028091e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 6.692781748953606e-8
+        },
+        {
+          "abs": 2.6828155963443123e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 7.700363799814233e-8
+        },
+        {
+          "abs": 2.6621870397036673e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 7.371099633103424e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [0.01, 100) plus edges",
+      "measured_worst": 7.700363799814233e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "LogElementwise",
+      "reference": "f64 ln"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3583896803925004088,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 6.944212416204465e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 6.944212416204465e-8
+        },
+        {
+          "abs": 7.509611488210055e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 7.509611488210055e-8
+        },
+        {
+          "abs": 8.37613017834471e-8,
+          "case": "rows=448 cols=1024",
+          "rel": 8.37613017834471e-8
+        },
+        {
+          "abs": 7.788748346282404e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 7.788748346282404e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-20, 20) plus edges",
+      "measured_worst": 8.37613017834471e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SinElementwise",
+      "reference": "f64 sin"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3583896803925004088,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 6.944212416204465e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 6.944212416204465e-8
+        },
+        {
+          "abs": 7.509611488210055e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 7.509611488210055e-8
+        },
+        {
+          "abs": 8.37613017834471e-8,
+          "case": "rows=448 cols=1024",
+          "rel": 8.37613017834471e-8
+        },
+        {
+          "abs": 7.788748346282404e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 7.788748346282404e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-20, 20) plus edges",
+      "measured_worst": 8.37613017834471e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SinElementwise",
+      "reference": "f64 sin"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5228530641033302105,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 6.502234051186662e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 6.502234051186662e-8
+        },
+        {
+          "abs": 7.17657214766021e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 7.17657214766021e-8
+        },
+        {
+          "abs": 8.391432548826572e-8,
+          "case": "rows=448 cols=1024",
+          "rel": 8.391432548826572e-8
+        },
+        {
+          "abs": 7.731101192565148e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 7.731101192565148e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-20, 20) plus edges",
+      "measured_worst": 8.391432548826572e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "CosElementwise",
+      "reference": "f64 cos"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5228530641033302105,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 6.502234051186662e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 6.502234051186662e-8
+        },
+        {
+          "abs": 7.17657214766021e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 7.17657214766021e-8
+        },
+        {
+          "abs": 8.391432548826572e-8,
+          "case": "rows=448 cols=1024",
+          "rel": 8.391432548826572e-8
+        },
+        {
+          "abs": 7.731101192565148e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 7.731101192565148e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-20, 20) plus edges",
+      "measured_worst": 8.391432548826572e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "CosElementwise",
+      "reference": "f64 cos"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2546265306169628633,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 8.584005595224653e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 8.584005595224653e-8
+        },
+        {
+          "abs": 8.315175714646017e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 8.315175714646017e-8
+        },
+        {
+          "abs": 1.0347885515127331e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.0347885515127331e-7
+        },
+        {
+          "abs": 9.253116017848839e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 9.253116017848839e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-5, 5) plus edges",
+      "measured_worst": 1.0347885515127331e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "TanhElementwise",
+      "reference": "f64 tanh"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2546265306169628633,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 8.584005595224653e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 8.584005595224653e-8
+        },
+        {
+          "abs": 8.315175714646017e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 8.315175714646017e-8
+        },
+        {
+          "abs": 1.0347885515127331e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.0347885515127331e-7
+        },
+        {
+          "abs": 9.253116017848839e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 9.253116017848839e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-5, 5) plus edges",
+      "measured_worst": 1.0347885515127331e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "TanhElementwise",
+      "reference": "f64 tanh"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8478024506027498528,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "ReluElementwise",
+      "reference": "f64 x < 0 ? 0 : x"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8478024506027498528,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "ReluElementwise",
+      "reference": "f64 x < 0 ? 0 : x"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 4023402343734102881,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 4.0977280324483445e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 9.902031679417213e-8
+        },
+        {
+          "abs": 3.9974017873589673e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 9.661471502282499e-8
+        },
+        {
+          "abs": 4.3305466590481956e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.250442460502916e-7
+        },
+        {
+          "abs": 4.2948869261039135e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 1.0100384408830909e-7
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 4.3305466590481956e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "GeluTanhElementwise",
+      "reference": "f64 0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3)))"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 4023402343734102881,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 4.0977280324483445e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 9.902031679417213e-8
+        },
+        {
+          "abs": 3.9974017873589673e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 9.661471502282499e-8
+        },
+        {
+          "abs": 4.3305466590481956e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.250442460502916e-7
+        },
+        {
+          "abs": 4.2948869261039135e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 1.0100384408830909e-7
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 1.250442460502916e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "GeluTanhElementwise",
+      "reference": "f64 0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3)))"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6309779980680993808,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 4.245270233127485e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 1.047927650737502e-7
+        },
+        {
+          "abs": 4.4484260186550273e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 1.0400763841527037e-7
+        },
+        {
+          "abs": 4.6066697922952926e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.2178291159179407e-7
+        },
+        {
+          "abs": 4.3841583075021617e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 1.083872084777108e-7
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 4.6066697922952926e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "GeluElementwise",
+      "reference": "f64 0.5 x (1 + erf(x / sqrt 2))"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6309779980680993808,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 4.245270233127485e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 1.047927650737502e-7
+        },
+        {
+          "abs": 4.4484260186550273e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 1.0400763841527037e-7
+        },
+        {
+          "abs": 4.6066697922952926e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.2178291159179407e-7
+        },
+        {
+          "abs": 4.3841583075021617e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 1.083872084777108e-7
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 1.2178291159179407e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "GeluElementwise",
+      "reference": "f64 0.5 x (1 + erf(x / sqrt 2))"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 525023599559185228,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "StepElementwise",
+      "reference": "f64 x > 0 ? 1 : 0"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 525023599559185228,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "StepElementwise",
+      "reference": "f64 x > 0 ? 1 : 0"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2727367701686823239,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 5.360128305653689e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 1.29126581299039e-7
+        },
+        {
+          "abs": 6.251844251181637e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 1.3808449033966536e-7
+        },
+        {
+          "abs": 7.466625566721063e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.507126779815055e-7
+        },
+        {
+          "abs": 6.706484612095664e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 1.4240030853775823e-7
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 7.466625566721063e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SiluElementwise",
+      "reference": "f64 x / (1 + exp(-x))"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2727367701686823239,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 5.360128305653689e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 1.29126581299039e-7
+        },
+        {
+          "abs": 6.251844251181637e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 1.3808449033966536e-7
+        },
+        {
+          "abs": 7.466625566721063e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.507126779815055e-7
+        },
+        {
+          "abs": 6.706484612095664e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 1.4240030853775823e-7
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 1.507126779815055e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SiluElementwise",
+      "reference": "f64 x / (1 + exp(-x))"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17621493112964812530,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 8.551312491444918e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 8.551312491444918e-8
+        },
+        {
+          "abs": 8.514637450662832e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 8.514637450662832e-8
+        },
+        {
+          "abs": 8.886886471159983e-8,
+          "case": "rows=448 cols=1024",
+          "rel": 8.886886471159983e-8
+        },
+        {
+          "abs": 8.837714893239479e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 8.837714893239479e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 8.886886471159983e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SigmoidElementwise",
+      "reference": "f64 1 / (1 + exp(-x))"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17621493112964812530,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 8.551312491444918e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 8.551312491444918e-8
+        },
+        {
+          "abs": 8.514637450662832e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 8.514637450662832e-8
+        },
+        {
+          "abs": 8.886886471159983e-8,
+          "case": "rows=448 cols=1024",
+          "rel": 8.886886471159983e-8
+        },
+        {
+          "abs": 8.837714893239479e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 8.837714893239479e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 8.886886471159983e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SigmoidElementwise",
+      "reference": "f64 1 / (1 + exp(-x))"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17674997261223046670,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.1175871073021426e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 6.178175750801397e-8
+        },
+        {
+          "abs": 2.663766087707131e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 8.648987511645622e-8
+        },
+        {
+          "abs": 8.06974078670919e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.1629863943855842e-7
+        },
+        {
+          "abs": 6.196290929239012e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 8.991022896539137e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [0.01, 100) plus edges",
+      "measured_worst": 8.06974078670919e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RsqrtElementwise",
+      "reference": "f64 1 / sqrt(x)"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17674997261223046670,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.1175871073021426e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 6.178175750801397e-8
+        },
+        {
+          "abs": 2.663766087707131e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 8.648987511645622e-8
+        },
+        {
+          "abs": 8.06974078670919e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 1.1629863943855842e-7
+        },
+        {
+          "abs": 6.196290929239012e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 8.991022896539137e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [0.01, 100) plus edges",
+      "measured_worst": 1.1629863943855842e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RsqrtElementwise",
+      "reference": "f64 1 / sqrt(x)"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3883077047295912676,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "FloorElementwise",
+      "reference": "f64 floor"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 3883077047295912676,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "FloorElementwise",
+      "reference": "f64 floor"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6548309430729237841,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "CeilElementwise",
+      "reference": "f64 ceil"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6548309430729237841,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "CeilElementwise",
+      "reference": "f64 ceil"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2101020056781025338,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RoundElementwise",
+      "reference": "f64 round half to even"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2101020056781025338,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RoundElementwise",
+      "reference": "f64 round half to even"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8009758815143645289,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 4.980767520645912e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 4.980767520645912e-8
+        },
+        {
+          "abs": 4.917463147791068e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 4.917463147791068e-8
+        },
+        {
+          "abs": 5.843054495802136e-8,
+          "case": "rows=448 cols=1024",
+          "rel": 5.843054495802136e-8
+        },
+        {
+          "abs": 5.4781279623661305e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 5.4781279623661305e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 5.843054495802136e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "ErfElementwise",
+      "reference": "f64 erf (non-alternating series)"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 8009758815143645289,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 4.980767520645912e-8,
+          "case": "rows=1 cols=1000",
+          "rel": 4.980767520645912e-8
+        },
+        {
+          "abs": 4.917463147791068e-8,
+          "case": "rows=1 cols=3072",
+          "rel": 4.917463147791068e-8
+        },
+        {
+          "abs": 5.843054495802136e-8,
+          "case": "rows=448 cols=1024",
+          "rel": 5.843054495802136e-8
+        },
+        {
+          "abs": 5.4781279623661305e-8,
+          "case": "rows=4 cols=8192",
+          "rel": 5.4781279623661305e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-6, 6) plus edges",
+      "measured_worst": 5.843054495802136e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "ErfElementwise",
+      "reference": "f64 erf (non-alternating series)"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 13713440066114356501,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SignElementwise",
+      "reference": "f64 x > 0 ? 1 : x < 0 ? -1 : 0"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 13713440066114356501,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SignElementwise",
+      "reference": "f64 x > 0 ? 1 : x < 0 ? -1 : 0"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 4546452310776874192,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "AddElementwise",
+      "reference": "f64 a + b"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 4546452310776874192,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "AddElementwise",
+      "reference": "f64 a + b"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 579897999062082389,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SubElementwise",
+      "reference": "f64 a - b"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 579897999062082389,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "SubElementwise",
+      "reference": "f64 a - b"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 7090932532982458585,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.88229932973627e-6,
+          "case": "rows=1 cols=1000",
+          "rel": 5.846140685822228e-8
+        },
+        {
+          "abs": 1.9072549548582174e-6,
+          "case": "rows=1 cols=3072",
+          "rel": 5.777674486949265e-8
+        },
+        {
+          "abs": 1.9073377188760787e-6,
+          "case": "rows=448 cols=1024",
+          "rel": 5.9488483841773265e-8
+        },
+        {
+          "abs": 1.9070830603595823e-6,
+          "case": "rows=4 cols=8192",
+          "rel": 5.892304472423632e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 1.9073377188760787e-6,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MulElementwise",
+      "reference": "f64 a * b"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 7090932532982458585,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 1.88229932973627e-6,
+          "case": "rows=1 cols=1000",
+          "rel": 5.846140685822228e-8
+        },
+        {
+          "abs": 1.9072549548582174e-6,
+          "case": "rows=1 cols=3072",
+          "rel": 5.777674486949265e-8
+        },
+        {
+          "abs": 1.9073377188760787e-6,
+          "case": "rows=448 cols=1024",
+          "rel": 5.9488483841773265e-8
+        },
+        {
+          "abs": 1.9070830603595823e-6,
+          "case": "rows=4 cols=8192",
+          "rel": 5.892304472423632e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 5.9488483841773265e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MulElementwise",
+      "reference": "f64 a * b"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6636046338466600872,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 7.540251374393847e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 5.70564923976336e-8
+        },
+        {
+          "abs": 9.493866137688656e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 5.867079311069708e-8
+        },
+        {
+          "abs": 9.536040757041064e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 5.9567838930290386e-8
+        },
+        {
+          "abs": 9.532092732911224e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 5.9556816890290215e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a uniform [-8, 8), |b| uniform [0.25, 8) both signs, plus edges",
+      "measured_worst": 9.536040757041064e-7,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "DivElementwise",
+      "reference": "f64 a / b"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6636046338466600872,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 7.540251374393847e-7,
+          "case": "rows=1 cols=1000",
+          "rel": 5.70564923976336e-8
+        },
+        {
+          "abs": 9.493866137688656e-7,
+          "case": "rows=1 cols=3072",
+          "rel": 5.867079311069708e-8
+        },
+        {
+          "abs": 9.536040757041064e-7,
+          "case": "rows=448 cols=1024",
+          "rel": 5.9567838930290386e-8
+        },
+        {
+          "abs": 9.532092732911224e-7,
+          "case": "rows=4 cols=8192",
+          "rel": 5.9556816890290215e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a uniform [-8, 8), |b| uniform [0.25, 8) both signs, plus edges",
+      "measured_worst": 5.9567838930290386e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "DivElementwise",
+      "reference": "f64 a / b"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5902236080238710049,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MaximumElementwise",
+      "reference": "f64 max"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5902236080238710049,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MaximumElementwise",
+      "reference": "f64 max"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5715285371390623555,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MinimumElementwise",
+      "reference": "f64 min"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5715285371390623555,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.0,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a, b uniform [-8, 8) plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "MinimumElementwise",
+      "reference": "f64 min"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2897287223794456625,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 2.042876531049842e-6,
+          "case": "rows=1 cols=1000",
+          "rel": 6.08243411818907e-8
+        },
+        {
+          "abs": 1.7583657339059755e-6,
+          "case": "rows=1 cols=3072",
+          "rel": 6.571228110625484e-8
+        },
+        {
+          "abs": 3.0285171064292626e-6,
+          "case": "rows=448 cols=1024",
+          "rel": 6.948641608716394e-8
+        },
+        {
+          "abs": 2.839517506458833e-6,
+          "case": "rows=4 cols=8192",
+          "rel": 6.679461089475424e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a uniform [0.5, 4), b uniform [-3, 3) plus edges",
+      "measured_worst": 3.0285171064292626e-6,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "PowElementwise",
+      "reference": "f64 powf"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2897287223794456625,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 2.042876531049842e-6,
+          "case": "rows=1 cols=1000",
+          "rel": 6.08243411818907e-8
+        },
+        {
+          "abs": 1.7583657339059755e-6,
+          "case": "rows=1 cols=3072",
+          "rel": 6.571228110625484e-8
+        },
+        {
+          "abs": 3.0285171064292626e-6,
+          "case": "rows=448 cols=1024",
+          "rel": 6.948641608716394e-8
+        },
+        {
+          "abs": 2.839517506458833e-6,
+          "case": "rows=4 cols=8192",
+          "rel": 6.679461089475424e-8
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a uniform [0.5, 4), b uniform [-3, 3) plus edges",
+      "measured_worst": 6.948641608716394e-8,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "PowElementwise",
+      "reference": "f64 powf"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17531809644770015931,
+    "claim": "max_absolute",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a uniform [-8, 8), |b| uniform [0.25, 8) both signs, plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RemElementwise",
+      "reference": "f64 Python-style modulo"
+    }
+  },
+  {
+    "kernel_ref": "baracuda",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17531809644770015931,
+    "claim": "max_relative",
+    "result": "pass",
+    "verified_at": "epoch:1792827561",
+    "protocol_version": 1,
+    "evidence": {
+      "adapter": "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "bound": 0.00001,
+      "cases": [
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=1000",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=1 cols=3072",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=448 cols=1024",
+          "rel": 0.0
+        },
+        {
+          "abs": 0.0,
+          "case": "rows=4 cols=8192",
+          "rel": 0.0
+        }
+      ],
+      "harness": "row-39/seed_cuda_accuracy",
+      "input_range": "a uniform [-8, 8), |b| uniform [0.25, 8) both signs, plus edges",
+      "measured_worst": 0.0,
+      "metric": "abs = |out-ref|; rel = |out-ref| / max(|ref|, 1.0)",
+      "op": "RemElementwise",
+      "reference": "f64 Python-style modulo"
     }
   }
 ]

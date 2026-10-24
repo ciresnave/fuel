@@ -28,6 +28,7 @@ use fuel_ir::probe::BackendId;
 use super::accuracy_common::{
     Claim, OpAccuracy, f32s, find_entry, measure_matmul, measure_rms_norm, measure_softmax,
 };
+use super::accuracy_elementwise::{BINARY_SPECS, UNARY_SPECS, measure_binary, measure_unary};
 use super::bit_stability::{HostTensor, KernelInvoker, VerifyError};
 use super::invoker_cuda::CudaInvoker;
 use super::ledger::LedgerRecord;
@@ -40,11 +41,80 @@ const HARNESS: &str = "row-39/seed_cuda_accuracy";
 
 /// The ops this module claims for; their sections are split by dtype in the contracts, which
 /// re-keys their entries (the dtype list is part of the revision hash).
-const MEASURED_OPS: [OpKind; 3] = [
-    OpKind::MatMul,
-    OpKind::RmsNormLastDim,
-    OpKind::SoftmaxLastDim,
+fn measured_ops() -> Vec<OpKind> {
+    [
+        OpKind::MatMul,
+        OpKind::RmsNormLastDim,
+        OpKind::SoftmaxLastDim,
+    ]
+    .into_iter()
+    .chain(UNARY_CLAIMS.iter().map(|c| c.0))
+    .chain(BINARY_CLAIMS.iter().map(|c| c.0))
+    .collect()
+}
+
+const fn both(bound: f64) -> Claim {
+    Claim {
+        max_relative: bound,
+        max_absolute: bound,
+    }
+}
+
+/// `(op, f32 section, claim)` of each unary op, one entry per `UNARY_SPECS` spec. The claim is
+/// the same number in `kernel-contracts/cuda/unary.fkc.md` (`claim_constants_match_the_contracts`).
+pub(crate) const UNARY_CLAIMS: &[(OpKind, &str, Claim)] = &[
+    (OpKind::NegElementwise, "neg_f32", both(0.0)),
+    (OpKind::AbsElementwise, "abs_f32", both(0.0)),
+    (OpKind::SqrElementwise, "sqr_f32", both(1.0e-5)),
+    (OpKind::SqrtElementwise, "sqrt_f32", both(1.0e-5)),
+    (OpKind::RecipElementwise, "recip_f32", both(1.0e-5)),
+    // The absolute ceiling is looser: results reach 148 on the measured domain, where one f32 ulp is 1.5e-5.
+    (
+        OpKind::ExpElementwise,
+        "exp_f32",
+        Claim {
+            max_relative: 1.0e-5,
+            max_absolute: 1.0e-4,
+        },
+    ),
+    (OpKind::LogElementwise, "log_f32", both(1.0e-5)),
+    (OpKind::SinElementwise, "sin_f32", both(1.0e-5)),
+    (OpKind::CosElementwise, "cos_f32", both(1.0e-5)),
+    (OpKind::TanhElementwise, "tanh_f32", both(1.0e-5)),
+    (OpKind::ReluElementwise, "relu_f32", both(0.0)),
+    (OpKind::GeluTanhElementwise, "gelu_tanh_f32", both(1.0e-5)),
+    (OpKind::GeluElementwise, "gelu_f32", both(1.0e-5)),
+    (OpKind::StepElementwise, "step_f32", both(0.0)),
+    (OpKind::SiluElementwise, "silu_f32", both(1.0e-5)),
+    (OpKind::SigmoidElementwise, "sigmoid_f32", both(1.0e-5)),
+    (OpKind::RsqrtElementwise, "rsqrt_f32", both(1.0e-5)),
+    (OpKind::FloorElementwise, "floor_f32", both(0.0)),
+    (OpKind::CeilElementwise, "ceil_f32", both(0.0)),
+    (OpKind::RoundElementwise, "round_f32", both(0.0)),
+    (OpKind::ErfElementwise, "erf_f32", both(1.0e-5)),
+    (OpKind::SignElementwise, "sign", both(0.0)),
 ];
+
+/// `(op, f32 section, claim)` of each binary op, one entry per `BINARY_SPECS` spec; the
+/// contract is `kernel-contracts/cuda/binary.fkc.md`.
+pub(crate) const BINARY_CLAIMS: &[(OpKind, &str, Claim)] = &[
+    (OpKind::AddElementwise, "add_f32", both(1.0e-5)),
+    (OpKind::SubElementwise, "sub_f32", both(1.0e-5)),
+    (OpKind::MulElementwise, "mul_f32", both(1.0e-5)),
+    (OpKind::DivElementwise, "div_f32", both(1.0e-5)),
+    (OpKind::MaximumElementwise, "maximum_f32", both(0.0)),
+    (OpKind::MinimumElementwise, "minimum_f32", both(0.0)),
+    (OpKind::PowElementwise, "pow_f32", both(1.0e-5)),
+    (OpKind::RemElementwise, "rem_f32", both(1.0e-5)),
+];
+
+fn claim_of(table: &[(OpKind, &str, Claim)], op: OpKind) -> Claim {
+    table
+        .iter()
+        .find(|c| c.0 == op)
+        .unwrap_or_else(|| panic!("{op:?} has a spec but no claim"))
+        .2
+}
 
 /// `matmul_f32` (`kernel-contracts/cuda/gemm_dense.fkc.md`), unit-scale inputs.
 pub(crate) const MATMUL_F32_CLAIM: Claim = Claim {
@@ -87,7 +157,7 @@ pub(crate) fn measure_cuda_f32_accuracy() -> Result<(String, Vec<OpAccuracy>), V
         Ok(f32s(&inv.invoke(entry, inputs)?))
     };
     let entry = |op: OpKind, dt: &[DType]| find_entry(&table, op, dt, BackendId::Cuda);
-    let ops = vec![
+    let mut ops = vec![
         measure_matmul(
             &run,
             entry(OpKind::MatMul, &[DType::F32; 3])?,
@@ -104,6 +174,24 @@ pub(crate) fn measure_cuda_f32_accuracy() -> Result<(String, Vec<OpAccuracy>), V
             SOFTMAX_F32_CLAIM,
         )?,
     ];
+    for spec in UNARY_SPECS {
+        let e = entry(spec.op, &[DType::F32; 2])?;
+        ops.push(measure_unary(
+            &run,
+            e,
+            spec,
+            claim_of(UNARY_CLAIMS, spec.op),
+        )?);
+    }
+    for spec in BINARY_SPECS {
+        let e = entry(spec.op, &[DType::F32; 3])?;
+        ops.push(measure_binary(
+            &run,
+            e,
+            spec,
+            claim_of(BINARY_CLAIMS, spec.op),
+        )?);
+    }
     Ok((device_name(), ops))
 }
 
@@ -136,8 +224,9 @@ pub(crate) fn run_seed_cuda_accuracy() {
     // The dtype list is part of a section's revision hash, so splitting a section re-keyed every
     // entry of its op: earn `bit_stable_on_same_hardware` for the entries that lack
     // a pass at their current hash (`force = false` leaves every other kernel's record alone).
-    let (ledger, log) = super::seed_cuda_ledger::run_cuda_verification(Some(&MEASURED_OPS), false)
-        .expect("cuda bit-stability seeding runs");
+    let (ledger, log) =
+        super::seed_cuda_ledger::run_cuda_verification(Some(&measured_ops()), false)
+            .expect("cuda bit-stability seeding runs");
     for a in &log {
         println!(
             "[row-39] {} {:?} (rev={}): {}",
@@ -188,8 +277,8 @@ mod tests {
     use super::*;
 
     /// `(contract text, kernel name, claim, op, dtypes of the F32 entry)` for each claimed op.
-    fn cases() -> [(&'static str, &'static str, Claim, OpKind, usize); 3] {
-        [
+    fn cases() -> Vec<(&'static str, &'static str, Claim, OpKind, usize)> {
+        let mut v = vec![
             (
                 include_str!("../../../kernel-contracts/cuda/gemm_dense.fkc.md"),
                 "matmul_f32",
@@ -211,7 +300,29 @@ mod tests {
                 OpKind::SoftmaxLastDim,
                 2,
             ),
-        ]
+        ];
+        let unary = include_str!("../../../kernel-contracts/cuda/unary.fkc.md");
+        let binary = include_str!("../../../kernel-contracts/cuda/binary.fkc.md");
+        v.extend(UNARY_CLAIMS.iter().map(|&(op, k, c)| (unary, k, c, op, 2)));
+        v.extend(
+            BINARY_CLAIMS
+                .iter()
+                .map(|&(op, k, c)| (binary, k, c, op, 3)),
+        );
+        v
+    }
+
+    /// Every claimed op has a measurement recipe and every recipe a claim: a spec added without
+    /// a claim would be measured against a panic, and a claim without a spec would never be
+    /// earned.
+    #[test]
+    fn specs_and_claims_cover_the_same_ops() {
+        let spec_ops: Vec<OpKind> = UNARY_SPECS.iter().map(|s| s.op).collect();
+        let claim_ops: Vec<OpKind> = UNARY_CLAIMS.iter().map(|c| c.0).collect();
+        assert_eq!(spec_ops, claim_ops, "unary");
+        let spec_ops: Vec<OpKind> = BINARY_SPECS.iter().map(|s| s.op).collect();
+        let claim_ops: Vec<OpKind> = BINARY_CLAIMS.iter().map(|c| c.0).collect();
+        assert_eq!(spec_ops, claim_ops, "binary");
     }
 
     /// The claim constants and their contract sections say the same numbers: a claim edited in
@@ -259,6 +370,9 @@ mod tests {
                 Some(claim.max_absolute),
                 "{kernel}"
             );
+            if kernel == "sign" {
+                continue; // F32-only op: there is no other-dtype section to keep audited
+            }
             let f16e = find_entry(&table, op, &vec![DType::F16; arity], BackendId::Cuda)
                 .unwrap_or_else(|e| panic!("{kernel} f16: {e:?}"));
             assert!(f16e.precision.bit_stable_on_same_hardware, "{kernel} f16");

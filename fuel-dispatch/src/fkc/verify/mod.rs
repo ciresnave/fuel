@@ -71,6 +71,8 @@
 mod accept_coverage;
 #[cfg(all(feature = "dev-tools", any(feature = "cuda", feature = "vulkan")))]
 mod accuracy_common;
+#[cfg(all(feature = "dev-tools", feature = "cuda"))]
+mod accuracy_elementwise;
 mod bit_stability;
 mod exact_ref;
 #[cfg(feature = "cuda")]
