@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.10 - 2026-10-24
+
+### Added
+
+- ROADMAP row 39: `fuel-dev-tools check-cuda-accuracy` now also measures the bf16 CUDA `FlashAttn` decode kernel (`flash_decoding`) against an f64 reference of the same bf16 inputs: worst 7.63e-4 absolute and relative on the RTX 4070 Laptop over the same 5 cases as f16 (f16 unchanged at 1.2e-4), inside the 1e-3 default bound by about 1.3x. One device and one shape set. Evidence only: no ledger record is written and no claim is earned. Hook-backed, not CI-backed (ROADMAP row 43)
+
 ## v0.25.9 - 2026-10-24
 
 ### Changed
