@@ -25,6 +25,7 @@ use fuel_ir::DType;
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 
+use super::accuracy_attention::{f16s, measure_flash_decoding};
 use super::accuracy_common::{
     Claim, OpAccuracy, f32s, find_entry, measure_matmul, measure_rms_norm, measure_softmax,
 };
@@ -215,6 +216,27 @@ pub(crate) fn measure_cuda_f32_accuracy() -> Result<(String, Vec<OpAccuracy>), V
     Ok((device_name(), ops))
 }
 
+/// The registered f16 CUDA `FlashAttn` decode kernel against the default placement bound.
+/// Evidence for `flash_decoding` only: no claim is earned, so `seed-cuda-accuracy` does not
+/// write it (`check-cuda-accuracy` prints and asserts it).
+fn measure_cuda_f16_attention() -> Result<OpAccuracy, VerifyError> {
+    use crate::ranker::filters::DEFAULT_ACCURACY_BOUND;
+    let mut table = KernelBindingTable::new();
+    crate::baracuda_dispatch::register_baracuda_cuda_kernels(&mut table);
+    let device =
+        CudaDevice::new(0).map_err(|e| VerifyError::Backend(format!("no CUDA device: {e}")))?;
+    let run = |entry: &BindingEntry, params: OpParams, inputs: &[HostTensor], shape: Vec<usize>| {
+        let inv = CudaInvoker::new(device.clone(), DType::F16, shape).with_params(params);
+        Ok(f16s(&inv.invoke(entry, inputs)?))
+    };
+    let entry = find_entry(&table, OpKind::FlashAttn, &[DType::F16; 4], BackendId::Cuda)?;
+    let bound = Claim {
+        max_relative: DEFAULT_ACCURACY_BOUND.max_relative,
+        max_absolute: DEFAULT_ACCURACY_BOUND.max_absolute,
+    };
+    measure_flash_decoding(&run, entry, bound)
+}
+
 fn records(name: &str, ops: &[OpAccuracy]) -> Vec<LedgerRecord> {
     ops.iter()
         .flat_map(|o| o.records(BACKEND, HARNESS, name))
@@ -285,8 +307,12 @@ pub(crate) fn run_seed_cuda_accuracy() {
 pub(crate) fn run_check_cuda_accuracy() {
     let (name, ops) = measure_cuda_f32_accuracy().expect("cuda f32 accuracy measurement runs");
     print_run(&name, &ops);
+    let attention =
+        vec![measure_cuda_f16_attention().expect("cuda f16 attention measurement runs")];
+    print_run(&name, &attention);
     let failing = records(&name, &ops)
         .into_iter()
+        .chain(records(&name, &attention))
         .filter(|r| r.result != "pass")
         .count();
     assert!(failing == 0, "{failing} measurement(s) exceed their claim");
