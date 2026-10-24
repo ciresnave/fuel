@@ -53,7 +53,7 @@ pub(crate) const DECODE_CASES: &[Geometry] = &[
 
 /// Round to `dtype` (F16 or BF16), as the kernel's input does, and return the bytes and the
 /// rounded values.
-fn to_half(dtype: DType, shape: Vec<usize>, vals: &[f32]) -> (HostTensor, Vec<f32>) {
+pub(crate) fn to_half(dtype: DType, shape: Vec<usize>, vals: &[f32]) -> (HostTensor, Vec<f32>) {
     let (bytes, rounded): (Vec<u8>, Vec<f32>) = if dtype == DType::BF16 {
         let h: Vec<bf16> = vals.iter().map(|&v| bf16::from_f32(v)).collect();
         (
