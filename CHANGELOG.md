@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.8 - 2026-10-24
+
+### Added
+
+- ROADMAP row 39: `verify/accuracy_attention.rs` measures the registered f16 CUDA `FlashAttn` decode kernel (`flash_decoding`) against an f64 reference of the same f16 inputs: worst 1.2e-4 absolute and relative on the RTX 4070 Laptop over 5 cases (GQA, `k_len < sk`), inside the 1e-3 default bound. Evidence only: no ledger record is written, no claim added. The live test is `#[ignore]` (run via `scripts/gpu-run.ps1`); `the_measurement_sees_a_perturbed_output` is the retained sabotage sibling
+
+### Changed
+
+- `flash-attn-cuda.fkc.md`: the `max_absolute: 0.001` of `flash-attn` and `flash-attn-varlen` is marked UNBACKED in comments. It cited `flash_attn_tests.rs` of the dissolved `fuel-flash-attn-cuda` crate, and neither contract binds a kernel (`fuel_flash_attn_cuda` is not a crate). No field changed
+
 ## v0.25.7 - 2026-10-24
 
 ### Changed
