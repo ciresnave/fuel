@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.24.5 - 2026-10-24
+
+### Changed
+
+- ROADMAP row 41a: `jit-synth` is back on a single seam copy: `baracuda-cuda-seam` `=0.1.0-alpha.2` (requires `fuel-kernel-seam{,-types}` ^0.24.0) replaces `=0.0.1-alpha.161` (^0.23.0). Control: `jit_synth_kernel_live` 6 of 6 in 3 of 3 default (parallel) runs on the RTX 4070. The next breaking bump of the seam crates needs another republish of that crate
+
 ## v0.24.4 - 2026-10-24
 
 ### Changed
