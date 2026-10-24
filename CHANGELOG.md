@@ -1,6 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.24.1 - 2026-10-24
+
+### Added
+
+- ROADMAP row 39: the CUDA f32 `RmsNormLastDim` (`rms_f32`) and `SoftmaxLastDim` (`softmax_f32`) carry earned numeric accuracy claims, `max_relative` = `max_absolute` = 1e-5 (measured worst 2.4e-7 abs / 1.6e-7 rel and 7.9e-8, over the decode and prefill shapes, RTX 4070 Laptop; ledger 1631 -> 1643: +4 accuracy records and +8 `bit_stable` passes at the re-keyed hashes). `norm.fkc.md` and `softmax.fkc.md` are split into an F32 section (carries the claim) and the F16/BF16/F64 section, as `gemm_dense.fkc.md` was in 0.23.2. `fuel-dev-tools seed-cuda-accuracy` / `check-cuda-accuracy` now cover MatMul, RmsNorm and Softmax
+- `verify/accuracy_common.rs` now holds the measurement functions, so the Vulkan and CUDA seeders run the same code through a `Runner` (the Vulkan numbers are unchanged: matmul 2.3e-4 / 8.8e-5, rms 2.3e-7, softmax 5.8e-8, rope 1.2e-7)
+
+### Fixed
+
+- The shared norm and softmax cases passed a flat `[rows * cols]` shape; the CUDA kernels take the row length from the last dimension of the layout, so every case with more than one row was normalised over the whole buffer (measured: softmax `rows=16 cols=22` abs error 0.67). They now pass `[rows, cols]`. Nothing was written to the ledger from the flat shape
+
 ## v0.24.0 - 2026-10-23
 
 ### Breaking

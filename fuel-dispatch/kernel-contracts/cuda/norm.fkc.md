@@ -22,7 +22,63 @@ per-OpKind CUDA cost fn); precision is the author-declared `audited: false` -> U
 
 ---
 
-## rms  (RmsNormLastDim - {F32, F16, BF16, F64}, strided+broadcast)
+## rms_f32  (RmsNormLastDim - F32, strided+broadcast; carries the numeric accuracy claim)
+
+RMSNorm over the last dim Backs `OpKind::RmsNormLastDim`. Stride-driven norm FFI; wrapper passes the input's true rank-N shape + strides. eps rides OpParams::NormLastDim. Output: fresh, contiguous, no aliasing.
+
+```fkc
+kernel: rms_f32
+op_kind: RmsNormLastDim
+blurb: "RMSNorm over the last dim (CUDA/baracuda) {F32, F16, BF16, F64}; strided+broadcast; per-(op,dtype)."
+backend: Cuda
+kernel_source: "baracuda"
+entry_point: "fuel_cuda_backend::fkc::rms_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: in
+      dtypes: [F32]
+      layout: { contiguous: accepted, strided: accepted, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "same_as=out"
+  op_params: { variant: NormLastDim }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(in)
+      shape_rule: same_as(in)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: handles_strided
+  fast_paths: []
+  in_place: false
+  alignment_bytes: 16
+  access_granularity_bits: 32
+
+cost:
+  provenance: judge_measured
+  class: cheap_elementwise
+  bytes_moved: "2 * n * dtype_bytes"
+  memory: { device_bytes: "n * dtype_bytes", host_bytes: 0, disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: 0.00001                 # MEASURED (row 39): worst 1.6e-7 over the decode/prefill shapes (rows up to 448, cols up to 8192); see the ledger evidence
+  max_absolute: 0.00001                 # MEASURED: worst 2.4e-7, uniform inputs, RTX 4070 Laptop (fuel-dev-tools seed-cuda-accuracy). Not evidence about other inputs, GPUs, or the F16/BF16/F64 sections
+  audited: true
+  notes: "baracuda_norm.cuh launch_rms_norm_fp dispatches between rms_norm_fp_kernel (legacy: one thread per output cell, serial per-thread sum-of-squares over the row in fixed j=0..norm_total_extent order, no cross-thread state) and rms_norm_smem_kernel (SMEM fast path: block_reduce_sum_f32/f64, a fixed warp-shuffle butterfly + cross-warp SMEM tree reduction, no atomics). Eligibility (contig last axis, contig outer stride, SMEM budget) is a pure function of rank/shape/stride/dtype computed host-side before launch, not a runtime occupancy heuristic — a fixed input shape always selects the same path and launch config (kBlock=256 is a compile-time constant in both). Bit-identical for bit-identical inputs on the same hardware. (LayerNormLastDim, this file's other section, is a separate kernel/audit — not covered by this claim.)"
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## rms  (RmsNormLastDim - {F16, BF16, F64}, strided+broadcast)
 
 RMSNorm over the last dim Backs `OpKind::RmsNormLastDim`. Stride-driven norm FFI; wrapper passes the input's true rank-N shape + strides. eps rides OpParams::NormLastDim. Output: fresh, contiguous, no aliasing.
 
@@ -38,7 +94,7 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: in
-      dtypes: [F32, F16, BF16, F64]
+      dtypes: [F16, BF16, F64]
       layout: { contiguous: accepted, strided: accepted, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_as=out"

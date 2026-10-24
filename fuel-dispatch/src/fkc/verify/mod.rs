@@ -83,10 +83,10 @@ mod invoker_vulkan;
 mod ledger;
 mod probe_recipes;
 pub(crate) mod seed_cpu_ledger;
+#[cfg(all(feature = "cuda", feature = "dev-tools"))]
+pub(crate) mod seed_cuda_accuracy;
 #[cfg(feature = "cuda")]
 pub(crate) mod seed_cuda_ledger;
-#[cfg(all(feature = "cuda", feature = "dev-tools"))]
-pub(crate) mod seed_cuda_matmul_accuracy;
 #[cfg(feature = "vulkan")]
 pub(crate) mod seed_vulkan_ledger;
 #[cfg(all(feature = "vulkan", feature = "dev-tools"))]

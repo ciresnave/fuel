@@ -31,13 +31,14 @@ use fuel_ir::probe::BackendId;
 use fuel_vulkan_backend::VulkanBackend;
 
 use super::accuracy_common::{
-    Claim, MATMUL_SHAPES, OpAccuracy, case, f32_tensor, f32s, find_entry, reference_matmul, scaled,
+    Claim, OpAccuracy, f32s, find_entry, measure_matmul, measure_rms_norm, measure_rope,
+    measure_softmax,
 };
 use super::bit_stability::{HostTensor, KernelInvoker, VerifyError};
 use super::invoker_cpu::CpuInvoker;
 use super::invoker_vulkan::VulkanInvoker;
 use super::ledger::LedgerRecord;
-use crate::kernel::{BindingEntry, KernelBindingTable, MatmulM, OpParams};
+use crate::kernel::{BindingEntry, KernelBindingTable, OpParams};
 
 /// The `backend` field of the records this module writes.
 const BACKEND: &str = "Vulkan";
@@ -65,37 +66,6 @@ pub(crate) const ROPE_F32_CLAIM: Claim = Claim {
     max_absolute: 1.0e-5,
 };
 
-/// `eps` the norm cases run with (the probe recipes' value).
-const NORM_EPS: f64 = 1.0e-5;
-
-/// `f64` host reference of RMS norm without affine: `x / sqrt(mean(x^2) + eps)` per row.
-fn reference_rms_norm(x: &[f32], rows: usize, cols: usize, eps: f64) -> Vec<f64> {
-    let mut out = vec![0f64; rows * cols];
-    for r in 0..rows {
-        let row = &x[r * cols..(r + 1) * cols];
-        let ms = row.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / cols as f64;
-        let inv = 1.0 / (ms + eps).sqrt();
-        for c in 0..cols {
-            out[r * cols + c] = row[c] as f64 * inv;
-        }
-    }
-    out
-}
-
-/// `f64` host reference of softmax along the last dim.
-fn reference_softmax(x: &[f32], rows: usize, cols: usize) -> Vec<f64> {
-    let mut out = vec![0f64; rows * cols];
-    for r in 0..rows {
-        let row = &x[r * cols..(r + 1) * cols];
-        let max = row.iter().fold(f64::NEG_INFINITY, |m, &v| m.max(v as f64));
-        let sum: f64 = row.iter().map(|&v| (v as f64 - max).exp()).sum();
-        for c in 0..cols {
-            out[r * cols + c] = (row[c] as f64 - max).exp() / sum;
-        }
-    }
-    out
-}
-
 /// Run `entry` on the Vulkan device with `inputs`/`params`, returning the f32 output.
 fn run_vulkan(
     backend: &Arc<VulkanBackend>,
@@ -106,216 +76,6 @@ fn run_vulkan(
 ) -> Result<Vec<f32>, VerifyError> {
     let inv = VulkanInvoker::new(backend.clone(), DType::F32, out_shape).with_params(params);
     Ok(f32s(&inv.invoke(entry, inputs)?))
-}
-
-/// `(rows, cols)` for the last-dim ops: decode rows (1 token, 16 q heads x head_dim 128),
-/// prefill rows (21 tokens), wide rows up to 4096.
-const NORM_SHAPES: &[(usize, usize)] = &[
-    (1, 1024),
-    (16, 1024),
-    (21, 1024),
-    (1, 3072),
-    (8, 128),
-    (16, 128),
-    (448, 128),
-    (1, 4096),
-    (32, 64),
-];
-
-/// `(rows, cols)` for softmax: attention rows over a growing KV length, and a wide row.
-const SOFTMAX_SHAPES: &[(usize, usize)] = &[
-    (1, 22),
-    (16, 22),
-    (16, 128),
-    (28, 1024),
-    (16, 2048),
-    (8, 4096),
-    (1, 8192),
-];
-
-/// `(outer, seq, head_dim)`: decode (seq 1), prefill (seq 21), and wider.
-const ROPE_SHAPES: &[(usize, usize, usize)] = &[
-    (16, 1, 128),
-    (8, 1, 128),
-    (16, 21, 128),
-    (1, 64, 128),
-    (4, 512, 64),
-];
-
-fn measure_matmul(
-    backend: &Arc<VulkanBackend>,
-    table: &KernelBindingTable,
-) -> Result<OpAccuracy, VerifyError> {
-    let dt = [DType::F32, DType::F32, DType::F32];
-    let entry = find_entry(table, OpKind::MatMul, &dt, BackendId::Vulkan)?;
-    let mut cases = Vec::new();
-    for (idx, &(m, n, k)) in MATMUL_SHAPES.iter().enumerate() {
-        let a = scaled(m * k, 0x1000 + idx as u64, 1.0);
-        let w = scaled(k * n, 0x2000 + idx as u64, 1.0);
-        let params = OpParams::Matmul {
-            lhs_batch_dims: vec![],
-            rhs_batch_dims: vec![],
-            m,
-            n,
-            k,
-            m_compute: MatmulM::All,
-        };
-        let got = run_vulkan(
-            backend,
-            entry,
-            params,
-            &[f32_tensor(vec![m, k], &a), f32_tensor(vec![k, n], &w)],
-            vec![m, n],
-        )?;
-        let want = reference_matmul(&a, &w, m, n, k);
-        cases.push(case(format!("m={m} n={n} k={k}"), &got, &want));
-    }
-    Ok(OpAccuracy::new(
-        OpKind::MatMul,
-        &dt,
-        MATMUL_F32_CLAIM,
-        entry,
-        cases,
-        "f64 host matmul of the same f32 inputs",
-        "uniform [-1, 1)",
-    ))
-}
-
-fn measure_rms_norm(
-    backend: &Arc<VulkanBackend>,
-    table: &KernelBindingTable,
-) -> Result<OpAccuracy, VerifyError> {
-    let dt = [DType::F32, DType::F32];
-    let entry = find_entry(table, OpKind::RmsNormLastDim, &dt, BackendId::Vulkan)?;
-    let mut cases = Vec::new();
-    for (idx, &(rows, cols)) in NORM_SHAPES.iter().enumerate() {
-        let x = scaled(rows * cols, 0x3000 + idx as u64, 2.0);
-        let params = OpParams::NormLastDim {
-            outer_count: rows,
-            last_dim: cols,
-            eps: NORM_EPS,
-        };
-        let got = run_vulkan(
-            backend,
-            entry,
-            params,
-            &[f32_tensor(vec![rows * cols], &x)],
-            vec![rows * cols],
-        )?;
-        let want = reference_rms_norm(&x, rows, cols, NORM_EPS);
-        cases.push(case(format!("rows={rows} cols={cols}"), &got, &want));
-    }
-    Ok(OpAccuracy::new(
-        OpKind::RmsNormLastDim,
-        &dt,
-        RMS_NORM_F32_CLAIM,
-        entry,
-        cases,
-        "f64 host x / sqrt(mean(x^2) + eps)",
-        "uniform [-2, 2)",
-    ))
-}
-
-fn measure_softmax(
-    backend: &Arc<VulkanBackend>,
-    table: &KernelBindingTable,
-) -> Result<OpAccuracy, VerifyError> {
-    let dt = [DType::F32, DType::F32];
-    let entry = find_entry(table, OpKind::SoftmaxLastDim, &dt, BackendId::Vulkan)?;
-    let mut cases = Vec::new();
-    for (idx, &(rows, cols)) in SOFTMAX_SHAPES.iter().enumerate() {
-        let x = scaled(rows * cols, 0x4000 + idx as u64, 4.0);
-        let params = OpParams::SoftmaxLastDim {
-            outer_count: rows,
-            last_dim: cols,
-        };
-        let got = run_vulkan(
-            backend,
-            entry,
-            params,
-            &[f32_tensor(vec![rows * cols], &x)],
-            vec![rows * cols],
-        )?;
-        let want = reference_softmax(&x, rows, cols);
-        cases.push(case(format!("rows={rows} cols={cols}"), &got, &want));
-    }
-    Ok(OpAccuracy::new(
-        OpKind::SoftmaxLastDim,
-        &dt,
-        SOFTMAX_F32_CLAIM,
-        entry,
-        cases,
-        "f64 host exp(x - max) / sum",
-        "uniform [-4, 4)",
-    ))
-}
-
-/// `cos`/`sin` tables `[seq, head_dim]` with the rotate-half layout (the angle repeats over
-/// the two halves), position `p`, frequency `10000^(-2j / head_dim)`.
-fn rope_tables(seq: usize, hd: usize) -> (Vec<f32>, Vec<f32>) {
-    let half = hd / 2;
-    let mut cos = vec![0f32; seq * hd];
-    let mut sin = vec![0f32; seq * hd];
-    for p in 0..seq {
-        for j in 0..hd {
-            let freq = 10_000f64.powf(-2.0 * (j % half) as f64 / hd as f64);
-            let theta = p as f64 * freq;
-            cos[p * hd + j] = theta.cos() as f32;
-            sin[p * hd + j] = theta.sin() as f32;
-        }
-    }
-    (cos, sin)
-}
-
-fn measure_rope(
-    backend: &Arc<VulkanBackend>,
-    table: &KernelBindingTable,
-    cpu_table: &KernelBindingTable,
-) -> Result<OpAccuracy, VerifyError> {
-    let dt = [DType::F32, DType::F32, DType::F32, DType::F32];
-    let entry = find_entry(table, OpKind::Rope, &dt, BackendId::Vulkan)?;
-    let cpu_entry = find_entry(cpu_table, OpKind::Rope, &dt, BackendId::Cpu)?;
-    let mut cases = Vec::new();
-    for (idx, &(outer, seq, hd)) in ROPE_SHAPES.iter().enumerate() {
-        let x = scaled(outer * seq * hd, 0x5000 + idx as u64, 1.0);
-        let (cos, sin) = rope_tables(seq, hd);
-        let inputs = [
-            f32_tensor(vec![outer, seq, hd], &x),
-            f32_tensor(vec![seq, hd], &cos),
-            f32_tensor(vec![seq, hd], &sin),
-        ];
-        let params = OpParams::Rope {
-            outer_count: outer,
-            seq,
-            head_dim: hd,
-        };
-        let got = run_vulkan(
-            backend,
-            entry,
-            params.clone(),
-            &inputs,
-            vec![outer, seq, hd],
-        )?;
-        let cpu = CpuInvoker::new(DType::F32, vec![outer, seq, hd]).with_params(params);
-        let want: Vec<f64> = f32s(&cpu.invoke(cpu_entry, &inputs)?)
-            .into_iter()
-            .map(f64::from)
-            .collect();
-        cases.push(case(
-            format!("outer={outer} seq={seq} hd={hd}"),
-            &got,
-            &want,
-        ));
-    }
-    Ok(OpAccuracy::new(
-        OpKind::Rope,
-        &dt,
-        ROPE_F32_CLAIM,
-        entry,
-        cases,
-        "registered portable-cpu Rope kernel (f32)",
-        "x uniform [-1, 1); cos/sin of position * 10000^(-2j/hd)",
-    ))
 }
 
 /// Everything one run measured.
@@ -346,11 +106,38 @@ pub(crate) fn measure_vulkan_f32_accuracy(
         .map(Arc::new)
         .map_err(|e| VerifyError::Backend(format!("no Vulkan device: {e}")))?;
     let device_name = backend.device_name.clone();
+    let run = |entry: &BindingEntry, params: OpParams, inputs: &[HostTensor], shape: Vec<usize>| {
+        run_vulkan(&backend, entry, params, inputs, shape)
+    };
+    let rope_dt = [DType::F32; 4];
+    let cpu_rope = find_entry(&cpu_table, OpKind::Rope, &rope_dt, BackendId::Cpu)?;
+    let cpu_reference = |params: OpParams, inputs: &[HostTensor], shape: Vec<usize>| {
+        let cpu = CpuInvoker::new(DType::F32, shape).with_params(params);
+        Ok(f32s(&cpu.invoke(cpu_rope, inputs)?))
+    };
+    let entry = |op: OpKind, dt: &[DType]| find_entry(&table, op, dt, BackendId::Vulkan);
     let ops = vec![
-        measure_matmul(&backend, &table)?,
-        measure_rms_norm(&backend, &table)?,
-        measure_softmax(&backend, &table)?,
-        measure_rope(&backend, &table, &cpu_table)?,
+        measure_matmul(
+            &run,
+            entry(OpKind::MatMul, &[DType::F32; 3])?,
+            MATMUL_F32_CLAIM,
+        )?,
+        measure_rms_norm(
+            &run,
+            entry(OpKind::RmsNormLastDim, &[DType::F32; 2])?,
+            RMS_NORM_F32_CLAIM,
+        )?,
+        measure_softmax(
+            &run,
+            entry(OpKind::SoftmaxLastDim, &[DType::F32; 2])?,
+            SOFTMAX_F32_CLAIM,
+        )?,
+        measure_rope(
+            &run,
+            &cpu_reference,
+            entry(OpKind::Rope, &rope_dt)?,
+            ROPE_F32_CLAIM,
+        )?,
     ];
     Ok(AccuracyRun { device_name, ops })
 }
@@ -449,29 +236,6 @@ mod tests {
         got[1] += 0.01;
         let (abs, rel) = worst_error(&got, &want);
         assert!(abs > MATMUL_F32_CLAIM.max_absolute || rel > MATMUL_F32_CLAIM.max_relative);
-    }
-
-    #[test]
-    fn reference_matmul_matches_a_hand_computed_product() {
-        // [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]]
-        let r = reference_matmul(&[1.0, 2.0, 3.0, 4.0], &[5.0, 6.0, 7.0, 8.0], 2, 2, 2);
-        assert_eq!(r, vec![19.0, 22.0, 43.0, 50.0]);
-    }
-
-    #[test]
-    fn reference_rms_norm_matches_a_hand_computed_row() {
-        // row [3, 4]: mean(x^2) = 12.5; eps 0 -> x / sqrt(12.5)
-        let r = reference_rms_norm(&[3.0, 4.0], 1, 2, 0.0);
-        let inv = 1.0 / 12.5f64.sqrt();
-        assert!((r[0] - 3.0 * inv).abs() < 1e-12 && (r[1] - 4.0 * inv).abs() < 1e-12);
-    }
-
-    #[test]
-    fn reference_softmax_matches_a_hand_computed_row() {
-        // row [0, ln 3]: probabilities 1/4 and 3/4
-        let r = reference_softmax(&[0.0, 3f32.ln()], 1, 2);
-        assert!((r[0] - 0.25).abs() < 1e-6 && (r[1] - 0.75).abs() < 1e-6);
-        assert!((r.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
 
     /// Each claim constant and its contract section say the same numbers: a claim edited in one
