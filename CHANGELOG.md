@@ -1,6 +1,11 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.25.14 - 2026-10-24
+
+### Changed
+
+- Changelog/ROADMAP text only (spec-to-roadmap audit, PM task): ROADMAP rows 44-100 record work that about 180 design docs describe and the roadmap did not carry, each marked open/held/done with its source; the roadmap's claims that `hopfield_retrieve` and the early-exit step driver are on main are corrected (both were deleted in B6, 50f0a41c3; row 45). No code, contract or ledger change
 ## v0.25.13 - 2026-10-24
 
 ### Added
