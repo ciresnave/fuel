@@ -2179,6 +2179,7 @@ dependencies = [
  "fuel-formats",
  "fuel-ir",
  "fuel-quantized",
+ "fuel-test-support",
  "memmap2",
  "mlmf-awq",
  "mlmf-core",

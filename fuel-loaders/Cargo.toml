@@ -25,7 +25,8 @@
     mlmf-source-file = { version = "0.5.11" }
 
 # MLMF move slice A (docs/design-notes/2026-10-24-mlmf-move-survey.md): AWQ config parse and
-# packed-layer discovery over a safetensors directory. Format crates only; no I/O in either.
+# packed-layer discovery over a safetensors directory. Slice B: the safetensors header and tensor
+# directory. Format crates only; no I/O in either.
     mlmf-awq         = { version = "0.5.11" }
     mlmf-safetensors = { version = "0.5.11" }
 
@@ -46,3 +47,4 @@
 [dev-dependencies]
     byteorder = { workspace = true }
     tempfile  = { workspace = true }
+    fuel-test-support = { path = "../fuel-test-support" }
