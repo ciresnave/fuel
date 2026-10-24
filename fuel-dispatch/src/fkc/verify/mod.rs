@@ -69,7 +69,7 @@
 //! cos/sin tables).
 
 mod accept_coverage;
-#[cfg(all(test, feature = "dev-tools", feature = "cuda"))]
+#[cfg(all(feature = "dev-tools", feature = "cuda"))]
 mod accuracy_attention;
 #[cfg(all(feature = "dev-tools", any(feature = "cuda", feature = "vulkan")))]
 mod accuracy_common;

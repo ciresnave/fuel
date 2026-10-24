@@ -2,9 +2,9 @@
 //! Measures the registered CUDA `FlashAttn` decode kernel (`flash_decoding`, f16) against an
 //! `f64` host attention of the same f16 inputs (ROADMAP row 39).
 //!
-//! (Compiled for tests only: nothing outside them uses it.)
-//!
-//! This is evidence, not a claim: nothing here writes the ledger. It replaces the test the
+//! This is evidence, not a claim: nothing here writes the ledger. The live run is
+//! `fuel-dev-tools check-cuda-accuracy` (a `#[ignore]`d test would breach the ignore ceiling, and
+//! a CUDA `skip` outside one breaches `skip_sites_are_opt_in`). It replaces the test the
 //! `flash-attn` contract cites for its `max_absolute: 0.001` (`flash_attn_tests.rs`, which lived
 //! in the dissolved `fuel-flash-attn-cuda` crate and exists nowhere now). The dense `flash-attn`
 //! and `flash-attn-varlen` contracts bind no kernel (their `fuel_flash_attn_cuda` link registry
@@ -19,14 +19,36 @@ use super::accuracy_common::{Claim, OpAccuracy, Runner, case, scaled};
 use super::bit_stability::{HostTensor, VerifyError};
 use crate::kernel::{BindingEntry, OpParams};
 
-/// `(b, hq, hkv, sk, d, k_len)` of each measured decode case. `k_len < sk` is the live prefix of
-/// a capacity-`sk` cache; `hq != hkv` is grouped-query attention.
-pub(crate) const DECODE_CASES: &[(usize, usize, usize, usize, usize, usize)] = &[
-    (1, 16, 8, 512, 128, 512),
-    (1, 16, 8, 512, 128, 300),
-    (2, 8, 2, 64, 64, 64),
-    (1, 4, 4, 33, 32, 17),
-    (1, 8, 8, 2048, 128, 2048),
+/// Geometry of one decode case. `k_len < sk` is the live prefix of a capacity-`sk` cache;
+/// `hq != hkv` is grouped-query attention.
+#[derive(Clone, Copy)]
+pub(crate) struct Geometry {
+    pub b: usize,
+    pub hq: usize,
+    pub hkv: usize,
+    pub sk: usize,
+    pub d: usize,
+    pub k_len: usize,
+}
+
+const fn geo(b: usize, hq: usize, hkv: usize, sk: usize, d: usize, k_len: usize) -> Geometry {
+    Geometry {
+        b,
+        hq,
+        hkv,
+        sk,
+        d,
+        k_len,
+    }
+}
+
+/// The measured decode cases.
+pub(crate) const DECODE_CASES: &[Geometry] = &[
+    geo(1, 16, 8, 512, 128, 512),
+    geo(1, 16, 8, 512, 128, 300),
+    geo(2, 8, 2, 64, 64, 64),
+    geo(1, 4, 4, 33, 32, 17),
+    geo(1, 8, 8, 2048, 128, 2048),
 ];
 
 /// Round to f16, as the kernel's input does, and return the bytes and the rounded values.
@@ -85,11 +107,18 @@ fn attend_head(
 /// query head `h` reading kv head `h / (hq / hkv)`. Returns `[b, hq, d]`.
 pub(crate) fn reference_decode(
     q: &[f32],
-    k: &[f32],
-    v: &[f32],
-    (b, hq, hkv, sk, d, k_len): (usize, usize, usize, usize, usize, usize),
+    (k, v): (&[f32], &[f32]),
+    g: Geometry,
     scale: f64,
 ) -> Vec<f64> {
+    let Geometry {
+        b,
+        hq,
+        hkv,
+        sk,
+        d,
+        k_len,
+    } = g;
     let group = hq / hkv;
     let mut out = vec![0.0; b * hq * d];
     for (row, cell) in out.chunks_exact_mut(d).enumerate() {
@@ -108,8 +137,15 @@ pub(crate) fn measure_flash_decoding(
     claim: Claim,
 ) -> Result<OpAccuracy, VerifyError> {
     let mut cases = Vec::new();
-    for (idx, &c) in DECODE_CASES.iter().enumerate() {
-        let (b, hq, hkv, sk, d, k_len) = c;
+    for (idx, &g) in DECODE_CASES.iter().enumerate() {
+        let Geometry {
+            b,
+            hq,
+            hkv,
+            sk,
+            d,
+            k_len,
+        } = g;
         let seed = 0xA000 + idx as u64 * 3;
         let (qt, q) = to_f16(vec![b, hq, 1, d], &scaled(b * hq * d, seed, 1.0));
         let kv_len = b * hkv * sk * d;
@@ -131,7 +167,7 @@ pub(crate) fn measure_flash_decoding(
             softcap: None,
         };
         let got = run(entry, params, &[qt, kt, vt], vec![b, hq, 1, d])?;
-        let want = reference_decode(&q, &k, &v, c, scale);
+        let want = reference_decode(&q, (&k, &v), g, scale);
         cases.push(case(
             format!("b={b} hq={hq} hkv={hkv} sk={sk} d={d} k_len={k_len}"),
             &got,
@@ -153,10 +189,7 @@ pub(crate) fn measure_flash_decoding(
 mod tests {
     use super::*;
     use crate::fkc::verify::accuracy_common::find_entry;
-    use crate::fkc::verify::bit_stability::KernelInvoker;
-    use crate::fkc::verify::invoker_cuda::CudaInvoker;
     use crate::kernel::KernelBindingTable;
-    use fuel_cuda_backend::CudaDevice;
     use fuel_ir::probe::BackendId;
 
     /// The default placement bound; the contract's `flash-attn` section declares the same number.
@@ -178,7 +211,7 @@ mod tests {
         let q = [0.0, 0.0];
         let k = [0.0, 0.0, 9.0];
         let v = [2.0, 4.0, 1000.0];
-        let out = reference_decode(&q, &k, &v, (1, 2, 1, 3, 1, 2), 1.0);
+        let out = reference_decode(&q, (&k, &v), geo(1, 2, 1, 3, 1, 2), 1.0);
         assert_eq!(out, [3.0, 3.0]);
     }
 
@@ -211,11 +244,15 @@ mod tests {
                     panic!("flash params expected");
                 };
                 let [q, k, v] = [0, 1, 2].map(|i| f16s(&ins[i]));
-                let mut out: Vec<f32> =
-                    reference_decode(&q, &k, &v, (b, hq, hkv, sk, d, k_len), softmax_scale as f64)
-                        .into_iter()
-                        .map(|x| f16::from_f64(x).to_f32())
-                        .collect();
+                let mut out: Vec<f32> = reference_decode(
+                    &q,
+                    (&k, &v),
+                    geo(b, hq, hkv, sk, d, k_len),
+                    softmax_scale as f64,
+                )
+                .into_iter()
+                .map(|x| f16::from_f64(x).to_f32())
+                .collect();
                 out[0] += perturb;
                 Ok(out)
             }
@@ -228,35 +265,5 @@ mod tests {
         );
         let off = measure_flash_decoding(&host(0.5), entry, BOUND).expect("measures");
         assert!(off.worst_abs >= 0.4, "perturbation seen: {}", off.worst_abs);
-    }
-
-    /// Live: the registered f16 decode kernel against the `f64` reference, within the default
-    /// bound. Needs a CUDA device and the `gpu-run` lock; skips (fatal under the hardware policy) without a device.
-    #[test]
-    fn flash_decoding_f16_is_within_the_default_bound() {
-        fuel_test_support::require_gpu_run_lock();
-        let Ok(device) = CudaDevice::new(0) else {
-            return fuel_test_support::hardware::skip(
-                fuel_test_support::hardware::Hardware::Cuda,
-                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
-            );
-        };
-        let table = entry_table();
-        let entry = find_entry(&table, OpKind::FlashAttn, &[DType::F16; 4], BackendId::Cuda)
-            .expect("f16 flash_decoding entry");
-        let run = |e: &BindingEntry, p: OpParams, ins: &[HostTensor], shape: Vec<usize>| {
-            let inv = CudaInvoker::new(device.clone(), DType::F16, shape).with_params(p);
-            Ok(f16s(&inv.invoke(e, ins)?))
-        };
-        let m = measure_flash_decoding(&run, entry, BOUND).expect("measures");
-        for c in &m.cases {
-            println!("[attn] {:48} abs {:.3e} rel {:.3e}", c.label, c.abs, c.rel);
-        }
-        println!(
-            "[attn] WORST abs {:.3e} rel {:.3e}",
-            m.worst_abs, m.worst_rel
-        );
-        assert!(m.worst_abs <= BOUND.max_absolute, "abs {}", m.worst_abs);
-        assert!(m.worst_rel <= BOUND.max_relative, "rel {}", m.worst_rel);
     }
 }
