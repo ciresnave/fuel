@@ -21,7 +21,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Added
 
-- ROADMAP row 39: the CUDA f32 axis reductions carry earned numeric accuracy claims (RTX 4070 Laptop; ledger 1819 -> 1843 records: 8 accuracy records and the first `bit_stable` passes of all 16 reduce entries). `max` and `min` claim 0 (measured exact), `mean` 1e-5 relative and absolute (measured worst 7.5e-8), `sum` 1e-4 relative and absolute (measured worst 4.3e-5 absolute, 3.2e-6 relative, over 65536-element rows). `reduce.fkc.md` is split into an F32 section per op (carries the claim) and the F16/BF16/F64 remainder. The claims hold only over the measured inputs (uniform [-1, 1)) and the nine layouts in `verify/accuracy_reduce.rs` (last, first and middle axis, several axes, full reduction, with and without `keepdim`); `the_measurement_sees_a_perturbed_output` there is the retained sabotage sibling. The claim is hook-backed, not CI-backed until ROADMAP row 43 (run it on the self-hosted GPU runner)
+- ROADMAP row 39: the CUDA f32 axis reductions carry earned numeric accuracy claims (RTX 4070 Laptop; ledger 1819 -> 1843 records: 8 accuracy records and the first `bit_stable` passes of all 16 reduce entries). `max` and `min` claim 0 (measured exact), `mean` 1e-5 relative and absolute (measured worst 7.5e-8), `sum` 1e-4 relative and absolute (measured worst 4.3e-5 absolute, 3.2e-6 relative, over 65536-element rows). `reduce.fkc.md` is split into an F32 section per op (carries the claim) and the F16/BF16/F64 remainder. The claims hold only over the measured inputs (uniform [-1, 1)) and the nine layouts in `verify/accuracy_reduce.rs` (last, first and middle axis, several axes, full reduction, with and without `keepdim`); `the_measurement_sees_a_perturbed_output` there is the retained sabotage sibling
 
 ## v0.25.4 - 2026-10-24
 
@@ -34,7 +34,7 @@ This documents the main changes to the `fuel` workspace.
 ### Added
 
 - ROADMAP row 39: the 22 CUDA f32 elementwise unary kernels and the 8 binary ones carry earned numeric accuracy claims (measured on the RTX 4070 Laptop; ledger 1643 -> 1819 records). The exact ops (`neg`, `abs`, `relu`, `step`, `sign`, `floor`, `ceil`, `round`, `maximum`, `minimum`) claim 0; the rest claim 1e-5 relative and absolute, except `exp_f32` at 1e-5 relative and 1e-4 absolute (its results reach 148; measured abs 1.8e-5). Every claim is inside `DEFAULT_ACCURACY_BOUND`. `unary.fkc.md` and `binary.fkc.md` are split into an F32 section per op (carries the claim) and the F16/BF16/F64 remainder, as `norm.fkc.md` was in 0.24.1
-- The claims hold only over the measured inputs: `exp` over [-10, 5), `pow` with base [0.5, 4) and exponent [-3, 3), shapes (1,1) (1,1000) (1,3072) (448,1024) (4,8192) plus edge values. `verify/accuracy_elementwise.rs` holds the specs and f64 references; `the_measurement_sees_a_perturbed_output` is the retained sabotage sibling. The claim is hook-backed, not CI-backed until ROADMAP row 43 (run it on the self-hosted GPU runner)
+- The claims hold only over the measured inputs: `exp` over [-10, 5), `pow` with base [0.5, 4) and exponent [-3, 3), shapes (1,1) (1,1000) (1,3072) (448,1024) (4,8192) plus edge values. `verify/accuracy_elementwise.rs` holds the specs and f64 references; `the_measurement_sees_a_perturbed_output` is the retained sabotage sibling
 - `seed_cuda_ledger` builds `bit_stable` probes for `PowElementwise` and `RemElementwise`, so their F32 entries earn `bit_stable` passes
 
 ## v0.25.1 - 2026-10-24
