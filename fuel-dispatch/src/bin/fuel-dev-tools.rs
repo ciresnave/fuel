@@ -17,7 +17,7 @@ fn main() {
         #[cfg(feature = "cuda")]
         "seed-cuda" => dev_tools::seed_cuda_ledger(),
         #[cfg(feature = "cuda")]
-        "seed-cuda-accuracy" => dev_tools::seed_cuda_matmul_accuracy(),
+        "seed-cuda-accuracy" => dev_tools::seed_cuda_accuracy(),
         #[cfg(feature = "cuda")]
         "check-cuda-accuracy" => dev_tools::check_cuda_accuracy(),
         #[cfg(feature = "vulkan")]

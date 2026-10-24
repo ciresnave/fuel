@@ -11,7 +11,7 @@ use fuel_ir::probe::BackendId;
 
 use super::bit_stability::{HostTensor, VerifyError, fill_deterministic};
 use super::ledger::LedgerRecord;
-use crate::kernel::{BindingEntry, KernelBindingTable};
+use crate::kernel::{BindingEntry, KernelBindingTable, MatmulM, OpParams};
 
 /// A declared claim: ceilings on the kernel's `max_relative` and `max_absolute`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -203,4 +203,271 @@ pub(crate) fn verified_at_string() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("epoch:{secs}")
+}
+
+/// Runs a registered kernel on a device: `(entry, params, inputs, out_shape) -> f32 output`.
+pub(crate) type Runner<'a> = dyn Fn(&BindingEntry, OpParams, &[HostTensor], Vec<usize>) -> Result<Vec<f32>, VerifyError>
+    + 'a;
+
+/// The reference a kernel is compared with when no `f64` host formula exists:
+/// `(params, inputs, out_shape) -> f32 output`.
+pub(crate) type Reference<'a> =
+    dyn Fn(OpParams, &[HostTensor], Vec<usize>) -> Result<Vec<f32>, VerifyError> + 'a;
+
+/// `eps` the norm cases run with (the probe recipes' value).
+pub(crate) const NORM_EPS: f64 = 1.0e-5;
+
+/// `f64` host reference of RMS norm without affine: `x / sqrt(mean(x^2) + eps)` per row.
+pub(crate) fn reference_rms_norm(x: &[f32], rows: usize, cols: usize, eps: f64) -> Vec<f64> {
+    let mut out = vec![0f64; rows * cols];
+    for r in 0..rows {
+        let row = &x[r * cols..(r + 1) * cols];
+        let ms = row.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / cols as f64;
+        let inv = 1.0 / (ms + eps).sqrt();
+        for c in 0..cols {
+            out[r * cols + c] = row[c] as f64 * inv;
+        }
+    }
+    out
+}
+
+/// `f64` host reference of softmax along the last dim.
+pub(crate) fn reference_softmax(x: &[f32], rows: usize, cols: usize) -> Vec<f64> {
+    let mut out = vec![0f64; rows * cols];
+    for r in 0..rows {
+        let row = &x[r * cols..(r + 1) * cols];
+        let max = row.iter().fold(f64::NEG_INFINITY, |m, &v| m.max(v as f64));
+        let sum: f64 = row.iter().map(|&v| (v as f64 - max).exp()).sum();
+        for c in 0..cols {
+            out[r * cols + c] = (row[c] as f64 - max).exp() / sum;
+        }
+    }
+    out
+}
+
+/// `(rows, cols)` for the last-dim ops: decode rows (1 token, 16 q heads x head_dim 128),
+/// prefill rows (21 tokens), wide rows up to 4096.
+pub(crate) const NORM_SHAPES: &[(usize, usize)] = &[
+    (1, 1024),
+    (16, 1024),
+    (21, 1024),
+    (1, 3072),
+    (8, 128),
+    (16, 128),
+    (448, 128),
+    (1, 4096),
+    (32, 64),
+];
+
+/// `(rows, cols)` for softmax: attention rows over a growing KV length, and a wide row.
+pub(crate) const SOFTMAX_SHAPES: &[(usize, usize)] = &[
+    (1, 22),
+    (16, 22),
+    (16, 128),
+    (28, 1024),
+    (16, 2048),
+    (8, 4096),
+    (1, 8192),
+];
+
+/// `(outer, seq, head_dim)`: decode (seq 1), prefill (seq 21), and wider.
+pub(crate) const ROPE_SHAPES: &[(usize, usize, usize)] = &[
+    (16, 1, 128),
+    (8, 1, 128),
+    (16, 21, 128),
+    (1, 64, 128),
+    (4, 512, 64),
+];
+
+pub(crate) fn measure_matmul(
+    run: &Runner,
+    entry: &BindingEntry,
+    claim: Claim,
+) -> Result<OpAccuracy, VerifyError> {
+    let dt = [DType::F32, DType::F32, DType::F32];
+    let mut cases = Vec::new();
+    for (idx, &(m, n, k)) in MATMUL_SHAPES.iter().enumerate() {
+        let a = scaled(m * k, 0x1000 + idx as u64, 1.0);
+        let w = scaled(k * n, 0x2000 + idx as u64, 1.0);
+        let params = OpParams::Matmul {
+            lhs_batch_dims: vec![],
+            rhs_batch_dims: vec![],
+            m,
+            n,
+            k,
+            m_compute: MatmulM::All,
+        };
+        let got = run(
+            entry,
+            params,
+            &[f32_tensor(vec![m, k], &a), f32_tensor(vec![k, n], &w)],
+            vec![m, n],
+        )?;
+        let want = reference_matmul(&a, &w, m, n, k);
+        cases.push(case(format!("m={m} n={n} k={k}"), &got, &want));
+    }
+    Ok(OpAccuracy::new(
+        OpKind::MatMul,
+        &dt,
+        claim,
+        entry,
+        cases,
+        "f64 host matmul of the same f32 inputs",
+        "uniform [-1, 1)",
+    ))
+}
+
+pub(crate) fn measure_rms_norm(
+    run: &Runner,
+    entry: &BindingEntry,
+    claim: Claim,
+) -> Result<OpAccuracy, VerifyError> {
+    let dt = [DType::F32, DType::F32];
+    let mut cases = Vec::new();
+    for (idx, &(rows, cols)) in NORM_SHAPES.iter().enumerate() {
+        let x = scaled(rows * cols, 0x3000 + idx as u64, 2.0);
+        let params = OpParams::NormLastDim {
+            outer_count: rows,
+            last_dim: cols,
+            eps: NORM_EPS,
+        };
+        let got = run(
+            entry,
+            params,
+            &[f32_tensor(vec![rows, cols], &x)],
+            vec![rows, cols],
+        )?;
+        let want = reference_rms_norm(&x, rows, cols, NORM_EPS);
+        cases.push(case(format!("rows={rows} cols={cols}"), &got, &want));
+    }
+    Ok(OpAccuracy::new(
+        OpKind::RmsNormLastDim,
+        &dt,
+        claim,
+        entry,
+        cases,
+        "f64 host x / sqrt(mean(x^2) + eps)",
+        "uniform [-2, 2)",
+    ))
+}
+
+pub(crate) fn measure_softmax(
+    run: &Runner,
+    entry: &BindingEntry,
+    claim: Claim,
+) -> Result<OpAccuracy, VerifyError> {
+    let dt = [DType::F32, DType::F32];
+    let mut cases = Vec::new();
+    for (idx, &(rows, cols)) in SOFTMAX_SHAPES.iter().enumerate() {
+        let x = scaled(rows * cols, 0x4000 + idx as u64, 4.0);
+        let params = OpParams::SoftmaxLastDim {
+            outer_count: rows,
+            last_dim: cols,
+        };
+        let got = run(
+            entry,
+            params,
+            &[f32_tensor(vec![rows, cols], &x)],
+            vec![rows, cols],
+        )?;
+        let want = reference_softmax(&x, rows, cols);
+        cases.push(case(format!("rows={rows} cols={cols}"), &got, &want));
+    }
+    Ok(OpAccuracy::new(
+        OpKind::SoftmaxLastDim,
+        &dt,
+        claim,
+        entry,
+        cases,
+        "f64 host exp(x - max) / sum",
+        "uniform [-4, 4)",
+    ))
+}
+
+/// `cos`/`sin` tables `[seq, head_dim]` with the rotate-half layout (the angle repeats over
+/// the two halves), position `p`, frequency `10000^(-2j / head_dim)`.
+pub(crate) fn rope_tables(seq: usize, hd: usize) -> (Vec<f32>, Vec<f32>) {
+    let half = hd / 2;
+    let mut cos = vec![0f32; seq * hd];
+    let mut sin = vec![0f32; seq * hd];
+    for p in 0..seq {
+        for j in 0..hd {
+            let freq = 10_000f64.powf(-2.0 * (j % half) as f64 / hd as f64);
+            let theta = p as f64 * freq;
+            cos[p * hd + j] = theta.cos() as f32;
+            sin[p * hd + j] = theta.sin() as f32;
+        }
+    }
+    (cos, sin)
+}
+
+pub(crate) fn measure_rope(
+    run: &Runner,
+    reference: &Reference,
+    entry: &BindingEntry,
+    claim: Claim,
+) -> Result<OpAccuracy, VerifyError> {
+    let dt = [DType::F32, DType::F32, DType::F32, DType::F32];
+    let mut cases = Vec::new();
+    for (idx, &(outer, seq, hd)) in ROPE_SHAPES.iter().enumerate() {
+        let x = scaled(outer * seq * hd, 0x5000 + idx as u64, 1.0);
+        let (cos, sin) = rope_tables(seq, hd);
+        let inputs = [
+            f32_tensor(vec![outer, seq, hd], &x),
+            f32_tensor(vec![seq, hd], &cos),
+            f32_tensor(vec![seq, hd], &sin),
+        ];
+        let params = OpParams::Rope {
+            outer_count: outer,
+            seq,
+            head_dim: hd,
+        };
+        let got = run(entry, params.clone(), &inputs, vec![outer, seq, hd])?;
+        let want: Vec<f64> = reference(params, &inputs, vec![outer, seq, hd])?
+            .into_iter()
+            .map(f64::from)
+            .collect();
+        cases.push(case(
+            format!("outer={outer} seq={seq} hd={hd}"),
+            &got,
+            &want,
+        ));
+    }
+    Ok(OpAccuracy::new(
+        OpKind::Rope,
+        &dt,
+        claim,
+        entry,
+        cases,
+        "registered portable-cpu Rope kernel (f32)",
+        "x uniform [-1, 1); cos/sin of position * 10000^(-2j/hd)",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reference_matmul_matches_a_hand_computed_product() {
+        // [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]]
+        let r = reference_matmul(&[1.0, 2.0, 3.0, 4.0], &[5.0, 6.0, 7.0, 8.0], 2, 2, 2);
+        assert_eq!(r, vec![19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn reference_rms_norm_matches_a_hand_computed_row() {
+        // row [3, 4]: mean(x^2) = 12.5; eps 0 -> x / sqrt(12.5)
+        let r = reference_rms_norm(&[3.0, 4.0], 1, 2, 0.0);
+        let inv = 1.0 / 12.5f64.sqrt();
+        assert!((r[0] - 3.0 * inv).abs() < 1e-12 && (r[1] - 4.0 * inv).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reference_softmax_matches_a_hand_computed_row() {
+        // row [0, ln 3]: probabilities 1/4 and 3/4
+        let r = reference_softmax(&[0.0, 3f32.ln()], 1, 2);
+        assert!((r[0] - 0.25).abs() < 1e-6 && (r[1] - 0.75).abs() < 1e-6);
+        assert!((r.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
 }
