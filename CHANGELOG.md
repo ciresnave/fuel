@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.23.3 - 2026-10-23
+
+### Added
+
+- ROADMAP row 40 stage 1: `fuel-transformers::models::lazy_qwen3_5` (`Qwen3_5Config`, `Qwen3_5Weights::load_from_mmapped`, `Qwen3_5Model`), the config and weight loader for the dense Qwen3.5 Gated DeltaNet / full-attention hybrid. Every tensor is shape-checked against the config; decoder RMS norms are stored as `1 + w` (zero-centred, measured on the real checkpoint). `Qwen3_5Model::forward` is a typed refusal until the recurrence exists (GAP-368). `tests/qwen3_5_loader_oracle.rs` loads `Qwen/Qwen3.5-0.8B` from `FUEL_QWEN35_DIR` (Hub skip when unset): 320 of 320 language-model tensors, 0 missing, 0 unread
+
 ## v0.23.2 - 2026-10-23
 
 ### Added
