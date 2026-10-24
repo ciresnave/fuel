@@ -168,6 +168,27 @@ fn build_cuda_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> {
             })
         }
 
+        // --- Per-axis reduce (1 input -> reduced output of the same dtype) --
+        // Absent until row 39: without a pass their F32 entries could not carry the numeric
+        // claim. Wide enough that the reduction spans many threads of a block.
+        OpKind::SumReduce | OpKind::MaxReduce | OpKind::MinReduce | OpKind::MeanReduce => {
+            let (outer, last) = (8usize, 2048usize);
+            let x = ht(
+                dt,
+                vec![outer, last],
+                &fill_deterministic(outer * last, seed),
+            )?;
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::Reduce {
+                    dims: vec![1],
+                    keepdim: false,
+                },
+                out_dtype: dt,
+                out_shape: vec![outer],
+            })
+        }
+
         // --- Unary elementwise (1 input, params ignored) -------------------
         OpKind::NegElementwise
         | OpKind::ReluElementwise
