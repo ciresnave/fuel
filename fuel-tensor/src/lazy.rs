@@ -8365,6 +8365,9 @@ pub type ConvWeightBias = (Arc<[f32]>, Arc<[f32]>);
 pub enum WeightStorage {
     F32(Arc<[f32]>),
     BF16(Arc<[half::bf16]>),
+    /// IEEE half-precision weights, kept half-width (ROADMAP row 34); the CPU and Vulkan
+    /// `[F32, F16, F32]` matmul kernels widen on read.
+    F16(Arc<[half::f16]>),
     /// GGML Q4_0 blocks (raw byte stream), laid out as `[out_features,
     /// in_features / 32]` blocks (18 bytes each, llama.cpp convention).
     /// Stored as `Arc<[u32]>` — the byte stream reinterpreted as u32
@@ -8414,6 +8417,7 @@ impl WeightStorage {
         match self {
             Self::F32(a) => a.len(),
             Self::BF16(a) => a.len(),
+            Self::F16(a) => a.len(),
             // Logical element count for a Q4_0 weight matrix is n*k.
             Self::Q4_0 {
                 in_features,
@@ -8433,6 +8437,7 @@ impl WeightStorage {
         match self {
             Self::F32(_) => fuel_ir::DType::F32,
             Self::BF16(_) => fuel_ir::DType::BF16,
+            Self::F16(_) => fuel_ir::DType::F16,
             // Q4_0 surfaces as U32 at the graph level (raw bytes
             // reinterpreted). Callers that care about the "actual"
             // quantization type should match on the variant directly.
@@ -8463,6 +8468,7 @@ impl WeightStorage {
         match self {
             Self::F32(a) => anchor.const_f32_like(a.clone(), shape),
             Self::BF16(a) => anchor.const_bf16_like(a.clone(), shape),
+            Self::F16(a) => anchor.const_f16_like(a.clone(), shape),
             Self::Q4_0 { words, .. } => {
                 let _ = shape; // shape arg unused — Q4_0 const is 1-D U32
                 // Arc-clone the precomputed u32 view; no byte copy.
@@ -8555,7 +8561,7 @@ impl WeightStorage {
             }
         }
         match self {
-            Self::F32(_) | Self::BF16(_) => {
+            Self::F32(_) | Self::BF16(_) | Self::F16(_) => {
                 let w = self.const_like(x, Shape::from_dims(&[in_features, out_features]))?;
                 x.matmul(&w)
             }
@@ -8726,6 +8732,16 @@ impl From<Arc<[half::bf16]>> for WeightStorage {
 impl From<Vec<half::bf16>> for WeightStorage {
     fn from(v: Vec<half::bf16>) -> Self {
         Self::BF16(Arc::from(v))
+    }
+}
+impl From<Arc<[half::f16]>> for WeightStorage {
+    fn from(a: Arc<[half::f16]>) -> Self {
+        Self::F16(a)
+    }
+}
+impl From<Vec<half::f16>> for WeightStorage {
+    fn from(v: Vec<half::f16>) -> Self {
+        Self::F16(Arc::from(v))
     }
 }
 
@@ -9298,9 +9314,8 @@ pub fn load_transposed_matrix(
 /// safetensors files saved with bf16 weights, returns
 /// `WeightStorage::BF16` and never materializes an f32 copy — the
 /// 2× memory saving vs `load_transposed_matrix` comes from here.
-/// f32 and other source dtypes still go through the f32 upcast path
-/// for safety; extending this to preserve f16 is a one-line change
-/// when a consumer wants it.
+/// An f16 file likewise returns `WeightStorage::F16` (ROADMAP row 34);
+/// f32 and other source dtypes still go through the f32 upcast path.
 ///
 /// The transpose itself is done in whatever dtype we're keeping:
 /// read bf16 elements from the file, place them in the transposed
@@ -9336,8 +9351,26 @@ pub fn load_transposed_matrix_preserve_dtype(
             }
             Ok(WeightStorage::BF16(Arc::from(out)))
         }
+        Dtype::F16 => {
+            if bytes.len() != expected * 2 {
+                crate::bail!(
+                    "load_transposed_matrix_preserve_dtype: f16 tensor {name:?} has {} bytes, expected {}",
+                    bytes.len(),
+                    expected * 2,
+                );
+            }
+            let mut out = vec![half::f16::ZERO; expected];
+            for i in 0..out_features {
+                for j in 0..in_features {
+                    let src_off = (i * in_features + j) * 2;
+                    let bits = u16::from_le_bytes([bytes[src_off], bytes[src_off + 1]]);
+                    out[j * out_features + i] = half::f16::from_bits(bits);
+                }
+            }
+            Ok(WeightStorage::F16(Arc::from(out)))
+        }
         _ => {
-            // F32, F64, F16 all fall through to the f32 upcast path.
+            // F32 and F64 fall through to the f32 upcast path.
             // Non-f32 source types still benefit from being readable;
             // they just lose the "weights stay compact" win.
             let flat = load_transposed_matrix(st, name, out_features, in_features)?;

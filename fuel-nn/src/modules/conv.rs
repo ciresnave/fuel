@@ -385,6 +385,7 @@ impl Conv2d {
         let weight_f32: Vec<f32> = match &self.weight {
             WeightStorage::F32(a) => a.iter().copied().collect(),
             WeightStorage::BF16(a) => a.iter().map(|v| v.to_f32()).collect(),
+            WeightStorage::F16(a) => a.iter().map(|v| v.to_f32()).collect(),
             WeightStorage::Q4_0 { .. } => {
                 return Err(fuel_ir::error::Error::Msg(
                     "Conv2d::absorb_bn: Q4_0 weights cannot be folded \
@@ -441,6 +442,11 @@ impl Conv2d {
                 let as_bf16: Vec<half::bf16> =
                     new_weight.into_iter().map(half::bf16::from_f32).collect();
                 WeightStorage::BF16(Arc::from(as_bf16))
+            }
+            WeightStorage::F16(_) => {
+                let as_f16: Vec<half::f16> =
+                    new_weight.into_iter().map(half::f16::from_f32).collect();
+                WeightStorage::F16(Arc::from(as_f16))
             }
             // The Q4_0 / WithLoRA arms returned early above.
             WeightStorage::Q4_0 { .. } | WeightStorage::Awq(_) | WeightStorage::WithLoRA { .. } => {
