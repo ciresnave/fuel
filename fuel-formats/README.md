@@ -36,7 +36,7 @@ Phase 7.5's work item E has landed: the wrappers that turn parsed metadata into 
 no longer live in `fuel-core`. `fuel_core::safetensors`/`fuel_core::quantized` were pure
 compat shims to `fuel_loaders` (fuel-core dissolution, GAP-347 PR 5/6) and have since been
 retired outright — current call sites are `fuel_loaders::safetensors::load` and
-`fuel_loaders::quantized::gguf_file::Content::read` (the `ggml_file` module they once
+`fuel_loaders::quantized::gguf_file::Content::open` (the `ggml_file` module they once
 discussed was deleted entirely; see `fuel-loaders/src/quantized/mod.rs`). `PthTensors::get`
 took a different path: pickle's Tensor-construction layer was absorbed directly into
 `fuel_formats::pickle`, with no separate `fuel-loaders` wrapper needed.
@@ -48,7 +48,7 @@ A new transport adapter (HTTP, S3, IPC, etc.) follows the same shape as `fuel-lo
 1. Acquire bytes from your transport — `Vec<u8>`, `Cursor<&[u8]>`, an `impl Read`.
 2. Hand them to the appropriate `fuel-formats` parser:
    - `fuel_formats::safetensors::SafeTensors::deserialize(&bytes)`
-   - `fuel_formats::gguf::Content::read(&mut cursor)`
+   - GGUF: `fuel-formats` keeps the wire types and the writer only; reading is `fuel_loaders::quantized::gguf_file::Content::open`/`from_bytes` over `mlmf-gguf` (MLMF slice D)
    - `fuel_formats::pickle::read_pth_tensor_info(path, false, key)` (currently file-bound;
      a stream variant is straightforward to add)
    - `fuel_formats::imatrix::parse(&mut reader)`

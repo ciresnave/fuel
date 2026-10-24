@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use std::{
-    fs::File,
-    io::BufReader,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -31,10 +27,7 @@ fn main() -> Result<()> {
     let gguf_path = resolve_model_path(&args.model, args.revision.clone())
         .with_context(|| format!("failed to locate GGUF file {}", args.model))?;
 
-    let file = File::open(&gguf_path)
-        .with_context(|| format!("failed to open GGUF file {}", gguf_path.display()))?;
-    let mut reader = BufReader::new(file);
-    let content = gguf_file::Content::read(&mut reader).context("failed to load GGUF metadata")?;
+    let content = gguf_file::Content::open(&gguf_path).context("failed to load GGUF metadata")?;
 
     // Build the tokenizer directly from the GGUF metadata (tokens, merges, and post-processing).
     let tokenizer =

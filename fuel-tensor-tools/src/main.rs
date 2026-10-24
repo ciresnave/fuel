@@ -40,6 +40,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use fuel_formats::gguf;
+use fuel_loaders::quantized::gguf_file::Content as GgufContent;
 use fuel_quantized::{GgmlDType, cpu_from_data, cpu_zeros};
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -197,7 +198,7 @@ struct RawGguf {
 
 fn gguf_read_raw<R: Read + Seek>(
     reader: &mut R,
-    content: &gguf::Content,
+    content: &GgufContent,
     name: &str,
 ) -> Result<RawGguf> {
     let info = content
@@ -276,8 +277,7 @@ fn run_ls(file: &std::path::PathBuf, format: Option<Format>, verbose: bool) -> R
     println!("--- {file:?} [{format:?}] ---");
     match format {
         Format::Gguf => {
-            let mut f = std::fs::File::open(file)?;
-            let content = gguf::Content::read(&mut f)?;
+            let content = GgufContent::open(file)?;
             let mut names: Vec<_> = content.tensor_infos.keys().cloned().collect();
             names.sort();
             for name in names {
@@ -339,7 +339,7 @@ fn run_print(
     match format {
         Format::Gguf => {
             let mut f = std::fs::File::open(file)?;
-            let content = gguf::Content::read(&mut f)?;
+            let content = GgufContent::open(file)?;
             let names = if names.is_empty() {
                 let mut n: Vec<_> = content.tensor_infos.keys().cloned().collect();
                 n.sort();
@@ -407,7 +407,7 @@ fn run_quantize(
     }
     let requested = quantization.dtype();
     let mut f = std::fs::File::open(in_file)?;
-    let content = gguf::Content::read(&mut f)?;
+    let content = GgufContent::open(in_file)?;
 
     let mut names: Vec<_> = content.tensor_infos.keys().cloned().collect();
     names.sort();

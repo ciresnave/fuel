@@ -101,7 +101,7 @@ impl Architecture {
 /// architecture like `nomic-bert-moe` or `bert`. Silently answering
 /// `Qwen3Moe`/`Llama` for those is indistinguishable from a file that
 /// genuinely declared them. `content.metadata` is an eager, COMPLETE map
-/// by the time this runs (both `Content::read` and `Content::open`
+/// by the time this runs (`Content::open`/`Content::from_bytes`, the only readers now;
 /// build it fully or return a typed `Err` first), so "key not in the
 /// map" here means genuine absence, never "not read yet" -- unlike
 /// mlmf-core's lazily-backed `MetadataSource`, fuel needs no

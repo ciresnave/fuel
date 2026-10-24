@@ -16,5 +16,6 @@ clap = { workspace = true }
 # format parsing and quantization go direct to fuel-formats / fuel-quantized.
 fuel = { workspace = true }
 fuel-formats = { workspace = true }
+fuel-loaders = { workspace = true }
 fuel-quantized = { workspace = true }
 safetensors = { workspace = true }
