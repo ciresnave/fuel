@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.24.2 - 2026-10-24
+
+### Changed
+
+- docs only: `docs/design-notes/2026-10-24-mlmf-move-survey.md`, step 1 of moving model loading and saving to MLMF (CireSnave, 2026-10-24: "Agreed on decision 265. Move any loading/saving portions to MLMF."), and ROADMAP row 42. No code, no API change
+
 ## v0.24.1 - 2026-10-24
 
 ### Added
