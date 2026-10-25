@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.18 - 2026-10-25
+
+### Changed
+
+- Docs only: ROADMAP rows 105 (`QMatMul` CUDA kernels for Q4_0 and Q8_0), 106 (CUDA paged attention) and 107 (the scheduler probe's per-op table) from the first CUDA TTFT profile (RTX 4070 Laptop, box idle floor 6-8%, `origin/main@991b93702` plus the phi cuda fix: with #493, without #492 and #496). Row 34 gains the gate that native Q8_0 (PR #495) may not be released until the loader keeps f32 on CUDA devices or a CUDA Q8_0 `QMatMul` exists. Headline numbers: scheduler path SmolLM2-135M Q8_0 145 tokens 14.2 s (lightbulb's 264-298 s was the 0.25.10 per-token re-plan); Q4_0 28.2 s and TinyLlama-1.1B Q4_0 90.6 s, dominated by `Copy` items because `QMatMul` runs on the CPU.
+
 ## v0.26.17 - 2026-10-25
 
 ### Changed
