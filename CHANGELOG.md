@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.24 - 2026-10-25
+
+### Added
+
+- Docs only: `docs/PATENT-SWEEP.md`, the first pass of the patent sweep CireSnave ordered before any release (board 286): the 16 ideas, the documented queries, the hits read and 11 items that need review; and `docs/PATENT-SWEEP-CHARTS.md`, claim charts of US 8,458,680 B2, US 8,146,066 B2 and US 8,375,368 B2 (Google, 2006 priority, estimated expiry 2030) against Fuel, with the two construction questions a lawyer would argue and the (unreached) pledge-list check. A due-diligence read, not legal advice and not a freedom-to-operate opinion; the record is in progress and says what it did not cover. One design consequence is recorded: US 11,521,062 B2 claim 23 (IBM) should be read before ROADMAP row 67 increment I3 adds the delayed-reload ordering.
+
 ## v0.26.22 - 2026-10-25
 
 ### Changed
