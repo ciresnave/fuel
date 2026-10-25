@@ -20,19 +20,19 @@ repository = "https://github.com/ciresnave/fuel"
 # The surface `fuel-core` used to carry is re-exported from the crates that own it
 # (GAP-348, fuel-core dissolution). Each dependency below is here because
 # src/lib.rs names it.
-fuel-tensor = { path = "../fuel-tensor", version = "0.26.8" }
-fuel-ir = { path = "../fuel-ir", version = "0.26.8" }
-fuel-hardware = { path = "../fuel-hardware", version = "0.26.8" }
-fuel-backend-contract = { path = "../fuel-backend-contract", version = "0.26.8" }
-fuel-cpu-backend = { path = "../fuel-cpu-backend", version = "0.26.8" }
+fuel-tensor = { path = "../fuel-tensor", version = "0.26.13" }
+fuel-ir = { path = "../fuel-ir", version = "0.26.13" }
+fuel-hardware = { path = "../fuel-hardware", version = "0.26.13" }
+fuel-backend-contract = { path = "../fuel-backend-contract", version = "0.26.13" }
+fuel-cpu-backend = { path = "../fuel-cpu-backend", version = "0.26.13" }
 # `fuel::topology` and `fuel::telemetry` (telemetry feature) come from here.
-fuel-dispatch = { path = "../fuel-dispatch", version = "0.26.8" }
+fuel-dispatch = { path = "../fuel-dispatch", version = "0.26.13" }
 # `fuel::kv_block_pool`.
-fuel-kv-pool = { path = "../fuel-kv-pool", version = "0.26.8" }
+fuel-kv-pool = { path = "../fuel-kv-pool", version = "0.26.13" }
 # `fuel::hf_config`, `fuel::safetensors`, `fuel::quantized`.
-fuel-loaders = { path = "../fuel-loaders", version = "0.26.8" }
+fuel-loaders = { path = "../fuel-loaders", version = "0.26.13" }
 # The model zoo (`pub use fuel_transformers::models::*`).
-fuel-transformers = { path = "../fuel-transformers", version = "0.26.8" }
+fuel-transformers = { path = "../fuel-transformers", version = "0.26.13" }
 
 # Features forward to EVERY dependency that declares them, and to no dependency
 # that does not (see fuel/tests/feature_forwarding.rs, which derives this rule

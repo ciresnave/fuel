@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.13 - 2026-10-25
+
+### Changed
+
+- CPU `matmul_f32` / `matmul_f32_capacity` run through the `gemm` crate (already a `fuel-cpu-backend` dependency) when `m * n * k >= 16384`, multi-threaded above about a million multiply-adds; smaller products keep the plain `(i, k, j)` loop. The plain loop ran at ~1.3 GFLOP/s and was the whole remaining cost of a CPU prefill: it was every launch of a dequantized (Q8_0, F16, BF16 upcast) model and the LM head. Measured on SmolLM2-135M, 140-token contiguous persistent prefill, CPU release, OMP 4, base `origin/main@c39b9e53` against this change, host 40-60% busy (executables proven different with cmp), alternating runs: Q8_0 (dequantized to f32) 38.4 s and 30.4 s -> 2.2 s and 2.1 s; Q4_0 10.9 s and 10.5 s -> 3.6 s and 3.7 s. The m = 1 matvec (`half_matvec_speed` example, three Qwen3-0.6B projection shapes) 3.5-5.2 ms -> 0.19-0.30 ms. Numerics: the reduction order changed, so results differ from the old loop in the last bits (first logit Q8_0 11.318165 -> 11.318174; Q4_0 10.814059 -> 10.958599 because the quantized layers round activations to Q8_0 blocks and a last-bit difference can move a block boundary; the sampled tokens were identical on 60 tokens for both). `fuel-cpu-backend/tests/matmul_f32_gemm.rs` pins the error against an f64 reference (worst 0.030 of the f32 accumulation bound over six shapes, tolerance 0.1; a transposed weight and a dropped k-block fail it by more than 100x) and that capacity tail rows stay zero. 95 test binaries (cpu-backend, dispatch, tensor, nn, model-llama, inference, transformers, model-phi) passed: 3144 passed, 0 failed, 4 ignored.
+
 ## v0.26.8 - 2026-10-25
 
 ### Changed
