@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.2 - 2026-10-25
+
+### Fixed
+
+- `PagedSessionScheduler` prefill re-planned the graph for every prompt token: `prefill_pass` called `forward_paged_step` per token, and only `decode_one` used the plan-once route (`forward_paged_step_persistent`) although the scheduler's default plan is `PlanOnce`. Prefill now takes the same route, so the first prompt token builds and optimizes the held graph and the rest rebind it (decode keeps using it). Measured through the scheduler on SmolLM2-135M, CPU release, host 40-65% busy, base `origin/main@c39b9e53` against this change (executables proven different, optimizer calls counted): Q8_0 145-token prompt time to first token 159.5 s (146 optimizer calls) -> 27.0 s (1 call); Q4_0 60 tokens 30.1 s -> 5.0 s; same sampled tokens. Pinned by `paged_prefill_plans_once_not_per_token` (born red: 13 optimizer calls for a 12-token prompt plus 2 decode tokens). The remaining Q8_0 time is f32 matmul over dequantized weights (ROADMAP row 34 follow-ups).
+
 ## v0.25.15 - 2026-10-24
 
 ### Added

@@ -2049,8 +2049,22 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             let start = self.sessions[idx].prefill_start.min(prompt.len());
             let mut last_logits: Option<Vec<f32>> = None;
             let mut failure: Option<String> = None;
+            // Every prompt token is a single-token step, so it takes the same route as a decode
+            // step (`plan`): under `PlanOnce` the first token builds and optimizes the held graph
+            // and the rest rebind it, and decode then keeps using it. Re-planning each prompt token
+            // (`forward_paged_step`) paid the optimizer, ~90% of a paged step, once per token:
+            // 220.9 s against 35.6 s for a 145-token prompt (SmolLM2-135M Q8_0, CPU).
+            let cap = self.sessions[idx].max_blocks_cap;
+            let plan = self.plan;
             for &tok in &prompt[start..] {
-                match model.forward_paged_step(tok, &mut self.pool, handle) {
+                match model.forward_paged_step_persistent(
+                    tok,
+                    &mut self.pool,
+                    handle,
+                    cap,
+                    plan,
+                    &mut self.sessions[idx].decode_session,
+                ) {
                     Ok(l) => last_logits = Some(l),
                     Err(e) => {
                         failure = Some(e.to_string());
@@ -3349,6 +3363,29 @@ mod tests {
             block_size: 4,
             num_blocks: 64,
         }
+    }
+
+    /// The prompt's tokens go through the plan-once route, not a re-plan per token. Measured
+    /// (SmolLM2-135M Q8_0, 145 tokens, CPU): 220.9 s re-planning every prompt token (the optimizer
+    /// is ~90% of a paged step) against 35.6 s with one held plan. The optimizer-call count is
+    /// exact (thread-local), so a prompt of N tokens must cost O(1) optimizer calls, not N.
+    #[test]
+    fn paged_prefill_plans_once_not_per_token() {
+        let model = tiny_model(42);
+        let mut s =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let prompt: Vec<u32> = (1..=12).collect();
+        s.add_session(&prompt, SamplingStrategy::Greedy, None, 2)
+            .unwrap();
+        let before = fuel::pipelined_bridge::optimize_calls_thread_local();
+        let out = s.run_to_completion();
+        let calls = fuel::pipelined_bridge::optimize_calls_thread_local() - before;
+        assert_eq!(out[0].1.len(), prompt.len() + 2);
+        assert!(
+            calls < prompt.len(),
+            "{calls} optimizer calls for a {}-token prompt + 2 decode tokens: prefill re-planned per token",
+            prompt.len()
+        );
     }
 
     /// A single paged session runs to its `max_new` budget: prefill (feed the
