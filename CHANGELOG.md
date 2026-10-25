@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.14 - 2026-10-25
+
+### Changed
+
+- CI only: the advisory Portfolio check is pinned to coderipper's workflow commit `33bd9292` (read inside that commit: `CODERIPPER_VERSION: 0.9.37`, a step that fails the job when the installed binary is not that release, and `df -h /` / `du -sm` log lines before and after the sweep). The 0.26.5 pin (`0688a6f7`, the commit of tag `v0.9.24`) actually installed 0.9.20; its comment claimed 0.9.24. The first hosted run's installed-version line and df/du numbers go into the PR and to the coderipper lane.
+
 ## v0.26.13 - 2026-10-25
 
 ### Changed

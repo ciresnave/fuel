@@ -1103,7 +1103,10 @@ jobs:
   # ("No space left on device", 23 of 45 members analysed) and fuel-aocl-cpu-backend / fuel-cuda-backend
   # fail to link (no SDK; "not judged"). Advisory-red until coderipper gets a build-footprint limit;
   # not moved to a self-hosted runner (public repo, board 241). The job is deliberately NOT hidden.
+  # PIN (2026-10-25): coderipper's workflow commit 33bd9292 sets CODERIPPER_VERSION=0.9.37 (read inside that commit)
+  # and fails the job if the installed binary is not that release; it logs `df -h /` and `du -sm` before and after
+  # the sweep. The previous pin (0688a6f7, tag v0.9.24's commit) installed 0.9.20: a tag's commit is not the version it names (the workflow file at the commit decides).
   portfolio:
     permissions:
       contents: read
-    uses: ciresnave/coderipper/.github/workflows/portfolio.yml@0688a6f7d6db839cba8d504e39689ef2dc608eee # 0.9.24
+    uses: ciresnave/coderipper/.github/workflows/portfolio.yml@33bd9292c7353df98fc7f00ef6887dc87954fa3b # installs 0.9.37
