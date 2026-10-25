@@ -1,0 +1,9 @@
+# CodeRipper's own file for this repository (read by `coderipper sweep`, see its README, "Members that cannot be
+# built where the run is"). A declared skip is printed as "not judged (declared skip)", is not a failure, and hides no
+# finding from any member that is built.
+
+[[skip_member]]
+name = "fuel-metal-kernels"
+needs = "xcrun"
+reason = "compiles to nothing off macOS, so coderipper's per-run positive controls (sentinel functions) cannot fire"
+owner = "fuel lane"
