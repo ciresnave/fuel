@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.6 - 2026-10-25
+
+### Changed
+
+- `fuel_tensor::persistent_decode::build_decode_graph`: when the caller wants the last position's logits (every `forward_with_kv_context*` prefill), the final norm and the LM head now run on that one row, not on all `seq` rows with the last sliced out afterwards. Logits are bit-identical (CPU f32). Measured on SmolLM2-135M, 140-token contiguous persistent prefill, CPU, release, host 40-65% busy, base `origin/main@c39b9e53` against this change (executables proven different): Q4_0 10.3-10.5 s -> 4.4-4.6 s (the LM-head launch 5.6 s -> 0.03 s, input 322560 B -> 2304 B); Q8_0 29.2 s -> 19.4 s. Pinned by `fuel-model-llama/tests/prefill_last_position.rs` (born red: 7 rows into the head before, 1 after).
+
 ## v0.26.5 - 2026-10-25
 
 ### Changed
