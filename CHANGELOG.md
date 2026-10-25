@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.27.1 - 2026-10-25
+
+### Changed
+
+- CI only: the advisory Portfolio check is pinned to coderipper 0.9.24 (was 0.9.14) and `rust-ci.yml` records why the job is red for fuel: on a GitHub-hosted runner (~14 GB disk) the sweep runs out of disk (23 of 45 members analysed) and `fuel-aocl-cpu-backend` / `fuel-cuda-backend` fail to link without their SDKs. It stays visible and advisory; the fix is a coderipper build-footprint limit.
+
 ## v0.26.2 - 2026-10-25
 
 ### Fixed
