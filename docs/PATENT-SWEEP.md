@@ -129,6 +129,18 @@ These are the sub-agents' readings, recorded so a lawyer can see what was looked
 
 **`unread`:** US 12,045,611 B2 and US 12,321,849 B2 (the tool returned HTTP 404); US 10,229,356 B2 (404); KR 2026-0039700 A (Korean). **Ideas with no hit read at all:** 14 (kernel interchange seam), and none that claims capture-and-replay of a decode step, symbolic sequence-length re-binding, paged KV with prefix sharing, or a dtype/storage/encoding split with sibling scales was found. Those absences are search weakness (WebSearch returned papers), not clearance.
 
+## Second pass (2026-10-25, paced at about one query a minute; no 503 seen)
+
+Three searches (all `WebSearch`, standard mode) and three claim fetches of known numbers. This pass is small on purpose: it was the first work done after the PM's pacing notice, and the search tool again returned mostly papers.
+
+| idea | query (source) | result |
+|---|---|---|
+| 11 | G "key-value cache blocks shared prefix reference count copy-on-write large language model serving patent claim \"block table\"" | No US patent. One Chinese grant, **CN 122019408 B** (Memory Tensor Shanghai, priority 2026-04-14, Active), read by the lane (claim 1): it indexes reusable text *fragments* by hash and aliases a new logical block hash list onto an earlier physical KV block ("logical hash alias mapping"). Fuel's prefix cache is a chain-prefix cache with no fragment index table and no alias mapping. **clear** on claim 1; a Chinese patent only, and I did not look for a US family. |
+| 10 | G+J "patent captured graph of GPU kernel launches reused across autoregressive decoding steps, updating kernel node parameters for sequence length, language model inference" | No patent matching the idea; papers only (hybrid JIT/CUDA-graph, per-layer graph replay, padded graph sets). Two nearby patents appeared and were not read: DE 102021102589 A1 (Google, "Calculation graph optimization", CUDA graph with fixed parameters) and speculative-decoding applications US 2024/0320433 A1 / WO 2024/205726 A1 (not capture/replay). **No hit read; not a clearance.** |
+| 14 | G "patent operator kernel registry lookup key data type layout, quantization parameters carried in separate descriptor not in kernel key, framework dispatch to backend kernel libraries" | Two Baidu registry patents, both read by the lane (claim 1): **US 12,705,545 B2** (operator processing; needs a macro-built variable parameter list and iterative template-parameter parsing: Fuel's registry does neither) and **US 12,670,371 B2** (operator registration; needs a check that the layouts a registered operator supports are registered completely, on a four-dimensional NCHW/NHWC tensor for a vision task: Fuel has no such check). Both **clear** on claim 1. Neither mentions quantization parameters. |
+
+Still not searched: ideas 9 (sibling-scale storage), the CPC-class pass, and direct USPTO/Espacenet queries; ideas 10 and 11 have no US hit at all, which is a search-weakness result, not a finding that none exists.
+
 ## Needs review (to the PM)
 
 Rows 1 to 11 above, ordered by how closely the independent claims track what Fuel does today:
