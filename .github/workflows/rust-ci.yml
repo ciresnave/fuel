@@ -1099,7 +1099,11 @@ jobs:
   # triaged by rule on the ROADMAP, never silenced in this file. The reusable
   # workflow is pinned to a commit SHA on coderipper's main, fixes the rule
   # profile and the CodeRipper version, and builds this crate (build.rs runs).
+  # KNOWN RED (2026-10-25): on a GitHub-hosted runner (~14 GB disk) the sweep runs out of disk
+  # ("No space left on device", 23 of 45 members analysed) and fuel-aocl-cpu-backend / fuel-cuda-backend
+  # fail to link (no SDK; "not judged"). Advisory-red until coderipper gets a build-footprint limit;
+  # not moved to a self-hosted runner (public repo, board 241). The job is deliberately NOT hidden.
   portfolio:
     permissions:
       contents: read
-    uses: ciresnave/coderipper/.github/workflows/portfolio.yml@d14a22b67e5533d0188f067e01693878065ca071 # 0.9.14
+    uses: ciresnave/coderipper/.github/workflows/portfolio.yml@0688a6f7d6db839cba8d504e39689ef2dc608eee # 0.9.24
