@@ -10,6 +10,10 @@ if the notice is removed.
 
 - Origin: https://github.com/ggml-org/llama.cpp, `LICENSE` at commit `9d57ce456c`
   (the commit `GgmlDType` in `fuel-ir/src/quantized.rs` is pinned to).
+- Also reached through candle (next section): the Q4_0 / Q8_0 / k-quant block layouts and quantization
+  algorithms in `fuel-quantized/src/k_quants.rs`, `utils.rs`, `avx.rs`, `neon.rs`. Compared line by line only for
+  `BlockQ4_0::from_float` (the same steps as `quantize_row_q4_0_ref` in `ggml/src/ggml-quants.c` at
+  `9d57ce456c`); the rest rests on candle's own citations of llama.cpp commits in those files' comments.
 - Used by: `fuel-quantized/src/iq4.rs` (IQ4_NL and IQ4_XS block layouts, codebook,
   dequantization arithmetic), `fuel-quantized/src/iq_grid_types.rs` (IQ2_XXS,
   IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ1_S, IQ1_M block layouts and dequantization),
@@ -43,6 +47,30 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## candle (Hugging Face)
+
+- Origin: https://github.com/huggingface/candle, dual-licensed MIT OR Apache-2.0. Fuel is a fork of it (this
+  repository's history still carries candle's commits). Its `LICENSE-MIT` is byte-identical to this repository's
+  root `LICENSE-MIT`, and its `LICENSE-APACHE` is the root `LICENSE-APACHE` apart from one leading blank line
+  (both compared at upstream commit `549eacb011f25b2c6fc765d6c3dbd26e42f72ee6`, 2025-11-18, the upstream
+  counterpart of `7b1d2a0a8`, the last candle-era commit here that touched these files). Neither upstream licence file names a holder.
+- Used by (traced to `candle-core/src/quantized/` at that commit, then modified here):
+  `fuel-quantized/src/k_quants.rs` (from `k_quants.rs`), `utils.rs` (from `utils.rs`), `avx.rs` (from `avx.rs`),
+  `neon.rs` (from `neon.rs`), and, in part only, `cpu.rs` (the `QuantizedType` trait, from `mod.rs`).
+  These files keep our SPDX line because the licence is the same one candle declares.
+- Verified: the repository's own history blobs for those four files at `7b1d2a0a8` are byte-identical to
+  upstream at `549eacb01`. Non-blank lines of the current file that also appear verbatim in the upstream file:
+  `k_quants.rs` 2162 of 2257, `utils.rs` 428 of 518, `avx.rs` 613 of 752, `neon.rs` 536 of 697 (measured
+  2026-10-25; `cpu.rs` 28 of 151 code lines over 25 characters against all of upstream `quantized/*.rs`).
+- Not derived from candle by the same measure: `dequant.rs` (0 of 94 such lines verbatim; it dispatches to
+  `GgmlType::to_float` and holds no block math), `awq_repack.rs` (written against AutoAWQ's layout and
+  baracuda's kernel layout), `lib.rs`. Other candle-derived files elsewhere in this repository are NOT traced
+  by this section.
+- Upstream contributors to the traced files up to that commit, by commit count on those paths in candle's
+  history: Laurent Mazare (83), ivarflakstad (10), Lukas Kreussel (8), Eric Buehler (6), Nicolas Patry (2),
+  Jon Craton (2), zmlcc, zachcp, Kyle Birnbaum, Anubhab Bandyopadhyay (1 each).
+- Licence texts: this repository's `LICENSE-MIT` and `LICENSE-APACHE`.
 
 ## bitsandbytes
 

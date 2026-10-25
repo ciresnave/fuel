@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Derived from candle (https://github.com/huggingface/candle, MIT OR Apache-2.0): `candle-core/src/quantized/mod.rs`
+// at commit 549eacb011f25b2c6fc765d6c3dbd26e42f72ee6, modified here. Only IN PART: the `QuantizedType` trait and the per-format scalar ops behind it were extracted from there; the rest of this file is ours.
+// Contributors, how this was verified and the licence texts: THIRD-PARTY-NOTICES.md (section "candle").
 //! Format-agnostic CPU helpers for quantized storage.
 //!
 //! Holds the dyn-boxable `QuantizedType` trait (per-block-format scalar
