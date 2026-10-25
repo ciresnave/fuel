@@ -1672,11 +1672,12 @@ fn host_buffer_dtype(buf: &HostBuffer) -> fuel_ir::DType {
 /// (`bytemuck::cast_slice` for typed numeric vecs; identity for the
 /// raw-byte sub-byte variants).
 ///
-/// `pub(crate)`: also reused by `LlamaModel::build_token_rope_mask_bytes`
-/// (CapturedRun replay wiring) to extract raw per-token bytes from the
-/// same `HostBuffer`s `build_token_rope_mask_arcs` uploads — one
-/// dtype-dispatch table, not two.
-pub(crate) fn host_buffer_to_bytes(buf: &HostBuffer) -> Vec<u8> {
+/// `pub`: reused by `LlamaModel::build_token_rope_mask_bytes` in `fuel-model-llama` and by
+/// `fuel-model-phi` (CapturedRun replay wiring) to extract raw per-token bytes from the same
+/// `HostBuffer`s `build_token_rope_mask_arcs` uploads — one dtype-dispatch table, not two. It was
+/// `pub(crate)` while its callers in other crates (behind their `cuda` feature) needed it, so
+/// `fuel-model-llama` and `fuel-model-phi` did not compile with `--features cuda` (E0603).
+pub fn host_buffer_to_bytes(buf: &HostBuffer) -> Vec<u8> {
     match buf {
         HostBuffer::U8(v) => v.clone(),
         // GAP-168(c): Bool is one byte per element (0/1) — raw bytes.
