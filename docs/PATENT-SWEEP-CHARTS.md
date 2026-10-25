@@ -42,7 +42,7 @@ Independent claims 1 (method), 8 (system) and 15 (computer program product). Sam
 
 ## US 8,375,368 B2: "Systems and methods for profiling an application running on a parallel-processing computer system" (same family; added because a sub-agent's search found it, then I read the claims myself)
 
-Google LLC (originally RapidMind), priority 2006-06-20, status Active, anticipated expiration 2030-08-18 (Google's estimate). Independent claim 1 (method) read in full; claims 12, 15, 17 and 24 were NOT read by me (the sub-agent listed them as independent; the chart assumes they carry the same core and must be read before this is relied on).
+Google LLC (originally RapidMind), priority 2006-06-20, status Active, anticipated expiration 2030-08-18 (Google's estimate). Independent claims 1, 12, 15, 17 and 24 were all read in full (from the saved claim text). Claims 1, 17 (system) and 24 (medium) have the same elements, charted below. **Claim 12** instead requires performance information for the two compute kernels "in a first format" and "in a second format" and "mapping ... into a unified format" before reporting: Fuel's profile has one format, so that element is **absent** and claim 12 does not read. **Claim 15** requires "a facility at the secondary processor to determine I/O performance information ... in connection with an operation of moving data from the primary processor to the secondary processor" and mapping it back to the primary processor: Fuel times its host-to-device `Copy` items from the host side only (`op_profile`), with no facility on the device, so that element is **absent as worded** (a construction question about "facility"), and claim 15 reads at most partly.
 
 | # | claim 1 element | rating | where in Fuel / why |
 |---|---|---|---|
