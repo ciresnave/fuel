@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.22 - 2026-10-25
+
+### Changed
+
+- Licence compliance, interim step 1 of 2 (this repository began as a fork of candle, MIT OR Apache-2.0; both licences require the licence text and notice to travel with derived code, and a crates.io release ships source): `THIRD-PARTY-NOTICES.md` now reproduces candle's `LICENSE-MIT` and `LICENSE-APACHE` verbatim (upstream `549eacb0`) and says plainly that the fork's file-level tracing is in progress and untraced files are untraced. Every one of the 43 publishable crates now ships `LICENSE-MIT`, `LICENSE-APACHE` and `THIRD-PARTY-NOTICES.md` (byte-identical copies written by the new `scripts/sync-packaged-notices.py`; previously only the three seam crates carried licence files, and none carried the ledger). Gates: `fuel-ir/tests/spdx_header_ratchet.rs` now derives the publishable crates from the manifests and pins every copy to the root file; CI's "Packaged crates" job gains `verify-packaged-crates.py notices`, which fails if a built tarball lacks any of the three files. Step 2 (a per-file own / candle / ggml via candle / not traced table and a ratchet on new files) follows.
+
 ## v0.26.21 - 2026-10-25
 
 ### Changed

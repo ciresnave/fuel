@@ -238,30 +238,6 @@ const NON_SOURCE_PATHS_WITHOUT_EXTENSION: &[(&str, &str)] = &[
         ".github/CODEOWNERS",
         "GitHub ownership declaration (WSP-001): data, not authored source",
     ),
-    (
-        "fuel-kernel-seam/LICENSE-APACHE",
-        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam/LICENSE-MIT",
-        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam-types/LICENSE-APACHE",
-        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam-types/LICENSE-MIT",
-        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam-announce/LICENSE-APACHE",
-        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam-announce/LICENSE-MIT",
-        "licence text (packaged copy of the root file; PACKAGED_LICENCE_COPIES)",
-    ),
     (".gitignore", "git configuration"),
     (".gitattributes", "git configuration"),
     (
@@ -377,30 +353,6 @@ const COPYRIGHT_ACCOUNTED_FOR: &[(&str, &str)] = &[
     ),
     ("LICENSE-APACHE", "the licence text itself"),
     ("LICENSE-MIT", "the licence text itself"),
-    (
-        "fuel-kernel-seam/LICENSE-APACHE",
-        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam/LICENSE-MIT",
-        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam-types/LICENSE-APACHE",
-        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam-types/LICENSE-MIT",
-        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam-announce/LICENSE-APACHE",
-        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
-    ),
-    (
-        "fuel-kernel-seam-announce/LICENSE-MIT",
-        "the licence text itself (packaged copy; PACKAGED_LICENCE_COPIES)",
-    ),
     (
         "fuel-examples/src/bs1770.rs",
         "vendored Apache-2.0 work; asserted separately by its own arm",
@@ -947,6 +899,7 @@ fn no_tracked_file_carries_an_unaccounted_copyright_notice() {
             !COPYRIGHT_ACCOUNTED_FOR
                 .iter()
                 .any(|(p, _)| *p == path.as_str())
+                && !is_packaged_copy(path)
         })
         .filter_map(|(path, bytes)| {
             let n = searchable_text(&bytes).matches("copyright").count();
@@ -975,7 +928,11 @@ fn no_tracked_file_carries_an_unaccounted_copyright_notice() {
 #[test]
 fn every_tracked_extension_is_classified() {
     let root = workspace_root();
-    let files: Vec<String> = tracked_entries(&root).into_iter().map(|e| e.path).collect();
+    let files: Vec<String> = tracked_entries(&root)
+        .into_iter()
+        .map(|e| e.path)
+        .filter(|p| !is_packaged_copy(p))
+        .collect();
 
     let unclassified = unclassified_paths(
         &files,
@@ -1239,54 +1196,125 @@ fn part_1_surveys_every_tracked_file_and_skips_none() {
     );
 }
 
-/// Byte-identical copies of the root licence files, shipped inside each
-/// publishable seam crate so the packaged crate carries its licence text. They are
-/// named by path in PART 1 and PART 3; this test stops a copy from DRIFTING from
-/// the root while still satisfying those path-keyed lists, and stops the three
-/// lists from disagreeing about which copies exist.
-const PACKAGED_LICENCE_COPIES: &[(&str, &str)] = &[
-    ("fuel-kernel-seam/LICENSE-APACHE", "LICENSE-APACHE"),
-    ("fuel-kernel-seam/LICENSE-MIT", "LICENSE-MIT"),
-    ("fuel-kernel-seam-types/LICENSE-APACHE", "LICENSE-APACHE"),
-    ("fuel-kernel-seam-types/LICENSE-MIT", "LICENSE-MIT"),
-    ("fuel-kernel-seam-announce/LICENSE-APACHE", "LICENSE-APACHE"),
-    ("fuel-kernel-seam-announce/LICENSE-MIT", "LICENSE-MIT"),
-];
+/// The files copied from the repository root into every publishable crate, so a crates.io
+/// tarball carries the licence texts and the third-party notices (candle's MIT and Apache-2.0
+/// both require them to travel with derived code). `scripts/sync-packaged-notices.py` writes them.
+const PACKAGED_NOTICE_FILES: &[&str] = &["LICENSE-MIT", "LICENSE-APACHE", "THIRD-PARTY-NOTICES.md"];
+
+/// `<crate>/<one of PACKAGED_NOTICE_FILES>`: a packaged copy, not an authored file. It is exempt
+/// from the path-keyed lists above BECAUSE
+/// `packaged_notice_copies_exist_for_every_publishable_crate_and_match_the_root` pins each one to
+/// the root file byte for byte.
+fn is_packaged_copy(path: &str) -> bool {
+    matches!(path.split_once('/'), Some((dir, name))
+        if !dir.is_empty() && !name.contains('/') && PACKAGED_NOTICE_FILES.contains(&name))
+}
+
+/// Publishable workspace members: the root manifest's `members`, minus those whose own manifest
+/// says `publish = false`. Read from tracked blobs, as every other arm here.
+fn publishable_members(root: &PathBuf, entries: &[Entry]) -> Vec<String> {
+    let manifest = String::from_utf8_lossy(
+        &blobs_for(root, entries, &["Cargo.toml"])
+            .first()
+            .expect("root Cargo.toml is tracked")
+            .1,
+    )
+    .into_owned();
+    let list = manifest
+        .split("members")
+        .nth(1)
+        .and_then(|t| t.split_once('['))
+        .and_then(|(_, t)| t.split_once(']'))
+        .map(|(l, _)| l.to_string())
+        .expect("root Cargo.toml has a members list");
+    let members: Vec<String> = list
+        .lines()
+        .filter_map(|l| {
+            l.trim()
+                .strip_prefix('"')?
+                .split_once('"')
+                .map(|(m, _)| m.to_string())
+        })
+        .collect();
+    assert!(
+        members.len() > 30,
+        "only {} members parsed: the parser broke",
+        members.len()
+    );
+    let manifests: Vec<String> = members.iter().map(|m| format!("{m}/Cargo.toml")).collect();
+    let want: Vec<&str> = manifests.iter().map(String::as_str).collect();
+    blobs_for(root, entries, &want)
+        .into_iter()
+        .zip(members)
+        .filter(|((_, bytes), _)| {
+            !String::from_utf8_lossy(bytes)
+                .lines()
+                .any(|l| l.split_whitespace().eq(["publish", "=", "false"]))
+        })
+        .map(|(_, m)| m)
+        .collect()
+}
 
 #[test]
-fn packaged_licence_copies_are_listed_and_match_the_root_files() {
+fn packaged_notice_copies_exist_for_every_publishable_crate_and_match_the_root() {
     let root = workspace_root();
     let entries = tracked_entries(&root);
-    let mut want: Vec<&str> = Vec::new();
-    for (copy, original) in PACKAGED_LICENCE_COPIES {
-        want.push(*copy);
-        want.push(*original);
+    let crates = publishable_members(&root, &entries);
+    let mut want: Vec<String> = PACKAGED_NOTICE_FILES
+        .iter()
+        .map(|f| f.to_string())
+        .collect();
+    for c in &crates {
+        for f in PACKAGED_NOTICE_FILES {
+            want.push(format!("{c}/{f}"));
+        }
     }
+    let refs: Vec<&str> = want.iter().map(String::as_str).collect();
     let blobs: std::collections::HashMap<String, Vec<u8>> =
-        blobs_for(&root, &entries, &want).into_iter().collect();
+        blobs_for(&root, &entries, &refs).into_iter().collect();
     let mut problems = Vec::new();
-    for (copy, original) in PACKAGED_LICENCE_COPIES {
-        match (blobs.get(*copy), blobs.get(*original)) {
-            (Some(c), Some(o)) if c == o => {}
-            (Some(_), Some(_)) => problems.push(format!("{copy} differs from {original}")),
-            _ => problems.push(format!("{copy} or {original} is not tracked")),
+    for c in &crates {
+        for f in PACKAGED_NOTICE_FILES {
+            let copy = format!("{c}/{f}");
+            match (blobs.get(&copy), blobs.get(*f)) {
+                (Some(x), Some(o)) if x == o => {}
+                (Some(_), Some(_)) => problems.push(format!("{copy} differs from the root {f}")),
+                _ => problems.push(format!("{copy} or the root {f} is not tracked")),
+            }
         }
-        if !NON_SOURCE_PATHS_WITHOUT_EXTENSION
-            .iter()
-            .any(|(p, _)| p == copy)
-        {
-            problems.push(format!(
-                "{copy} is missing from NON_SOURCE_PATHS_WITHOUT_EXTENSION"
-            ));
-        }
-        if !COPYRIGHT_ACCOUNTED_FOR.iter().any(|(p, _)| p == copy) {
-            problems.push(format!("{copy} is missing from COPYRIGHT_ACCOUNTED_FOR"));
+    }
+    // The other direction: a packaged-copy path in a directory that is not a publishable crate.
+    for e in &entries {
+        if is_packaged_copy(&e.path) {
+            let dir = e.path.split('/').next().unwrap_or("");
+            if !crates.iter().any(|c| c == dir) {
+                problems.push(format!(
+                    "{} sits in a directory that is not a publishable crate",
+                    e.path
+                ));
+            }
         }
     }
     assert!(
         problems.is_empty(),
-        "packaged licence copies must be byte-identical to the root files and named in both          path-keyed lists: {problems:#?}"
+        "every publishable crate must ship the root licence texts and THIRD-PARTY-NOTICES.md,          byte-identical. Run `python scripts/sync-packaged-notices.py`.
+{problems:#?}"
     );
+}
+
+#[test]
+fn constructed_a_packaged_copy_path_is_recognised_and_a_nested_one_is_not() {
+    assert!(is_packaged_copy("fuel-ir/LICENSE-MIT"));
+    assert!(is_packaged_copy("fuel-ir/THIRD-PARTY-NOTICES.md"));
+    assert!(
+        !is_packaged_copy("LICENSE-MIT"),
+        "the root file is not a packaged copy"
+    );
+    assert!(
+        !is_packaged_copy("fuel-ir/src/LICENSE-MIT"),
+        "nested paths are not packaged copies"
+    );
+    assert!(!is_packaged_copy("fuel-ir/README.md"));
 }
 
 // ---------------------------------------------------------------------------
