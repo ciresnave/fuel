@@ -1041,7 +1041,7 @@ impl PhiModel {
         }
 
         // ---- 1b. Staleness: retire capture-then-session together. ----
-        invalidate_decode_pair_if_stale(
+        fuel_tensor::lazy::invalidate_decode_pair_if_stale(
             session,
             captured,
             ctx,
