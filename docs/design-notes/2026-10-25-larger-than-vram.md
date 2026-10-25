@@ -29,20 +29,41 @@ thought that was already in place". It is not in place. Everything below is read
    The existing evict/reload chain cannot express that: a weight read once per decode step has one consumer and no
    gap, so `find_gap_consumers` returns `None` for it.
 
+## 2b. What I1 found about the existing pass (2026-10-25, after writing sections 1-3)
+
+Wiring the pass and testing it showed three defects in it, none visible while nothing called it:
+
+1. **It measured a number it could not move.** `ResidencyPlanner::analyze` walks a plain topological order
+   and counts every node's output. The staged host copy (`Op::Move{Cpu}` output) is not bytes of the device
+   being planned, and the `Move` sits wherever the topological sort puts it, not where the executor runs it
+   (right after the last non-destructive reader of its source). Fix: `analyze_on(graph, roots, device)`
+   walks `execution_plan` and counts only nodes resident on `device`. `analyze` is unchanged (KV-pool sizing).
+2. **A second run double-evicted.** The `evicted` set only covered one run; a second run put a second
+   destructive `Op::Move` on the same source, and `execution_plan` panics "cycle in ordering edges".
+   Fix: a candidate that already feeds a `Move` is skipped.
+3. **The reload is eager, so one round does not lower the peak.** The ordering `execution_plan` uses is
+   DERIVED from destructive ops (`derive_ordering`); there is no way to add a constraint of one's own. The
+   reload `Op::Copy` therefore runs right after its `Move`, and on the test graph the analysed device peak is
+   64 B before and after (pinned by `today_the_reload_runs_eagerly_so_the_device_peak_does_not_drop`).
+   **I3 therefore needs a new primitive, not just a pass: a stored "run after" constraint on `Graph` that
+   `execution_plan` merges with the derived edges** (so the reload can be held until just before its first
+   post-gap consumer, or released `k` nodes earlier for prefetch).
+
 ## 3. Build order (each increment is a PR with its own measurement)
 
-- **I1, wire the existing pass.** `PlanOptions::device_budget_bytes: Option<usize>`; in `optimize_graph`, after
-  `insert_residency_copies`, call `insert_residency_evictions` when a pinned device and a budget are both set,
-  with `placement_of` read from the plan's resolved placements. Tests: with no budget the graph is byte-identical
-  (negative control); with a budget below the analysed peak the pass inserts chains, the analysed peak of the
-  transformed graph is at or under the budget, and the realized result equals the unbudgeted result (CPU "device",
-  the same-device spill the pass already documents). Not claimed: any GPU behaviour.
+- **I1, wire the existing pass (DONE in the PR that carries this edit).** `PlanOptions::device_budget_bytes:
+  Option<usize>`; in `optimize_graph`, after `insert_residency_copies`, call `insert_residency_evictions_in`
+  (a `&mut Graph` form; the `SharedGraph` entry point wraps it) when a pinned device and a budget are both set,
+  with `placement_of` read from the plan's resolved placements, plus the two fixes in section 2b (items 1 and 2).
+  Tests: no budget, a roomy budget and no pinned device leave the graph untouched (negative controls); a budget
+  below the peak inserts `Move`/`Copy` chains; `analyze_on` discounts the staged copy; a candidate is evicted at
+  most once. Not claimed: any reduction of the device peak (section 2b item 3) and any GPU behaviour.
 - **I2, the budget source.** Turn the probed total/free VRAM of the pinned device (the `BackendStreams` signal the
   selector already reads) into a default budget with a documented reserve fraction; an explicit
   `FUEL_DEVICE_BUDGET_BYTES` style override for tests and for a box with a shared GPU. The default must be
   conservative and visible in the plan report, never silent.
-- **I3, prefetch.** Order the reload `Op::Copy` a configurable number of nodes before its first post-gap consumer
-  (an ordering edge, the mechanism `derive_ordering` already uses to pin each `Move` after its readers), priced
+- **I3, ordering primitive and prefetch.** First the stored "run after" constraint on `Graph` (section 2b item 3),
+  then order the reload `Op::Copy` a configurable number of nodes before its first post-gap consumer, priced
   with the probed `TransferCalibration` so the distance covers the transfer time. Measure on the 4070 (8 GB)
   with a model that does not fit; needs a GPU window and `scripts/gpu-run.ps1`.
 - **I4, weight streaming.** For weights that do not fit, a planner transform that keeps them host-resident and

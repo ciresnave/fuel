@@ -2771,6 +2771,17 @@ pub fn insert_evict_reload(
     post_gap_consumers: &[NodeId],
 ) -> (NodeId, NodeId) {
     let mut g = graph.write().unwrap();
+    insert_evict_reload_in(&mut g, candidate, src_device, post_gap_consumers)
+}
+
+/// [`insert_evict_reload`] on a graph the caller already holds mutably (the optimizer's
+/// `optimize_graph` takes `&mut Graph`, not a `SharedGraph`). Same chain, same rewrite.
+pub fn insert_evict_reload_in(
+    g: &mut Graph,
+    candidate: NodeId,
+    src_device: DeviceLocation,
+    post_gap_consumers: &[NodeId],
+) -> (NodeId, NodeId) {
     let (shape, dtype) = {
         let n = g.node(candidate);
         (n.shape.clone(), n.dtype)

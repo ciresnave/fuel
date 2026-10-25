@@ -170,5 +170,6 @@ pub use ranker::{
     enumerate_candidates,
 };
 pub use residency::{
-    EvictReload, LiveRange, ResidencyPlanner, ResidencyReport, insert_residency_evictions,
+    EvictReload, EvictionOutcome, LiveRange, ResidencyPlanner, ResidencyReport,
+    insert_residency_evictions,
 };

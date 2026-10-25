@@ -2302,6 +2302,7 @@ fn order_for(
                         roots: effective_roots.to_vec(),
                         generation: optimized.generation,
                         placements: None,
+                        eviction: None,
                     };
                     view.dispatch_order(graph)
                 }
@@ -9305,6 +9306,7 @@ mod tests {
             roots: vec![add_a],
             generation: live_gen,
             placements: None,
+            eviction: None,
         };
         let (arm0_arc, _) = PipelinedExecutor::realize_with_optimized(g_a, add_a, in_a, &opt_a)
             .expect("arm-0 realize");
@@ -9316,6 +9318,7 @@ mod tests {
             roots: vec![add_r],
             generation: live_gen,
             placements: None,
+            eviction: None,
         };
         let empty_route = PickedRoute::new();
         let (route_arc, _) =
@@ -9399,6 +9402,7 @@ mod tests {
             roots: vec![add],
             generation: live_gen,
             placements: None,
+            eviction: None,
         };
         let order_cache: OnceLock<Vec<NodeId>> = OnceLock::new();
         assert!(order_cache.get().is_none(), "sanity: cache starts empty");
@@ -9482,6 +9486,7 @@ mod tests {
             roots: vec![NodeId(0)],
             generation: 42,
             placements: None,
+            eviction: None,
         };
         let order_cache: std::sync::OnceLock<Vec<NodeId>> = std::sync::OnceLock::new();
 
