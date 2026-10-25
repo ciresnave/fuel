@@ -1220,11 +1220,12 @@ fn publishable_members(root: &PathBuf, entries: &[Entry]) -> Vec<String> {
             .1,
     )
     .into_owned();
+    // The list starts at a line beginning `members = [`: the word also appears in comments and in
+    // `default-members`.
     let list = manifest
-        .split("members")
+        .split("\nmembers = [")
         .nth(1)
-        .and_then(|t| t.split_once('['))
-        .and_then(|(_, t)| t.split_once(']'))
+        .and_then(|t| t.split_once(']'))
         .map(|(l, _)| l.to_string())
         .expect("root Cargo.toml has a members list");
     let members: Vec<String> = list
