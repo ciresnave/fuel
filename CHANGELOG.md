@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.12 - 2026-10-25
+
+### Changed
+
+- **BRANCH `seam-vocab-024` ONLY, never merged to `main` (PM plan C).** The workspace `unpopped-vocab` requirement moves from 0.22.0 to 0.24.0 so `fuel-kernel-seam` and `fuel-kernel-seam-types` can be published on it (baracuda's `baracuda-cuda-seam` consumes them and must move to 0.24 after them). `fuel-kernel-seam`, `-types` and `-announce` check clean on 0.24 (`cargo check -p ... --all-targets`, 0 errors; they reach no baracuda crate). `fuel-dispatch --features jit` is KNOWN BROKEN on this branch: 8 type-identity errors between `baracuda_kernels_types` (unpopped-vocab 0.22 via baracuda alpha.158) and `unpopped_vocab` 0.24 in `jit_adopt.rs` and `jit_carrier.rs`, with about 30 more `baracuda_kernels_types` uses behind them. The single fuel PR to `main` that adapts `fuel-dispatch` and moves the baracuda pins comes after baracuda republishes on 0.24; the seam crates' sources there must be byte-identical to the published ones.
+
 ## v0.26.8 - 2026-10-25
 
 ### Changed
