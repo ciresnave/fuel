@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.0 - 2026-10-25
+
+### Breaking
+
+- `WeightStorage::F16(Arc<[half::f16]>)` is a new variant of the public `fuel_tensor::lazy::WeightStorage`, and the enum is now `#[non_exhaustive]`, so a downstream `match` over it needs a wildcard arm from here on (ROADMAP row 34, loaders slice). In this workspace only `fuel-nn`'s `Conv2d::absorb_bn` matched it exhaustively; it now folds an F16 conv weight and returns a typed error for a variant it cannot fold.
+
+### Added
+
+- `load_transposed_matrix_preserve_dtype` keeps an F16 checkpoint half-width as `WeightStorage::F16` (previously only BF16 stayed compact; F16 was upcast to f32). `apply_linear` on an F16 weight with f32 activations runs the native CPU `[F32, F16, F32]` kernel from 0.25.13. Tests: `fuel-tensor/tests/preserve_dtype_f16.rs` (bit-exact transpose, BF16 and F32 controls, CPU `apply_linear` against the widened-weight reference).
+
 ## v0.25.15 - 2026-10-24
 
 ### Added
