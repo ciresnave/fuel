@@ -1,6 +1,23 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.26 - 2026-10-25
+
+### Added
+
+- ROADMAP row 67, increment I1: `PlanOptions::device_budget_bytes` (default `None`, builder `with_device_budget_bytes`). With a pinned device and a budget, `optimize_graph` runs the residency-eviction pass (`insert_residency_evictions_in`, a `&mut Graph` form of `insert_residency_evictions`; `fuel_graph::opt::insert_evict_reload_in` likewise) after the residency-copy pass. With no budget the graph is unchanged (tested). The pass had no production caller before this.
+
+### Fixed
+
+- `ResidencyPlanner::analyze_on(graph, roots, device)`: the eviction loop now measures the executor's own order (`execution_plan`) and counts only nodes resident on the planned device; the old `analyze` (plain topological order, every output counted, unchanged and still used for KV-pool sizing) could not see an eviction's effect.
+- A second run of the eviction pass no longer evicts a source that already feeds an eviction `Op::Move`: two destructive Moves of one source made `execution_plan` panic with "cycle in ordering edges".
+
+### Known limitation
+
+- One eviction round does NOT yet lower the analysed device peak: the reload `Op::Copy` runs right after its `Op::Move` because `Graph` has no way to add a "run after" constraint (64 -> 64 bytes on the test graph). Pinned by `residency::tests::today_the_reload_runs_eagerly_so_the_device_peak_does_not_drop`, which row 67 I3's PR must flip to assert a drop. Not run on a GPU; nothing here sets a budget by default.
+
+- Review fixes (Pip, advisory, on PR #498; each verified against the code before changing it): the eviction pass now stops at the first round that does not lower the analysed device peak and returns an `EvictionOutcome` (`peak_before`, `peak_after`, `fits()`, the chains), which `optimize_graph` surfaces as `OptimizedGraph::eviction`; before, a same-device budget could never be met (the reload runs right after its Move until row 67 I3) and the pass inserted a transfer pair per candidate, up to 16, then discarded the result. A realize root is never evicted (a `Move` consumes its source and the caller reads the root afterwards). `analyze_on` no longer counts a node stamped for another device or an `Op::Alloc` aimed elsewhere. A comment that cited a test that does not exist was corrected. New tests: root never evicted, stalled pass stops and reports, a consumer reading the candidate twice is rewired in both slots; each of the first two was made to fail by removing its fix.
+
 ## v0.26.24 - 2026-10-25
 
 ### Added
