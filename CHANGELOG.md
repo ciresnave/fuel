@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.19 - 2026-10-25
+
+### Fixed
+
+- `fuel-model-phi --features cuda` did not compile: its cuda-gated `forward_with_kv_context_captured` names `fuel_dispatch::pipelined::{CapturedDecodeSession, StorageCache}` but the crate did not depend on `fuel-dispatch` (4 x E0433), and called `invalidate_decode_pair_if_stale` unqualified (E0425; the helper is `fuel_tensor::lazy::invalidate_decode_pair_if_stale`, shared with `LlamaModel` by design). Found by the first slot build of the feature: `fuel-model-llama --features cuda` compiled (after 0.26.2's `host_buffer_to_bytes` visibility fix), `fuel-model-phi --features cuda` had these 5 errors. **Compiles with `--features cuda` (slot build at `origin/main@991b93702` plus this change, 0 errors); NOT run on a GPU** (neither crate's captured-decode path has been executed on a device in this change).
+
 ## v0.26.18 - 2026-10-25
 
 ### Changed

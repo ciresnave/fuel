@@ -15,6 +15,9 @@
     cuda = ["fuel-tensor/cuda"]
 
 [dependencies]
+    # The cuda-gated capture path names `fuel_dispatch::pipelined::{CapturedDecodeSession, StorageCache}`;
+    # the crate did not depend on it, so `--features cuda` failed with E0433 (found 2026-10-25).
+    fuel-dispatch  = { workspace = true }
     fuel-graph     = { workspace = true }
     fuel-ir        = { workspace = true }
     # Added for hf_config's shim retirement (fuel-core dissolution,
