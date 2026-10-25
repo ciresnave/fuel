@@ -72,6 +72,10 @@ SOFTWARE.
   Jon Craton (2), zmlcc, zachcp, Kyle Birnbaum, Anubhab Bandyopadhyay (1 each).
 - Licence texts: below, verbatim from upstream at that commit, and in this repository's `LICENSE-MIT` /
   `LICENSE-APACHE` (shipped in every published crate, with this file).
+- **Candle is used under its MIT licence** (the MIT choice of its dual MIT OR Apache-2.0 grant). MIT asks that the
+  notice and licence text be included with copies; every published crate ships them (`LICENSE-MIT`, `LICENSE-APACHE`
+  and this file). The Apache-2.0 requirement of a prominent notice in each changed file is therefore not relied on;
+  in-file origin headers for the candle-derived files are scheduled (ROADMAP row 108), not skipped.
 - **This repository began as a fork of candle. File-level tracing is in progress: a file that is not yet
   traced is listed as "not traced", never as ours.** The per-file table is `docs/provenance/` once it lands;
   until then only the files named above are traced. Both licences require their text and notice to travel
