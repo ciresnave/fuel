@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.26 - 2026-10-25
+
+### Changed
+
+- Dependencies: every `baracuda-*` pin moves to `0.1.0-alpha.25` (the `0.0.1-alpha.N` line ended at 158; `baracuda-cuda-seam` `=0.1.0-alpha.15` to `=0.1.0-alpha.25`), and `unpopped-vocab` to `0.24.0`, all from crates.io (the lock also takes `baracuda-cuda-emit` 0.24.0 and `unpopped` 0.24.0 transitively). This is ROADMAP row 41's step 3: alpha.25's `baracuda-kernels-types` requires `unpopped-vocab ^0.24.0`, so the workspace and baracuda now name the same vocabulary version. Checked: `cargo check -p fuel-dispatch --features jit,telemetry --all-targets` (CPU) finishes clean, and a CUDA slot build `cargo check -p fuel-cuda-backend -p fuel-dispatch --features fuel-dispatch/cuda,fuel-dispatch/jit --all-targets` finishes with 0 errors (compile only, **nothing was run on a GPU**). The three seam crate directories differ from the published tag `v0.26.12` only by the `THIRD-PARTY-NOTICES.md` copy added in 0.26.22. **NOT working: the `jit-synth` feature.** `baracuda-cuda-seam` alpha.25 requires `fuel-kernel-seam` and `fuel-kernel-seam-types` at exactly `=0.26.12`, the workspace copies are 0.26.26, and `[patch.crates-io]` cannot unify an exact old version with the path crates, so the lock holds two copies of each and `cargo check --features fuel-dispatch/jit-synth` fails with two E0308 errors inside baracuda-cuda-seam (`PatternNode` of one copy against the other). I did not build `jit-synth` at the old pins, so I cannot say it ever worked since the seam crates left 0.25.
+
 ## v0.26.22 - 2026-10-25
 
 ### Changed
