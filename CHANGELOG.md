@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.21 - 2026-10-25
+
+### Changed
+
+- Provenance only (no behaviour change): `fuel-quantized`'s `k_quants.rs`, `utils.rs`, `avx.rs`, `neon.rs` and (in part) `cpu.rs` now say they derive from candle (`candle-core/src/quantized/`, MIT OR Apache-2.0, upstream commit `549eacb0`), and `THIRD-PARTY-NOTICES.md` gains a "candle" section: the evidence (the repository's own history blobs for the four files are byte-identical to upstream; 77-96% of the current non-blank lines of those files appear verbatim upstream), the upstream contributors, and what was NOT derived (`dequant.rs`, `awq_repack.rs`, `lib.rs`). The ggml section now says the Q4_0 / Q8_0 / k-quant files reach ggml through candle's port, and that only `BlockQ4_0::from_float` was compared against ggml's source. New gate `candle_derived_files_still_name_their_origin` in `fuel-ir/tests/spdx_header_ratchet.rs`. Other candle-derived files elsewhere in the repository are not traced by this change.
+
 ## v0.26.19 - 2026-10-25
 
 ### Fixed

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Derived from candle (https://github.com/huggingface/candle, MIT OR Apache-2.0): `candle-core/src/quantized/utils.rs`
+// at commit 549eacb011f25b2c6fc765d6c3dbd26e42f72ee6, modified here. candle's code is itself a port of ggml / llama.cpp (MIT), which its own comments cite by commit.
+// Contributors, how this was verified and the licence texts: THIRD-PARTY-NOTICES.md (section "candle").
 pub(super) fn nearest_int(v: f32) -> i32 {
     v.round() as i32
 }

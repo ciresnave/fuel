@@ -1288,3 +1288,117 @@ fn packaged_licence_copies_are_listed_and_match_the_root_files() {
         "packaged licence copies must be byte-identical to the root files and named in both          path-keyed lists: {problems:#?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Files derived from candle: they KEEP their SPDX line (candle declares the same licence), so
+// INHERITED_WITH_NOTICE does not apply; what must travel with them is the statement of origin.
+// ---------------------------------------------------------------------------
+
+/// `(path, the basename the THIRD-PARTY-NOTICES.md "candle" section lists it under)`.
+const DERIVED_FROM_CANDLE: &[(&str, &str)] = &[
+    ("fuel-quantized/src/k_quants.rs", "k_quants.rs"),
+    ("fuel-quantized/src/utils.rs", "utils.rs"),
+    ("fuel-quantized/src/avx.rs", "avx.rs"),
+    ("fuel-quantized/src/neon.rs", "neon.rs"),
+    ("fuel-quantized/src/cpu.rs", "cpu.rs"),
+];
+
+/// The upstream commit those headers and the ledger name.
+const CANDLE_COMMIT: &str = "549eacb011f25b2c6fc765d6c3dbd26e42f72ee6";
+
+fn candle_origin_violations(items: &[(&str, &str, Vec<u8>)], ledger: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if !ledger.contains("## candle (Hugging Face)") || !ledger.contains(CANDLE_COMMIT) {
+        out.push("THIRD-PARTY-NOTICES.md lost its candle section or the upstream commit".into());
+    }
+    for (rel, listed_as, bytes) in items {
+        let head = head_of_bytes(bytes);
+        if !head.contains("Derived from candle") || !head.contains(CANDLE_COMMIT) {
+            out.push(format!(
+                "{rel}: lost its statement of origin (candle @{CANDLE_COMMIT})"
+            ));
+        }
+        if !ledger.contains(&format!("`{listed_as}`")) {
+            out.push(format!(
+                "{rel}: not listed in the candle section of THIRD-PARTY-NOTICES.md"
+            ));
+        }
+    }
+    out
+}
+
+#[test]
+fn candle_derived_files_still_name_their_origin() {
+    let root = workspace_root();
+    let entries = tracked_entries(&root);
+    let mut want: Vec<&str> = DERIVED_FROM_CANDLE.iter().map(|(p, _)| *p).collect();
+    want.push("THIRD-PARTY-NOTICES.md");
+    let fetched = blobs_for(&root, &entries, &want);
+    let (ledger, files) = fetched.split_last().expect("blobs_for returned nothing");
+    let ledger = String::from_utf8_lossy(&ledger.1).into_owned();
+    let items: Vec<(&str, &str, Vec<u8>)> = DERIVED_FROM_CANDLE
+        .iter()
+        .zip(files.iter())
+        .map(|((rel, listed), (_, bytes))| (*rel, *listed, bytes.clone()))
+        .collect();
+    assert_eq!(
+        items.len(),
+        DERIVED_FROM_CANDLE.len(),
+        "every listed file must be tracked"
+    );
+    let v = candle_origin_violations(&items, &ledger);
+    assert!(
+        v.is_empty(),
+        "candle-derived file(s) lost their statement of origin or their ledger entry. Removing          the credit is a provenance violation; restore it, or (if a file was rewritten from          scratch) say so in the commit and drop it from DERIVED_FROM_CANDLE.
+{v:#?}"
+    );
+}
+
+#[test]
+fn constructed_a_stripped_origin_header_or_ledger_entry_reddens() {
+    let ledger = format!(
+        "## candle (Hugging Face)
+{CANDLE_COMMIT}
+`k_quants.rs`
+"
+    );
+    let good = vec![(
+        "fake/k_quants.rs",
+        "k_quants.rs",
+        format!(
+            "// SPDX
+// Derived from candle @{CANDLE_COMMIT}
+"
+        )
+        .into_bytes(),
+    )];
+    assert!(
+        candle_origin_violations(&good, &ledger).is_empty(),
+        "control: intact must not flag"
+    );
+    let stripped = vec![(
+        "fake/k_quants.rs",
+        "k_quants.rs",
+        b"// SPDX
+fn main() {}
+"
+        .to_vec(),
+    )];
+    assert!(
+        candle_origin_violations(&stripped, &ledger)
+            .iter()
+            .any(|m| m.contains("statement of origin")),
+        "a stripped header must redden"
+    );
+    let unlisted = vec![("fake/other.rs", "other.rs", good[0].2.clone())];
+    assert!(
+        candle_origin_violations(&unlisted, &ledger)
+            .iter()
+            .any(|m| m.contains("not listed")),
+        "a missing ledger entry must redden"
+    );
+    assert!(
+        !candle_origin_violations(&good, "no section here").is_empty(),
+        "a lost ledger section must redden"
+    );
+}
