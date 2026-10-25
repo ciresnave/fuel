@@ -893,6 +893,8 @@ jobs:
         run: cargo package --workspace --exclude fuel-model-fixture --exclude fuel-model-umbrella-fixture --locked --no-verify
       - name: No include leaves a tarball
         run: python3 scripts/verify-packaged-crates.py scan target/package
+      - name: Every tarball carries the licence texts and the third-party notices
+        run: python3 scripts/verify-packaged-crates.py notices target/package
       - name: Build every crate from its own tarball
         run: python3 scripts/verify-packaged-crates.py build target/package Cargo.lock ${{ env.WORKSPACE_EXCLUDES }}
 
