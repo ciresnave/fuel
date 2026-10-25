@@ -311,6 +311,18 @@ impl QuantizedLlama3Model {
                     in_features,
                     out_features,
                 }),
+                // Q8_0 stays 8-bit too and runs through `QMatMul` (the CPU, Vulkan kernels take
+                // `QuantType::Q8_0`). Before this arm a Q8_0 checkpoint was dequantized to an f32
+                // copy and every linear ran the f32 matmul: SmolLM2-135M, 145-token prompt, CPU,
+                // ~27 s of a 27 s prefill. `in_features` must be a whole number of 32-element blocks.
+                fuel_loaders::quantized::GgmlDType::Q8_0 if in_features.is_multiple_of(32) => {
+                    Ok(WeightStorage::Q8_0 {
+                        words: bytes_to_u32_arc(bytes),
+                        bytes_len: bytes.len(),
+                        in_features,
+                        out_features,
+                    })
+                }
                 _ => {
                     // Dequantize to F32 and transpose [out, in] → [in, out].
                     let f32_out_in = dequant_bytes_to_f32(bytes, dt, name)?;

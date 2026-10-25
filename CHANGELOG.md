@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.27.0 - 2026-10-25
+
+### Breaking
+
+- `fuel_tensor::lazy::WeightStorage` has a new variant `Q8_0 { words, bytes_len, in_features, out_features }`; a downstream exhaustive `match` over the enum needs an arm (in this workspace only `fuel-nn`'s `Conv2d::absorb_bn` matched it exhaustively). Pre-1.0 breaking, so the second number moves (PM allocated 0.27.0); making `WeightStorage` `#[non_exhaustive]` (so the next variant is not breaking) is on the F16-weights branch.
+
+### Changed
+
+- GGUF Q8_0 linear weights stay 8-bit and run through `Op::QMatMul` with `QuantType::Q8_0` (`QuantizedLlama3Model::from_gguf`, the llama loader only) instead of being dequantized to an f32 copy; before this every linear of a Q8_0 checkpoint ran the f32 matmul. Measured on SmolLM2-135M Q8_0, CPU release, base `origin/main@c39b9e53` against this change, host 50-90% busy (other lanes), executables proven different: 140-token contiguous persistent prefill 42.4 s and 43.0 s -> 14.9 s and 23.8 s (f32 `MatMul` launches 271 -> 61, `QMatMul` 210); 60-token scheduler time to first token (per-token re-plan, i.e. without the 0.26.2 fix) 83.3 s -> 52.0 s. Numerics: the CPU kernel rounds the f32 activations to Q8_0 blocks (llama.cpp's `vec_dot`), so results differ from the dequantized path by that rounding: the first logit moved 11.318165 -> 11.442013 (+1.1%); the sampled tokens were identical on the 60-token run. Pinned by `fuel-tensor/tests/q8_0_weight_storage.rs` (error against an f64 reference of the dequantized weight within the activation-rounding bound, tolerance sabotage-calibrated, shape mismatch is a typed error). Other loaders (phi, qwen, gemma, ...) still dequantize Q8_0; GPU backends untested with this variant.
+
 ## v0.26.2 - 2026-10-25
 
 ### Fixed

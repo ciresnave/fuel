@@ -89,9 +89,12 @@ impl QuantizableLinear {
         Self::new(weight, None, in_features, out_features)
     }
 
-    /// Returns `true` if the underlying weight is Q4_0.
+    /// Returns `true` if the underlying weight is Q4_0 or Q8_0.
     pub fn is_quantized(&self) -> bool {
-        matches!(self.weight, WeightStorage::Q4_0 { .. })
+        matches!(
+            self.weight,
+            WeightStorage::Q4_0 { .. } | WeightStorage::Q8_0 { .. }
+        )
     }
 
     /// Reference to the underlying weight storage.
