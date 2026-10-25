@@ -1099,13 +1099,17 @@ jobs:
   # triaged by rule on the ROADMAP, never silenced in this file. The reusable
   # workflow is pinned to a commit SHA on coderipper's main, fixes the rule
   # profile and the CodeRipper version, and builds this crate (build.rs runs).
-  # KNOWN RED (2026-10-25): on a GitHub-hosted runner (~14 GB disk) the sweep runs out of disk
-  # ("No space left on device", 23 of 45 members analysed) and fuel-aocl-cpu-backend / fuel-cuda-backend
-  # fail to link (no SDK; "not judged"). Advisory-red until coderipper gets a build-footprint limit;
-  # not moved to a self-hosted runner (public repo, board 241). The job is deliberately NOT hidden.
+  # KNOWN RED (2026-10-25, corrected): the first run on the 0.9.37 pin (fuel#499, run 40186542506) ran on a 145G
+  # runner (59G used / 86G free before, 65G / 80G after; coderipper-build 4442 MB, ~/.cargo 449 MB) and analysed
+  # 45 of 45 members. The only member not judged is fuel-metal-kernels (the Metal crate compiles to nothing off
+  # macOS, so coderipper's per-run positive controls cannot fire); it is a declared skip in .coderipper.toml.
+  # An earlier note here said the sweep runs out of disk on a ~14 GB runner; that was WRONG for this runner (the
+  # "No space left on device" was seen once, on the 0.9.14 sweep, and did not reproduce). Not moved to a self-hosted
+  # runner (public repo, board 241). The job is deliberately NOT hidden.
   # PIN (2026-10-25): coderipper's workflow commit 33bd9292 sets CODERIPPER_VERSION=0.9.37 (read inside that commit)
   # and fails the job if the installed binary is not that release; it logs `df -h /` and `du -sm` before and after
-  # the sweep. The previous pin (0688a6f7, tag v0.9.24's commit) installed 0.9.20: a tag's commit is not the version it names (the workflow file at the commit decides).
+  # the sweep. The previous pin (0688a6f7, tag v0.9.24's commit) installed 0.9.20: a tag's commit is not the version it
+  # names (the workflow file at the commit decides).
   portfolio:
     permissions:
       contents: read

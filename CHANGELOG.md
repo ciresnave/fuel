@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.17 - 2026-10-25
+
+### Changed
+
+- CI only: retraction and one declared skip for the Portfolio check. The first hosted run on the 0.9.37 pin (fuel#499, run 40186542506) printed `installed: coderipper 0.9.37; CODERIPPER_VERSION: 0.9.37`, and read a 145G runner (59G used / 86G free before the sweep, 65G / 80G after; `coderipper-build` 4442 MB, `~/.cargo` 449 MB, `coderipper-bin` 24 MB) and `45 members analysed, 1 with errors`. The earlier stated cause (a ~14 GB hosted runner out of disk with 23 of 45 members analysed, in the 0.26.5 entry, the `rust-ci.yml` comment and ROADMAP row 102) came from one run of the 0.9.14 sweep and did not reproduce; all three places are corrected. The one member not judged, `fuel-metal-kernels` (compiles to nothing off macOS, so coderipper's per-run positive controls cannot fire), is now a declared `[[skip_member]]` in the new `.coderipper.toml` (`needs = "xcrun"`, owner the fuel lane): printed "not judged (declared skip)", not a failure, and no finding of any built member is hidden.
+
 ## v0.26.14 - 2026-10-25
 
 ### Changed
@@ -29,7 +35,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Changed
 
-- CI only: the advisory Portfolio check is pinned to coderipper 0.9.24 (was 0.9.14) and `rust-ci.yml` records why the job is red for fuel: on a GitHub-hosted runner (~14 GB disk) the sweep runs out of disk (23 of 45 members analysed) and `fuel-aocl-cpu-backend` / `fuel-cuda-backend` fail to link without their SDKs. It stays visible and advisory; the fix is a coderipper build-footprint limit.
+- CI only: the advisory Portfolio check is pinned to coderipper 0.9.24 (was 0.9.14) and `rust-ci.yml` records why the job is red for fuel. [Corrected in 0.26.17: the cause first stated here, a ~14 GB hosted runner running out of disk with 23 of 45 members analysed, did not reproduce; see the 0.26.17 entry.] It stays visible and advisory.
 
 ## v0.26.2 - 2026-10-25
 
