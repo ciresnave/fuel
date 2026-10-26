@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.32 - 2026-10-26
+
+### Changed
+
+- Docs only (weekly roadmap sweep): the 18 open ROADMAP rows that were stale (latest dated entry more than 14 days old or none, and no owner, blocker or gate named: rows 48, 52, 54, 56, 58, 59, 61, 62, 73, 79, 82, 85, 90, 91, 93, 96, 98, 99) now name the Fuel lane as owner (not scheduled). Row 90 (plan-fragment memoization and horizontal fusion) also carries the patent design gate: no horizontal-fusion rule family until CireSnave rules (US 12,619,868 B2 claim 1).
+
 ## v0.26.31 - 2026-10-26
 
 ### Changed
