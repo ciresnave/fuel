@@ -9,7 +9,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Deprecated
 
-- `fuel-kernel-seam-announce`: `negotiate()` (a plain AND, wrong for provider-only bits) and `SEAM_CAP_JIT_ON_REQUEST` (bit 16 is in the KISS EXT experimental range, not the registry; the registry bit is FEAT 32, a different position). Both are removed in 0.27.0; the deprecated `negotiate()` is pinned by a test until then. `examples/gap315_seam_probe.rs` uses the new function.
+- `fuel-kernel-seam-announce`: `negotiate()` (a plain AND, wrong for provider-only bits) and `SEAM_CAP_JIT_ON_REQUEST` (bit 16 is in the KISS EXT experimental range, not the registry; the registry bit is FEAT 32, a different position). Both are removed in 0.27.0; the deprecated `negotiate()` is pinned by a test until then. `examples/gap315_seam_probe.rs` uses the new function. Bit 16 to 32 moves nothing downstream: the PM grepped baracuda and Unpopped at origin/main for `JIT_ON_REQUEST` and found no hits.
 
 ## v0.26.32 - 2026-10-26
 
