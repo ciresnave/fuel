@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.31 - 2026-10-26
+
+### Changed
+
+- Docs only: corrections to the patent sweep after the PM's independent reads (`.lane-state/patent-reads`, board 314). US 8,458,680 B2's expiry is **2027-03-05** on Google's page for that patent, not 2030-08-08 (that was its parent US 8,108,844 B2's date, which the claims tool printed under it); the chart's statement that Fuel "does not require or exploit" shared memory is replaced by the code facts (a `TransferPath::SharedMemory` is modelled and priced, no backend declares it); the '066 default-path statement is corrected for Metal (it compiles source at run time and caches the library); US 11,556,756 B2's maintenance fee is unconfirmed. New "Design gates until CireSnave rules" section: no delayed-reload ordering for ROADMAP row 67 I3 (US 11,521,062 B2 claim 23) and no horizontal-fusion rule family (US 12,619,868 B2); ROADMAP row 67 carries the gate. New "Before the first publish" list in `docs/PATENT-SWEEP.md`, including re-checking US 2023/0025245 A1 on the USPTO record.
+
 ## v0.26.30 - 2026-10-25
 
 ### Added
