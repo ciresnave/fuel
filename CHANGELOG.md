@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.30 - 2026-10-25
+
+### Added
+
+- `fuel-quantized` feature `float-dot` (OFF by default; no default behaviour changes): the CPU quantized matmul converts each weight row to f32 and dots it with the f32 activation row instead of quantising the activations and using the per-block integer `vec_dot`. A measuring instrument for the cost of not using per-block-scaled integer dot products (the Nvidia US 12,045,307 / 12,412,082 charts in `docs/PATENT-SWEEP-CHARTS.md`). Measured on TinyLlama-1.1B-Chat Q4_0, CPU (Ryzen 9 7940HX, 32 logical processors, `target-cpu=native`), 24-token prompt then 48 greedy tokens, three alternating runs per build, other lanes building (CPU load 6 to 37% before each run, not idle): **decode 125 to 131 ms/token with the integer dot (7.65 to 7.98 tok/s) against 169 to 177 ms/token with float-dot (5.65 to 5.93 tok/s): float-dot is about 36% slower per decoded token (mean 127.4 ms against 173.5 ms)**; **24-token prefill 2.95 to 3.55 s (6.8 to 8.1 tok/s) with the integer dot against 2.48 to 2.61 s (9.2 to 9.7 tok/s) with float-dot: float-dot is about 21% faster at m = 24** (the weight row is converted once and reused for 24 activation rows). Greedy token ids are deterministic within each build and agree for the first 23 of 48 tokens on this synthetic repeating-token prompt, then diverge (near-tie logits; 30 of 48 positions equal overall), so this is a speed measurement, not an accuracy one. On `main` only Q4_0 reaches this path (Q8_0 is dequantised to f32 at load; the native Q8_0 draft PR #495 would add it). Two tests: the float-dot driver equals the f32 matmul of the dequantised weights, and the default matmul stays within the activation-quantisation error of the same reference.
+
 ## v0.26.28 - 2026-10-25
 
 ### Added
