@@ -57,7 +57,7 @@ Source `G` = restricted to patents.google.com; `U` = unrestricted; `J` = patents
 
 ## Hits
 
-"Read by": **lane** = I re-read the independent claim(s) quoted; **agent** = the sub-agent's reading only. Expiry dates are Google's estimates. Verdict vocabulary is the process's (`clear`, `design-around`, `needs-review`) plus `unread`; a **lane verdict** replaces the agent's candidate, an **agent candidate** is shown in brackets and is not a verdict.
+"Read by": **lane** = I re-read the independent claim(s) quoted; **agent** = the sub-agent's reading only. Expiry dates are Google's estimates. Verdict vocabulary is the process's (`clear`, `design-around`, `needs-review`) plus a label for a number whose claims could not be fetched; a **lane verdict** replaces the agent's candidate, an **agent candidate** is shown in brackets and is not a verdict.
 
 ### Needs review (the PM puts these on the board)
 
@@ -75,7 +75,7 @@ Source `G` = restricted to patents.google.com; `U` = unrestricted; `J` = patents
 | 10 | US 12,619,868 B2 | Combining independent operations in a graph structure | Nvidia | Active, ~2042-05-14 | 3 | lane (claim 1) | claim 1: "cause two or more portions of one or more graphs to be combined based ... on whether the two or more portions are to operate independently on the same data; cause a list of operations to be updated ...; and cause two or more additional portions to be combined based ... on the updated list" | a **processor** claim; Fuel's algebraic factoring (A·B + A·C to A·(B+C)) merges operations sharing an operand, but I have not checked that it iterates over an updated list | **needs-review** (low) |
 | 12 | US 12,045,307 B2 | Fine-grained per-vector scaling for neural network quantization | Nvidia | Granted 2024-07-23; filed 2020-10-30, priority 2020-08-28; est. expiry ~2043-04-12 (my calculation) | 9, 16 | lane (claims 1, 14, 17, 20 read from the USPTO scan) | claim 1: "a set of multipliers receives at least a subset of the quantized parameters in the vector and performs multiplication operations at the bitwidth ... modifying ... each vector dot-product value according to the corresponding scale factor ... accumulating the scaled vector dot-product values to produce each element of a multi-dimensional output tensor" | none missing on the CPU integer paths (Q8_0 x Q8_0, Q4_0 x Q8_0, `k_quants.rs:712-731`, `avx.rs:108`); claim 20's tensor-wide coarse scale is absent; weight-only 4-bit paths probably absent (not read) | **needs-review**, charted |
 | 13 | US 12,412,082 B2 | same title | Nvidia | Granted 2025-09-09; same filing and priority; est. expiry ~2043-08-14 (my calculation) | 9, 16 | lane (claims 1, 16, 19 read from the USPTO scan) | claim 1: "computing a coarse scale factor ... shared by at least two of the vectors ... the reduced bitwidth of each of the at least two of the vectors of parameters is also reduced according to the coarse scale factor; and processing ... using a set of multiplier circuits that operate at the reduced bitwidth" | present on the k-quants (two-level scales: `BlockQ4K` `d`/`dmin` plus 6-bit sub-block scales, `k_quants.rs:144-149`); absent on one-level formats; a quantizing-method preamble that Fuel splits across `from_float` and the dot | **needs-review**, charted |
-| 11 | EP 4242845 A1 | Modifying computational graphs | Google | Pending | 15 | agent only (first independent claim; US counterpart not found) | claim 1: "partitioning the computational graph into multiple subgraphs ... assigning ... a communication node ... for another subgraph" | Fuel inserts one copy op at a device boundary rather than paired communication nodes (not verified in code) | **needs-review** (agent candidate; unread by me) |
+| 11 | EP 4242845 A1 | Modifying computational graphs | Google | Pending | 15 | agent only (first independent claim; US counterpart not found) | claim 1: "partitioning the computational graph into multiple subgraphs ... assigning ... a communication node ... for another subgraph" | Fuel inserts one copy op at a device boundary rather than paired communication nodes (not verified in code) | **needs-review** (agent candidate; not read by me) |
 
 ### Read and not a concern on the claims read (agent only unless noted)
 
@@ -132,7 +132,7 @@ These are the sub-agents' readings, recorded so a lawyer can see what was looked
 | 16 | US 9,798,527 B1 | Google | Active | index-function / data-function composition fusion; only claim 1 seen | [design-around] |
 | 16 | US 8,209,664 B2 | Microsoft | Expired | distributed cluster / UDF annotations | [clear, expired] |
 
-**Previously `unread`, read on 2026-10-26:** US 12,045,611, US 12,321,849 and US 10,229,356 (the tool had answered HTTP 404 for them; I downloaded the USPTO scans and read the independent claims by eye) and KR 2026-0039700 (read from Google's English rendering); see the four rows above. **Still read by an agent only:** EP 4242845 A1. **Ideas with no hit read at all:** 14 (kernel interchange seam), and none that claims capture-and-replay of a decode step, symbolic sequence-length re-binding, paged KV with prefix sharing, or a dtype/storage/encoding split with sibling scales was found. Those absences are search weakness (WebSearch returned papers), not clearance.
+**Not read in the first pass, read on 2026-10-26:** US 12,045,611, US 12,321,849 and US 10,229,356 (the tool had answered HTTP 404 for them; I downloaded the USPTO scans and read the independent claims by eye) and KR 2026-0039700 (read from Google's English rendering); see the four rows above. **Still read by an agent only:** EP 4242845 A1. **Ideas with no hit read at all:** 14 (kernel interchange seam), and none that claims capture-and-replay of a decode step, symbolic sequence-length re-binding, paged KV with prefix sharing, or a dtype/storage/encoding split with sibling scales was found. Those absences are search weakness (WebSearch returned papers), not clearance.
 
 ## Second pass (2026-10-25, paced at about one query a minute; no 503 seen)
 
@@ -155,7 +155,7 @@ Rows 1 to 13 above (rows 12 and 13, the two Nvidia per-vector-scaling patents, w
 3. **US 11,790,250 B2** (Intel): profile the application graph on every executor type; Fuel profiles op classes.
 4. **US 11,521,062 B2 claim 23** (IBM): delay-the-restore ordering is what ROADMAP row 67 I3 would add. **Do not build I3 before this is looked at.**
 5. **US 12,288,050 B2** (Grid AI): proxy-input tracing and fusion into executor kernels.
-6. **US 8,146,066 B2**, **US 8,375,368 B2** (charted), **US 12,423,074 B1**, then the Nvidia processor claims **US 2023/0025245 A1** (pending) and **US 12,619,868 B2**, and the unread **EP 4242845 A1**.
+6. **US 8,146,066 B2**, **US 8,375,368 B2** (charted), **US 12,423,074 B1**, then the Nvidia processor claims **US 2023/0025245 A1** (pending) and **US 12,619,868 B2**, and **EP 4242845 A1** (not read by me).
 
 No design change is proposed by this lane. Which of these matter is a question for CireSnave with counsel (see the options in `PATENT-SWEEP-CHARTS.md`).
 
