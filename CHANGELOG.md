@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.28 - 2026-10-25
+
+### Added
+
+- Docs only: claim charts for US 12,045,307 B2 and US 12,412,082 B2 (Nvidia, fine-grained per-vector scaling for neural network quantization; filed 2020-10-30, priority 2020-08-28; estimated expiry about April and August 2043) against Fuel's block-scaled integer dot products (`fuel-quantized` Q8_0, Q4_0 and the k-quants), added to `docs/PATENT-SWEEP-CHARTS.md` with two new `needs-review` rows in `docs/PATENT-SWEEP.md`. The claims were read from the USPTO's scanned PDFs (Google Patents was answering HTTP 503), by eye. A due-diligence read, not legal advice; no code changed. Findings: '307 claims 1, 14, 17 have no missing element on the CPU integer paths; '307 claim 20 (tensor-wide coarse scale) and weight-only 4-bit paths probably do not read; '082 reads on the two-level k-quant formats. No design change is proposed (the formats are ggml's); the ROADMAP's quantized-kernel rows wait for the PM.
+
 ## v0.26.26 - 2026-10-25
 
 ### Added
