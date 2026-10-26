@@ -53,7 +53,7 @@
 //! dropping it varies the two arms on TWO axes and no difference can then be
 //! attributed to the guard. Use a separate `CARGO_TARGET_DIR` so the two
 //! configurations do not invalidate each other's cache on every switch.
-use fuel_kernel_seam_announce::{SEAM_MAX_PROFILES, SeamHello, negotiate};
+use fuel_kernel_seam_announce::{Role, SEAM_MAX_PROFILES, SeamHello, negotiate_with_role};
 
 enum Outcome {
     Panic(String),
@@ -153,7 +153,10 @@ fn main() {
     let r = std::panic::catch_unwind(|| {
         let local = SeamHello::advertise(&(1..=20u16).collect::<Vec<_>>(), 0);
         let remote = SeamHello::advertise(&[20u16], 0);
-        format!("{:?}", negotiate(&local, &remote).map(|n| n.profile))
+        format!(
+            "{:?}",
+            negotiate_with_role(&local, &remote, Role::Consumer).map(|n| n.profile)
+        )
     });
     std::panic::set_hook(prev);
     println!(

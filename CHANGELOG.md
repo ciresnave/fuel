@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.33 - 2026-10-26
+
+### Added
+
+- `fuel-kernel-seam-announce`: `negotiate_with_role(local, remote, Role)`, the role-aware live capability word of KISS-ANNOUNCE-7.3-0003: `(local & remote & !FEAT) | (provider & FEAT)`, FEAT = bits `[24, 48)` (`SEAM_CAP_FEAT_MASK`, `SEAM_CAP_PROVIDER_ONLY_MASK`), masked by axis not by recognition. New `Role`, `SEAM_CAP_{EXT,FEAT,SUB}_MASK`, `SEAM_CAP_PROVISION_ON_REQUEST` (bit 32) and `SEAM_CAP_CONTRACT_QUERY` (bit 33). The 56-byte envelope is unchanged (no role on the wire). Tests include both orientations of the KISS corpus worked vector (`0x0011_0003_0000_0001`, where a plain AND gives `0x0011_0000_0000_0001`) and a sabotage sibling (a FEAT bit only the consumer sets is never live).
+
+### Deprecated
+
+- `fuel-kernel-seam-announce`: `negotiate()` (a plain AND, wrong for provider-only bits) and `SEAM_CAP_JIT_ON_REQUEST` (bit 16 is in the KISS EXT experimental range, not the registry; the registry bit is FEAT 32, a different position). Both are removed in 0.27.0; the deprecated `negotiate()` is pinned by a test until then. `examples/gap315_seam_probe.rs` uses the new function.
+
 ## v0.26.32 - 2026-10-26
 
 ### Changed
