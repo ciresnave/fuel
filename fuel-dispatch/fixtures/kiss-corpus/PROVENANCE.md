@@ -25,8 +25,8 @@ vendoring (2026-10-14) added `ops-narrow-move-nan`, `ops-narrow-select-nan`,
 | `ops-arith.json` | `f4952b4c` (same blob at `5b28bf51`) | `aee2de79a709e722f3c439047bf90c638aec9b24` | `kiss-oracle-vectors-v1.json` |
 | `ops-minmax-ordinary.json` | `f4952b4c` (same blob at `5b28bf51`) | `7bd6cc394bd247f9ca34edfc957d70a37432af97` | `kiss-oracle-vectors-v1.json` |
 | `ops-minmax-signed-zero.json` | `f4952b4c` (same blob at `5b28bf51`) | `d06bdb85c8e626750318b61585b4af3ea5c8d4b4` | `kiss-oracle-vectors-v1.json` |
-| `dtype_manifest.json` | **`86196f7`** (sk6; was `5b28bf51`) | `ab50a92692ce92447913cd14d910c466cdf7e315` | `kiss-dtype-manifest` |
-| `structure_key_vectors.json` | **`86196f7`** (sk6; was `5b28bf51`) | `019f646f607d068db4dfe23396fc817093b6f455` | `kiss-structure-key-vectors` |
+| `dtype_manifest.json` | **`bafbe07`** (was `86196f7`) | `7aa676d9324b800241ddcb31d294ddce8e70af0a` | `kiss-dtype-manifest` |
+| `structure_key_vectors.json` | **`bafbe07`** (was `86196f7`) | `05c7a99bff4451dad318393c3360ac254d598da1` | `kiss-structure-key-vectors` |
 | `structure_key_derivation_vectors.json` | **`86196f7`** (sk6) | `393138b0540bfec0e81e78666ecf1c18f6c665f9` | derivation vectors |
 | `ops-narrow-move-nan.json` | **`5b28bf51`** | `c108226af556aa1c6a45e8e43b85ab29b96dec2d` | `kiss-oracle-vectors-v1.json` |
 | `ops-narrow-select-nan.json` | **`5b28bf51`** | `2efbfd259c43936d8cf6dc24b1375f6c9b5ae81b` | `kiss-oracle-vectors-v1.json` |
@@ -81,10 +81,30 @@ not a vendorable corpus. What the event changes in the two files re-vendored her
   rows, §6.8-0002) that the deriver does not exercise.
 - `dtype_manifest.json`: `f8e6m2` is now in the `reserved` column.
 
-⚠️ **`source_commit` inside `structure_key_vectors.json` is still `19c3ad7`** —
-KISS's own hand-written stamp (KISS #218), unchanged by this event. It is NOT
-the pin of this vendoring; the table above is. The leg's own provenance test
-asserts both so a swap of either cannot pass quietly.
+⚠️ **Superseded 2026-10-28:** KISS dropped the `source_commit` member at `bafbe07`
+(KISS#713; it was a literal `19c3ad7` no generator computed), so the file no longer
+carries it and the leg's provenance test no longer asserts it. The table above is the
+pin of each vendoring.
+
+## The `bafbe07` re-vendor (2026-10-28): MX element rows and the pair vectors
+
+Two files re-vendored byte-for-byte via `git show bafbe07:conformance/corpus/<file>`
+(blobs above verified with `git hash-object --no-filters`; positive control: the
+unchanged `structure_key_derivation_vectors.json` hashes to `393138b0...` here and to
+`313a03f0...` at `bafbe07`, so the two differ and the check can fail). KISS asked for a
+three-line regeneration; Fuel's copy was at `86196f7`, so the real delta also carried
+KISS `68dc233` (the MX element rows `f4e2m1`/`f6e2m3`/`f6e3m2`, KISS-CLASSIFY-6.1-0014..-0016:
+recognition 24 -> 27, usable 21 -> 24, 3 positive and 2 decline vectors) and `9336a5b`
+(three discriminating pair vectors: `i32`, `ix64`, `warp`). Fuel now spells the three MX
+tokens (`fuel_ir::sk4_token`, `SK4_DTYPE_TOKENS` 24 -> 27) and declines them in an
+accumulator position (`DeriveDecline::ElementDtypeAsAccumulator`).
+
+**`structure_key_derivation_vectors.json` is deliberately NOT re-vendored** (still the
+`86196f7` blob `393138b0...`). At `bafbe07` its scope changed from "every cell class
+except ctr" to "every cell class, ctr included": 37 vectors now carry caller-declared
+contraction roles (M/N/K as operand axes, batch axes, weight/scale slots) that
+`kiss_derivation_vectors.rs` cannot feed yet (run against the new file: 37 vectors
+diverge from the pinned sets). Adopting it is harness work, tracked in ROADMAP row 109.
 
 **2026-10-14 -- the paragraph that stood here is superseded.** It said `op_manifest.json`
 was left at `f4952b4c` on purpose and that the NaN files were "not vendored and not

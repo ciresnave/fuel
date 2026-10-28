@@ -663,6 +663,10 @@ pub enum DeriveDecline {
     InvalidContraction,
     /// The token would exceed `MAX_TOKEN_BYTES` (§6.4-0004): declines, never truncates.
     TokenTooLong,
+    /// An MX element dtype (`f4e2m1`, `f6e2m3`, `f6e3m2`) names an accumulator
+    /// (KISS-CLASSIFY-6.1-0016): usable as a weight, output or primary dtype,
+    /// never as an `<acc>`.
+    ElementDtypeAsAccumulator,
 }
 
 impl DeriveDecline {
@@ -683,8 +687,15 @@ impl DeriveDecline {
             DeriveDecline::AccMpOnContraction => "AccMpOnContraction",
             DeriveDecline::InvalidContraction => "InvalidContraction",
             DeriveDecline::TokenTooLong => "TokenTooLong",
+            DeriveDecline::ElementDtypeAsAccumulator => "ElementDtypeAsAccumulator",
         }
     }
+}
+
+/// An MX element dtype (KISS-CLASSIFY-6.1-0014): spellable in a dtype field,
+/// declined in an accumulator position (6.1-0016).
+fn is_mx_element(dt: DType) -> bool {
+    matches!(dt, DType::F4 | DType::F6E2M3 | DType::F6E3M2)
 }
 
 /// The decline for a dtype that [`sk6_dtype_token`] refused: reserved if it is
@@ -933,10 +944,16 @@ fn append_precision_fields(
     compute: DType,
 ) -> Result<(), DeriveDecline> {
     if let Some(a) = acc_mp.filter(|a| a.deviates_from(compute)) {
+        if is_mx_element(a.acc_dtype) {
+            return Err(DeriveDecline::ElementDtypeAsAccumulator);
+        }
         token.push('|');
         token.push_str(&a.field().ok_or_else(|| dtype_decline(a.acc_dtype))?);
     }
     if let (CellClass::DenseContraction, Some(cell)) = (class, facts.contraction) {
+        if is_mx_element(cell.acc_dtype) {
+            return Err(DeriveDecline::ElementDtypeAsAccumulator);
+        }
         token.push('|');
         token.push_str(&contraction_field(&cell).ok_or(DeriveDecline::InvalidContraction)?);
     }
@@ -1030,7 +1047,8 @@ fn size_class(extent: i64) -> Option<char> {
 /// calling this function if operand 0 is `F8E8M0`.
 ///
 /// The block-scoped sub-byte **element** formats (`F6E2M3`/`F6E3M2`/`F4`) are
-/// still outside the set and typed-decline (`None`), never a guessed token.
+/// spelled (`f6e2m3`/`f6e3m2`/`f4e2m1`, KISS-CLASSIFY-6.1-0014); their accumulator
+/// positions decline with [`DeriveDecline::ElementDtypeAsAccumulator`] (6.1-0016).
 ///
 /// **Delegates to [`fuel_ir::sk4_token`], the single source of the seam
 /// spelling**; this function used to carry its own copy of the table. Two
@@ -1315,11 +1333,12 @@ mod tests {
 
         // Non-vacuity: if the spelling table ever returned `None` for everything,
         // the loop above would pass by examining nothing. 14 = the 15 spelled at
-        // sk4 minus `f8e6m2`, reserved at sk5; `token_kind.rs` pins the 15
-        // independently.
+        // sk4 minus `f8e6m2`, reserved at sk5, plus the three MX element
+        // rows (KISS-CLASSIFY-6.1-0014) = 17; `token_kind.rs` pins the 18 seam
+        // spellings independently.
         assert_eq!(
-            spelled, 14,
-            "expected 14 sk5-spelled dtypes; got {spelled} — this test would be vacuous at 0",
+            spelled, 17,
+            "expected 17 sk6-spelled dtypes; got {spelled} — this test would be vacuous at 0",
         );
         let known_positional_exemptions = [DType::F8E8M0];
         let unexpected_gaps: Vec<(DType, &'static str)> = not_derivable
@@ -1736,18 +1755,25 @@ mod tests {
     }
 
     /// A gem cell declines (never guesses) on a precision coordinate outside
-    /// the closed §6.1 set (an MX dtype) or an invalid negative role extent.
+    /// the closed §6.1 set (an MX element as the accumulator, 6.1-0016) or an
+    /// invalid negative role extent.
     #[test]
     fn gem_declines_unmappable_or_invalid() {
         let ops = [f32c(&[8, 4096]), f32c(&[4096, 4096]), f32c(&[8, 4096])];
+        let mx_acc = GemCell {
+            acc_dtype: DType::F4,
+            ..gem_f32(8, 4096, 4096)
+        };
+        assert_eq!(
+            derive(DeclaredFacts::contraction(mx_acc), &ops, "cuda:sm89"),
+            None
+        );
+        // Sibling: the same MX element as the WEIGHT dtype is usable (6.1-0014).
         let mx_weight = GemCell {
             weight_dtype: DType::F4,
             ..gem_f32(8, 4096, 4096)
         };
-        assert_eq!(
-            derive(DeclaredFacts::contraction(mx_weight), &ops, "cuda:sm89"),
-            None
-        );
+        assert!(derive(DeclaredFacts::contraction(mx_weight), &ops, "cuda:sm89").is_some());
         let negative_m = gem_f32(-1, 4096, 4096);
         assert_eq!(
             derive(DeclaredFacts::contraction(negative_m), &ops, "cuda:sm89"),
@@ -1964,19 +1990,18 @@ mod tests {
              deriver-local — reconcile with the GAP row"
         );
 
-        // (3) Negative control: the block-scoped sub-byte ELEMENT formats are
-        // outside the closed set entirely (a vocabulary exclusion, not a
-        // positional one — `sk6_dtype_token` returns None for these too).
-        for dt in [DType::F6E2M3, DType::F6E3M2, DType::F4] {
-            assert_eq!(
-                derive(DeclaredFacts::none(), &[co(&[4096], dt)], "cuda:sm89"),
-                None,
-                "{dt:?} is NOT in the §6.1 set and must still typed-decline",
-            );
-            assert!(
-                sk6_dtype_token(dt).is_none(),
-                "{dt:?} is a vocabulary exclusion, not a positional one",
-            );
+        // (3) The block-scoped sub-byte ELEMENT formats joined the usable set
+        // (KISS-CLASSIFY-6.1-0014): spelled, and derivable at operand 0. Their
+        // accumulator positions decline instead (6.1-0016).
+        for (dt, spelling) in [
+            (DType::F6E2M3, "f6e2m3"),
+            (DType::F6E3M2, "f6e3m2"),
+            (DType::F4, "f4e2m1"),
+        ] {
+            assert_eq!(sk6_dtype_token(dt), Some(spelling));
+            let token = derive(DeclaredFacts::none(), &[co(&[4096], dt)], "cuda:sm89")
+                .unwrap_or_else(|| panic!("{dt:?} must derive at operand 0"));
+            assert_eq!(token.split('|').nth(2), Some(spelling));
         }
     }
 
@@ -2184,10 +2209,10 @@ mod tests {
 
     #[test]
     fn declines_rather_than_guessing() {
-        // Block-scoped sub-byte ELEMENT format (F4) — still outside the §6.1
-        // closed set at sk4 → typed decline. (The two MX *scales* joined the
-        // set at sk4 and now emit; see `mx_scale_and_reserved_dtypes_decline_at_operand_zero_for_distinct_reasons`.)
-        let bad_dtype = co(&[4096], DType::F4);
+        // The reserved `f8e6m2` has no sk6 spelling → typed decline. (The MX
+        // scales and the MX element formats are spelled; see
+        // `mx_scale_and_reserved_dtypes_decline_at_operand_zero_for_distinct_reasons`.)
+        let bad_dtype = co(&[4096], DType::F8E6M2);
         assert_eq!(
             derive(DeclaredFacts::none(), &[bad_dtype], "cuda:sm89"),
             None

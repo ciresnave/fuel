@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.26.34 - 2026-10-28
+
+### Changed
+
+- Re-vendored `structure_key_vectors.json` and `dtype_manifest.json` from KISS `bafbe07` (KISS#713, board 315 item 5 option A: `generated_from` now names the emitting program and the `source_commit` member is gone, so `kiss_structure_key_byte_match.rs` no longer asserts it). Fuel's copy was at `86196f7`, so the re-vendor also brings the MX element rows (KISS-CLASSIFY-6.1-0014..-0016; recognition 24 to 27, usable 21 to 24) and the `i32`/`ix64`/`warp` pair vectors: the byte-match now constructs the six new cells (34 positives, all matched or named exclusions) and 27 declines. `fuel_ir::sk4_token` now spells `F4` as `f4e2m1`, `F6E2M3` as `f6e2m3` and `F6E3M2` as `f6e3m2`; `fuel_ir::SK4_DTYPE_TOKENS` grows from 24 to 27 entries (its array type changes: **breaking in the strict sense, proposed 0.26.34; the PM may prefer 0.27.0**). The structure-key deriver declines an MX element dtype in an accumulator position with the new `DeriveDecline::ElementDtypeAsAccumulator` (6.1-0016; the enum is `#[non_exhaustive]`), asserted by a test whose sabotage (the guard disabled) was seen red. `structure_key_derivation_vectors.json` stays at its `86196f7` blob: at `bafbe07` it also carries 37 contraction-role vectors the harness cannot feed yet (ROADMAP row 109).
+
 ## v0.26.33 - 2026-10-26
 
 ### Added
