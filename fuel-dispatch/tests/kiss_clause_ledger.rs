@@ -117,6 +117,22 @@ struct Row {
 /// Adding a citation without a row is a BUILD FAILURE, which is the point.
 const LEDGER: &[Row] = &[
     Row {
+        clause: "KISS-ANNOUNCE-7.3-0002",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in `fuel-kernel-seam-announce` docs to say why a plain AND is wrong: the                  consumer writes provider-only (FEAT) bits as zero. Fuel's consumer envelope                  sets none; the consumer-only case is exercised by the sabotage sibling of the                  7.3-0003 obligation, which is the row that carries the test.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-ANNOUNCE-7.3-0003",
+        disposition: Obligation,
+        test: Some(
+            "fuel-kernel-seam-announce/src/lib.rs::kiss_vectors_live_word_is_role_aware_in_both_orientations",
+        ),
+        reason: "The role-aware live capability word, `negotiate_with_role`: the KISS corpus                  worked vector (`announce_vectors.json`, `negotiation`) in both orientations.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-CLASSIFY-6.1-0001",
         disposition: Record,
         test: None,
