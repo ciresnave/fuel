@@ -111,7 +111,7 @@ current sources uses `spirv_asm`**, so the pass is dormant, not exercised.
   `layer_norm_last_dim*.slang`, `reduce_last_dim*.slang`.
 - `WaveGetLaneCount` is used to size per-subgroup partials, so the kernel's correctness depends on a
   **device-dependent lane count**. CUDA's warp is the constant 32; a Vulkan subgroup is 32, 64, or
-  another size, and differs between this box's two adapters.
+  another size, and may differ between adapters (this box has an NVIDIA and an AMD adapter; I have not measured either's subgroup size).
 - Needed: subgroup size and subgroup-arithmetic support as **target properties** (the Backend's
   `supports_dtype(kind, target)` shape, extended to a capability query), and a schedule vocabulary
   that does not hard-code 32.
