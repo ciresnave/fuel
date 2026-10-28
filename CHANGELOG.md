@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.27.1 - 2026-10-28
+
+### Added
+
+- Docs only: `docs/SLANG-SEAM-REQUIREMENTS.md`, what the Slang side needs from Unpopped's Frontend/Backend seam that CUDA does not (CireSnave, 2026-10-28, via the PM): a structured binding/ABI manifest (every one of the 147 kernels uses descriptor set 0 with an explicit binding order and a trailing `Params` uniform block), SPIR-V plus the flags that built it, entry names and workgroup size, subgroup operations (27 files), shared memory and atomics (36 and 19 files), packed 16-bit and quantized storage (89 and 6 files), and strided access carried in run-time `Params` (31 kernels). States where ROADMAP row 101 stands (not started) and what Fuel needs from Unpopped to start. Measurements are regex counts over `origin/main` `2eed77789`, with the definitions beside each number.
+
 ## v0.26.33 - 2026-10-26
 
 ### Added
