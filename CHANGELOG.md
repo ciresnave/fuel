@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.30.2 - 2026-10-29
+
+### Changed
+
+- Dependencies: `zip` 9.0.5 -> 9.1.3 (workspace pin; used by `fuel-formats` pickle reading, `fuel-ir`, `fuel-tensor`), with `typed-path` 0.12.3 -> 0.13.0 in the lock. Ran: `cargo test -p fuel-formats`, `cargo test -p fuel-ir --lib`, `cargo check -p fuel-tensor --all-targets`. No source change.
+
 ## v0.30.0 - 2026-10-29
 
 ### Added
