@@ -198,6 +198,10 @@ const SOURCE_PATHS_WITHOUT_EXTENSION: &[&str] = &["Makefile", "scripts/hooks/pre
 /// omission — the difference between a decision and a gap.
 const NON_SOURCE_EXTENSIONS: &[(&str, &str)] = &[
     ("md", "prose"),
+    (
+        "tsv",
+        "data table (docs/provenance/FILES.tsv: the candle provenance table)",
+    ),
     ("txt", "prose and plain-text fixtures"),
     (
         "bin",
@@ -1429,5 +1433,126 @@ fn main() {}
     assert!(
         !candle_origin_violations(&good, "no section here").is_empty(),
         "a lost ledger section must redden"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The candle provenance table: every tracked file has a row. A new file cannot land unclassified.
+// ---------------------------------------------------------------------------
+
+const PROVENANCE_TABLE: &str = "docs/provenance/FILES.tsv";
+/// The table and its README are the table's own files and carry no row.
+const PROVENANCE_META: &[&str] = &["docs/provenance/FILES.tsv", "docs/provenance/README.md"];
+const PROVENANCE_CLASSES: &[&str] = &[
+    "candle",
+    "candle-modified",
+    "not-traced",
+    "ggml",
+    "own",
+    "data",
+    "copy",
+];
+
+/// The table's own rows: `path -> class`, plus a problem for every malformed, unclassified or
+/// duplicated row.
+fn provenance_rows(table: &str) -> (std::collections::BTreeMap<&str, &str>, Vec<String>) {
+    let mut rows = std::collections::BTreeMap::new();
+    let mut out = Vec::new();
+    for (i, line) in table.lines().enumerate().skip(1) {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() != 4 || f[3].is_empty() {
+            out.push(format!(
+                "line {}: expected 4 non-empty-basis columns: {line:?}",
+                i + 1
+            ));
+            continue;
+        }
+        out.extend(provenance_row_problems(f[0], f[1]));
+        if rows.insert(f[0], f[1]).is_some() {
+            out.push(format!("{}: listed twice", f[0]));
+        }
+    }
+    (rows, out)
+}
+
+fn provenance_row_problems(path: &str, class: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if !PROVENANCE_CLASSES.contains(&class) {
+        out.push(format!("{path}: unknown class {class:?}"));
+    }
+    if (class == "copy") != is_packaged_copy(path) {
+        out.push(format!(
+            "{path}: class copy must be exactly the packaged notice copies"
+        ));
+    }
+    out
+}
+
+fn provenance_violations(tracked: &[String], table: &str) -> Vec<String> {
+    let (rows, mut out) = provenance_rows(table);
+    for t in tracked {
+        if !PROVENANCE_META.contains(&t.as_str()) && !rows.contains_key(t.as_str()) {
+            out.push(format!(
+                "{t}: tracked but has no row (add one: python scripts/provenance.py generate)"
+            ));
+        }
+    }
+    for path in rows.keys() {
+        if !tracked.iter().any(|t| t == path) {
+            out.push(format!("{path}: has a row but is not tracked"));
+        }
+    }
+    out
+}
+
+#[test]
+fn candle_provenance_table_covers_every_tracked_file() {
+    let root = workspace_root();
+    let entries = tracked_entries(&root);
+    let table = blobs_for(&root, &entries, &[PROVENANCE_TABLE]);
+    let table = String::from_utf8_lossy(&table[0].1).into_owned();
+    let tracked: Vec<String> = entries.iter().map(|e| e.path.clone()).collect();
+    let v = provenance_violations(&tracked, &table);
+    assert!(
+        v.is_empty(),
+        "{} problem(s) between the tracked files and {PROVENANCE_TABLE}. This repository began as a \
+         fork of candle and its licences require the origin of derived code to be on record: a new \
+         file needs a row. Run `python scripts/provenance.py generate` (it classifies by evidence; \
+         `not-traced` means a person has not judged it yet).\n{v:#?}",
+        v.len()
+    );
+}
+
+#[test]
+fn constructed_an_unclassified_file_and_a_bad_row_redden_the_provenance_gate() {
+    let table =
+        "path\tclass\tcandle_source\tbasis\na.rs\town\t\tnone\nb.rs\tcandle\tc/b.rs\tsame\n";
+    let both = vec!["a.rs".to_string(), "b.rs".to_string()];
+    assert!(
+        provenance_violations(&both, table).is_empty(),
+        "control: a complete table must pass"
+    );
+    let new_file = vec!["a.rs".to_string(), "b.rs".to_string(), "new.rs".to_string()];
+    assert!(
+        provenance_violations(&new_file, table)
+            .iter()
+            .any(|m| m.contains("new.rs") && m.contains("no row")),
+        "a tracked file without a row must redden"
+    );
+    assert!(
+        provenance_violations(&both[..1], table)
+            .iter()
+            .any(|m| m.contains("not tracked")),
+        "a row for an untracked file must redden"
+    );
+    let bad = "path\tclass\tcandle_source\tbasis\na.rs\tmine\t\tnone\nb.rs\tcopy\t\tx\n";
+    let v = provenance_violations(&both, bad);
+    assert!(
+        v.iter().any(|m| m.contains("unknown class")),
+        "an unknown class must redden: {v:?}"
+    );
+    assert!(
+        v.iter().any(|m| m.contains("class copy")),
+        "a non-packaged copy row must redden: {v:?}"
     );
 }
