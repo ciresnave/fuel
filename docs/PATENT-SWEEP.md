@@ -1,6 +1,6 @@
 # Patent sweep: Fuel 0.26.x @ 04adf332d (IN PROGRESS: ideas listed, first search pass done, 13 items need review)
 
-Date started: 2026-10-25. Run by: Fuel lane (Fuel 1), Claude Sonnet 5.5. Method: AI-assisted search and read; **NOT legal advice; NOT a freedom-to-operate opinion.** Process: `C:\Projects\PATENT-SWEEP-PROCESS.md` (CireSnave, board 286: a sweep must exist before any release). Covers the version line 0.26.x (pre-publish; nothing of Fuel has been published to crates.io yet).
+Date started: 2026-10-25. Run by: Fuel lane (Fuel 1), Claude Sonnet 5.5. Method: AI-assisted search and read; **NOT legal advice; NOT a freedom-to-operate opinion.** Process: `C:\Projects\PATENT-SWEEP-PROCESS.md` (CireSnave, board 286: a sweep must exist before any release). Covers the version line 0.26.x at the swept commit, with an addendum for 0.26.24 to 0.28.0 (below). **Correction, 2026-10-29:** the first sentence of this record said "pre-publish; nothing of Fuel has been published to crates.io yet". That was wrong for three crates: `fuel-kernel-seam-types`, `fuel-kernel-seam` and `fuel-kernel-seam-announce` 0.26.12 are on crates.io (the crates.io API listed 0.26.12 as the newest version of each on 2026-10-29; tarballs downloaded and diffed). The other workspace crates were not checked.
 
 **Status of this record (2026-10-25, first pass):** the idea list is written; each idea has been searched with 3 to 9 documented queries and its closest hits read (by sub-agents, then re-read by the lane for the 13 `needs-review` items). **This is a first pass, not a finished sweep:** recall is low (see "How the search was run"), ideas 9, 10, 11 and 14 are barely covered, USPTO/Espacenet/WIPO were not queried directly, and no `clear` below is a clearance of the idea. Nothing here is a freedom-to-operate opinion.
 
@@ -132,7 +132,7 @@ These are the sub-agents' readings, recorded so a lawyer can see what was looked
 | 16 | US 9,798,527 B1 | Google | Active | index-function / data-function composition fusion; only claim 1 seen | [design-around] |
 | 16 | US 8,209,664 B2 | Microsoft | Expired | distributed cluster / UDF annotations | [clear, expired] |
 
-**Not read in the first pass, read on 2026-10-26:** US 12,045,611, US 12,321,849 and US 10,229,356 (the tool had answered HTTP 404 for them; I downloaded the USPTO scans and read the independent claims by eye) and KR 2026-0039700 (read from Google's English rendering); see the four rows above. **Still read by an agent only:** EP 4242845 A1. **Ideas with no hit read at all:** 14 (kernel interchange seam), and none that claims capture-and-replay of a decode step, symbolic sequence-length re-binding, paged KV with prefix sharing, or a dtype/storage/encoding split with sibling scales was found. Those absences are search weakness (WebSearch returned papers), not clearance.
+**Not read in the first pass, read on 2026-10-26:** US 12,045,611, US 12,321,849 and US 10,229,356 (the tool had answered HTTP 404 for them; I downloaded the USPTO scans and read the independent claims by eye) and KR 2026-0039700 (read from Google's English rendering); see the four rows above. **Still read by an agent only:** EP 4242845 A1. **Idea 14 (kernel interchange seam):** only the two Baidu hits in its row of the second-pass table were read (by the lane); its other queries recorded no hit, so the earlier wording "no hit read at all" contradicted that row and is replaced. **No patent was found** that claims capture-and-replay of a decode step, symbolic sequence-length re-binding, paged KV with prefix sharing, or a dtype/storage/encoding split with sibling scales. Those absences are search weakness (WebSearch returned papers), not clearance.
 
 ## Second pass (2026-10-25, paced at about one query a minute; no 503 seen)
 
@@ -150,7 +150,7 @@ Still not searched: ideas 9 (sibling-scale storage), the CPC-class pass, and dir
 
 Rows 1 to 13 above (rows 12 and 13, the two Nvidia per-vector-scaling patents, were added 2026-10-25 at the PM's request and are the closest to Fuel's quantized kernels), ordered by how closely the independent claims track what Fuel does today:
 
-1. **US 8,458,680 B2** (charted): reads on the core of Fuel's dispatch on every element except two construction questions. Expires 2027-03-05 if Google's date for this patent holds (corrected; its parent's 2030-08-08 is the other number in circulation); counsel to confirm and to read the parent.
+1. **US 8,458,680 B2** (charted): reads on the core of Fuel's dispatch on every element except two construction questions. Expires 2027-03-05 if Google's date for this patent holds (corrected; its parent's 2030-08-08 is the other number in circulation); counsel to confirm. **Parent read 2026-10-29** (see the claim-read section below): its term is 2030-08-08 per Google, so the family outlives 2027-03-05.
 2. **US 11,556,756 B2** (Alibaba): Fuel's placement DP computes the same trellis implicitly; the only difference is the explicit "augmented graph with replica nodes".
 3. **US 11,790,250 B2** (Intel): profile the application graph on every executor type; Fuel profiles op classes.
 4. **US 11,521,062 B2 claim 23** (IBM): delay-the-restore ordering is what ROADMAP row 67 I3 would add. **Do not build I3 before this is looked at.**
@@ -159,11 +159,48 @@ Rows 1 to 13 above (rows 12 and 13, the two Nvidia per-vector-scaling patents, w
 
 No design change is proposed by this lane. Which of these matter is a question for CireSnave with counsel (see the options in `PATENT-SWEEP-CHARTS.md`).
 
+## Addendum 2026-10-29: additions after the swept commit (0.26.24 to 0.28.0 @ 8ff54523e). Ideas and queries only; NO verdicts
+
+Nothing below has been searched or read yet; this section lists what is new so the next read pass has it. The swept list above was written at `04adf332d`; these changes landed on `main` after it.
+
+- **17. Role-aware capability negotiation with provider-only bits.** In a capability handshake between a framework and a kernel provider, computing the live capability word as `(local & remote & !FEAT) | (provider & FEAT)`: bits of the feature axis belong to the provider alone, the provider is known from the exchange (a role argument) and never from a capability bit, and the extension and sub-feature axes stay a plain AND. Where: `fuel-kernel-seam-announce` `negotiate_with_role`, `Role`, `SEAM_CAP_PROVIDER_ONLY_MASK` (#512, 0.26.33; the old plain-AND `negotiate()` is deprecated). Extends idea 14. Proposed queries: "capability negotiation bitmask provider-only features consumer role handshake"; "capability word intersection except provider advertised bits"; "kernel provider capability announcement version profile negotiation hardware". Not run.
+- **18. Typed decline of a storage element type in an accumulator position.** A structure-key deriver that refuses (with a typed reason) to derive a key when a block-scaled microscaling element type appears as an accumulator, and derives it normally elsewhere. Where: `fuel-dispatch` `structure_key_derive.rs` `DeriveDecline::ElementDtypeAsAccumulator` (#513, 0.27.0). Extends idea 14. Proposed queries: "kernel identity key derivation decline microscaling element type accumulator"; "tensor operation signature hash precision accumulator element type". Not run.
+- **Idea 12 is now implemented in part** (it was swept as a specification): the residency eviction pass is wired into `optimize_graph` behind a device budget (#498, 0.26.26, ROADMAP row 67 I1). Row 67 I3 (delayed reload) stays gated. The swept text of idea 12 is unchanged; this note only records that the "second pass (d)" re-sweep trigger has fired.
+- **Quantized float dot** (`fuel-quantized` feature `float-dot`, off by default, #509) and the draft native Q8_0 `QMatMul` (#495, held): covered by `docs/PATENT-SWEEP-CHARTS.md` (board 307), not by a new idea here.
+- **No new mechanism:** #513's re-vendored KISS corpus, #514 (a requirements document), #515 (a dependency move to `unpopped-vocab` 0.32.1).
+
+## Claim-read verdicts for the three seam crates, 2026-10-29 (`fuel-kernel-seam-types`, `fuel-kernel-seam`, `fuel-kernel-seam-announce` 0.28.0 @ 8ff54523e)
+
+**Provenance.** These verdicts are from a separate read agent's report (`C:\Projects\.lane-state\patent-readsuel-seam-0.28.md`, relayed by the PM), made from Google Patents claim text fetched on 2026-10-29, **independent claims only**, with dependent claims skimmed. I (the Fuel lane) did not re-read the claim text for this addendum. Statuses and dates are Google's display, not the USPTO record. NOT legal advice; NOT a freedom-to-operate opinion. "Seam crates" means those three crates alone: they carry wire types, a JIT-on-request envelope and a capability handshake, and contain no tensor arithmetic, scheduling, placement or kernel library; the target architecture is chosen by Fuel outside them. Verdicts are about those crates, **not** about Fuel as a whole.
+
+| Item | Independent claims read | Verdict (seam crates) | Status / expiry (Google) |
+|---|---|---|---|
+| US 8,458,680 B2 | 1, 9, 17 | arguable, low | Active, 2027-03-05 |
+| US 8,108,844 B2 (parent of '680) | 1, 8, 15 | arguable, low | Active, 2030-08-08 (patent term adjustment not confirmed) |
+| US 11,556,756 B2 | 1, 9, 15 | outside as read | Active, 2041-11-17; **maintenance fee unverified** |
+| US 2023/0025245 A1 | 1, 9, 17, 25 | arguable, low (seam crates); **arguable, medium for Fuel as a whole** | Pending |
+| US 12,705,545 B2 | 1, 14, 20 | outside as read | Active, 2044-03-08 |
+| US 12,670,371 B2 | 1, 6, 11 | outside as read | Active, 2045-03-22 |
+| US 12,045,307 B2 | 1, 14, 17, 20 | outside as read | Active, 2043-04-12 |
+| US 12,412,082 B2 | 1, 16, 19 | outside as read | Active, 2043-08-14 |
+| US 2024/0354570 A1 | 1, 20, 22 | outside as read | Pending |
+| US 2025/0125819 A1 | 1, 15 | outside as read | Pending |
+| US 11,521,062 B2 | 1, 22, 23 | outside as read | Active, 2041-01-15 |
+| US 12,619,868 B2 | 1, 8, 14, 20, 26 | outside as read | Active, 2042-05-14 |
+
+**Corrections carried from that read.**
+- **'680 and its family.** '680 expires 2027-03-05 per Google, but its parent US 8,108,844 B2 shows 2030-08-08, so the family is in force to 2030 if Google is right; the sweep's "wait for expiry" option must cite 2030, not 2027. The parent is now read (independent claims 1, 8, 15; narrower than '680: the intrinsic operation must be an arithmetic operation). `tools/patent-claims.py` prints the parent's 2030-08-08 under '680 (a known tool bug), and the '680 page itself says 2027-03-05.
+- **US 11,556,756 B2 fee.** The 3.5-year fee was due by 2026-07-17 (window from the 2023-01-17 grant; my arithmetic, not a record); Google lists no payment event. **Payment is not verified and a lapse is not asserted;** the USPTO record is needed.
+- **US 2023/0025245 A1.** The first pass read only claim 1 (a processor claim). The application also has software and method independents (claims 17, 25), and claim 25 ("modifying one or more neural networks based, at least in part, on a user-provided description of at least one portion") is broad. Row 9's "low, processor claim" reasoning therefore does not cover Fuel as a whole; the **medium** for Fuel as a whole stays on the design gate and board item 307, not on a seam-crate publish.
+- **Idea 14.** The paragraph that said no idea-14 hit was read contradicted the second-pass table; fixed above. Only the two Baidu hits were read; **no new idea-14 searches were run** by the 2026-10-29 read, so nothing here says no patent claims a closed structure key with an open quantization overlay and capability bits.
+
+Still not done: USPTO record checks (fees, grant status, term adjustments, terminal disclaimers); specification text and prosecution history; foreign families; the parent chain of the Nvidia quantization applications; Fuel-as-a-whole verdicts, which the first-pass "Needs review" list still carries.
+
 ## Before the first publish (open items)
 
-- Re-check **US 2023/0025245 A1** (Nvidia, row 9) on the USPTO record: pending as of this record; read the granted claims if it has issued.
-- Confirm **US 8,458,680 B2**'s expiry and read its parent **US 8,108,844 B2** (row 1).
-- Confirm **US 11,556,756 B2**'s maintenance status (row 4).
+- Re-check **US 2023/0025245 A1** (Nvidia, row 9) on the USPTO record: pending as of this record; read the granted claims if it has issued. (Independent claims 17 and 25 read 2026-10-29: see the claim-read section; Fuel as a whole is "arguable, medium".)
+- ~~Confirm **US 8,458,680 B2**'s expiry and read its parent~~ done 2026-10-29 for the seam crates: '680 2027-03-05, parent '844 2030-08-08 (Google); USPTO term adjustment still unconfirmed.
+- Confirm **US 11,556,756 B2**'s maintenance status (row 4): **still open**, needs the USPTO fee record (Google lists no payment event; do not assert a lapse).
 - Design gates (see `docs/PATENT-SWEEP-CHARTS.md`, "Design gates until CireSnave rules"): no delayed-reload ordering (ROADMAP row 67 I3), no horizontal-fusion rule family.
 - Pending continuations of the Nvidia per-vector-scaling family (US 2024/0354570 A1 and US 2025/0125819 A1, per the PM's reader) can change those claims; not read here.
 

@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.28.1 - 2026-10-29
+
+### Changed
+
+- Docs only: `docs/PATENT-SWEEP.md` gets claim-read verdicts for the three seam crates (a read agent's report of independent claims, not re-read by the lane; "arguable, low" for '680 and its parent '844 and for US 2023/0025245 A1, "arguable, medium" for the latter as to Fuel as a whole, "outside as read" for the rest), the corrections that came with it ('680 expires 2027-03-05 but its parent '844 2030-08-08; the '556 fee is unverified, not lapsed; the idea-14 paragraph no longer contradicts its table), and an addendum listing what landed after the swept commit (ideas 17 and 18 and the note on idea 12; ideas and proposed queries only, no verdicts), and corrects its opening line, which said nothing of Fuel was on crates.io: `fuel-kernel-seam-types`, `fuel-kernel-seam` and `fuel-kernel-seam-announce` 0.26.12 are.
+
 ## v0.28.0 - 2026-10-29
 
 ### Changed
