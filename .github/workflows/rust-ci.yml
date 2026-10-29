@@ -709,7 +709,9 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
-          shared-key: test-${{ matrix.os }}-cpu-${{ steps.cpu.outputs.id }}
+          # Linux runs every test build with the lld RUSTFLAGS (which displace `target-cpu=native`),
+          # so its artifacts are CPU-independent and the key needs no fingerprint; Windows/macOS do.
+          shared-key: ${{ runner.os == 'Linux' && format('test-{0}', matrix.os) || format('test-{0}-cpu-{1}', matrix.os, steps.cpu.outputs.id) }}
           save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
 
       - name: Install lld (Linux only)
@@ -754,6 +756,8 @@ jobs:
         # before it, so there is no reason for its result to be conditional on
         # that step's.
         if: always() && runner.os == 'Linux'
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
         # `cargo test --workspace` above uses DEFAULT features, so the
         # telemetry-gated tests — notably
         # `fuel_emits_only_recognized_sk5_dtype_spellings` — BUILD but never RUN
@@ -815,6 +819,8 @@ jobs:
         # cells. The lints come first, then the leg. GAP-299 holds both halves
         # and says they must not land together.
         if: always() && runner.os == 'Linux'
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP:-/tmp}/dlpack-fuel-ir-test.log"
