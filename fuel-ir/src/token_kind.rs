@@ -39,7 +39,7 @@ use crate::dtype::{DType, is_reserved_dtype_token};
 /// Read this from KISS with `git show origin/main:<path>` on a schema bump — a
 /// KISS working tree can sit behind its own `origin/main`, and sk3→sk4 already
 /// respelled tokens once (`e4m3fnuz` → `f8e4m3fnuz`).
-pub const SK4_DTYPE_TOKENS: [&str; 24] = [
+pub const SK4_DTYPE_TOKENS: [&str; 27] = [
     "f16",
     "bf16",
     "f32",
@@ -64,6 +64,11 @@ pub const SK4_DTYPE_TOKENS: [&str; 24] = [
     "b1",
     "c64",
     "c128",
+    // Additive at sk6 (KISS-CLASSIFY-6.1-0014..-0016, KISS 68dc233): the MX element
+    // dtypes. Usable in a dtype field, never as an accumulator.
+    "f4e2m1",
+    "f6e2m3",
+    "f6e3m2",
 ];
 
 /// sk4 tokens that are **active in the standard** but for which Fuel has no
@@ -90,8 +95,10 @@ pub const RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS: &[&str] =
 /// `fnuz` layouts deviate from IEEE E5M2). Conflating the two is how a
 /// retired or internal spelling reaches a wire format.
 ///
-/// `None` is the block-scoped sub-byte **element** formats, which are outside
-/// §6.1 at sk4 (GAP-153). They are declined, never given a guessed token.
+/// The block-scoped sub-byte **element** formats were outside §6.1 at sk4
+/// (GAP-153, declined); KISS-CLASSIFY-6.1-0014..-0016 added them as usable
+/// spellings (`f4e2m1`, `f6e2m3`, `f6e3m2`), so every `DType` now has a token.
+/// The `Option` stays: a future `DType` may again have none.
 ///
 /// Exhaustive by design: a new `DType` is a compile error here, forcing a
 /// decision instead of a silent omission.
@@ -114,8 +121,10 @@ pub fn sk4_token(dt: DType) -> Option<&'static str> {
         // GAP-168(c): Fuel now HAS a Bool dtype, so bool is Supported (moved out
         // of RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS). Seam spelling == internal.
         DType::Bool => "bool",
-        // Block-scoped sub-byte ELEMENT formats — outside the sk4 closed set.
-        DType::F6E2M3 | DType::F6E3M2 | DType::F4 => return None,
+        // Block-scoped sub-byte ELEMENT formats (KISS-CLASSIFY-6.1-0014..-0016).
+        DType::F6E2M3 => "f6e2m3",
+        DType::F6E3M2 => "f6e3m2",
+        DType::F4 => "f4e2m1",
     })
 }
 
@@ -182,7 +191,7 @@ mod tests {
     }
 
     /// **The completeness gate.** The three in-vocabulary kinds partition the
-    /// sk4 vocabulary exactly — 15 + 7 + 2 = 24. (Was 14 + 8 + 2 before
+    /// vocabulary exactly — 18 + 7 + 2 = 27 (24 at sk4; the three MX element rows are additive). (Was 14 + 8 + 2 before
     /// GAP-168(c) gave Fuel a `Bool` dtype, moving `bool` supported.)
     ///
     /// This is what makes the taxonomy checkable rather than merely tidy: a new
@@ -201,7 +210,7 @@ mod tests {
             .collect();
         let reserved: BTreeSet<&str> = RESERVED_DTYPE_TOKENS.iter().copied().collect();
 
-        assert_eq!(supported.len(), 15, "supported: {supported:?}");
+        assert_eq!(supported.len(), 18, "supported: {supported:?}");
         assert_eq!(
             recognized.len(),
             7,
@@ -235,13 +244,13 @@ mod tests {
             "the three kinds must cover the sk4 vocabulary exactly",
         );
 
-        // Non-vacuity: the vocabulary really is the 24 distinct tokens, so a
+        // Non-vacuity: the vocabulary really is the 27 distinct tokens, so a
         // duplicated entry cannot quietly shrink it into agreement.
-        assert_eq!(vocabulary.len(), 24, "sk4 tokens must be distinct");
+        assert_eq!(vocabulary.len(), 27, "vocabulary tokens must be distinct");
     }
 
-    /// Every Fuel `DType` is accounted for: 15 carry a seam token, 3 are
-    /// block-scoped elements outside the vocabulary. Guards the other
+    /// Every Fuel `DType` is accounted for: all 18 carry a seam token (15 + the
+    /// three MX element formats), none is outside the vocabulary. Guards the other
     /// direction from the partition test — a new `DType` that returned a token
     /// already in the vocabulary would pass this but break the partition, and
     /// one that returned `None` breaks this.
@@ -255,8 +264,8 @@ mod tests {
             .iter()
             .filter(|d| sk4_token(**d).is_none())
             .count();
-        assert_eq!(with, 15);
-        assert_eq!(without, 3, "the block-scoped sub-byte element formats");
+        assert_eq!(with, 18);
+        assert_eq!(without, 0, "every DType now has a seam token");
         assert_eq!(with + without, DType::ALL.len());
 
         // Every emitted token must actually be IN the vocabulary — otherwise
