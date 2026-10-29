@@ -288,6 +288,7 @@ pub struct EvictReload {
 /// What one run of the eviction pass did, so a caller can see whether the budget was met instead
 /// of inferring it from a graph that quietly grew.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct EvictionOutcome {
     /// The device whose budget this was.
     pub device: DeviceLocation,
