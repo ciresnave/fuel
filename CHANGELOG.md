@@ -1,6 +1,14 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.28.2 - 2026-10-29
+
+### Added
+
+- ROADMAP row 67, increment I2 (`fuel-dispatch`): `device_budget` turns a device into a byte budget for `PlanOptions::device_budget_bytes` and says which rule produced it. `resolve_device_budget(explicit, env, available, fraction)` takes an explicit value first, then the `FUEL_DEVICE_BUDGET_BYTES` override, then the probed free bytes times a reserve fraction (`DEFAULT_RESERVE_FRACTION` = 0.9, the design note's proposal); it returns `None` when the device gives no finite figure, and a malformed override or a fraction outside `(0, 1]` is a `BudgetError`, never a silent fallback. `resolve_device_budget_for` reads the process environment and a `BackendRuntime`. `PlanOptions::with_resolved_device_budget` attaches the result, and the rule reaches `EvictionOutcome::budget_source` so a plan report names its budget's origin.
+- **Not on by default**, and no caller resolves a budget yet: the eviction pass still moves a reload without delaying it (row 67 I3), so a default-on budget would add copies and not lower the analysed peak. The design note's decision 1 (default ON for a pinned CUDA/Vulkan device) stays with the PM until I3 lands.
+- Source-level note: `PlanOptions` and `EvictionOutcome` each gain a public field (`device_budget_source`, `budget_source`); `EvictionOutcome` also stops deriving `Eq` (it now holds an `f64`). A struct literal of either type outside this crate would need the new field. The lane found none in the workspace.
+
 ## v0.28.1 - 2026-10-29
 
 ### Changed
