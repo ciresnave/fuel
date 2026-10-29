@@ -409,6 +409,10 @@ pub struct PlanOptions<'env> {
     /// written for this but had no production caller. No default budget is derived from the
     /// device here; a caller (or a later increment) supplies it.
     pub device_budget_bytes: Option<usize>,
+    /// Which rule produced [`Self::device_budget_bytes`] (ROADMAP row 67 I2), when it came from
+    /// [`crate::device_budget::resolve_device_budget`]; `None` for a bare number set by hand. The
+    /// optimizer copies it onto the eviction outcome so a plan report names its budget's origin.
+    pub device_budget_source: Option<crate::device_budget::BudgetSource>,
     /// Baracuda dispatch-telemetry hooks (behind the `telemetry` cargo
     /// feature). When `Some` AND the config's mode is not `Off`,
     /// `compile_plan` runs a post-plan pass that emits a structural
@@ -436,6 +440,7 @@ impl Default for PlanOptions<'_> {
             reuse_plan: None,
             allow_cost_placement: true,
             device_budget_bytes: None,
+            device_budget_source: None,
             #[cfg(feature = "telemetry")]
             telemetry: None,
         }
@@ -451,6 +456,17 @@ impl<'env> PlanOptions<'env> {
     /// Set the pinned device's resident-bytes budget; see [`Self::device_budget_bytes`].
     pub fn with_device_budget_bytes(mut self, budget_bytes: usize) -> Self {
         self.device_budget_bytes = Some(budget_bytes);
+        self
+    }
+
+    /// Set the budget from a [`crate::device_budget::ResolvedBudget`], keeping the rule that
+    /// produced it for the plan report.
+    pub fn with_resolved_device_budget(
+        mut self,
+        budget: crate::device_budget::ResolvedBudget,
+    ) -> Self {
+        self.device_budget_bytes = Some(budget.bytes);
+        self.device_budget_source = Some(budget.source);
         self
     }
 

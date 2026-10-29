@@ -287,7 +287,8 @@ pub struct EvictReload {
 
 /// What one run of the eviction pass did, so a caller can see whether the budget was met instead
 /// of inferring it from a graph that quietly grew.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct EvictionOutcome {
     /// The device whose budget this was.
     pub device: DeviceLocation,
@@ -299,6 +300,9 @@ pub struct EvictionOutcome {
     pub peak_after: usize,
     /// The chains inserted, in order.
     pub chains: Vec<EvictReload>,
+    /// Which rule produced `budget_bytes`, when the caller resolved it through
+    /// [`crate::device_budget`]; `None` for a hand-set number. Filled by `optimize_graph`.
+    pub budget_source: Option<crate::device_budget::BudgetSource>,
 }
 
 impl EvictionOutcome {
@@ -411,6 +415,7 @@ pub fn insert_residency_evictions_in(
         peak_before,
         peak_after: peak,
         chains,
+        budget_source: None,
     })
 }
 
