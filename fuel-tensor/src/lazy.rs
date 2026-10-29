@@ -8380,6 +8380,16 @@ pub enum WeightStorage {
         in_features: usize,
         out_features: usize,
     },
+    /// GGML Q8_0 blocks (34 bytes per 32 elements: an f16 scale and 32 i8 quants), laid out
+    /// `[out_features, in_features / 32]` like [`Self::Q4_0`] and applied through
+    /// `Op::QMatMul` with `QuantType::Q8_0`, so the weight stays 8-bit instead of being
+    /// dequantized to an f32 copy (ROADMAP row 34, TTFT). Same field meanings as `Q4_0`.
+    Q8_0 {
+        words: Arc<[u32]>,
+        bytes_len: usize,
+        in_features: usize,
+        out_features: usize,
+    },
     /// An AWQ 4-bit linear (HuggingFace `*-AWQ`, GEMM version) in the
     /// `AWQ_MATMUL` kernel layout, as graph-independent host buffers. The
     /// graph sees it through `NodeHandle::awq_matmul` operands
@@ -8419,6 +8429,11 @@ impl WeightStorage {
                 in_features,
                 out_features,
                 ..
+            }
+            | Self::Q8_0 {
+                in_features,
+                out_features,
+                ..
             } => *in_features * *out_features,
             Self::Awq(w) => w.ic * w.oc,
             Self::WithLoRA {
@@ -8436,7 +8451,7 @@ impl WeightStorage {
             // Q4_0 surfaces as U32 at the graph level (raw bytes
             // reinterpreted). Callers that care about the "actual"
             // quantization type should match on the variant directly.
-            Self::Q4_0 { .. } => fuel_ir::DType::U32,
+            Self::Q4_0 { .. } | Self::Q8_0 { .. } => fuel_ir::DType::U32,
             // AWQ surfaces as U32 for the same reason (packed nibbles).
             Self::Awq(_) => fuel_ir::DType::U32,
             // WithLoRA exposes the base's dtype (the LoRA adapter is
@@ -8463,8 +8478,8 @@ impl WeightStorage {
         match self {
             Self::F32(a) => anchor.const_f32_like(a.clone(), shape),
             Self::BF16(a) => anchor.const_bf16_like(a.clone(), shape),
-            Self::Q4_0 { words, .. } => {
-                let _ = shape; // shape arg unused — Q4_0 const is 1-D U32
+            Self::Q4_0 { words, .. } | Self::Q8_0 { words, .. } => {
+                let _ = shape; // shape arg unused — a quantized const is 1-D U32
                 // Arc-clone the precomputed u32 view; no byte copy.
                 anchor.const_u32_like(Arc::clone(words), Shape::from_dims(&[words.len()]))
             }
@@ -8576,6 +8591,25 @@ impl WeightStorage {
                 x.qmatmul(
                     &w_bytes,
                     fuel_graph::QuantType::Q4_0,
+                    in_features,
+                    out_features,
+                )
+            }
+            Self::Q8_0 {
+                in_features: expected_in,
+                out_features: expected_out,
+                ..
+            } => {
+                if *expected_in != in_features || *expected_out != out_features {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "WeightStorage::Q8_0 shape mismatch: stored                          [{expected_in}, {expected_out}], requested                          [{in_features}, {out_features}]",
+                    ))
+                    .bt());
+                }
+                let w_bytes = self.const_like(x, Shape::from_dims(&[in_features, out_features]))?;
+                x.qmatmul(
+                    &w_bytes,
+                    fuel_graph::QuantType::Q8_0,
                     in_features,
                     out_features,
                 )
