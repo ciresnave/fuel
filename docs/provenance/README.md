@@ -50,7 +50,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `(root)` | 23 | 4 | 4 |  |  | 15 |  |  |
 | `.cargo` | 1 |  | 1 |  |  |  |  |  |
 | `.github` | 5 | 1 | 2 |  |  | 2 |  |  |
-| `docs` | 185 |  |  |  |  | 185 |  |  |
+| `docs` | 186 |  |  |  |  | 186 |  |  |
 | `fuel` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-aocl-cpu-backend` | 7 |  |  |  |  | 4 |  | 3 |
 | `fuel-backend-contract` | 10 |  |  | 4 |  | 3 |  | 3 |
@@ -60,7 +60,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-cpu-kernels` | 12 | 1 | 4 |  |  | 4 |  | 3 |
 | `fuel-cuda-backend` | 56 |  | 3 | 11 |  | 39 |  | 3 |
 | `fuel-datasets` | 13 |  | 7 |  |  | 3 |  | 3 |
-| `fuel-dispatch` | 293 |  |  |  |  | 290 |  | 3 |
+| `fuel-dispatch` | 294 |  |  |  |  | 291 |  | 3 |
 | `fuel-examples` | 250 | 61 | 157 | 21 |  | 8 |  | 3 |
 | `fuel-formats` | 11 |  | 2 | 2 |  | 4 |  | 3 |
 | `fuel-graph` | 38 |  |  | 3 |  | 32 |  | 3 |
@@ -88,7 +88,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-onnx` | 13 | 1 | 3 | 2 |  | 4 |  | 3 |
 | `fuel-parallel` | 12 |  |  |  |  | 9 |  | 3 |
 | `fuel-posttrain` | 6 |  |  | 2 |  | 1 |  | 3 |
-| `fuel-quantized` | 16 | 1 | 3 | 1 | 4 | 4 |  | 3 |
+| `fuel-quantized` | 16 |  | 4 | 1 | 4 | 4 |  | 3 |
 | `fuel-tensor` | 61 | 1 | 2 | 3 |  | 50 | 2 | 3 |
 | `fuel-tensor-tools` | 5 |  | 1 | 1 |  |  |  | 3 |
 | `fuel-test-support` | 11 |  |  |  |  | 8 |  | 3 |
@@ -97,5 +97,5 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-vulkan-backend` | 26 |  |  |  |  | 23 |  | 3 |
 | `fuel-vulkan-kernels` | 183 |  |  |  |  | 2 | 178 | 3 |
 | `scripts` | 70 |  |  | 1 |  | 69 |  |  |
-| **all** | **2031** | **118** | **212** | **253** | **4** | **1135** | **180** | **129** |
+| **all** | **2033** | **117** | **213** | **253** | **4** | **1137** | **180** | **129** |
 <!-- provenance-summary:end -->
