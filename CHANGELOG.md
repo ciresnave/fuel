@@ -1,7 +1,7 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
-## v0.28.2 - 2026-10-29
+## v0.30.0 - 2026-10-29
 
 ### Added
 
@@ -9,6 +9,11 @@ This documents the main changes to the `fuel` workspace.
 - **Not on by default**, and no caller resolves a budget yet: the eviction pass still moves a reload without delaying it (row 67 I3), so a default-on budget would add copies and not lower the analysed peak. The design note's decision 1 (default ON for a pinned CUDA/Vulkan device) stays with the PM until I3 lands.
 - Source-level note: `PlanOptions` and `EvictionOutcome` each gain a public field (`device_budget_source`, `budget_source`); `EvictionOutcome` also stops deriving `Eq` (it now holds an `f64`). `EvictionOutcome` is now `#[non_exhaustive]` (it is an output, so downstream only reads it) so a later field never breaks again; a struct literal of `PlanOptions` outside this crate would need the new field. The lane found no literal of either in the workspace or in the sibling checkouts (lightbulb defines its own, unrelated `EvictionOutcome`).
 - Docs only: `docs/SLANG-SEAM-REQUIREMENTS.md` records the measured `Params` layout rule (146 `Params` structs, scalar fields only, so std140 and scalar offsets coincide), with the scan method and what was not checked; an earlier note of four fixed-array `Params` kernels is retracted.
+## v0.29.0 - 2026-10-29
+
+### Removed
+
+- **Breaking** (`fuel-kernel-seam-announce`): the deprecated plain-AND `negotiate()` and `SEAM_CAP_JIT_ON_REQUEST` (bit 16, in the KISS EXT experimental range) are gone, as the 0.26.33 deprecation notices promised. Use `negotiate_with_role` (a FEAT bit such as `SEAM_CAP_PROVISION_ON_REQUEST` belongs to the provider alone) and `SEAM_CAP_PROVISION_ON_REQUEST` (FEAT bit 32). The test pinning the old plain-AND behaviour is deleted with it; the profile-selection tests now run through `negotiate_with_role`.
 
 ## v0.28.1 - 2026-10-29
 
