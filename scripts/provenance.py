@@ -22,6 +22,7 @@ What the classes MEAN (a class is evidence, not a verdict on every idea in a fil
 """
 import collections
 import os
+import re
 import shutil
 import subprocess  # nosec B404 -- only used with fixed argument lists and no shell
 import sys
@@ -46,8 +47,24 @@ SOURCE_EXT = {"rs", "metal", "cu", "cuh", "slang", "glsl", "py", "ps1", "sh", "h
 CLASSES = ["candle", "candle-modified", "not-traced", "ggml", "own", "data", "copy"]
 
 
+GIT_LITERALS = frozenset({
+    "ls-tree", "-r", "-z", "-c", "diff.renameLimit=999999", "diff", "--find-copies-harder",
+    "-M30%", "-C30%", "-l0", "--name-status", "ls-files",
+})
+GIT_REV = re.compile(r"^(HEAD|[0-9a-f]{7,40})$")
+
+
+def checked(arg):
+    """Every git argument is one of the literals above or a revision (HEAD or a hex object name):
+    nothing from outside this file reaches the command line, and none can start with `-` as an option."""
+    if arg in GIT_LITERALS or GIT_REV.match(arg):
+        return arg
+    raise ValueError(f"refusing unexpected git argument {arg!r}")
+
+
 def git(*a, text=True):
-    out = subprocess.check_output([GIT, *a], cwd=ROOT)  # NOSONAR # nosec B603 -- fixed argv, no shell
+    argv = [GIT, *map(checked, a)]
+    out = subprocess.check_output(argv, cwd=ROOT)  # NOSONAR # nosec B603 -- checked argv, no shell
     return out.decode("utf-8", "surrogateescape") if text else out
 
 
