@@ -6,7 +6,7 @@
 //! seam** — the piece that lets Fuel, Baracuda, Vulkane, and future ecosystems
 //! support multiple profile versions over time without a lockstep flag-day.
 //! [`SeamHello`] is the frozen C-ABI envelope by which each side advertises its
-//! supported profiles; [`negotiate`] runs §3.2 ("highest mutually-supported
+//! supported profiles; [`negotiate_with_role`] runs §3.2 ("highest mutually-supported
 //! wins, hard-fail on disjoint"). The struct layout is **frozen forever** and
 //! cross-checked by the size/offset asserts in the tests below — the same
 //! discipline FDX uses for its `#[repr(C)]` structs.
@@ -41,7 +41,8 @@ pub const PROFILE_V1: u16 = 1;
 // ---- Capability bits (§3.4) ------------------------------------------------
 // Profile v1 adopts the FDX `BackendProbe` tokens as the low bits and reserves
 // higher bits for FKC-/JIT-level optional features. The negotiated set is
-// `local & remote`; a feature neither side flags is simply not used.
+// `local & remote` for the EXT and SUB axes; the FEAT axis is the provider's word alone
+// (KISS-ANNOUNCE-7.3-0003, see [`negotiate_with_role`]).
 
 /// FDX base sidecar support (`DlpackExtV1`).
 pub const SEAM_CAP_FDX_V1: u64 = 1 << 0;
@@ -55,15 +56,37 @@ pub const SEAM_CAP_FDX_AFFINE: u64 = 1 << 3;
 pub const SEAM_CAP_FDX_SYMBOLIC: u64 = 1 << 4;
 /// FDX indexed-residency / gather (`DlpackExtGather`).
 pub const SEAM_CAP_FDX_GATHER: u64 = 1 << 5;
-/// JIT-on-request endpoint (§5); a party may support Profile v1's FDX+FKC
-/// without this.
-pub const SEAM_CAP_JIT_ON_REQUEST: u64 = 1 << 16;
+// ---- KISS-ANNOUNCE §7.2 axes and the registry bits Fuel acts on (kiss `spec/announce.md` @4656dc2) ----
+
+/// EXT axis, bits `[0, 24)`: external interchange tokens (what each side *speaks*).
+pub const SEAM_CAP_EXT_MASK: u64 = (1 << 24) - 1;
+/// FEAT axis, bits `[24, 48)`: provider-level optional features (what the provider *offers*).
+pub const SEAM_CAP_FEAT_MASK: u64 = ((1 << 24) - 1) << 24;
+/// SUB axis, bits `[48, 64)`: which sub-standards the provider speaks (presence only).
+pub const SEAM_CAP_SUB_MASK: u64 = ((1 << 16) - 1) << 48;
+/// The bits only the PROVIDER decides: the whole FEAT axis (KISS-ANNOUNCE-7.3-0003 masks by axis,
+/// not by recognition, so two readers that recognise different FEAT bits compute the same word).
+pub const SEAM_CAP_PROVIDER_ONLY_MASK: u64 = SEAM_CAP_FEAT_MASK;
+/// FEAT bit 32 `PROVISION_ON_REQUEST`: the provider builds a kernel on a miss (the JIT endpoint, §5).
+pub const SEAM_CAP_PROVISION_ON_REQUEST: u64 = 1 << 32;
+/// FEAT bit 33 `CONTRACT_QUERY`: the provider answers contract queries.
+pub const SEAM_CAP_CONTRACT_QUERY: u64 = 1 << 33;
+
+/// Which side of the exchange the LOCAL envelope is. Known from the exchange itself, never inferred
+/// from a capability bit (the envelope is frozen at 56 bytes and carries no role field).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// The local side asks for kernels (Fuel, in the JIT-on-request exchange).
+    Consumer,
+    /// The local side supplies kernels (a backend such as baracuda).
+    Provider,
+}
 
 /// The negotiation envelope — a FIXED-SIZE C-ABI POD, frozen for all time
 /// (§3.1). 56 bytes; field offsets are frozen and asserted (see the tests).
 /// Providers fill a caller-allocated `SeamHello` via the out-param entry point
 /// `int baracuda_seam_hello(SeamHello* out)`; Fuel reads it and runs
-/// [`negotiate`].
+/// [`negotiate_with_role`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SeamHello {
@@ -183,7 +206,7 @@ impl SeamHello {
     }
 
     /// Validate the frozen envelope and return the advertised profiles slice. A
-    /// remote `SeamHello` MUST pass this before [`negotiate`] consumes it.
+    /// remote `SeamHello` MUST pass this before [`negotiate_with_role`] consumes it.
     pub fn validate(&self) -> Result<&[u16], SeamError> {
         if self.magic != SEAM_MAGIC {
             return Err(SeamError::BadMagic(self.magic));
@@ -208,25 +231,47 @@ impl SeamHello {
     }
 }
 
-/// §3.2: select the **highest mutually-supported** profile (TLS-style), with
-/// `capabilities = local & remote`. Hard-fails with [`SeamError::VersionMismatch`]
-/// on disjoint advertised sets — the connection does NOT proceed on a guessed
-/// version. Both envelopes are validated first.
-pub fn negotiate(local: &SeamHello, remote: &SeamHello) -> Result<Negotiated, SeamError> {
+/// The highest profile both validated envelopes advertise (§3.2), or the typed hard failure.
+fn select_profile(local: &SeamHello, remote: &SeamHello) -> Result<u16, SeamError> {
     let lp = local.validate()?;
     let rp = remote.validate()?;
     // Both lists ascending; iterate local high→low and take the first that the
     // remote also advertises = max of the intersection.
-    match lp.iter().rev().find(|p| rp.contains(p)).copied() {
-        Some(profile) => Ok(Negotiated {
-            profile,
-            capabilities: local.capabilities & remote.capabilities,
-        }),
-        None => Err(SeamError::VersionMismatch {
+    lp.iter()
+        .rev()
+        .find(|p| rp.contains(p))
+        .copied()
+        .ok_or_else(|| SeamError::VersionMismatch {
             local: lp.to_vec(),
             remote: rp.to_vec(),
-        }),
-    }
+        })
+}
+
+/// §3.2 and KISS-ANNOUNCE-7.3-0003 (CireSnave decision 310, Q3 A): the highest mutually-supported
+/// profile, and a **role-aware** live capability word,
+/// `(local & remote & !FEAT) | (provider & FEAT)` with `FEAT` = [`SEAM_CAP_FEAT_MASK`].
+///
+/// `local_role` is the role of the LOCAL envelope; the provider is known from the exchange, never
+/// from a capability bit. A consumer writes the provider-only bits as zero (KISS-ANNOUNCE-7.3-0002),
+/// which is why a plain AND would lose them. The FEAT axis is masked as a whole, not bit by bit, so two readers that
+/// recognise different FEAT bits still compute the same word. EXT and SUB bits are live only when
+/// both sides set them. Both envelopes are validated first; disjoint advertised profile sets hard-fail with
+/// [`SeamError::VersionMismatch`], never a guessed version.
+pub fn negotiate_with_role(
+    local: &SeamHello,
+    remote: &SeamHello,
+    local_role: Role,
+) -> Result<Negotiated, SeamError> {
+    let profile = select_profile(local, remote)?;
+    let provider_word = match local_role {
+        Role::Provider => local.capabilities,
+        Role::Consumer => remote.capabilities,
+    };
+    Ok(Negotiated {
+        profile,
+        capabilities: (local.capabilities & remote.capabilities & !SEAM_CAP_PROVIDER_ONLY_MASK)
+            | (provider_word & SEAM_CAP_PROVIDER_ONLY_MASK),
+    })
 }
 
 #[cfg(test)]
@@ -322,7 +367,7 @@ mod tests {
     fn v1_both_sides_select_profile_1() {
         let local = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_FDX_GGML);
         let remote = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_FDX_MX);
-        let n = negotiate(&local, &remote).expect("v1 ∩ v1 negotiates");
+        let n = negotiate_with_role(&local, &remote, Role::Consumer).expect("v1 ∩ v1 negotiates");
         assert_eq!(n.profile, PROFILE_V1);
         // capabilities = local & remote — only the common FDX_V1 bit survives.
         assert_eq!(n.capabilities, SEAM_CAP_FDX_V1);
@@ -332,34 +377,25 @@ mod tests {
     fn highest_mutually_supported_wins() {
         let local = SeamHello::advertise(&[1, 2, 3], 0);
         let remote = SeamHello::advertise(&[2, 3, 5], 0);
-        assert_eq!(negotiate(&local, &remote).unwrap().profile, 3);
+        assert_eq!(
+            negotiate_with_role(&local, &remote, Role::Consumer)
+                .unwrap()
+                .profile,
+            3
+        );
     }
 
     #[test]
     fn disjoint_profiles_hard_fail() {
         let local = SeamHello::advertise(&[1], 0);
         let remote = SeamHello::advertise(&[2], 0);
-        match negotiate(&local, &remote) {
+        match negotiate_with_role(&local, &remote, Role::Consumer) {
             Err(SeamError::VersionMismatch { local, remote }) => {
                 assert_eq!(local, vec![1]);
                 assert_eq!(remote, vec![2]);
             }
             other => panic!("expected VersionMismatch, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn jit_capability_negotiates_to_off_when_one_side_lacks_it() {
-        // Fuel supports JIT-on-request; a provider that doesn't → off.
-        let fuel = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_JIT_ON_REQUEST);
-        let provider = SeamHello::fuel(SEAM_CAP_FDX_V1);
-        let n = negotiate(&fuel, &provider).unwrap();
-        assert_eq!(
-            n.capabilities & SEAM_CAP_JIT_ON_REQUEST,
-            0,
-            "JIT not on this connection"
-        );
-        assert_eq!(n.capabilities & SEAM_CAP_FDX_V1, SEAM_CAP_FDX_V1);
     }
 
     #[test]
@@ -382,5 +418,153 @@ mod tests {
             toomany.validate(),
             Err(SeamError::TooManyProfiles(_))
         ));
+    }
+
+    /// A 56-byte frame as the KISS corpus writes it (`conformance/corpus/announce_vectors.json`).
+    fn hello_from_hex(hex: &str) -> SeamHello {
+        let b: Vec<u8> = hex
+            .split_whitespace()
+            .map(|x| u8::from_str_radix(x, 16).expect("hex byte"))
+            .collect();
+        assert_eq!(b.len(), 56, "an envelope is 56 bytes");
+        let u16_at = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+        let mut profiles = [0u16; SEAM_MAX_PROFILES];
+        for (k, p) in profiles.iter_mut().enumerate() {
+            *p = u16_at(10 + 2 * k);
+        }
+        SeamHello {
+            magic: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+            envelope_version: b[4],
+            reserved: [b[5], b[6], b[7]],
+            profiles_len: u16_at(8),
+            profiles,
+            reserved1: [b[42], b[43], b[44], b[45], b[46], b[47]],
+            capabilities: u64::from_le_bytes(b[48..56].try_into().unwrap()),
+        }
+    }
+
+    const KISS_CONSUMER: &str = "53 45 41 4D 01 00 00 00 01 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00 31 00";
+    const KISS_PROVIDER: &str = "53 45 41 4D 01 00 00 00 02 00 01 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 03 00 00 00 03 00 91 00";
+    /// `live_capabilities_le_hex` of both vectors: `01 00 00 00 03 00 11 00`.
+    const KISS_LIVE: u64 = 0x0011_0003_0000_0001;
+
+    /// KISS-ANNOUNCE-7.3-0003, worked vectors (the corpus bytes, both orientations): the live word is
+    /// the same, and the plain AND (`0x0011_0000_0000_0001`) loses both FEAT bits.
+    #[test]
+    fn kiss_vectors_live_word_is_role_aware_in_both_orientations() {
+        let consumer = hello_from_hex(KISS_CONSUMER);
+        let provider = hello_from_hex(KISS_PROVIDER);
+        let a = negotiate_with_role(&consumer, &provider, Role::Consumer).expect("consumer local");
+        let b = negotiate_with_role(&provider, &consumer, Role::Provider).expect("provider local");
+        assert_eq!(a.profile, 1);
+        assert_eq!(b.profile, 1);
+        assert_eq!(a.capabilities, KISS_LIVE, "consumer local, provider remote");
+        assert_eq!(b.capabilities, KISS_LIVE, "provider local, consumer remote");
+        // A plain AND of the two words would lose both FEAT bits.
+        let plain = consumer.capabilities & provider.capabilities;
+        assert_eq!(plain, 0x0011_0000_0000_0001);
+        assert_ne!(plain, KISS_LIVE);
+    }
+
+    /// The old JIT test, FLIPPED: the provider flags PROVISION_ON_REQUEST and Fuel (the consumer)
+    /// does not write the provider-only bit (7.3-0002), and the feature is ON.
+    #[test]
+    fn a_provider_only_bit_is_live_when_only_the_provider_sets_it() {
+        let fuel = SeamHello::fuel(SEAM_CAP_FDX_V1);
+        let provider = SeamHello::fuel(
+            SEAM_CAP_FDX_V1 | SEAM_CAP_PROVISION_ON_REQUEST | SEAM_CAP_CONTRACT_QUERY,
+        );
+        let n = negotiate_with_role(&fuel, &provider, Role::Consumer).unwrap();
+        assert_eq!(
+            n.capabilities & SEAM_CAP_PROVISION_ON_REQUEST,
+            SEAM_CAP_PROVISION_ON_REQUEST
+        );
+        assert_eq!(
+            n.capabilities & SEAM_CAP_CONTRACT_QUERY,
+            SEAM_CAP_CONTRACT_QUERY
+        );
+        assert_eq!(n.capabilities & SEAM_CAP_FDX_V1, SEAM_CAP_FDX_V1);
+    }
+
+    /// SABOTAGE SIBLING of the test above: a provider-only bit that ONLY the consumer sets is never
+    /// live (only the provider's word decides a FEAT bit), so a consumer cannot switch a provider
+    /// feature on by claiming it. Without it the flip above could pass for the wrong reason (a
+    /// formula that took FEAT from `local | remote` would also pass it).
+    #[test]
+    fn a_provider_only_bit_set_only_by_the_consumer_is_never_live() {
+        let fuel = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_PROVISION_ON_REQUEST);
+        let provider = SeamHello::fuel(SEAM_CAP_FDX_V1);
+        let as_consumer = negotiate_with_role(&fuel, &provider, Role::Consumer).unwrap();
+        assert_eq!(as_consumer.capabilities & SEAM_CAP_PROVISION_ON_REQUEST, 0);
+        // And with the roles exchanged (the claiming side is now the provider's remote).
+        let as_provider = negotiate_with_role(&provider, &fuel, Role::Provider).unwrap();
+        assert_eq!(as_provider.capabilities & SEAM_CAP_PROVISION_ON_REQUEST, 0);
+    }
+
+    /// EXT and SUB bits stay a plain AND: live only if BOTH sides set them.
+    #[test]
+    fn ext_and_sub_bits_are_live_only_when_both_sides_set_them() {
+        let sub = 1u64 << 52;
+        let consumer = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_FDX_MX | sub);
+        let provider = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_FDX_GGML);
+        let n = negotiate_with_role(&consumer, &provider, Role::Consumer).unwrap();
+        assert_eq!(n.capabilities, SEAM_CAP_FDX_V1);
+    }
+
+    /// 7.3-0003 masks by AXIS, not by recognition: a FEAT bit this crate has never heard of
+    /// (bit 35, core-reserved) is still decided by the provider alone, so two implementations that
+    /// recognise different bits compute the same word.
+    #[test]
+    fn an_unrecognised_feat_bit_follows_the_provider_too() {
+        let unknown_feat = 1u64 << 35;
+        let consumer = SeamHello::fuel(SEAM_CAP_FDX_V1);
+        let provider = SeamHello::fuel(SEAM_CAP_FDX_V1 | unknown_feat);
+        let n = negotiate_with_role(&consumer, &provider, Role::Consumer).unwrap();
+        assert_eq!(n.capabilities & unknown_feat, unknown_feat);
+    }
+
+    /// The profile rule is unchanged: highest mutual wins, a disjoint set is a typed hard failure.
+    #[test]
+    fn role_aware_negotiation_keeps_the_profile_rules() {
+        let local = SeamHello::advertise(&[1, 2, 3], 0);
+        let remote = SeamHello::advertise(&[2, 3, 5], 0);
+        assert_eq!(
+            negotiate_with_role(&local, &remote, Role::Consumer)
+                .unwrap()
+                .profile,
+            3
+        );
+        let a = SeamHello::advertise(&[1], 0);
+        let b = SeamHello::advertise(&[2], 0);
+        assert!(matches!(
+            negotiate_with_role(&a, &b, Role::Provider),
+            Err(SeamError::VersionMismatch { .. })
+        ));
+    }
+
+    /// The axis masks partition the word and the registry bits sit inside the right axis.
+    #[test]
+    fn the_axis_masks_partition_the_word_and_hold_the_registry_bits() {
+        assert_eq!(
+            SEAM_CAP_EXT_MASK | SEAM_CAP_FEAT_MASK | SEAM_CAP_SUB_MASK,
+            u64::MAX
+        );
+        assert_eq!(SEAM_CAP_EXT_MASK & SEAM_CAP_FEAT_MASK, 0);
+        assert_eq!(SEAM_CAP_FEAT_MASK & SEAM_CAP_SUB_MASK, 0);
+        assert_eq!(SEAM_CAP_PROVIDER_ONLY_MASK, SEAM_CAP_FEAT_MASK);
+        assert_ne!(SEAM_CAP_PROVISION_ON_REQUEST & SEAM_CAP_FEAT_MASK, 0);
+        assert_ne!(SEAM_CAP_CONTRACT_QUERY & SEAM_CAP_FEAT_MASK, 0);
+        assert_eq!(SEAM_CAP_PROVISION_ON_REQUEST.trailing_zeros(), 32);
+        assert_eq!(SEAM_CAP_CONTRACT_QUERY.trailing_zeros(), 33);
+        for ext in [
+            SEAM_CAP_FDX_V1,
+            SEAM_CAP_FDX_MX,
+            SEAM_CAP_FDX_GGML,
+            SEAM_CAP_FDX_AFFINE,
+            SEAM_CAP_FDX_SYMBOLIC,
+            SEAM_CAP_FDX_GATHER,
+        ] {
+            assert_ne!(ext & SEAM_CAP_EXT_MASK, 0);
+        }
     }
 }

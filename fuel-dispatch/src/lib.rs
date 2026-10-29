@@ -109,6 +109,7 @@ pub mod decode_flash;
 #[cfg(feature = "dev-tools")]
 #[doc(hidden)]
 pub mod dev_tools;
+pub mod device_budget;
 pub mod dispatch;
 pub mod driver;
 pub mod fkc;

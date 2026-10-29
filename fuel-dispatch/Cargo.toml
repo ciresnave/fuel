@@ -20,7 +20,7 @@ fuel-graph = { workspace = true }
 # unconditional core infrastructure.
 fuel-kernel-seam-types = { workspace = true }
 # kiss-ref advisory cross-check (cuda-gated verify path only) — see the `cuda` feature.
-fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", version = "0.26.29", optional = true }
+fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", version = "0.30.4", optional = true }
 # kiss-ref-core (github.com/ThinkersJournal/kiss-ref, crates.io "0.4") — the SINGLE
 # cross-project source of truth for the ULP-distance metric. `fkc::verify::ulp::
 # ulp_distance` delegates to `kiss_ref_core::ulp_distance_f32` so Fuel's verify stack
@@ -36,6 +36,7 @@ fuel-vulkan-backend = { workspace = true, optional = true }
 # Pulled by the `cuda` feature so the telemetry `BaracudaStructureKeyProvider`
 # can call it; already present transitively via fuel-cuda-backend.
 baracuda-kernels-types = { workspace = true, optional = true }
+unpopped-vocab = { workspace = true, optional = true }
 # The JIT-on-request envelope — only under `jit` (the adopt-glue seam). The core
 # dispatch layer stays free of it (adopt_runtime_fused takes resolved parts).
 fuel-kernel-seam = { workspace = true, optional = true }
@@ -171,7 +172,7 @@ telemetry = ["fuel-ir/serde"]
 # JIT-on-request adopt glue (the seam-consumption site): synthesize -> take_kernel
 # -> load kernel (caller-provided CUDA seam) -> adopt_runtime_fused. Pulls the
 # envelope crate + baracuda's OperandDesc (ElementKind). Default OFF.
-jit = ["dep:fuel-kernel-seam", "baracuda-types", "dep:kiss-ops-vocab"]
+jit = ["dep:fuel-kernel-seam", "baracuda-types", "dep:kiss-ops-vocab", "dep:unpopped-vocab"]
 # The LIVE JIT loop on published crates: jit + cuda + the real BaracudaSynthesizer
 # (baracuda-cuda-seam, nvrtc). Enables the on-device test that drives
 # synthesize -> take_kernel -> load_synth_kernel -> launch with Baracuda's own

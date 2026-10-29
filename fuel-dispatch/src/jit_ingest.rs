@@ -44,7 +44,7 @@ pub struct CandidateKernel {
     pub kernel: crate::kernel::KernelRef,
     pub op_params: crate::kernel::OpParams,
     pub decompose: Option<fuel_graph::jit::PatternNode>,
-    pub operands: Vec<baracuda_kernels_types::OperandDesc>,
+    pub operands: Vec<unpopped_vocab::OperandDesc>,
     pub dtypes: Vec<fuel_ir::DType>,
     pub kernel_revision_hash: u64,
     pub declared: crate::fused::PrecisionGuarantee,
@@ -931,11 +931,11 @@ mod flag_not_verdict_tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn kiss_ref_advisory_records_for_add_f32() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -989,11 +989,11 @@ mod flag_not_verdict_tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn multi_node_region_advisory_flags_add_kernel_for_relu_add() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -1056,11 +1056,11 @@ mod flag_not_verdict_tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn claimed_op_candidate_reaches_advisory_via_runtime_region() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -2755,11 +2755,11 @@ mod tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn verify_candidate_add_f32_passes_against_its_decompose() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -2842,11 +2842,11 @@ mod tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn verify_candidate_refuses_numeric_claim_for_non_f32() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -2923,11 +2923,11 @@ mod tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn verify_candidate_add_f64_is_inconclusive_not_failed() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -3011,11 +3011,11 @@ mod tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn ingest_rejects_mul_candidate_for_the_add_region() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -3083,11 +3083,11 @@ mod tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn ingest_adopts_add_candidate_for_the_add_region() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -3237,11 +3237,11 @@ mod tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn rope_oracle_rejects_interleaved_rope_claiming_rope() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::registry::FusedOps;
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -3340,12 +3340,12 @@ mod tests {
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
     fn rope_oracle_adopts_matching_elementwise_claimant() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_cuda_backend::CudaDevice;
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_graph::runtime_fused::register_runtime_fused;
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let Ok(dev) = CudaDevice::new(0) else {
             return fuel_test_support::hardware::skip(
@@ -3420,9 +3420,9 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn adopt_verified_rejects_a_candidate_without_a_decompose() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         let cand = CandidateKernel {
@@ -3462,10 +3462,10 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn adopt_verified_rejects_when_the_region_is_not_registrable() {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         // Bind indices {0, 2} — missing 1 — register_runtime_fused rejects
         // this as NonContiguousBinds.
@@ -3526,9 +3526,9 @@ mod tests {
     /// mocked out via `start_with_verify`), so there's nothing to realize a
     /// reference from.
     fn test_candidate(entry_point: &str) -> CandidateKernel {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
         CandidateKernel {
@@ -4027,10 +4027,10 @@ mod tests {
     /// discipline as `ingest_adopts_add_candidate_for_the_add_region`).
     #[cfg(feature = "cuda")]
     fn e2e_add_candidate() -> CandidateKernel {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let decompose = PatternNode::Op {
             op: OpTag::Add,
@@ -4065,10 +4065,10 @@ mod tests {
     /// compared and caught, not just skipped as an unclaimed property.
     #[cfg(feature = "cuda")]
     fn e2e_mul_candidate() -> CandidateKernel {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let decompose = PatternNode::Op {
             op: OpTag::Add,
@@ -4104,10 +4104,10 @@ mod tests {
     /// non-f32 numeric claim Fuel's f32-only authority can't verdict.
     #[cfg(feature = "cuda")]
     fn e2e_add_f64_candidate() -> CandidateKernel {
-        use baracuda_kernels_types::{ElementKind, OperandDesc};
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
         use fuel_ir::DType;
         use fuel_ir::probe::BackendId;
+        use unpopped_vocab::{ElementKind, OperandDesc};
 
         let decompose = PatternNode::Op {
             op: OpTag::Add,

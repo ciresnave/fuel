@@ -883,6 +883,13 @@ fn build_optimized_graph(
     if let Some(oracle) = judge_oracle.as_deref() {
         options = options.with_judge(oracle);
     }
+    // ROADMAP row 67 I2: an opt-in device byte budget (`FUEL_DEVICE_BUDGET_BYTES`). Unset = the
+    // eviction pass stays off and the plan is byte-identical.
+    if let Some(budget) = fuel_dispatch::device_budget::device_budget_from_env()
+        .map_err(|e| Error::Msg(e.to_string()).bt())?
+    {
+        options = options.with_resolved_device_budget(budget);
+    }
     #[cfg(feature = "telemetry")]
     if let Some(ref hooks) = tele_hooks {
         options = options.with_telemetry(hooks);

@@ -49,10 +49,10 @@
 //! anyway because the trigger is the piece Fuel owns, and because the next
 //! fused op with no backend implementation may not be indexed.
 
-use baracuda_kernels_types::{ArchSku, OperandDesc};
 use fuel_graph::{Graph, NodeId};
 use fuel_ir::probe::BackendId;
 use fuel_kernel_seam::{JitBudget, JitRequest};
+use unpopped_vocab::{ArchSku, OperandDesc};
 
 use crate::jit_adopt::dtype_to_element_kind;
 use crate::kernel::KernelBindingTable;
@@ -183,7 +183,7 @@ mod tests {
     /// failure mode; it is the one this test exists to prevent.
     #[test]
     fn builds_a_request_for_a_fused_op_with_no_kernel_here() {
-        use baracuda_kernels_types::ElementKind;
+        use unpopped_vocab::ElementKind;
 
         let mut g = Graph::new();
         let (id, _) = paged_node(&mut g);
