@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.30.1 - 2026-10-29
+
+### Removed
+
+- `fuel-cuda-backend`: the unused `CUDA_QUANTIZE_BLOCK_SIZE` and `CUDA_DEQUANTIZE_BLOCK_SIZE` constants (inherited from the Candle CUDA path; the Baracuda-backed launches size their own blocks, and `git grep` at origin/main finds no reader). They were two of the dead-code findings the `portfolio` sweep reports; that check has ~520 other Medium+ findings and is not required, so this does not turn it green. Not compiled here (the crate needs the CUDA toolchain and the forge); a pure deletion of two `pub const` items that nothing in the workspace names.
+
 ## v0.30.0 - 2026-10-29
 
 ### Added
