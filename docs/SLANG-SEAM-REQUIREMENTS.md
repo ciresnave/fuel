@@ -206,3 +206,5 @@ control: the script finds 147 `.slang` files (the same population as `git ls-fil
 comments; `Params` field parsing assumes a struct literally named `Params` (one file, `autodiff_poc`,
 has none); rank is read from field names, not from index math. None of this was run through a Slang
 parser, which is the thing P3 would build.
+
+<!-- ci-speed light-path probe; throwaway -->
