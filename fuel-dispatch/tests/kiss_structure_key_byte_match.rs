@@ -1290,70 +1290,54 @@ fn target_match_vectors_are_recorded_as_not_exercised_by_this_leg() {
     );
 }
 
-/// KISS-CLASSIFY-6.1-0016, the emit-side dual of the two published
-/// `ElementDtypeAsAccumulator` declines: an MX element dtype is a legal dtype
-/// field but never an `<acc>`. The SIBLING arm (the same cell with an `f32`
-/// accumulator derives) keeps the decline from passing for some other reason.
+/// KISS-CLASSIFY-6.1-0016, the emit-side dual of the published
+/// `mx_element_as_non_contraction_accumulator` decline: an MX element dtype is a
+/// legal dtype field but never an `<acc>`. The SIBLING arm (the same cell with an
+/// `f64` accumulator derives) keeps the decline from passing for another reason.
 #[test]
 fn mx_element_dtypes_decline_as_accumulators_and_derive_elsewhere() {
     use fuel_dispatch::telemetry::structure_key_derive::{
         DeriveDecline, derive_structure_key_token_typed,
     };
-    let ops = || {
-        io(vec![
-            f32c(&[128, 256]),
-            f32c(&[128, 256]),
-            f32c(&[128, 256]),
-        ])
-    };
-    let acc = |dt| {
-        Some(AccMp {
+    let ops = io(vec![
+        f32c(&[128, 256]),
+        f32c(&[128, 256]),
+        f32c(&[128, 256]),
+    ]);
+    let derive = |dt| {
+        let acc = Some(AccMp {
             acc_dtype: dt,
             math_precision: GemMathPrecision::BitStable,
-        })
+        });
+        derive_structure_key_token_typed(&DeclaredFacts::none(), &ops, "cuda:sm89", acc)
     };
     for dt in [DType::F4, DType::F6E2M3, DType::F6E3M2] {
-        let got =
-            derive_structure_key_token_typed(&DeclaredFacts::none(), &ops(), "cuda:sm89", acc(dt));
+        let got = derive(dt);
         assert_eq!(got, Err(DeriveDecline::ElementDtypeAsAccumulator), "{dt:?}");
         assert_eq!(got.unwrap_err().wire(), "ElementDtypeAsAccumulator");
     }
-    // Sibling: a deviating, non-element accumulator on the same cell derives.
-    let ok = derive_structure_key_token_typed(
-        &DeclaredFacts::none(),
-        &ops(),
-        "cuda:sm89",
-        acc(DType::F64),
-    );
-    assert!(ok.unwrap().ends_with("|f64/st"));
-    // Contraction accumulator.
-    let mut g = gem_f32(8, 4096, 4096);
-    g.acc_dtype = DType::F4;
-    let got = derive_structure_key_token_typed(
-        &DeclaredFacts::contraction(g),
-        &io(vec![
-            f32c(&[8, 4096]),
-            f32c(&[4096, 4096]),
-            f32c(&[8, 4096]),
-        ]),
-        "cuda:sm89",
-        None,
-    );
-    assert_eq!(got, Err(DeriveDecline::ElementDtypeAsAccumulator));
-    // ...and an MX element as the WEIGHT dtype of the same contraction is fine.
-    let mut g = gem_f32(8, 4096, 4096);
-    g.weight_dtype = DType::F4;
-    assert!(
-        derive_structure_key_token_typed(
-            &DeclaredFacts::contraction(g),
-            &io(vec![
-                f32c(&[8, 4096]),
-                f32c(&[4096, 4096]),
-                f32c(&[8, 4096])
-            ]),
-            "cuda:sm89",
-            None,
-        )
-        .is_ok()
-    );
+    assert!(derive(DType::F64).unwrap().ends_with("|f64/st"));
+}
+
+/// The contraction `<acc>` position of 6.1-0016, with its sibling: the same MX
+/// element as the WEIGHT dtype of the same contraction derives.
+#[test]
+fn mx_element_dtype_declines_as_a_contraction_accumulator_but_derives_as_weight() {
+    use fuel_dispatch::telemetry::structure_key_derive::{
+        DeriveDecline, derive_structure_key_token_typed,
+    };
+    let ops = io(vec![
+        f32c(&[8, 4096]),
+        f32c(&[4096, 4096]),
+        f32c(&[8, 4096]),
+    ]);
+    let derive = |g: GemCell| {
+        derive_structure_key_token_typed(&DeclaredFacts::contraction(g), &ops, "cuda:sm89", None)
+    };
+    let mut acc = gem_f32(8, 4096, 4096);
+    acc.acc_dtype = DType::F4;
+    assert_eq!(derive(acc), Err(DeriveDecline::ElementDtypeAsAccumulator));
+    let mut weight = gem_f32(8, 4096, 4096);
+    weight.weight_dtype = DType::F4;
+    assert!(derive(weight).is_ok());
 }
