@@ -172,7 +172,7 @@ jobs:
         shell: bash
         run: |
           if [ -r /proc/cpuinfo ]; then
-            id=$(grep -m1 -i '^flags' /proc/cpuinfo | sha1sum | cut -c1-12)
+            id=$( (grep -m1 -iE '^(flags|features)' /proc/cpuinfo || uname -m) | sha1sum | cut -c1-12)
           else
             id=$(printf '%s' "${PROCESSOR_IDENTIFIER:-$(uname -m)}" | sha1sum | cut -c1-12)
           fi
@@ -700,7 +700,7 @@ jobs:
         shell: bash
         run: |
           if [ -r /proc/cpuinfo ]; then
-            id=$(grep -m1 -i '^flags' /proc/cpuinfo | sha1sum | cut -c1-12)
+            id=$( (grep -m1 -iE '^(flags|features)' /proc/cpuinfo || uname -m) | sha1sum | cut -c1-12)
           else
             id=$(printf '%s' "${PROCESSOR_IDENTIFIER:-$(uname -m)}" | sha1sum | cut -c1-12)
           fi
@@ -983,7 +983,7 @@ jobs:
         shell: bash
         run: |
           if [ -r /proc/cpuinfo ]; then
-            id=$(grep -m1 -i '^flags' /proc/cpuinfo | sha1sum | cut -c1-12)
+            id=$( (grep -m1 -iE '^(flags|features)' /proc/cpuinfo || uname -m) | sha1sum | cut -c1-12)
           else
             id=$(printf '%s' "${PROCESSOR_IDENTIFIER:-$(uname -m)}" | sha1sum | cut -c1-12)
           fi
