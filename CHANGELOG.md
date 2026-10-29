@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.28.1 - 2026-10-29
+
+### Changed
+
+- Docs only: `docs/PATENT-SWEEP.md` gets an addendum listing what landed after the swept commit (ideas 17 and 18 and the note on idea 12; ideas and proposed queries only, no verdicts), and corrects its opening line, which said nothing of Fuel was on crates.io: `fuel-kernel-seam-types`, `fuel-kernel-seam` and `fuel-kernel-seam-announce` 0.26.12 are.
+
 ## v0.28.0 - 2026-10-29
 
 ### Changed

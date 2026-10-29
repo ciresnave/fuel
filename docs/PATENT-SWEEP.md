@@ -1,6 +1,6 @@
 # Patent sweep: Fuel 0.26.x @ 04adf332d (IN PROGRESS: ideas listed, first search pass done, 13 items need review)
 
-Date started: 2026-10-25. Run by: Fuel lane (Fuel 1), Claude Sonnet 5.5. Method: AI-assisted search and read; **NOT legal advice; NOT a freedom-to-operate opinion.** Process: `C:\Projects\PATENT-SWEEP-PROCESS.md` (CireSnave, board 286: a sweep must exist before any release). Covers the version line 0.26.x (pre-publish; nothing of Fuel has been published to crates.io yet).
+Date started: 2026-10-25. Run by: Fuel lane (Fuel 1), Claude Sonnet 5.5. Method: AI-assisted search and read; **NOT legal advice; NOT a freedom-to-operate opinion.** Process: `C:\Projects\PATENT-SWEEP-PROCESS.md` (CireSnave, board 286: a sweep must exist before any release). Covers the version line 0.26.x at the swept commit, with an addendum for 0.26.24 to 0.28.0 (below). **Correction, 2026-10-29:** the first sentence of this record said "pre-publish; nothing of Fuel has been published to crates.io yet". That was wrong for three crates: `fuel-kernel-seam-types`, `fuel-kernel-seam` and `fuel-kernel-seam-announce` 0.26.12 are on crates.io (the crates.io API listed 0.26.12 as the newest version of each on 2026-10-29; tarballs downloaded and diffed). The other workspace crates were not checked.
 
 **Status of this record (2026-10-25, first pass):** the idea list is written; each idea has been searched with 3 to 9 documented queries and its closest hits read (by sub-agents, then re-read by the lane for the 13 `needs-review` items). **This is a first pass, not a finished sweep:** recall is low (see "How the search was run"), ideas 9, 10, 11 and 14 are barely covered, USPTO/Espacenet/WIPO were not queried directly, and no `clear` below is a clearance of the idea. Nothing here is a freedom-to-operate opinion.
 
@@ -158,6 +158,16 @@ Rows 1 to 13 above (rows 12 and 13, the two Nvidia per-vector-scaling patents, w
 6. **US 8,146,066 B2**, **US 8,375,368 B2** (charted), **US 12,423,074 B1**, then the Nvidia processor claims **US 2023/0025245 A1** (pending) and **US 12,619,868 B2**, and **EP 4242845 A1** (not read by me).
 
 No design change is proposed by this lane. Which of these matter is a question for CireSnave with counsel (see the options in `PATENT-SWEEP-CHARTS.md`).
+
+## Addendum 2026-10-29: additions after the swept commit (0.26.24 to 0.28.0 @ 8ff54523e). Ideas and queries only; NO verdicts
+
+Nothing below has been searched or read yet; this section lists what is new so the next read pass has it. The swept list above was written at `04adf332d`; these changes landed on `main` after it.
+
+- **17. Role-aware capability negotiation with provider-only bits.** In a capability handshake between a framework and a kernel provider, computing the live capability word as `(local & remote & !FEAT) | (provider & FEAT)`: bits of the feature axis belong to the provider alone, the provider is known from the exchange (a role argument) and never from a capability bit, and the extension and sub-feature axes stay a plain AND. Where: `fuel-kernel-seam-announce` `negotiate_with_role`, `Role`, `SEAM_CAP_PROVIDER_ONLY_MASK` (#512, 0.26.33; the old plain-AND `negotiate()` is deprecated). Extends idea 14. Proposed queries: "capability negotiation bitmask provider-only features consumer role handshake"; "capability word intersection except provider advertised bits"; "kernel provider capability announcement version profile negotiation hardware". Not run.
+- **18. Typed decline of a storage element type in an accumulator position.** A structure-key deriver that refuses (with a typed reason) to derive a key when a block-scaled microscaling element type appears as an accumulator, and derives it normally elsewhere. Where: `fuel-dispatch` `structure_key_derive.rs` `DeriveDecline::ElementDtypeAsAccumulator` (#513, 0.27.0). Extends idea 14. Proposed queries: "kernel identity key derivation decline microscaling element type accumulator"; "tensor operation signature hash precision accumulator element type". Not run.
+- **Idea 12 is now implemented in part** (it was swept as a specification): the residency eviction pass is wired into `optimize_graph` behind a device budget (#498, 0.26.26, ROADMAP row 67 I1). Row 67 I3 (delayed reload) stays gated. The swept text of idea 12 is unchanged; this note only records that the "second pass (d)" re-sweep trigger has fired.
+- **Quantized float dot** (`fuel-quantized` feature `float-dot`, off by default, #509) and the draft native Q8_0 `QMatMul` (#495, held): covered by `docs/PATENT-SWEEP-CHARTS.md` (board 307), not by a new idea here.
+- **No new mechanism:** #513's re-vendored KISS corpus, #514 (a requirements document), #515 (a dependency move to `unpopped-vocab` 0.32.1).
 
 ## Before the first publish (open items)
 
