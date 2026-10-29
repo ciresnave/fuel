@@ -23,7 +23,8 @@ Anything else, an empty diff, or a git failure is heavy. Usage:
 import collections
 import os
 import re
-import subprocess
+import shutil
+import subprocess  # nosec B404 - runs `git` only, with a fixed argument list and no shell
 import sys
 
 DOC = re.compile(r"^(docs/.*|.*\.md|LICENSE.*)$")
@@ -32,7 +33,11 @@ LONE_VERSION = re.compile(r'^version = "\d+\.\d+\.\d+"$')
 
 
 def git(*args):
-    return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+    # Fixed argument list, no shell; the only inputs are ref names and paths from `git diff` itself.
+    exe = shutil.which("git")
+    if exe is None:
+        raise OSError("git not found on PATH")
+    return subprocess.run([exe, *args], capture_output=True, text=True, check=True).stdout  # nosec B603
 
 
 def changed_lines(base, head, path):
@@ -59,26 +64,31 @@ def manifest_is_version_only(removed, added):
     return all(map(ok_line, removed + added)) and same_but_versions(removed, added)
 
 
+def heavy_reason(base, head, name):
+    """Why `name` makes the change heavy, or None when it is documentation or version-only."""
+    if DOC.match(name):
+        return None
+    base_name = name.rsplit("/", 1)[-1]
+    if base_name not in ("Cargo.toml", "Cargo.lock"):
+        return f"{name}: not documentation or a version file"
+    removed, added = changed_lines(base, head, name)
+    if not removed and not added:
+        return f"{name}: no content lines (mode or rename change)"
+    check = same_but_versions if base_name == "Cargo.lock" else manifest_is_version_only
+    if not check(removed, added):
+        return f"{name}: changes more than workspace version numbers"
+    return None
+
+
 def classify(base, head):
     """Return (light, reasons)."""
     names = git("diff", "--name-only", base, head).splitlines()
     if not names:
         return False, ["empty diff"]
     for name in names:
-        if DOC.match(name):
-            continue
-        base_name = name.rsplit("/", 1)[-1]
-        if base_name not in ("Cargo.toml", "Cargo.lock"):
-            return False, [f"{name}: not documentation or a version file"]
-        removed, added = changed_lines(base, head, name)
-        if not removed and not added:
-            return False, [f"{name}: no content lines (mode or rename change)"]
-        if base_name == "Cargo.lock":
-            ok = same_but_versions(removed, added)
-        else:
-            ok = manifest_is_version_only(removed, added)
-        if not ok:
-            return False, [f"{name}: changes more than workspace version numbers"]
+        reason = heavy_reason(base, head, name)
+        if reason:
+            return False, [reason]
     return True, [f"{len(names)} path(s), all documentation or version-only"]
 
 
