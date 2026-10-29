@@ -1,11 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
-## v0.30.2 - 2026-10-29
+## v0.30.4 - 2026-10-29
 
 ### Changed
 
 - Dependencies: `zip` 9.0.5 -> 9.1.3 (workspace pin; used by `fuel-formats` pickle reading, `fuel-ir`, `fuel-tensor`), with `typed-path` 0.12.3 -> 0.13.0 in the lock. Ran: `cargo test -p fuel-formats`, `cargo test -p fuel-ir --lib`, `cargo check -p fuel-tensor --all-targets`. No source change.
+
+## v0.30.3 - 2026-10-29
+
+### Changed
+
+- CI (`.github/workflows/rust-ci.yml`): build cache (`Swatinem/rust-cache`, keyed by a CPU-feature hash because `.cargo/config.toml` builds with `target-cpu=native`) on the Test Suite legs, Clippy and Check (ubuntu-latest); the Linux disk-space cleanup deletes its four directories in parallel; the Windows and macOS test legs skip their build and test steps for a PR that changes only documentation and workspace version numbers (`scripts/ci_change_class.py`; required contexts and job names unchanged, `main` pushes always run everything).
 
 ## v0.30.1 - 2026-10-29
 
