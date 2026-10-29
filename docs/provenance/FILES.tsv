@@ -7,11 +7,11 @@ path	class	candle_source	basis
 .github/CODEOWNERS	own		no lineage; 0 of 1 lines verbatim in candle (0%)
 .github/dependabot.yml	candle	.github/dependabot.yml	identical path; 100% of 2 lines verbatim
 .github/workflows/cuda-metal-compile-check.yml	own		no lineage; 0 of 73 lines verbatim in candle (0%)
-.github/workflows/rust-ci.yml	candle-modified	.github/workflows/rust-ci.yml	same path; 3% of 883 lines verbatim
+.github/workflows/rust-ci.yml	candle-modified	.github/workflows/rust-ci.yml	same path; 3% of 940 lines verbatim
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 8% of 404 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 8% of 406 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 302 lines verbatim
@@ -1967,6 +1967,7 @@ scripts/audit_output.txt	own		no lineage; 0 of 289 lines verbatim in candle (0%)
 scripts/b3_storage_seam_to_result.py	own		no lineage; 1 of 61 lines verbatim in candle (2%)
 scripts/check-dev-dep-publish-cycles.py	own		no lineage; 1 of 29 lines verbatim in candle (3%)
 scripts/check-gaps-table.py	own		no lineage; 0 of 894 lines verbatim in candle (0%)
+scripts/ci_change_class.py	own		no lineage; 1 of 69 lines verbatim in candle (1%)
 scripts/compose-check.ps1	own		no lineage; 0 of 133 lines verbatim in candle (0%)
 scripts/cuda-build.ps1	own		no lineage; 0 of 222 lines verbatim in candle (0%)
 scripts/doc_link_census.py	own		no lineage; 1 of 430 lines verbatim in candle (0%)

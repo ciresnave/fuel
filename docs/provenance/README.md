@@ -96,6 +96,6 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-transformers` | 178 | 2 | 4 | 149 |  | 20 |  | 3 |
 | `fuel-vulkan-backend` | 26 |  |  |  |  | 23 |  | 3 |
 | `fuel-vulkan-kernels` | 183 |  |  |  |  | 2 | 178 | 3 |
-| `scripts` | 70 |  |  | 1 |  | 69 |  |  |
-| **all** | **2033** | **117** | **213** | **253** | **4** | **1137** | **180** | **129** |
+| `scripts` | 71 |  |  | 1 |  | 70 |  |  |
+| **all** | **2034** | **117** | **213** | **253** | **4** | **1138** | **180** | **129** |
 <!-- provenance-summary:end -->
