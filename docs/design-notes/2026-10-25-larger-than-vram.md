@@ -58,7 +58,7 @@ Wiring the pass and testing it showed three defects in it, none visible while no
   Tests: no budget, a roomy budget and no pinned device leave the graph untouched (negative controls); a budget
   below the peak inserts `Move`/`Copy` chains; `analyze_on` discounts the staged copy; a candidate is evicted at
   most once. Not claimed: any reduction of the device peak (section 2b item 3) and any GPU behaviour.
-- **I2, the budget source.** Turn the probed total/free VRAM of the pinned device (the `BackendStreams` signal the
+- **I2, the budget source (BUILT, `fuel-dispatch/src/device_budget.rs`; not wired by default, see the CHANGELOG).** Turn the probed total/free VRAM of the pinned device (the `BackendStreams` signal the
   selector already reads) into a default budget with a documented reserve fraction; an explicit
   `FUEL_DEVICE_BUDGET_BYTES` style override for tests and for a box with a shared GPU. The default must be
   conservative and visible in the plan report, never silent.

@@ -1,11 +1,25 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
-## v0.28.3 - 2026-10-29
+## v0.30.1 - 2026-10-29
 
 ### Removed
 
-- `fuel-cuda-backend`: the unused `CUDA_QUANTIZE_BLOCK_SIZE` and `CUDA_DEQUANTIZE_BLOCK_SIZE` constants (inherited from the Candle CUDA path; the Baracuda-backed launches size their own blocks, and `git grep` at origin/main finds no reader). They were the two findings keeping `portfolio / Portfolio checks` red on `main`. Not compiled here (the crate needs the CUDA toolchain and the forge); a pure deletion of two `pub const` items that nothing in the workspace names.
+- `fuel-cuda-backend`: the unused `CUDA_QUANTIZE_BLOCK_SIZE` and `CUDA_DEQUANTIZE_BLOCK_SIZE` constants (inherited from the Candle CUDA path; the Baracuda-backed launches size their own blocks, and `git grep` at origin/main finds no reader). They were two of the dead-code findings the `portfolio` sweep reports; that check has ~520 other Medium+ findings and is not required, so this does not turn it green. Not compiled here (the crate needs the CUDA toolchain and the forge); a pure deletion of two `pub const` items that nothing in the workspace names.
+
+## v0.30.0 - 2026-10-29
+
+### Added
+
+- ROADMAP row 67, increment I2 (`fuel-dispatch`): `device_budget` turns a device into a byte budget for `PlanOptions::device_budget_bytes` and says which rule produced it. `resolve_device_budget(explicit, env, available, fraction)` takes an explicit value first, then the `FUEL_DEVICE_BUDGET_BYTES` override, then the probed free bytes times a reserve fraction (`DEFAULT_RESERVE_FRACTION` = 0.9, the design note's proposal); it returns `None` when the device gives no finite figure, and a malformed override or a fraction outside `(0, 1]` is a `BudgetError`, never a silent fallback. `device_budget_from_env` is the opt-in the realize path calls (`pipelined_bridge`): with `FUEL_DEVICE_BUDGET_BYTES` set, the plan gets that budget and the eviction pass runs; unset, the plan is byte-identical. `PlanOptions::with_resolved_device_budget` attaches the result, and the rule reaches `EvictionOutcome::budget_source` so a plan report names its budget's origin.
+- **Not on by default**: only the environment override reaches the realize path (the probed rule is built and unit-tested but no production caller uses it). The eviction pass reloads eagerly and the delayed reload is row 67 I3 (design-gated), so a default-on budget would add copies and not lower the analysed peak. The design note's decision 1 (default ON for a pinned CUDA/Vulkan device) stays with the PM until I3 lands.
+- Source-level note: `PlanOptions` and `EvictionOutcome` each gain a public field (`device_budget_source`, `budget_source`); `EvictionOutcome` also stops deriving `Eq` (it now holds an `f64`). `EvictionOutcome` is now `#[non_exhaustive]` (it is an output, so downstream only reads it) so a later field never breaks again; a struct literal of `PlanOptions` outside this crate would need the new field. The lane found no literal of either in the workspace or in the sibling checkouts (lightbulb defines its own, unrelated `EvictionOutcome`).
+- Docs only: `docs/SLANG-SEAM-REQUIREMENTS.md` records the measured `Params` layout rule (146 `Params` structs, scalar fields only, so std140 and scalar offsets coincide), with the scan method and what was not checked; an earlier note of four fixed-array `Params` kernels is retracted.
+## v0.29.0 - 2026-10-29
+
+### Removed
+
+- **Breaking** (`fuel-kernel-seam-announce`): the deprecated plain-AND `negotiate()` and `SEAM_CAP_JIT_ON_REQUEST` (bit 16, in the KISS EXT experimental range) are gone, as the 0.26.33 deprecation notices promised. Use `negotiate_with_role` (a FEAT bit such as `SEAM_CAP_PROVISION_ON_REQUEST` belongs to the provider alone) and `SEAM_CAP_PROVISION_ON_REQUEST` (FEAT bit 32). The test pinning the old plain-AND behaviour is deleted with it; the profile-selection tests now run through `negotiate_with_role`.
 
 ## v0.28.1 - 2026-10-29
 

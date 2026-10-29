@@ -407,14 +407,16 @@ fn optimize_graph_with_passes(
         // best candidates while the analysed peak exceeds it. Runs after the copy pass
         // (it reads the resolved placements) and before layout fixups. No budget = no-op.
         if let Some(budget) = opts.device_budget_bytes {
-            eviction = Some(crate::residency::insert_residency_evictions_in(
+            let mut outcome = crate::residency::insert_residency_evictions_in(
                 graph,
                 roots,
                 pinned,
                 budget,
                 RESIDENCY_EVICTION_MAX_ROUNDS,
                 |id| placements.get(&id).copied(),
-            )?);
+            )?;
+            outcome.budget_source = opts.device_budget_source;
+            eviction = Some(outcome);
         }
         resolved_placements = Some(placements);
         // Cleanup Step B (layout): insert `Op::Contiguize` before any kernel
@@ -980,6 +982,35 @@ mod tests {
         // spill to the CPU cannot lower CPU residency; that property is pinned in
         // `residency::tests::today_the_reload_runs_eagerly_so_the_device_peak_does_not_drop`
         // (which documents that no round lowers the analysed peak until ROADMAP row 67 I3).
+    }
+
+    #[test]
+    fn the_plan_report_names_where_the_budget_came_from() {
+        use crate::device_budget::{BudgetSource, ResolvedBudget};
+        let run = |opts: PlanOptions<'_>| {
+            let mut table = KernelBindingTable::new();
+            let (mut g, root) = build_over_budget_graph(&mut table);
+            optimize_graph(&mut g, &[root], &table, &opts)
+                .expect("optimize_graph")
+                .eviction
+                .expect("a budgeted run reports an outcome")
+        };
+        let mut table = KernelBindingTable::new();
+        let (g, root) = build_over_budget_graph(&mut table);
+        let budget = peak_bytes(&g, root) - 1;
+        let resolved = ResolvedBudget {
+            bytes: budget,
+            source: BudgetSource::Probed {
+                available: (budget as u64) * 10 / 9,
+                fraction: 0.9,
+            },
+        };
+        let from_policy = run(cpu_opts().with_resolved_device_budget(resolved));
+        assert_eq!(from_policy.budget_bytes, budget);
+        assert_eq!(from_policy.budget_source, Some(resolved.source));
+        // Control: a hand-set number carries no source, so the two paths are told apart.
+        let by_hand = run(cpu_opts().with_device_budget_bytes(budget));
+        assert_eq!(by_hand.budget_source, None);
     }
 
     #[test]
