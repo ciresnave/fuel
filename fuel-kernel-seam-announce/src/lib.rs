@@ -56,14 +56,6 @@ pub const SEAM_CAP_FDX_AFFINE: u64 = 1 << 3;
 pub const SEAM_CAP_FDX_SYMBOLIC: u64 = 1 << 4;
 /// FDX indexed-residency / gather (`DlpackExtGather`).
 pub const SEAM_CAP_FDX_GATHER: u64 = 1 << 5;
-/// JIT-on-request endpoint (§5); a party may support Profile v1's FDX+FKC
-/// without this.
-#[deprecated(
-    since = "0.26.33",
-    note = "bit 16 is in the KISS EXT experimental range, not the registry; use SEAM_CAP_PROVISION_ON_REQUEST (FEAT bit 32) with negotiate_with_role"
-)]
-pub const SEAM_CAP_JIT_ON_REQUEST: u64 = 1 << 16;
-
 // ---- KISS-ANNOUNCE §7.2 axes and the registry bits Fuel acts on (kiss `spec/announce.md` @4656dc2) ----
 
 /// EXT axis, bits `[0, 24)`: external interchange tokens (what each side *speaks*).
@@ -255,26 +247,6 @@ fn select_profile(local: &SeamHello, remote: &SeamHello) -> Result<u16, SeamErro
         })
 }
 
-/// §3.2: select the **highest mutually-supported** profile (TLS-style), with
-/// `capabilities = local & remote`. Hard-fails with [`SeamError::VersionMismatch`]
-/// on disjoint advertised sets — the connection does NOT proceed on a guessed
-/// version. Both envelopes are validated first.
-///
-/// **Wrong for provider-only bits**: a plain AND drops a FEAT bit (such as
-/// [`SEAM_CAP_PROVISION_ON_REQUEST`]) whenever the consumer does not write it, and
-/// KISS-ANNOUNCE-7.3-0002 has the consumer write it as zero. Use [`negotiate_with_role`].
-/// Removed in 0.27.0.
-#[deprecated(
-    since = "0.26.33",
-    note = "plain AND is wrong for provider-only (FEAT) bits; use negotiate_with_role"
-)]
-pub fn negotiate(local: &SeamHello, remote: &SeamHello) -> Result<Negotiated, SeamError> {
-    Ok(Negotiated {
-        profile: select_profile(local, remote)?,
-        capabilities: local.capabilities & remote.capabilities,
-    })
-}
-
 /// §3.2 and KISS-ANNOUNCE-7.3-0003 (CireSnave decision 310, Q3 A): the highest mutually-supported
 /// profile, and a **role-aware** live capability word,
 /// `(local & remote & !FEAT) | (provider & FEAT)` with `FEAT` = [`SEAM_CAP_FEAT_MASK`].
@@ -282,8 +254,8 @@ pub fn negotiate(local: &SeamHello, remote: &SeamHello) -> Result<Negotiated, Se
 /// `local_role` is the role of the LOCAL envelope; the provider is known from the exchange, never
 /// from a capability bit. The FEAT axis is masked as a whole, not bit by bit, so two readers that
 /// recognise different FEAT bits still compute the same word. EXT and SUB bits are live only when
-/// both sides set them. Same validation and [`SeamError::VersionMismatch`] behaviour as the
-/// deprecated [`negotiate`].
+/// both sides set them. Both envelopes are validated first; disjoint advertised profile sets hard-fail with
+/// [`SeamError::VersionMismatch`], never a guessed version.
 pub fn negotiate_with_role(
     local: &SeamHello,
     remote: &SeamHello,
@@ -302,7 +274,6 @@ pub fn negotiate_with_role(
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::mem::{align_of, offset_of, size_of};
@@ -395,7 +366,7 @@ mod tests {
     fn v1_both_sides_select_profile_1() {
         let local = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_FDX_GGML);
         let remote = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_FDX_MX);
-        let n = negotiate(&local, &remote).expect("v1 ∩ v1 negotiates");
+        let n = negotiate_with_role(&local, &remote, Role::Consumer).expect("v1 ∩ v1 negotiates");
         assert_eq!(n.profile, PROFILE_V1);
         // capabilities = local & remote — only the common FDX_V1 bit survives.
         assert_eq!(n.capabilities, SEAM_CAP_FDX_V1);
@@ -405,35 +376,25 @@ mod tests {
     fn highest_mutually_supported_wins() {
         let local = SeamHello::advertise(&[1, 2, 3], 0);
         let remote = SeamHello::advertise(&[2, 3, 5], 0);
-        assert_eq!(negotiate(&local, &remote).unwrap().profile, 3);
+        assert_eq!(
+            negotiate_with_role(&local, &remote, Role::Consumer)
+                .unwrap()
+                .profile,
+            3
+        );
     }
 
     #[test]
     fn disjoint_profiles_hard_fail() {
         let local = SeamHello::advertise(&[1], 0);
         let remote = SeamHello::advertise(&[2], 0);
-        match negotiate(&local, &remote) {
+        match negotiate_with_role(&local, &remote, Role::Consumer) {
             Err(SeamError::VersionMismatch { local, remote }) => {
                 assert_eq!(local, vec![1]);
                 assert_eq!(remote, vec![2]);
             }
             other => panic!("expected VersionMismatch, got {other:?}"),
         }
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn deprecated_negotiate_stays_a_plain_and() {
-        // Pins the deprecated behaviour until 0.27.0 removes it: a bit only one side sets is off.
-        let fuel = SeamHello::fuel(SEAM_CAP_FDX_V1 | SEAM_CAP_JIT_ON_REQUEST);
-        let provider = SeamHello::fuel(SEAM_CAP_FDX_V1);
-        let n = negotiate(&fuel, &provider).unwrap();
-        assert_eq!(
-            n.capabilities & SEAM_CAP_JIT_ON_REQUEST,
-            0,
-            "JIT not on this connection"
-        );
-        assert_eq!(n.capabilities & SEAM_CAP_FDX_V1, SEAM_CAP_FDX_V1);
     }
 
     #[test]
@@ -498,8 +459,8 @@ mod tests {
         assert_eq!(b.profile, 1);
         assert_eq!(a.capabilities, KISS_LIVE, "consumer local, provider remote");
         assert_eq!(b.capabilities, KISS_LIVE, "provider local, consumer remote");
-        // The plain AND is what the deprecated `negotiate` computes: it loses both FEAT bits.
-        let plain = negotiate(&consumer, &provider).expect("plain").capabilities;
+        // A plain AND of the two words would lose both FEAT bits.
+        let plain = consumer.capabilities & provider.capabilities;
         assert_eq!(plain, 0x0011_0000_0000_0001);
         assert_ne!(plain, KISS_LIVE);
     }

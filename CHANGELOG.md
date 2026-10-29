@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.29.0 - 2026-10-29
+
+### Removed
+
+- **Breaking** (`fuel-kernel-seam-announce`): the deprecated plain-AND `negotiate()` and `SEAM_CAP_JIT_ON_REQUEST` (bit 16, in the KISS EXT experimental range) are gone, as the 0.26.33 deprecation notices promised. Use `negotiate_with_role` (a FEAT bit such as `SEAM_CAP_PROVISION_ON_REQUEST` belongs to the provider alone) and `SEAM_CAP_PROVISION_ON_REQUEST` (FEAT bit 32). The test pinning the old plain-AND behaviour is deleted with it; the profile-selection tests now run through `negotiate_with_role`.
+
 ## v0.28.1 - 2026-10-29
 
 ### Changed
