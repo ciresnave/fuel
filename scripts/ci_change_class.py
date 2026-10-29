@@ -32,12 +32,28 @@ VERSION = re.compile(r"\d+\.\d+\.\d+")
 LONE_VERSION = re.compile(r'^version = "\d+\.\d+\.\d+"$')
 
 
+GIT_LITERALS = frozenset({"diff", "-U0", "--no-color", "--name-only", "--"})
+SAFE_ARG = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./^~@+=,:-]*$")
+
+
+def checked(arg):
+    """Every non-literal argument (a ref from the command line, a path from `git diff`) must be a
+    plain token that cannot start with `-` (so it cannot be read as an option); anything else raises
+    and the caller reports a git failure, which classifies the change as heavy."""
+    if arg in GIT_LITERALS:
+        return arg
+    if not SAFE_ARG.match(arg):
+        raise OSError(f"refusing unexpected git argument {arg!r}")
+    return arg
+
+
 def git(*args):
-    # Fixed argument list, no shell; the only inputs are ref names and paths from `git diff` itself.
+    # Argument list, no shell; paths follow `--`; every argument is a literal or passes `checked`.
     exe = shutil.which("git")
     if exe is None:
         raise OSError("git not found on PATH")
-    return subprocess.run([exe, *args], capture_output=True, text=True, check=True).stdout  # nosec B603
+    argv = [exe, *map(checked, args)]
+    return subprocess.run(argv, capture_output=True, text=True, check=True).stdout  # nosec B603
 
 
 def changed_lines(base, head, path):
