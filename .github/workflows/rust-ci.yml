@@ -180,8 +180,8 @@ jobs:
       - if: matrix.os == 'ubuntu-latest'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: cpu-${{ steps.cpu.outputs.id }}
-          shared-key: check
+          # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
+          shared-key: check-cpu-${{ steps.cpu.outputs.id }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Keeps the Metal crates — this is the ONLY job that can compile
@@ -708,8 +708,8 @@ jobs:
       - if: steps.cls.outputs.light != 'true' || runner.os == 'Linux'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: cpu-${{ steps.cpu.outputs.id }}
-          shared-key: test-${{ matrix.os }}
+          # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
+          shared-key: test-${{ matrix.os }}-cpu-${{ steps.cpu.outputs.id }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install lld (Linux only)
@@ -990,8 +990,8 @@ jobs:
           echo "id=$id" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: cpu-${{ steps.cpu.outputs.id }}
-          shared-key: clippy
+          # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
+          shared-key: clippy-cpu-${{ steps.cpu.outputs.id }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked --workspace --tests --examples --benches ${{ env.WORKSPACE_EXCLUDES }} -- -D warnings
       # GAP-242: the workspace leg above enables `fuel-dispatch/vulkan` through
