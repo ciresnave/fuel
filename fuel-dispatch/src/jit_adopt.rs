@@ -23,11 +23,11 @@
 //! applies. Gated behind the `jit` feature so the core dispatch layer stays free
 //! of the envelope crate.
 
-use baracuda_kernels_types::{ElementKind, OperandDesc};
 use fuel_graph::registry::FusedOpId;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, Error, Result};
 use fuel_kernel_seam::{JitRequest, JitResponse, SynthArtifact, Synthesizer};
+use unpopped_vocab::{ElementKind, OperandDesc};
 
 use crate::kernel::KernelRef;
 use crate::runtime_fused_kernels::adopt_runtime_fused;
@@ -107,7 +107,13 @@ pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
         | ElementKind::U4
         | ElementKind::B1
         | ElementKind::Complex64
-        | ElementKind::Complex128 => return None,
+        | ElementKind::Complex128
+        // MX element kinds (unpopped-vocab 0.32). Fuel has `DType::F4`/`F6E2M3`/`F6E3M2`, but the
+        // seam does not emit them yet (PM: typed declines, no new emit), so decline at adoption
+        // rather than map a kind the round-trip pair above does not carry.
+        | ElementKind::F4E2M1
+        | ElementKind::F6E2M3
+        | ElementKind::F6E3M2 => return None,
         // alpha.81 vocab bump: no Fuel `DType` counterpart exists at all for
         // these four — mechanically forced, nothing to decide.
         ElementKind::U16
@@ -352,8 +358,8 @@ mod tests {
     #[test]
     fn bool_maps_to_the_seam_bool_and_did_not_stay_declined() {
         use super::{dtype_to_element_kind, element_kind_to_dtype};
-        use baracuda_kernels_types::ElementKind;
         use fuel_ir::DType;
+        use unpopped_vocab::ElementKind;
 
         // GAP-193. `DType::Bool` arrived with the GAP-168(c) comparison cut and
         // made this pair's declines wrong in BOTH directions — but only one
@@ -372,8 +378,8 @@ mod tests {
     #[test]
     fn fp8_maps_to_baracuda_ocp_element_kinds() {
         use super::{dtype_to_element_kind, element_kind_to_dtype};
-        use baracuda_kernels_types::ElementKind;
         use fuel_ir::DType;
+        use unpopped_vocab::ElementKind;
 
         // Outbound: Fuel FP8 dtype -> the OCP seam kind (exact, not just
         // round-trip-consistent).
@@ -482,7 +488,7 @@ mod tests {
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
             ],
-            baracuda_kernels_types::ArchSku::Sm89,
+            unpopped_vocab::ArchSku::Sm89,
             JitBudget {
                 max_compile_ms: 250,
             },

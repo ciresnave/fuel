@@ -15,7 +15,7 @@
 //! live CUDA device to produce a reference, synthesizing sized deterministic
 //! inputs is pure host-side arithmetic.
 
-use baracuda_kernels_types::OperandDesc;
+use unpopped_vocab::OperandDesc;
 
 use crate::fkc::verify::{HostTensor, fill_deterministic, to_bytes};
 use crate::jit_adopt::element_kind_to_dtype;
@@ -500,8 +500,8 @@ pub fn reference_from_registered_recipe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use baracuda_kernels_types::ElementKind;
     use fuel_ir::DType;
+    use unpopped_vocab::ElementKind;
 
     /// **The whole probe set is examined — a failure in the LAST probe still
     /// fails the candidate.**

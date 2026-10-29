@@ -1,6 +1,14 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.28.0 - 2026-10-29
+
+### Changed
+
+- `fuel-kernel-seam` moves from `unpopped-vocab` 0.22 to **0.32.1** (PM task, 2026-10-29): the published `fuel-kernel-seam` 0.26.12 asks for `^0.24` and Baracuda's `baracuda-cuda-seam` carries its own vocab copy, so `OperandDesc`/`ElementKind`/`ArchSku`/`TargetId` were two types in one graph (E0308/E0277). The seam's own source needed no change at 0.32.1 (`cargo check -p fuel-kernel-seam --all-targets`). Its public vocabulary types are re-exported from that dependency, so this is **breaking for seam consumers** (pre-1.0: second digit). `fuel-kernel-seam-types` and `fuel-kernel-seam-announce` do not use the vocabulary and change only in version.
+- `fuel-dispatch` (feature `jit`): the JIT glue (`jit_adopt`, `jit_carrier`, `jit_ingest`, `jit_ingest_probe`, `tests/jit_synth_kernel_live.rs`) now names the vocabulary types from `unpopped_vocab` directly (new optional dependency, enabled by `jit`) instead of through `baracuda_kernels_types`, which at alpha.158 is still on vocab 0.22. `element_kind_to_dtype` declines the new MX element kinds `F4E2M1`, `F6E2M3`, `F6E3M2` (typed decline; no new emit, Slang seam hold stands). The `telemetry`/`baracuda-types` path and `fuel-cuda-backend` stay on the baracuda-resolved vocab 0.22 until Baracuda publishes a vocab-0.32 family.
+- Known and not fixable here: `jit-synth` (`baracuda-cuda-seam`) cannot compile against vocab 0.32 until Baracuda publishes a `baracuda-cuda-seam` that depends on the new `fuel-kernel-seam` and vocab 0.32 (its published alpha.25 is `unpopped-vocab ^0.24` and `fuel-kernel-seam =0.26.12`). Not compiled here (needs the CUDA toolchain).
+
 ## v0.27.1 - 2026-10-29
 
 ### Added

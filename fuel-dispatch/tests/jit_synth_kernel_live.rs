@@ -54,7 +54,6 @@
 
 use std::sync::{Arc, RwLock};
 
-use baracuda_kernels_types::{ArchSku, ElementKind, OperandDesc};
 use baracuda_nvrtc::{CompileOptions, Program};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_dispatch::jit_adopt::adopt_from_response;
@@ -68,6 +67,7 @@ use fuel_kernel_seam::{
     ArtifactKind, JitBudget, JitRequest, JitResponse, LinkEntry, SynthArtifact, Synthesizer,
 };
 use fuel_memory::{BackendStorage, Storage};
+use unpopped_vocab::{ArchSku, ElementKind, OperandDesc};
 
 /// These tests share the process-global JIT slot bank and kernel binding table (the slot
 /// reclamation test asserts on the whole bank; the adoption test binds by signature and sees
