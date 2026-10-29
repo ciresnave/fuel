@@ -10,7 +10,7 @@
 //! CHECK. Nothing in this file hashes the corpus.** They document which
 //! artifact was read; they cannot detect a later edit to it. The binding that
 //! IS enforced is field-wise, in `corpus_is_the_artifact_this_leg_was_bound_to`
-//! (schema, `source_commit`, prefix, schema version, counts, reserved set,
+//! (schema, prefix, schema version, counts, reserved set,
 //! per-namespace vocabulary versions) plus the per-vector token assertions in
 //! `positive_vectors_byte_match` — which together cover strictly more than a
 //! digest would for everything this leg reads. **Recorded here because a hash
@@ -36,9 +36,10 @@
 //!   byte-match itself is what notices). An earlier version of this stamp had
 //!   to be corrected more than once for exactly that confusion; **RE-MEASURE IT
 //!   ON EVERY RE-VENDOR.**
-//! - **Spec provenance:** the corpus's own `source_commit` = `19c3ad7`
-//!   (asserted below, so swapping the vendored file for one of different
-//!   provenance fails rather than passing quietly).
+//! - **Spec provenance:** KISS dropped the corpus's `source_commit` member at
+//!   `bafbe07` (KISS#713; it was a literal `19c3ad7` no generator computed), and
+//!   `generated_from` now names the emitting program, so there is no provenance
+//!   field to assert; the schema, prefix, counts and reserved set below bind it.
 //! - **Fuel side:** whatever commit this file lands on. The Fuel-side numbers
 //!   below are NOT stable across commits.
 //!
@@ -120,13 +121,11 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Byte-identical vendored copy of the KISS artifact — see the module header.
 const CORPUS: &str = include_str!("../fixtures/kiss-corpus/structure_key_vectors.json");
 
-/// The corpus's declared spec provenance. Distinct from the artifact commit
-/// (`5b28bf51`); conflating the two leaves the report unfalsifiable.
-const KISS_SOURCE_COMMIT: &str = "19c3ad7";
-
 /// The sk5 dtype spellings Fuel can emit — instrument 2, the *token-grammar*
 /// tier. Pinned as a list rather than a count so a change is a decision with a
 /// diff, not a number that silently moves.
+///
+/// The three MX element spellings are additive at sk6 (KISS-CLASSIFY-6.1-0014).
 ///
 /// `f8e6m2` is **absent on purpose**: reserved at sk5 (KISS #517), so the
 /// deriver does not spell it (it did at sk4, when this list had 15 entries).
@@ -134,7 +133,7 @@ const KISS_SOURCE_COMMIT: &str = "19c3ad7";
 /// **Not** the set Fuel can key: see the module header on the binding stage.
 const FUEL_SK5_SPELLINGS: &[&str] = &[
     "f16", "bf16", "f32", "f64", "i8", "i16", "u8", "u32", "i32", "i64", "f8e4m3fn", "f8e5m2",
-    "f8e8m0", "bool",
+    "f8e8m0", "bool", "f4e2m1", "f6e2m3", "f6e3m2",
 ];
 
 /// Positive vectors Fuel cannot express, with the **absent surface** that
@@ -328,6 +327,39 @@ fn cells() -> BTreeMap<&'static str, Cell> {
             "cuda:sm89",
         ),
     );
+    // The pair vectors (KISS 9336a5b) and the MX element rows (KISS 68dc233):
+    // each is `binary_two_operands` with ONE coordinate changed, so the pair
+    // discriminates that coordinate alone.
+    let pair = |dtype: DType, dims: &[usize]| {
+        cell(
+            none(),
+            vec![
+                CellOperand::input(co(dims, dtype)),
+                CellOperand::in_place(co(dims, dtype)),
+            ],
+            "cuda:sm89",
+        )
+    };
+    // dtype-only pair: i32 is the width of f32, so v4 holds.
+    m.insert("binary_two_operands_i32", pair(DType::I32, &[128, 256]));
+    // index-width-only pair: max touched offset 65536*32768 + 32767 >= 2^31.
+    m.insert(
+        "binary_two_operands_ix64",
+        pair(DType::F32, &[65537, 32768]),
+    );
+    // schedule-only pair: 2*16 = 32 frame elements selects `warp`.
+    m.insert("binary_two_operands_warp", pair(DType::F32, &[2, 16]));
+    // MX element dtypes (KISS-CLASSIFY-6.1-0014): sub-byte storage never vectorizes.
+    m.insert("binary_two_operands_f4e2m1", pair(DType::F4, &[128, 256]));
+    m.insert(
+        "binary_two_operands_f6e2m3",
+        pair(DType::F6E2M3, &[128, 256]),
+    );
+    m.insert(
+        "binary_two_operands_f6e3m2",
+        pair(DType::F6E3M2, &[128, 256]),
+    );
+
     // One input + one output: `ew1`.
     m.insert(
         "unary_f16_v8",
@@ -628,13 +660,12 @@ fn decline<'a>(c: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
 fn corpus_is_the_artifact_this_leg_was_bound_to() {
     let c = corpus();
     assert_eq!(field(&c, "schema"), "kiss-structure-key-vectors-v1");
-    assert_eq!(field(&c, "source_commit"), KISS_SOURCE_COMMIT);
     assert_eq!(field(&c, "token_prefix"), "sk6");
     assert_eq!(c["structure_key_schema_version"].as_u64(), Some(6));
-    assert_eq!(c["recognition_count"].as_u64(), Some(24));
-    assert_eq!(c["usable_count"].as_u64(), Some(21));
-    assert_eq!(strs(&c, "dtype_recognition_set").len(), 24);
-    assert_eq!(strs(&c, "dtype_usable_set").len(), 21);
+    assert_eq!(c["recognition_count"].as_u64(), Some(27));
+    assert_eq!(c["usable_count"].as_u64(), Some(24));
+    assert_eq!(strs(&c, "dtype_recognition_set").len(), 27);
+    assert_eq!(strs(&c, "dtype_usable_set").len(), 24);
     assert_eq!(
         strs(&c, "reserved_dtypes"),
         vec!["f8e4m3fnuz", "f8e5m2fnuz", "f8e6m2"],
@@ -653,8 +684,8 @@ fn corpus_is_the_artifact_this_leg_was_bound_to() {
         c["namespace_vocabulary_versions"]["vulkan"].as_u64(),
         Some(5)
     );
-    assert_eq!(vectors(&c, "positive_vectors").len(), 28);
-    assert_eq!(vectors(&c, "decline_vectors").len(), 25);
+    assert_eq!(vectors(&c, "positive_vectors").len(), 34);
+    assert_eq!(vectors(&c, "decline_vectors").len(), 27);
 }
 
 /// Every positive vector is either **constructed** or **explicitly excluded** —
@@ -867,7 +898,7 @@ fn fuel_never_emits_a_published_decline_token() {
     // one. Assert BOTH, so the pair is a real injectivity check on the
     // published decline set rather than an accident of two numbers matching.
     let published = vectors(&c, "decline_vectors").len();
-    assert_eq!(published, 25, "published decline vectors");
+    assert_eq!(published, 27, "published decline vectors");
     assert_eq!(
         declines.len(),
         published,
@@ -1195,8 +1226,8 @@ fn fuel_emits_only_recognized_sk5_dtype_spellings() {
     }
     // Non-vacuity, and the discrimination check: the set is neither empty nor
     // everything, so `is-a-subset` is a real constraint here. 15 -> 14 at sk5:
-    // `f8e6m2` left the emitted set.
-    assert_eq!(emitted.len(), 14);
+    // `f8e6m2` left the emitted set; 14 -> 17 at sk6 for the three MX element rows.
+    assert_eq!(emitted.len(), 17);
     assert!(emitted.len() < recognized.len());
 }
 
@@ -1257,4 +1288,56 @@ fn target_match_vectors_are_recorded_as_not_exercised_by_this_leg() {
         8,
         "KISS's target-match axis changed size; decide whether this leg now exercises it"
     );
+}
+
+/// KISS-CLASSIFY-6.1-0016, the emit-side dual of the published
+/// `mx_element_as_non_contraction_accumulator` decline: an MX element dtype is a
+/// legal dtype field but never an `<acc>`. The SIBLING arm (the same cell with an
+/// `f64` accumulator derives) keeps the decline from passing for another reason.
+#[test]
+fn mx_element_dtypes_decline_as_accumulators_and_derive_elsewhere() {
+    use fuel_dispatch::telemetry::structure_key_derive::{
+        DeriveDecline, derive_structure_key_token_typed,
+    };
+    let ops = io(vec![
+        f32c(&[128, 256]),
+        f32c(&[128, 256]),
+        f32c(&[128, 256]),
+    ]);
+    let derive = |dt| {
+        let acc = Some(AccMp {
+            acc_dtype: dt,
+            math_precision: GemMathPrecision::BitStable,
+        });
+        derive_structure_key_token_typed(&DeclaredFacts::none(), &ops, "cuda:sm89", acc)
+    };
+    for dt in [DType::F4, DType::F6E2M3, DType::F6E3M2] {
+        let got = derive(dt);
+        assert_eq!(got, Err(DeriveDecline::ElementDtypeAsAccumulator), "{dt:?}");
+        assert_eq!(got.unwrap_err().wire(), "ElementDtypeAsAccumulator");
+    }
+    assert!(derive(DType::F64).unwrap().ends_with("|f64/st"));
+}
+
+/// The contraction `<acc>` position of 6.1-0016, with its sibling: the same MX
+/// element as the WEIGHT dtype of the same contraction derives.
+#[test]
+fn mx_element_dtype_declines_as_a_contraction_accumulator_but_derives_as_weight() {
+    use fuel_dispatch::telemetry::structure_key_derive::{
+        DeriveDecline, derive_structure_key_token_typed,
+    };
+    let ops = io(vec![
+        f32c(&[8, 4096]),
+        f32c(&[4096, 4096]),
+        f32c(&[8, 4096]),
+    ]);
+    let derive = |g: GemCell| {
+        derive_structure_key_token_typed(&DeclaredFacts::contraction(g), &ops, "cuda:sm89", None)
+    };
+    let mut acc = gem_f32(8, 4096, 4096);
+    acc.acc_dtype = DType::F4;
+    assert_eq!(derive(acc), Err(DeriveDecline::ElementDtypeAsAccumulator));
+    let mut weight = gem_f32(8, 4096, 4096);
+    weight.weight_dtype = DType::F4;
+    assert!(derive(weight).is_ok());
 }

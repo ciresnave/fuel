@@ -148,6 +148,24 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-CLASSIFY-6.1-0014",
+        disposition: Obligation,
+        test: Some(
+            "fuel-dispatch/tests/kiss_structure_key_byte_match.rs::positive_vectors_byte_match",
+        ),
+        reason: "The MX element dtypes f4e2m1/f6e2m3/f6e3m2 are usable in a dtype field: Fuel                  spells them (`fuel_ir::sk4_token`) and byte-matches the three published                  `binary_two_operands_<mx>` vectors.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-CLASSIFY-6.1-0016",
+        disposition: Obligation,
+        test: Some(
+            "fuel-dispatch/tests/kiss_structure_key_byte_match.rs::mx_element_dtypes_decline_as_accumulators_and_derive_elsewhere",
+        ),
+        reason: "An MX element dtype is never an `<acc>`: the deriver declines it with                  `DeriveDecline::ElementDtypeAsAccumulator`, in both the non-contraction and                  the contraction accumulator positions; the sibling arm shows the same dtype                  derives as a weight.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-CLASSIFY-6.3-0009",
         disposition: Record,
         test: None,
