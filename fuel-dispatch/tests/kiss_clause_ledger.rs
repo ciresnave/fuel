@@ -117,6 +117,22 @@ struct Row {
 /// Adding a citation without a row is a BUILD FAILURE, which is the point.
 const LEDGER: &[Row] = &[
     Row {
+        clause: "KISS-ANNOUNCE-7.3-0002",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in `fuel-kernel-seam-announce` docs to say why a plain AND is wrong: the                  consumer writes provider-only (FEAT) bits as zero. Fuel's consumer envelope                  sets none; the consumer-only case is exercised by the sabotage sibling of the                  7.3-0003 obligation, which is the row that carries the test.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-ANNOUNCE-7.3-0003",
+        disposition: Obligation,
+        test: Some(
+            "fuel-kernel-seam-announce/src/lib.rs::kiss_vectors_live_word_is_role_aware_in_both_orientations",
+        ),
+        reason: "The role-aware live capability word, `negotiate_with_role`: the KISS corpus                  worked vector (`announce_vectors.json`, `negotiation`) in both orientations.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-CLASSIFY-6.1-0001",
         disposition: Record,
         test: None,
@@ -129,6 +145,24 @@ const LEDGER: &[Row] = &[
         disposition: Record,
         test: None,
         reason: "docs/gaps.md registry row. Cited to identify the clause a gap is about.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-CLASSIFY-6.1-0014",
+        disposition: Obligation,
+        test: Some(
+            "fuel-dispatch/tests/kiss_structure_key_byte_match.rs::positive_vectors_byte_match",
+        ),
+        reason: "The MX element dtypes f4e2m1/f6e2m3/f6e3m2 are usable in a dtype field: Fuel                  spells them (`fuel_ir::sk4_token`) and byte-matches the three published                  `binary_two_operands_<mx>` vectors.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-CLASSIFY-6.1-0016",
+        disposition: Obligation,
+        test: Some(
+            "fuel-dispatch/tests/kiss_structure_key_byte_match.rs::mx_element_dtypes_decline_as_accumulators_and_derive_elsewhere",
+        ),
+        reason: "An MX element dtype is never an `<acc>`: the deriver declines it with                  `DeriveDecline::ElementDtypeAsAccumulator`, in both the non-contraction and                  the contraction accumulator positions; the sibling arm shows the same dtype                  derives as a weight.",
         exists_at: None,
     },
     Row {

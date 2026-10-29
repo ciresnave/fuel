@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Derived from candle (https://github.com/huggingface/candle, MIT OR Apache-2.0): `candle-core/src/quantized/avx.rs`
+// at commit 549eacb011f25b2c6fc765d6c3dbd26e42f72ee6, modified here. candle's code is itself a port of ggml / llama.cpp (MIT), which its own comments cite by commit.
+// Contributors, how this was verified and the licence texts: THIRD-PARTY-NOTICES.md (section "candle").
 use super::k_quants::{
     BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K, BlockQ6K,
     BlockQ8_0, BlockQ8_1, BlockQ8K, QK_K, QK4_1, QK5_0, QK5_1, QK8_0, QK8_1,

@@ -90,6 +90,10 @@ use crate::kernel::KernelBindingTable;
 use crate::plan::{ExecutionPlan, PlanOptions, compile_plan};
 use crate::topology::SystemTopology;
 
+/// Round cap for the residency-eviction pass `optimize_graph` runs under a device byte budget
+/// (the legacy rule's default; the pass stops earlier once the budget is met).
+const RESIDENCY_EVICTION_MAX_ROUNDS: usize = 16;
+
 /// The transient *view* [`optimize_graph`] returns — the realize-roots
 /// it optimized for plus the topology generation it ran under. It is
 /// **not** stored on the graph; the optimized form is the graph itself
@@ -117,6 +121,11 @@ pub struct OptimizedGraph {
     /// sets and bare-graph test callers often do not. `None` therefore means
     /// **"not computed"**, never "placed nowhere".
     pub(crate) placements: Option<HashMap<NodeId, DeviceLocation>>,
+    /// What the budgeted eviction pass did (ROADMAP row 67 I1): `Some` only when
+    /// `PlanOptions::device_budget_bytes` was set and a device was pinned. Read
+    /// [`crate::residency::EvictionOutcome::fits`] before trusting that the budget was met: today a same-device
+    /// budget cannot be met (the reload is not delayed), and this says so.
+    pub eviction: Option<crate::residency::EvictionOutcome>,
 }
 
 impl OptimizedGraph {
@@ -354,6 +363,7 @@ fn optimize_graph_with_passes(
     // so a caller can tell "not computed" from "no placement" — see
     // `OptimizedGraph::has_placements`.
     let mut resolved_placements: Option<HashMap<NodeId, DeviceLocation>> = None;
+    let mut eviction: Option<crate::residency::EvictionOutcome> = None;
     if let Some(pinned) = opts.pinned_device {
         stamp_plan_backends(graph, roots, &plan, pinned);
         // Optimize-time kernel-variant bake: resolve **same-device**
@@ -392,13 +402,21 @@ fn optimize_graph_with_passes(
         // Capture the resolved placement map on the way past — it is the pass's
         // own input, and surfacing it is what makes `OptimizedGraph::placement_of`
         // an observation rather than an inference.
-        resolved_placements = Some(insert_residency_copies(
-            graph,
-            roots,
-            &plan,
-            pinned,
-            opts.input_residency,
-        ));
+        let placements = insert_residency_copies(graph, roots, &plan, pinned, opts.input_residency);
+        // ROADMAP row 67 (I1): with a device byte budget, evict + reload around the
+        // best candidates while the analysed peak exceeds it. Runs after the copy pass
+        // (it reads the resolved placements) and before layout fixups. No budget = no-op.
+        if let Some(budget) = opts.device_budget_bytes {
+            eviction = Some(crate::residency::insert_residency_evictions_in(
+                graph,
+                roots,
+                pinned,
+                budget,
+                RESIDENCY_EVICTION_MAX_ROUNDS,
+                |id| placements.get(&id).copied(),
+            )?);
+        }
+        resolved_placements = Some(placements);
         // Cleanup Step B (layout): insert `Op::Contiguize` before any kernel
         // whose chosen winner rejects strided inputs and whose input layout is
         // non-contiguous — the optimizer writing the layout-fixup decision INTO
@@ -419,6 +437,7 @@ fn optimize_graph_with_passes(
         roots: roots.to_vec(),
         generation,
         placements: resolved_placements,
+        eviction,
     })
 }
 
@@ -903,6 +922,101 @@ mod tests {
         let sum = f32_node(&mut g, Op::Add, vec![a1, b1]);
         let out = f32_node(&mut g, Op::Tanh, vec![sum]);
         (g, out)
+    }
+
+    /// ROADMAP row 67 (I1): a graph whose analysed peak exceeds a small budget. `a` is read by `b` early and
+    /// by `c` late, so its longest inactive gap is evictable (the same shape the residency tests use).
+    fn build_over_budget_graph(table: &mut KernelBindingTable) -> (Graph, NodeId) {
+        register_elementwise(table, OpKind::ReluElementwise, 1);
+        register_elementwise(table, OpKind::NegElementwise, 1);
+        register_elementwise(table, OpKind::MulElementwise, 2);
+        register_elementwise(table, OpKind::AddElementwise, 2);
+        let mut g = Graph::new();
+        let a = f32_node(&mut g, Op::Const, vec![]);
+        let b = f32_node(&mut g, Op::Relu, vec![a]);
+        let pad = f32_node(&mut g, Op::Neg, vec![b]);
+        let pad2 = f32_node(&mut g, Op::Neg, vec![pad]);
+        let c = f32_node(&mut g, Op::Mul, vec![pad2, a]);
+        let out = f32_node(&mut g, Op::Add, vec![b, c]);
+        (g, out)
+    }
+
+    fn count_ops(g: &Graph, pred: impl Fn(&Op) -> bool) -> usize {
+        (0..g.len())
+            .filter(|i| pred(&g.node(NodeId(*i)).op))
+            .count()
+    }
+
+    fn peak_bytes(g: &Graph, root: NodeId) -> usize {
+        crate::residency::ResidencyPlanner::analyze(g, &[root]).peak_bytes
+    }
+
+    #[test]
+    fn a_device_budget_below_the_peak_inserts_evict_reload_chains() {
+        let mut table = KernelBindingTable::new();
+        let (mut g, root) = build_over_budget_graph(&mut table);
+        let before = peak_bytes(&g, root);
+        let opts = cpu_opts().with_device_budget_bytes(before - 1);
+        let optimized =
+            optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph under a budget");
+        let outcome = optimized
+            .eviction
+            .as_ref()
+            .expect("a budgeted run reports what the eviction pass did");
+        assert!(
+            !outcome.chains.is_empty(),
+            "the outcome lists the inserted chains"
+        );
+        assert_eq!(outcome.budget_bytes, before - 1);
+        assert!(
+            count_ops(&g, |op| matches!(op, Op::Move { .. })) >= 1,
+            "a budget below the peak must insert an Op::Move eviction"
+        );
+        assert!(
+            count_ops(&g, |op| matches!(op, Op::Copy { .. })) >= 1,
+            "and its reload Op::Copy"
+        );
+        // Not asserted here: a drop in the analysed peak. This graph is pinned to the CPU, and a
+        // spill to the CPU cannot lower CPU residency; that property is pinned in
+        // `residency::tests::today_the_reload_runs_eagerly_so_the_device_peak_does_not_drop`
+        // (which documents that no round lowers the analysed peak until ROADMAP row 67 I3).
+    }
+
+    #[test]
+    fn no_budget_a_roomy_budget_or_no_pinned_device_leave_the_graph_alone() {
+        let nodes_of = |opts: &PlanOptions<'_>| {
+            let mut table = KernelBindingTable::new();
+            let (mut g, root) = build_over_budget_graph(&mut table);
+            if opts.pinned_device.is_none() {
+                // No pinned device: nodes need explicit placements to plan at all.
+                for i in 0..g.len() {
+                    g.set_placement(NodeId(i), DeviceLocation::Cpu);
+                }
+            }
+            let optimized = optimize_graph(&mut g, &[root], &table, opts).expect("optimize_graph");
+            if opts.device_budget_bytes.is_none() {
+                assert!(optimized.eviction.is_none(), "no budget: no outcome");
+            }
+            (g.len(), count_ops(&g, |op| matches!(op, Op::Move { .. })))
+        };
+        // Negative control: no budget at all.
+        assert_eq!(nodes_of(&cpu_opts()).1, 0, "no budget: no eviction");
+        // A budget the graph already fits.
+        assert_eq!(
+            nodes_of(&cpu_opts().with_device_budget_bytes(usize::MAX)).1,
+            0,
+            "roomy budget: no eviction"
+        );
+        // The pass is gated on a pinned device, like the residency pass it follows.
+        let unpinned = PlanOptions::new()
+            .without_cost_population()
+            .with_device_budget_bytes(1);
+        assert_eq!(nodes_of(&unpinned).1, 0, "no pinned device: no eviction");
+        // Node counts match the no-budget run exactly.
+        assert_eq!(
+            nodes_of(&cpu_opts()).0,
+            nodes_of(&cpu_opts().with_device_budget_bytes(usize::MAX)).0
+        );
     }
 
     /// A pure straight-line CPU graph — the simplest no-competing-route

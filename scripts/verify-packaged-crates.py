@@ -22,6 +22,7 @@ Usage:
   verify-packaged-crates.py selftest
   verify-packaged-crates.py scan  <dir-of-.crate-files> [--allowlist FILE]
   verify-packaged-crates.py build <dir-of-.crate-files> <lockfile> [--exclude CRATE ...]
+  verify-packaged-crates.py notices <dir-of-.crate-files>
 """
 import os
 import posixpath
@@ -156,6 +157,25 @@ def scan(crate_dir, allow_path):
     return len(hard) + check_allowlist(found, allow)
 
 
+NOTICE_FILES = ("LICENSE-MIT", "LICENSE-APACHE", "THIRD-PARTY-NOTICES.md")
+
+
+def missing_notices(crate_dir):
+    """(crate, file) for every tarball lacking one of NOTICE_FILES: candle's MIT and Apache-2.0
+    require the licence text and notice to travel with derived code, and a .crate ships source."""
+    out = []
+    crates = sorted(f for f in os.listdir(crate_dir) if f.endswith(".crate"))
+    for c in crates:
+        _, files = crate_members(os.path.join(crate_dir, c))
+        for name in NOTICE_FILES:
+            if name not in files:
+                out.append((c, name))
+    print(f"checked {len(crates)} .crate files for {', '.join(NOTICE_FILES)}")
+    for c, name in out:
+        print(f"FAIL notice missing from tarball: {c} lacks {name}")
+    return out
+
+
 def make_crate(dirpath, name, files):
     path = os.path.join(dirpath, f"{name}-0.0.0.crate")
     with tarfile.open(path, "w:gz") as tf:
@@ -208,6 +228,16 @@ def selftest():
         open(stale, "w").write("aux_only\ttests/t.rs\taux\t1\tcontrol\ngone\tsrc/x.rs\truntime\t1\tstale\n")
         expect("scan FAILS on a stale allowlist entry", scan(only(["aux_only"]), stale) > 0, True)
         expect("scan PASSES a clean crate", scan(only(["good"]), empty), 0)
+    with tempfile.TemporaryDirectory() as d:
+        full = {n: "x" for n in NOTICE_FILES}
+        make_crate(d, "with_notices", {"src/lib.rs": "", **full})
+        expect("a tarball with all notice files is clean", missing_notices(d), [])
+    with tempfile.TemporaryDirectory() as d:
+        make_crate(d, "no_ledger", {"src/lib.rs": "", "LICENSE-MIT": "x", "LICENSE-APACHE": "x"})
+        make_crate(d, "bare", {"src/lib.rs": ""})
+        got = sorted((c.split("-0.0.0")[0], n) for c, n in missing_notices(d))
+        want = [("bare", n) for n in NOTICE_FILES] + [("no_ledger", "THIRD-PARTY-NOTICES.md")]
+        expect("missing notice files are named per tarball", got, sorted(want))
     print("selftest:", "OK" if fails == 0 else f"{fails} FAILED")
     return fails
 
@@ -296,7 +326,11 @@ def cmd_build(argv):
     return build(argv[2], argv[3], ex)
 
 
-COMMANDS = {"selftest": cmd_selftest, "scan": cmd_scan, "build": cmd_build}
+def cmd_notices(argv):
+    return 1 if missing_notices(argv[2]) else 0
+
+
+COMMANDS = {"selftest": cmd_selftest, "scan": cmd_scan, "build": cmd_build, "notices": cmd_notices}
 
 
 def main(argv):

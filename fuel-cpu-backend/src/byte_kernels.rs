@@ -4800,6 +4800,36 @@ pub fn matmul_f32_capacity(
         // Compute only the first `m_compute` rows; the tail
         // (`m_compute..m_capacity`) stays zeroed — the capacity slots for
         // the rows this pass's runtime extent did not fill.
+        if m_compute * n * k >= GEMM_MIN_WORK {
+            // SAFETY: `lhs_off + m_compute * k <= lhs_view.len()`, `rhs_off + k * n <=
+            // rhs_view.len()` and `out_off + m_compute * n <= out_view.len()` follow from the byte
+            // length checks above (`m_compute <= m_capacity`); all three matrices are row-major
+            // contiguous, `out` was zeroed and does not alias the inputs.
+            unsafe {
+                gemm::gemm(
+                    m_compute,
+                    n,
+                    k,
+                    out_view[out_off..].as_mut_ptr(),
+                    1,
+                    n as isize,
+                    false,
+                    lhs_view[lhs_off..].as_ptr(),
+                    1,
+                    k as isize,
+                    rhs_view[rhs_off..].as_ptr(),
+                    1,
+                    n as isize,
+                    0.0f32,
+                    1.0f32,
+                    false,
+                    false,
+                    false,
+                    gemm_parallelism(m_compute * n * k),
+                );
+            }
+            continue;
+        }
         for i in 0..m_compute {
             for kk in 0..k {
                 let a = lhs_view[lhs_off + i * k + kk];
@@ -4812,6 +4842,22 @@ pub fn matmul_f32_capacity(
         }
     }
     Ok(())
+}
+
+/// `m * n * k` below which the f32 matmul keeps the plain `(i, k, j)` loop: `gemm`'s packing
+/// and thread hand-off cost more than the product.
+const GEMM_MIN_WORK: usize = 1 << 14;
+
+/// Threads for one `gemm` call: single-threaded for small products, the shared pool size above.
+fn gemm_parallelism(work: usize) -> gemm::Parallelism {
+    // `ops::get_num_threads` is cfg-gated away under the `mkl` / `accelerate` features, and this
+    // kernel is built in every configuration; rayon's global pool honours `RAYON_NUM_THREADS` too.
+    let threads = rayon::current_num_threads();
+    if threads > 1 && work >= (1 << 20) {
+        gemm::Parallelism::Rayon(threads)
+    } else {
+        gemm::Parallelism::None
+    }
 }
 
 /// Batched row-major matmul for half-float types (bf16/f16) with

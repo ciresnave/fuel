@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Derived from candle (https://github.com/huggingface/candle, MIT OR Apache-2.0): `candle-core/src/quantized/k_quants.rs`
+// at commit 549eacb011f25b2c6fc765d6c3dbd26e42f72ee6, modified here. candle's code is itself a port of ggml / llama.cpp (MIT), which its own comments cite by commit.
+// Contributors, how this was verified and the licence texts: THIRD-PARTY-NOTICES.md (section "candle").
 use crate::utils::{
     get_scale_min_k4, group_for_dequantization, group_for_quantization, make_q3_quants,
     make_qkx1_quants, make_qkx3_quants, make_qp_quants, make_qx_quants, nearest_int,
@@ -2334,6 +2337,9 @@ pub fn matmul<T: GgmlType>(
         "unexpected lhs length {} ({m},{k},{n})",
         lhs.len()
     );
+    if cfg!(feature = "float-dot") {
+        return matmul_float_dot((m, k, n), lhs, rhs_t, dst);
+    }
     let k_in_blocks = k.div_ceil(T::BLCK_SIZE);
 
     // TODO: Pre-allocate this.
@@ -2366,6 +2372,63 @@ pub fn matmul<T: GgmlType>(
     Ok(())
 }
 
+/// Whether this build replaced the integer block dot products with floating point (the
+/// `float-dot` feature). A probe prints it so two builds can be told apart.
+pub const FLOAT_DOT: bool = cfg!(feature = "float-dot");
+
+/// Plain f32 dot product, eight independent lanes so the compiler can vectorise it.
+fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
+    let mut acc = [0f32; 8];
+    let ((ca, ra), (cb, rb)) = (a.as_chunks::<8>(), b.as_chunks::<8>());
+    let tail: f32 = ra.iter().zip(rb).map(|(x, y)| x * y).sum();
+    for (xa, xb) in ca.iter().zip(cb) {
+        for l in 0..8 {
+            acc[l] += xa[l] * xb[l];
+        }
+    }
+    acc.iter().sum::<f32>() + tail
+}
+
+/// The `float-dot` matmul: every weight row is converted to f32 (`to_float`, the block scale is
+/// applied to each value here, BEFORE any multiply) and dotted with the f32 activation row. No
+/// activation quantisation, no integer multiplies, no per-block scaling of an integer sum.
+fn matmul_float_dot<T: GgmlType>(
+    (m, k, n): (usize, usize, usize),
+    lhs: &[f32],
+    rhs_t: &[T],
+    dst: &mut [f32],
+) -> Result<()> {
+    if m * k != lhs.len() || m * n != dst.len() {
+        fuel_ir::bail!(
+            "float-dot matmul: bad lengths lhs {} dst {} for ({m},{k},{n})",
+            lhs.len(),
+            dst.len()
+        );
+    }
+    let k_in_blocks = k.div_ceil(T::BLCK_SIZE);
+    // Result laid out column-major (one chunk of `m` values per weight row) so each parallel task
+    // owns a disjoint chunk; transposed into `dst` afterwards (a no-op copy for m == 1).
+    let mut tmp = vec![0f32; m * n];
+    tmp.par_chunks_mut(m)
+        .enumerate()
+        .with_min_len(64)
+        .for_each_init(
+            || vec![0f32; k_in_blocks * T::BLCK_SIZE],
+            |buf, (col, out)| {
+                T::to_float(&rhs_t[col * k_in_blocks..(col + 1) * k_in_blocks], buf);
+                for (row, o) in out.iter_mut().enumerate() {
+                    *o = dot_f32(&buf[..k], &lhs[row * k..(row + 1) * k]);
+                }
+            },
+        );
+    for col in 0..n {
+        for row in 0..m {
+            dst[row * n + col] = tmp[col * m + row];
+        }
+    }
+    Ok(())
+}
+
 pub fn matmul_f16<T: GgmlType>(
     mkn: (usize, usize, usize),
     lhs: &[f16],
@@ -2375,6 +2438,15 @@ pub fn matmul_f16<T: GgmlType>(
     let (m, k, n) = mkn;
     if m * k != lhs.len() {
         fuel_ir::bail!("unexpected lhs length {} {mkn:?}", lhs.len());
+    }
+    if cfg!(feature = "float-dot") {
+        let lhs32: Vec<f32> = lhs.iter().map(|x| x.to_f32()).collect();
+        let mut dst32 = vec![0f32; m * n];
+        matmul_float_dot(mkn, &lhs32, rhs_t, &mut dst32)?;
+        for (d, s) in dst.iter_mut().zip(dst32) {
+            *d = f16::from_f32(s);
+        }
+        return Ok(());
     }
 
     let k_in_lhs_blocks = k.div_ceil(T::BLCK_SIZE);
@@ -2563,3 +2635,77 @@ verify_block_sizes!(
     BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, BlockQ2K, BlockQ3K, BlockQ4K,
     BlockQ5K, BlockQ6K, BlockQ8K, f32, f16, bf16
 );
+
+#[cfg(test)]
+mod float_dot_tests {
+    use super::*;
+
+    /// A small deterministic matrix: values in about [-1, 1], no two rows alike.
+    fn fill(len: usize, seed: u32) -> Vec<f32> {
+        (0..len as u32)
+            .map(|i| {
+                let x = (i
+                    .wrapping_mul(2654435761)
+                    .wrapping_add(seed.wrapping_mul(40503)))
+                    >> 8;
+                (x % 2001) as f32 / 1000.0 - 1.0
+            })
+            .collect()
+    }
+
+    /// The float-dot driver is the matmul of the DEQUANTISED weights with the f32 activations (so it
+    /// agrees with a plain f32 reference to rounding), for several rows of activations at once.
+    #[test]
+    fn float_dot_equals_the_f32_matmul_of_the_dequantised_weights() {
+        let (m, k, n) = (3usize, 64usize, 8usize);
+        let w = fill(n * k, 7);
+        let x = fill(m * k, 11);
+        let mut blocks = vec![BlockQ4_0::zeros(); n * k / QK4_0];
+        BlockQ4_0::from_float(&w, &mut blocks);
+        let mut deq = vec![0f32; n * k];
+        BlockQ4_0::to_float(&blocks, &mut deq);
+        let mut want = vec![0f32; m * n];
+        for r in 0..m {
+            for c in 0..n {
+                want[r * n + c] = (0..k).map(|i| x[r * k + i] * deq[c * k + i]).sum();
+            }
+        }
+        let mut got = vec![0f32; m * n];
+        matmul_float_dot((m, k, n), &x, &blocks, &mut got).expect("float-dot matmul");
+        assert!(
+            want.iter().any(|v| v.abs() > 0.1),
+            "control: the reference is not all zeros"
+        );
+        for (g, w) in got.iter().zip(&want) {
+            assert!(
+                (g - w).abs() <= 1e-3 * w.abs().max(1.0),
+                "float-dot {g} vs reference {w}"
+            );
+        }
+    }
+
+    /// The integer path (the default build) stays within the activation-quantisation error of the
+    /// same reference, so the two builds can be compared on one fixture.
+    #[test]
+    fn the_default_matmul_is_close_to_the_f32_reference() {
+        let (m, k, n) = (2usize, 64usize, 8usize);
+        let w = fill(n * k, 3);
+        let x = fill(m * k, 5);
+        let mut blocks = vec![BlockQ4_0::zeros(); n * k / QK4_0];
+        BlockQ4_0::from_float(&w, &mut blocks);
+        let mut deq = vec![0f32; n * k];
+        BlockQ4_0::to_float(&blocks, &mut deq);
+        let mut got = vec![0f32; m * n];
+        matmul((m, k, n), &x, &blocks, &mut got).expect("matmul");
+        for r in 0..m {
+            for c in 0..n {
+                let want: f32 = (0..k).map(|i| x[r * k + i] * deq[c * k + i]).sum();
+                assert!(
+                    (got[r * n + c] - want).abs() <= 0.05 * want.abs().max(1.0),
+                    "matmul {} vs reference {want} (float-dot build: {FLOAT_DOT})",
+                    got[r * n + c]
+                );
+            }
+        }
+    }
+}

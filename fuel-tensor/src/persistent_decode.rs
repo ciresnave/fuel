@@ -1003,13 +1003,19 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     }
 
     // ---- Final norm + LM head ----
-    let logits = model.decode_final_norm_and_head(&h)?;
+    //
+    // Only the last position's logits are returned unless the caller asked for all of them, so
+    // the final norm and the LM head run on that one row. The head is `[seq, dim] x [dim, vocab]`:
+    // on the whole prompt it was ~57% of a CPU prefill (SmolLM2-135M Q4_0, 140 tokens: one
+    // 6 s f32 matmul of 10.5 s). Both the norm and the head are row-wise, so the last row is
+    // unchanged.
     let logits_root = if return_all_positions {
-        logits.reshape(Shape::from_dims(&[seq * dims.vocab]))?
+        model
+            .decode_final_norm_and_head(&h)?
+            .reshape(Shape::from_dims(&[seq * dims.vocab]))?
     } else {
-        let last_pos = seq - 1;
-        logits
-            .slice(1, last_pos, 1)?
+        model
+            .decode_final_norm_and_head(&h.slice(1, seq - 1, 1)?)?
             .reshape(Shape::from_dims(&[dims.vocab]))?
     };
     // `realize_one_as_with_env::<f32>` reinterprets the root's raw bytes as

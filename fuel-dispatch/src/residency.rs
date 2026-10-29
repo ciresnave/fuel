@@ -49,13 +49,9 @@
 //!   graph-level planning.
 
 use crate::plan::backend_for_device;
-use fuel_graph::{Graph, NodeId, SharedGraph, opt, topo_order_multi};
+use fuel_graph::opt::execution_plan;
+use fuel_graph::{Graph, NodeId, Op, SharedGraph, opt, topo_order_multi};
 use fuel_ir::{DeviceLocation, Error, Result};
-// `Op` is named only by the test-module graph builders below (this module
-// emits `Op::Move`/`Op::Copy` through `opt`'s helpers, never by naming the
-// variant), so the import is `cfg(test)`-scoped to keep the lib build clean.
-#[cfg(test)]
-use fuel_graph::Op;
 use std::collections::HashMap;
 
 /// One tensor's residency span. `[first_use, last_use]` are op
@@ -110,10 +106,34 @@ impl ResidencyReport {
 pub struct ResidencyPlanner;
 
 impl ResidencyPlanner {
-    /// Run the analysis. O(V + E) in the reachable subgraph.
+    /// Run the analysis. O(V + E) in the reachable subgraph. Walks a plain topological order and
+    /// counts every node's output (the single-device view the KV-pool sizing uses).
     pub fn analyze(g: &Graph, roots: &[NodeId]) -> ResidencyReport {
-        let order = topo_order_multi(g, roots);
+        Self::analyze_ordered(g, roots, topo_order_multi(g, roots), |_| true)
+    }
 
+    /// The analysis the eviction pass uses to decide whether `device` fits a budget: the walk is
+    /// the order the executor will actually run ([`execution_plan`], which pins each `Op::Move`
+    /// after every non-destructive reader of its source), and a node counts only while it is
+    /// resident on `device`: the output of an `Op::Move` / `Op::Copy` aimed at ANOTHER device
+    /// (the staged host copy of an eviction) is not device bytes. Without both, an eviction could
+    /// never lower the analysed peak and the pass would evict until it ran out of rounds.
+    pub fn analyze_on(g: &Graph, roots: &[NodeId], device: DeviceLocation) -> ResidencyReport {
+        let resident = |nid: NodeId| match &g.node(nid).op {
+            Op::Move { target } | Op::Copy { target } | Op::Alloc { target } => *target == device,
+            // A stamped placement on another device is not this device's bytes; an unstamped node
+            // inherits the executor's default and is counted (the conservative direction).
+            _ => g.placement(nid).is_none_or(|p| p == device),
+        };
+        Self::analyze_ordered(g, roots, execution_plan(g, roots), resident)
+    }
+
+    fn analyze_ordered(
+        g: &Graph,
+        roots: &[NodeId],
+        order: Vec<NodeId>,
+        resident: impl Fn(NodeId) -> bool,
+    ) -> ResidencyReport {
         // 1. For every node, compute its output byte size.
         // 2. Determine first-use (= position of the producing op in
         //    topo order) and last-use (= position of the last
@@ -130,7 +150,11 @@ impl ResidencyPlanner {
         for (op_idx, &nid) in order.iter().enumerate() {
             let node = g.node(nid);
             let elems = node.shape.elem_count();
-            let bytes = elems * node.dtype.size_in_bytes();
+            let bytes = if resident(nid) {
+                elems * node.dtype.size_in_bytes()
+            } else {
+                0
+            };
             byte_of.insert(nid, bytes);
             first_use.entry(nid).or_insert(op_idx);
 
@@ -147,81 +171,12 @@ impl ResidencyPlanner {
             }
         }
 
-        // 3. Walk topo order, maintain live-set bytes. At each op:
-        //    a. Add the new node's output bytes (it goes live).
-        //    b. Record current bytes.
-        //    c. Drop any nodes whose last_use == this position AFTER
-        //       the op completes (they're freed once the op exits).
-        let mut live_bytes: usize = 0;
-        let mut peak_bytes: usize = 0;
-        let mut peak_op_index: usize = 0;
-        let mut total_bytes: usize = 0;
+        let (peak_bytes, peak_op_index, total_bytes) =
+            scan_peak(&order, &byte_of, &last_use, &reads_at);
 
-        for (op_idx, &nid) in order.iter().enumerate() {
-            let bytes = *byte_of.get(&nid).unwrap_or(&0);
-            live_bytes += bytes;
-            total_bytes += bytes;
-            if live_bytes > peak_bytes {
-                peak_bytes = live_bytes;
-                peak_op_index = op_idx;
-            }
-            // Post-op: free anything whose last_use is this op.
-            // We only free *inputs* that are done, not the node we
-            // just produced (that's live until IT is consumed).
-            for &input in &reads_at[op_idx] {
-                if last_use.get(&input) == Some(&op_idx) {
-                    let b = *byte_of.get(&input).unwrap_or(&0);
-                    live_bytes = live_bytes.saturating_sub(b);
-                }
-            }
-        }
+        let gap_of = inactive_gaps(&first_use, &last_use, &reads_at);
 
-        // 4. Compute per-node inactive_gap: longest span of ops between
-        //    consecutive reads where the tensor is live but not touched.
-        //    For eviction, nodes with big gap × bytes are the best
-        //    candidates (lots of wasted residency).
-        let mut gap_of: HashMap<NodeId, usize> = HashMap::with_capacity(n);
-        for (nid, &first) in &first_use {
-            // Collect positions where this node is read.
-            let reads: Vec<usize> = reads_at
-                .iter()
-                .enumerate()
-                .filter_map(|(i, rs)| if rs.contains(nid) { Some(i) } else { None })
-                .collect();
-            // Build the gap sequence: between first (produced) and each
-            // read, between consecutive reads, and after last read till
-            // last_use.
-            let last = last_use.get(nid).copied().unwrap_or(first);
-            let mut points = vec![first];
-            points.extend(reads.iter().copied());
-            points.push(last);
-            points.sort();
-            let max_gap = points.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
-            gap_of.insert(*nid, max_gap);
-        }
-
-        // 5. Build + sort eviction candidates.
-        let mut cands: Vec<LiveRange> = order
-            .iter()
-            .map(|&nid| LiveRange {
-                node: nid,
-                bytes: *byte_of.get(&nid).unwrap_or(&0),
-                first_use: *first_use.get(&nid).unwrap_or(&0),
-                last_use: *last_use.get(&nid).unwrap_or(&0),
-                inactive_gap: *gap_of.get(&nid).unwrap_or(&0),
-            })
-            .collect();
-        // Rank by bytes × inactive_gap, descending. Ties: larger
-        // bytes first (more reclaim per evict).
-        cands.sort_by(|a, b| {
-            let a_score = (a.bytes as u128) * (a.inactive_gap as u128);
-            let b_score = (b.bytes as u128) * (b.inactive_gap as u128);
-            b_score.cmp(&a_score).then(b.bytes.cmp(&a.bytes))
-        });
-        // Filter out zero-score candidates (hot tensors with no gap).
-        cands.retain(|c| c.bytes > 0 && c.inactive_gap > 0);
-        // Cap to a reasonable count for downstream consumers.
-        cands.truncate(32);
+        let cands = rank_candidates(&order, &byte_of, &first_use, &last_use, &gap_of);
 
         ResidencyReport {
             total_bytes,
@@ -230,6 +185,92 @@ impl ResidencyPlanner {
             eviction_candidates: cands,
         }
     }
+}
+
+/// Walk `order`, keeping the live-set bytes: a node goes live at its position and is freed after
+/// its last reader. Returns `(peak_bytes, peak_op_index, total_bytes)`.
+fn scan_peak(
+    order: &[NodeId],
+    byte_of: &HashMap<NodeId, usize>,
+    last_use: &HashMap<NodeId, usize>,
+    reads_at: &[Vec<NodeId>],
+) -> (usize, usize, usize) {
+    let mut live_bytes: usize = 0;
+    let mut peak_bytes: usize = 0;
+    let mut peak_op_index: usize = 0;
+    let mut total_bytes: usize = 0;
+    for (op_idx, &nid) in order.iter().enumerate() {
+        let bytes = *byte_of.get(&nid).unwrap_or(&0);
+        live_bytes += bytes;
+        total_bytes += bytes;
+        if live_bytes > peak_bytes {
+            peak_bytes = live_bytes;
+            peak_op_index = op_idx;
+        }
+        // Post-op: free the inputs whose last read is this op (not the node just produced).
+        for &input in &reads_at[op_idx] {
+            if last_use.get(&input) == Some(&op_idx) {
+                let b = *byte_of.get(&input).unwrap_or(&0);
+                live_bytes = live_bytes.saturating_sub(b);
+            }
+        }
+    }
+    (peak_bytes, peak_op_index, total_bytes)
+}
+
+/// Per node, the longest stretch of ops between consecutive reads while the tensor is live but
+/// untouched (produced -> reads -> last use). Big gap x bytes = the best eviction candidates.
+fn inactive_gaps(
+    first_use: &HashMap<NodeId, usize>,
+    last_use: &HashMap<NodeId, usize>,
+    reads_at: &[Vec<NodeId>],
+) -> HashMap<NodeId, usize> {
+    let mut gap_of: HashMap<NodeId, usize> = HashMap::with_capacity(first_use.len());
+    for (nid, &first) in first_use {
+        let mut points = vec![first];
+        points.extend(
+            reads_at
+                .iter()
+                .enumerate()
+                .filter(|(_, rs)| rs.contains(nid))
+                .map(|(i, _)| i),
+        );
+        points.push(last_use.get(nid).copied().unwrap_or(first));
+        points.sort();
+        let max_gap = points.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+        gap_of.insert(*nid, max_gap);
+    }
+    gap_of
+}
+
+/// Build the eviction candidates and rank them by bytes x inactive gap, descending (ties: larger
+/// bytes first, more reclaim per evict). Zero-score nodes (hot tensors with no gap) are dropped and
+/// the list is capped for downstream consumers.
+fn rank_candidates(
+    order: &[NodeId],
+    byte_of: &HashMap<NodeId, usize>,
+    first_use: &HashMap<NodeId, usize>,
+    last_use: &HashMap<NodeId, usize>,
+    gap_of: &HashMap<NodeId, usize>,
+) -> Vec<LiveRange> {
+    let mut cands: Vec<LiveRange> = order
+        .iter()
+        .map(|&nid| LiveRange {
+            node: nid,
+            bytes: *byte_of.get(&nid).unwrap_or(&0),
+            first_use: *first_use.get(&nid).unwrap_or(&0),
+            last_use: *last_use.get(&nid).unwrap_or(&0),
+            inactive_gap: *gap_of.get(&nid).unwrap_or(&0),
+        })
+        .collect();
+    cands.sort_by(|a, b| {
+        let a_score = (a.bytes as u128) * (a.inactive_gap as u128);
+        let b_score = (b.bytes as u128) * (b.inactive_gap as u128);
+        b_score.cmp(&a_score).then(b.bytes.cmp(&a.bytes))
+    });
+    cands.retain(|c| c.bytes > 0 && c.inactive_gap > 0);
+    cands.truncate(32);
+    cands
 }
 
 /// One evict/reload chain emitted by [`insert_residency_evictions`].
@@ -242,6 +283,29 @@ pub struct EvictReload {
     pub move_node: NodeId,
     pub reload: NodeId,
     pub src_device: DeviceLocation,
+}
+
+/// What one run of the eviction pass did, so a caller can see whether the budget was met instead
+/// of inferring it from a graph that quietly grew.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvictionOutcome {
+    /// The device whose budget this was.
+    pub device: DeviceLocation,
+    /// The budget the pass was asked to meet, in bytes.
+    pub budget_bytes: usize,
+    /// The analysed peak on `device` before any eviction.
+    pub peak_before: usize,
+    /// The analysed peak on `device` after the last chain the pass kept.
+    pub peak_after: usize,
+    /// The chains inserted, in order.
+    pub chains: Vec<EvictReload>,
+}
+
+impl EvictionOutcome {
+    /// Whether the analysed peak now fits the budget.
+    pub fn fits(&self) -> bool {
+        self.peak_after <= self.budget_bytes
+    }
 }
 
 /// Graph-mutating eviction pass: while the graph's peak residency
@@ -262,7 +326,10 @@ pub struct EvictReload {
 ///
 /// Returns the inserted chains. Idempotent once the budget is met or
 /// no candidate has a gap ≥ 2 op positions; capped at `max_rounds`
-/// (16 is the legacy default) to prevent pathological loops.
+/// (16 is the legacy default) to prevent pathological loops. A realize root is never evicted
+/// (the caller reads its storage after the run, and a `Move` consumes it), and the pass stops at
+/// the first round that does not lower the analysed peak (see
+/// [`insert_residency_evictions_in`], which also reports the outcome).
 pub fn insert_residency_evictions(
     graph: &SharedGraph,
     roots: &[NodeId],
@@ -270,72 +337,136 @@ pub fn insert_residency_evictions(
     max_rounds: usize,
     placement_of: impl Fn(NodeId) -> Option<DeviceLocation>,
 ) -> Result<Vec<EvictReload>> {
+    // The device whose budget this is: where the roots live (the pinned device on the production
+    // path), `Cpu` when unknown (a same-device spill, as before).
+    let device = roots
+        .first()
+        .and_then(|&r| placement_of(r))
+        .unwrap_or(DeviceLocation::Cpu);
+    let mut g = write_graph(graph)?;
+    Ok(insert_residency_evictions_in(
+        &mut g,
+        roots,
+        device,
+        budget_bytes,
+        max_rounds,
+        placement_of,
+    )?
+    .chains)
+}
+
+/// [`insert_residency_evictions`] on a graph the caller already holds mutably: what
+/// `optimize_graph` (which takes `&mut Graph`) calls when `PlanOptions::device_budget_bytes` is set.
+/// Same candidates, same stamps, and an [`EvictionOutcome`] instead of a bare list.
+///
+/// **It stops at the first round that does not lower the analysed peak.** Today the reload `Op::Copy`
+/// runs right after its `Op::Move` (nothing delays it; ROADMAP row 67 I3 adds the ordering
+/// primitive), so on a same-device budget a round cannot lower the peak, and without this stop the
+/// pass would insert a transfer pair per candidate, up to `max_rounds`, for no gain. The one chain
+/// that revealed the stall is kept (a graph cannot drop nodes) and the outcome reports
+/// `peak_after >= peak_before` and `!fits()`: the caller sees that the budget was NOT met.
+/// A realize root is never a candidate: the caller reads its storage after the run.
+pub fn insert_residency_evictions_in(
+    g: &mut Graph,
+    roots: &[NodeId],
+    device: DeviceLocation,
+    budget_bytes: usize,
+    max_rounds: usize,
+    placement_of: impl Fn(NodeId) -> Option<DeviceLocation>,
+) -> Result<EvictionOutcome> {
     // Track candidates we've already evicted this run. Without this
     // guard, a just-evicted candidate's new consumers (its own Move)
     // show up as post-gap consumers in the next round, triggering
     // infinite re-eviction.
     let mut evicted: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
     let mut chains: Vec<EvictReload> = Vec::new();
+    let peak_before = ResidencyPlanner::analyze_on(g, roots, device).peak_bytes;
+    let mut peak = peak_before;
 
     for _round in 0..max_rounds {
-        let report = {
-            let g = read_graph(graph)?;
-            ResidencyPlanner::analyze(&g, roots)
-        };
+        let report = ResidencyPlanner::analyze_on(g, roots, device);
         if report.fits_in(budget_bytes) {
-            return Ok(chains);
+            break;
         }
         // Pick the top candidate that still has a realizable gap AND
         // hasn't been evicted already in this run.
-        let mut progressed = false;
-        for cand in &report.eviction_candidates {
-            if evicted.contains(&cand.node) {
-                continue;
-            }
-
-            let post_gap_consumers = {
-                let g = read_graph(graph)?;
-                match find_gap_consumers(&g, cand.node) {
-                    Some((_pre_gap, post)) if !post.is_empty() => post,
-                    _ => continue,
-                }
-            };
-
-            let src_device = placement_of(cand.node).unwrap_or(DeviceLocation::Cpu);
-
-            let (move_id, reload_id) =
-                opt::insert_evict_reload(graph, cand.node, src_device, &post_gap_consumers);
-
-            // Stamp the transfer pair so the pipelined executor's
-            // Op::Move / Op::Copy compile arms (which require an
-            // explicit target_backend = "the backend whose kernel
-            // runs the transfer") resolve without a prepare pass:
-            // the Move downloads from src_device's backend; the
-            // reload uploads from the staged CPU copy.
-            {
-                let mut g = write_graph(graph)?;
-                g.set_target_backend(move_id, backend_for_device(src_device));
-                g.set_target_backend(reload_id, backend_for_device(DeviceLocation::Cpu));
-                g.set_placement(move_id, DeviceLocation::Cpu);
-                g.set_placement(reload_id, src_device);
-            }
-
-            evicted.insert(cand.node);
-            chains.push(EvictReload {
-                candidate: cand.node,
-                move_node: move_id,
-                reload: reload_id,
-                src_device,
-            });
-
-            progressed = true;
+        let Some((cand, post_gap_consumers)) =
+            first_evictable(g, roots, &report.eviction_candidates, &evicted)
+        else {
+            break;
+        };
+        let src_device = placement_of(cand).unwrap_or(DeviceLocation::Cpu);
+        chains.push(evict_one(g, cand, src_device, &post_gap_consumers));
+        evicted.insert(cand);
+        let after = ResidencyPlanner::analyze_on(g, roots, device).peak_bytes;
+        let progressed = after < peak;
+        peak = after;
+        if !progressed {
             break;
         }
-        if !progressed {
-            return Ok(chains);
-        }
     }
-    Ok(chains)
+    Ok(EvictionOutcome {
+        device,
+        budget_bytes,
+        peak_before,
+        peak_after: peak,
+        chains,
+    })
+}
+
+/// The highest-ranked candidate that was not evicted yet, is not a realize root, and has post-gap
+/// consumers to rewire.
+fn first_evictable(
+    g: &Graph,
+    roots: &[NodeId],
+    candidates: &[LiveRange],
+    evicted: &std::collections::HashSet<NodeId>,
+) -> Option<(NodeId, Vec<NodeId>)> {
+    candidates.iter().find_map(|c| {
+        if roots.contains(&c.node) || evicted.contains(&c.node) || already_evicted(g, c.node) {
+            return None;
+        }
+        match find_gap_consumers(g, c.node) {
+            Some((_pre_gap, post)) if !post.is_empty() => Some((c.node, post)),
+            _ => None,
+        }
+    })
+}
+
+/// Insert one evict/reload chain for `candidate` and stamp the transfer pair so the pipelined
+/// executor's `Op::Move` / `Op::Copy` compile arms (which need an explicit `target_backend`, the
+/// backend whose kernel runs the transfer) resolve without a prepare pass: the Move downloads
+/// from `src_device`'s backend; the reload uploads from the staged CPU copy.
+fn evict_one(
+    g: &mut Graph,
+    candidate: NodeId,
+    src_device: DeviceLocation,
+    post_gap_consumers: &[NodeId],
+) -> EvictReload {
+    let (move_id, reload_id) =
+        opt::insert_evict_reload_in(g, candidate, src_device, post_gap_consumers);
+    g.set_target_backend(move_id, backend_for_device(src_device));
+    g.set_target_backend(reload_id, backend_for_device(DeviceLocation::Cpu));
+    g.set_placement(move_id, DeviceLocation::Cpu);
+    g.set_placement(reload_id, src_device);
+    EvictReload {
+        candidate,
+        move_node: move_id,
+        reload: reload_id,
+        src_device,
+    }
+}
+
+/// Whether `candidate` already feeds an `Op::Move` (from an earlier run of this pass, or from any
+/// other transfer: ANY `Move` blocks, which can miss an optimisation but never double-moves).
+/// A second destructive consumer of the same source makes the Moves wait on each other:
+/// `execution_plan` then panics with "cycle in ordering edges". So a candidate is evicted at
+/// most once across runs, not just within one (`evicted` below only covers one run).
+fn already_evicted(g: &Graph, candidate: NodeId) -> bool {
+    (0..g.len()).any(|i| {
+        let n = g.node(NodeId(i));
+        matches!(n.op, Op::Move { .. }) && n.inputs.first() == Some(&candidate)
+    })
 }
 
 /// Find the pre-gap and post-gap consumers of `candidate` — i.e., the
@@ -383,12 +514,6 @@ fn find_gap_consumers(g: &Graph, candidate: NodeId) -> Option<(NodeId, Vec<NodeI
     let after_gap: Vec<NodeId> = positions[gap_idx + 1..].iter().map(|(_, n)| *n).collect();
 
     Some((last_before, after_gap))
-}
-
-fn read_graph(graph: &SharedGraph) -> Result<std::sync::RwLockReadGuard<'_, Graph>> {
-    graph
-        .read()
-        .map_err(|_| Error::Msg("residency: graph RwLock poisoned".into()).bt())
 }
 
 fn write_graph(graph: &SharedGraph) -> Result<std::sync::RwLockWriteGuard<'_, Graph>> {
@@ -583,6 +708,86 @@ mod tests {
         assert_eq!(g.target_backend(chain.reload), Some(BackendId::Cpu));
     }
 
+    /// `analyze_on` does not count the staged host copy of an eviction as bytes of the planned
+    /// device, and the order-blind, residency-blind `analyze` does (the second flaw the
+    /// eviction loop had: it measured a number the evictions could not move).
+    #[test]
+    fn analyze_on_does_not_count_the_staged_host_copy() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let graph = shared();
+        let out = {
+            let mut g = graph.write().unwrap();
+            let a = push(&mut g, Op::Const, vec![], &[4]);
+            let b = push(&mut g, Op::Relu, vec![a], &[4]);
+            let staged = push(
+                &mut g,
+                Op::Move {
+                    target: DeviceLocation::Cpu,
+                },
+                vec![a],
+                &[4],
+            );
+            push(&mut g, Op::Add, vec![b, staged], &[4])
+        };
+        let g = graph.read().unwrap();
+        let blind = ResidencyPlanner::analyze(&g, &[out]).peak_bytes;
+        let on = ResidencyPlanner::analyze_on(&g, &[out], cuda).peak_bytes;
+        assert!(
+            on < blind,
+            "device peak {on} must be below the blind peak {blind}"
+        );
+        // Control: on the CPU itself the Move{Cpu} output IS resident, so nothing is discounted.
+        let on_cpu = ResidencyPlanner::analyze_on(&g, &[out], DeviceLocation::Cpu).peak_bytes;
+        assert_eq!(on_cpu, blind);
+    }
+
+    /// CHARACTERISATION of a known limitation, not a goal: today the executor's order runs the
+    /// reload `Op::Copy` right after its `Op::Move` (nothing delays it; there is no way to ask for
+    /// "reload just before the first post-gap consumer"), so one eviction round does NOT lower the
+    /// analysed device peak on this graph (64 -> 64 bytes). ROADMAP row 67 I3 adds the ordering
+    /// primitive; when it lands this test flips to assert a drop.
+    #[test]
+    fn today_the_reload_runs_eagerly_so_the_device_peak_does_not_drop() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let (graph, _a, out) = over_budget_graph();
+        let before = ResidencyPlanner::analyze_on(&graph.read().unwrap(), &[out], cuda).peak_bytes;
+        let chains = insert_residency_evictions(&graph, &[out], before - 1, 16, |_| Some(cuda))
+            .expect("eviction pass");
+        assert!(!chains.is_empty(), "a budget below the peak must evict");
+        let g = graph.read().unwrap();
+        let order = fuel_graph::opt::execution_plan(&g, &[out]);
+        let pos = |n: NodeId| order.iter().position(|&x| x == n).unwrap();
+        let c = &chains[0];
+        assert_eq!(
+            pos(c.reload),
+            pos(c.move_node) + 1,
+            "the reload follows its Move immediately in the executor's order"
+        );
+        let after = ResidencyPlanner::analyze_on(&g, &[out], cuda).peak_bytes;
+        assert_eq!(after, before, "so the analysed peak is unchanged");
+    }
+
+    /// Regression: a candidate already feeding an eviction `Op::Move` is not evicted again by a
+    /// second run. Two destructive Moves of one source wait on each other and `execution_plan`
+    /// panics ("cycle in ordering edges"); the old pass only remembered candidates within one run.
+    #[test]
+    fn a_candidate_is_evicted_at_most_once_across_runs() {
+        let (graph, _a, out) = over_budget_graph();
+        let first = insert_residency_evictions(&graph, &[out], 0, 16, |_| None).expect("run 1");
+        assert!(!first.is_empty());
+        let second = insert_residency_evictions(&graph, &[out], 0, 16, |_| None).expect("run 2");
+        let evicted_before: Vec<NodeId> = first.iter().map(|c| c.candidate).collect();
+        assert!(
+            second
+                .iter()
+                .all(|c| !evicted_before.contains(&c.candidate)),
+            "run 2 re-evicted a candidate of run 1"
+        );
+        // The graph must still be orderable (this panics on a cycle).
+        let g = graph.read().unwrap();
+        let _ = fuel_graph::opt::execution_plan(&g, &[out]);
+    }
+
     /// Correctness invariant: graph surgery for residency must be
     /// transparent to the result. Realize the same graph WITHOUT and
     /// WITH the eviction pass through the PRODUCTION executor and
@@ -628,6 +833,95 @@ mod tests {
             "eviction must preserve the output bit-exactly",
         );
         assert_eq!(baseline, vec![0.0_f32, 6.0, 0.0, 20.0]);
+    }
+
+    /// Review finding 2 (Pip, #498): a realize root must never be evicted. The caller reads the root's
+    /// storage after the run and an `Op::Move` consumes its source. `a` is the best candidate here
+    /// (live from the start, read early and late), so making it a root is exactly the hazard.
+    #[test]
+    fn a_realize_root_is_never_evicted() {
+        let (graph, a, out) = over_budget_graph();
+        let chains =
+            insert_residency_evictions(&graph, &[a, out], 1, 16, |_| Some(DeviceLocation::Cpu))
+                .expect("eviction pass");
+        assert!(
+            chains.iter().all(|c| c.candidate != a),
+            "the root `a` was evicted: {chains:?}"
+        );
+        // Control: with `a` NOT a root it is the candidate the pass picks (so the exclusion above
+        // is what spared it, not an absence of gap).
+        let (graph, a, out) = over_budget_graph();
+        let chains =
+            insert_residency_evictions(&graph, &[out], 1, 16, |_| Some(DeviceLocation::Cpu))
+                .expect("eviction pass");
+        assert!(
+            chains.iter().any(|c| c.candidate == a),
+            "control: without the root exclusion `a` is evicted"
+        );
+    }
+
+    /// Review finding 1 (Pip, #498): a round that does not lower the analysed peak ends the pass, and
+    /// the outcome says the budget was not met. Today (no reload delay, row 67 I3) no round can, so a
+    /// same-device budget keeps ONE chain, not `max_rounds` of them, and `fits()` is false.
+    #[test]
+    fn a_round_that_does_not_lower_the_peak_stops_and_is_reported() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let (graph, _a, out) = over_budget_graph();
+        let mut g = graph.write().unwrap();
+        let before = ResidencyPlanner::analyze_on(&g, &[out], cuda).peak_bytes;
+        let outcome =
+            insert_residency_evictions_in(&mut g, &[out], cuda, before - 1, 16, |_| Some(cuda))
+                .expect("eviction pass");
+        assert_eq!(outcome.peak_before, before);
+        assert_eq!(
+            outcome.chains.len(),
+            1,
+            "a stalled pass must stop after the round that showed the stall, not run to max_rounds"
+        );
+        assert!(outcome.peak_after >= outcome.peak_before);
+        assert!(
+            !outcome.fits(),
+            "the budget was NOT met and the outcome must say so"
+        );
+        // Control: a budget the graph already fits reports fits() and inserts nothing.
+        let ok =
+            insert_residency_evictions_in(&mut g, &[out], cuda, usize::MAX, 16, |_| Some(cuda))
+                .expect("eviction pass");
+        assert!(ok.fits() && ok.chains.is_empty());
+    }
+
+    /// Review question 1 (Pip, #498): a post-gap consumer that reads the candidate twice has BOTH
+    /// input slots rewired to the reload (`rewrite_input` replaces every matching slot).
+    #[test]
+    fn a_candidate_read_twice_by_one_consumer_is_rewired_in_both_slots() {
+        // `late` = Where(pad2, a, a) reads `a` in two slots and sits after the long chain, so it is
+        // the post-gap consumer; `early` = Relu(a) is the pre-gap one.
+        let graph = shared();
+        let (a, pad2, late) = {
+            let mut g = graph.write().unwrap();
+            let a = push(&mut g, Op::Const, vec![], &[4]);
+            let early = push(&mut g, Op::Relu, vec![a], &[4]);
+            let pad = push(&mut g, Op::Neg, vec![early], &[4]);
+            let pad2 = push(&mut g, Op::Neg, vec![pad], &[4]);
+            let late = push(&mut g, Op::Where, vec![pad2, a, a], &[4]);
+            for n in [early, pad, pad2, late] {
+                g.set_target_backend(n, BackendId::Cpu);
+            }
+            (a, pad2, late)
+        };
+        let chains =
+            insert_residency_evictions(&graph, &[late], 1, 4, |_| Some(DeviceLocation::Cpu))
+                .expect("eviction pass");
+        let chain = chains
+            .iter()
+            .find(|c| c.candidate == a)
+            .expect("`a` is evicted");
+        let g = graph.read().unwrap();
+        assert_eq!(
+            g.node(late).inputs,
+            vec![pad2, chain.reload, chain.reload],
+            "both slots that read `a` must read the reload"
+        );
     }
 
     /// Idempotence guard: re-running the pass after the budget can't

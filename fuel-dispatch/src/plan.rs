@@ -401,6 +401,14 @@ pub struct PlanOptions<'env> {
     /// size. Explicit `Graph::placement` is a hard pin either way; this flag
     /// governs only the *un-pinned* nodes.
     pub allow_cost_placement: bool,
+    /// Byte budget for the pinned device's resident working set (ROADMAP row 67, increment I1).
+    /// When `Some(budget)` AND [`Self::pinned_device`] is set, `optimize_graph` runs the
+    /// residency-eviction pass after the residency-copy pass: while the graph's analysed peak
+    /// exceeds `budget`, it inserts an `Op::Move{Cpu}` + reload `Op::Copy{device}` chain around the
+    /// best candidate. `None` (the default) leaves the graph exactly as it was: the pass was
+    /// written for this but had no production caller. No default budget is derived from the
+    /// device here; a caller (or a later increment) supplies it.
+    pub device_budget_bytes: Option<usize>,
     /// Baracuda dispatch-telemetry hooks (behind the `telemetry` cargo
     /// feature). When `Some` AND the config's mode is not `Off`,
     /// `compile_plan` runs a post-plan pass that emits a structural
@@ -427,6 +435,7 @@ impl Default for PlanOptions<'_> {
             input_residency: None,
             reuse_plan: None,
             allow_cost_placement: true,
+            device_budget_bytes: None,
             #[cfg(feature = "telemetry")]
             telemetry: None,
         }
@@ -437,6 +446,12 @@ impl<'env> PlanOptions<'env> {
     /// Builder constructor; same fields as [`Default`].
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the pinned device's resident-bytes budget; see [`Self::device_budget_bytes`].
+    pub fn with_device_budget_bytes(mut self, budget_bytes: usize) -> Self {
+        self.device_budget_bytes = Some(budget_bytes);
+        self
     }
 
     /// Set the precision requirement hard filter.
