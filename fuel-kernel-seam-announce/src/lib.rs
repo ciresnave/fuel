@@ -252,7 +252,8 @@ fn select_profile(local: &SeamHello, remote: &SeamHello) -> Result<u16, SeamErro
 /// `(local & remote & !FEAT) | (provider & FEAT)` with `FEAT` = [`SEAM_CAP_FEAT_MASK`].
 ///
 /// `local_role` is the role of the LOCAL envelope; the provider is known from the exchange, never
-/// from a capability bit. The FEAT axis is masked as a whole, not bit by bit, so two readers that
+/// from a capability bit. A consumer writes the provider-only bits as zero (KISS-ANNOUNCE-7.3-0002),
+/// which is why a plain AND would lose them. The FEAT axis is masked as a whole, not bit by bit, so two readers that
 /// recognise different FEAT bits still compute the same word. EXT and SUB bits are live only when
 /// both sides set them. Both envelopes are validated first; disjoint advertised profile sets hard-fail with
 /// [`SeamError::VersionMismatch`], never a guessed version.
