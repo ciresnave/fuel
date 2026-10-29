@@ -163,6 +163,26 @@ jobs:
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # `.cargo/config.toml` builds with `target-cpu=native`, so a cached dependency artifact is only
+      # valid on the CPU family that built it. The key carries a hash of the CPU's feature flags
+      # (Linux/Windows) so a runner with a different instruction set misses the cache instead of
+      # loading code it cannot run.
+      - name: CPU fingerprint for the build cache key
+        id: cpu
+        shell: bash
+        run: |
+          if [ -r /proc/cpuinfo ]; then
+            id=$( (grep -m1 -iE '^(flags|features)' /proc/cpuinfo || uname -m) | sha1sum | cut -c1-12)
+          else
+            id=$(printf '%s' "${PROCESSOR_IDENTIFIER:-$(uname -m)}" | sha1sum | cut -c1-12)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - if: matrix.os == 'ubuntu-latest'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
+          shared-key: check-cpu-${{ steps.cpu.outputs.id }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Keeps the Metal crates — this is the ONLY job that can compile
       # fuel-metal-backend / fuel-metal-kernels, so it is the only Metal
@@ -623,15 +643,34 @@ jobs:
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo rm -rf /opt/hostedtoolcache
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache &
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /opt/ghc &
+          wait
           df -h
+      # Depth 2: the merge commit and its base-side parent, which is all
+      # `scripts/ci_change_class.py` diffs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      # A pull request that changes only documentation and workspace version numbers cannot change
+      # what the Windows and macOS test runs exercise; those two (non-required) legs skip their
+      # build and test steps and report success. The required Linux leg always runs in full, and
+      # every push to `main` runs every leg. The classifier is conservative: anything else, or any
+      # git failure, is heavy. See the script's header for the exact rule.
+      - name: Classify the change (docs and version numbers only?)
+        id: cls
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            python scripts/ci_change_class.py
+          else
+            echo "light=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Remove cargo config (macOS ring crate fix)
         if: runner.os == 'macOS'
         run: rm -f .cargo/config.toml
@@ -652,6 +691,28 @@ jobs:
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # `.cargo/config.toml` builds with `target-cpu=native`, so a cached dependency artifact is only
+      # valid on the CPU family that built it. The key carries a hash of the CPU's feature flags
+      # (Linux/Windows) so a runner with a different instruction set misses the cache instead of
+      # loading code it cannot run.
+      - name: CPU fingerprint for the build cache key
+        id: cpu
+        shell: bash
+        run: |
+          if [ -r /proc/cpuinfo ]; then
+            id=$( (grep -m1 -iE '^(flags|features)' /proc/cpuinfo || uname -m) | sha1sum | cut -c1-12)
+          else
+            id=$(printf '%s' "${PROCESSOR_IDENTIFIER:-$(uname -m)}" | sha1sum | cut -c1-12)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - if: steps.cls.outputs.light != 'true' || runner.os == 'Linux'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
+          # Linux runs every test build with the lld RUSTFLAGS (which displace `target-cpu=native`),
+          # so its artifacts are CPU-independent and the key needs no fingerprint; Windows/macOS do.
+          shared-key: ${{ runner.os == 'Linux' && format('test-{0}', matrix.os) || format('test-{0}-cpu-{1}', matrix.os, steps.cpu.outputs.id) }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install lld (Linux only)
         if: runner.os == 'Linux'
@@ -672,7 +733,7 @@ jobs:
           RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
         run: cargo test --locked --workspace --no-fail-fast ${{ env.WORKSPACE_EXCLUDES }}
       - name: Run tests (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.cls.outputs.light != 'true'
         run: cargo test --locked --workspace --no-fail-fast ${{ env.WORKSPACE_EXCLUDES }}
       # macOS gets its OWN exclusion set, and the difference is the point: this
       # runner CAN build the Metal crates (objc2 is happy on Apple), so
@@ -682,7 +743,7 @@ jobs:
       # platform-independent gap. Two exclusions for two different reasons; do
       # not collapse them into one list.
       - name: Run tests (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.cls.outputs.light != 'true'
         run: cargo test --locked --workspace --no-fail-fast ${{ env.MACOS_EXCLUDES }}
       - name: Run telemetry-gated dispatch tests (sk4 wire codec)
         # `always() &&` is LOAD-BEARING, not defensive. Without it this step is
@@ -695,6 +756,8 @@ jobs:
         # before it, so there is no reason for its result to be conditional on
         # that step's.
         if: always() && runner.os == 'Linux'
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
         # `cargo test --workspace` above uses DEFAULT features, so the
         # telemetry-gated tests — notably
         # `fuel_emits_only_recognized_sk5_dtype_spellings` — BUILD but never RUN
@@ -756,6 +819,8 @@ jobs:
         # cells. The lints come first, then the leg. GAP-299 holds both halves
         # and says they must not land together.
         if: always() && runner.os == 'Linux'
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP:-/tmp}/dlpack-fuel-ir-test.log"
@@ -915,6 +980,25 @@ jobs:
       # Runs on ubuntu-latest, so it needs the full non-Apple exclusion set —
       # clippy compiles what it lints, and would die on `objc2` exactly as
       # `cargo check` does.
+      # `.cargo/config.toml` builds with `target-cpu=native`, so a cached dependency artifact is only
+      # valid on the CPU family that built it. The key carries a hash of the CPU's feature flags
+      # (Linux/Windows) so a runner with a different instruction set misses the cache instead of
+      # loading code it cannot run.
+      - name: CPU fingerprint for the build cache key
+        id: cpu
+        shell: bash
+        run: |
+          if [ -r /proc/cpuinfo ]; then
+            id=$( (grep -m1 -iE '^(flags|features)' /proc/cpuinfo || uname -m) | sha1sum | cut -c1-12)
+          else
+            id=$(printf '%s' "${PROCESSOR_IDENTIFIER:-$(uname -m)}" | sha1sum | cut -c1-12)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
+          shared-key: clippy-cpu-${{ steps.cpu.outputs.id }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked --workspace --tests --examples --benches ${{ env.WORKSPACE_EXCLUDES }} -- -D warnings
       # GAP-242: the workspace leg above enables `fuel-dispatch/vulkan` through
       # feature unification, so it never lints the crate at DEFAULT features --
