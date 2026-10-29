@@ -1,17 +1,25 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
-## v0.28.0 - 2026-10-29
+## v0.29.0 - 2026-10-29
 
 ### Breaking
 
-- `fuel_tensor::lazy::WeightStorage` has a new variant `Q8_0 { words, bytes_len, in_features, out_features }`; a downstream exhaustive `match` over the enum needs an arm (in this workspace only `fuel-nn`'s `Conv2d::absorb_bn` matched it exhaustively). Pre-1.0 breaking, so the second number moves (PM allocated 0.28.0); making `WeightStorage` `#[non_exhaustive]` (so the next variant is not breaking) is on the F16-weights branch.
+- `fuel_tensor::lazy::WeightStorage` has a new variant `Q8_0 { words, bytes_len, in_features, out_features }`; a downstream exhaustive `match` over the enum needs an arm (in this workspace only `fuel-nn`'s `Conv2d::absorb_bn` matched it exhaustively). Pre-1.0 breaking, so the second number moves (PM allocated 0.29.0); making `WeightStorage` `#[non_exhaustive]` (so the next variant is not breaking) is on the F16-weights branch.
 - **Numerics change**: the CPU Q8_0 kernel rounds the f32 activations to Q8_0 blocks first (llama.cpp's `vec_dot`), so results differ from the previous dequantize-to-f32 path by that rounding. TinyLlama-1.1B Q8_0, a fixed 200-token text (`docs/architecture/01-identity.md`, first 3000 bytes), teacher-forced, all-position forward: mean next-token loss 5.9651 -> 5.9667 (perplexity 389.6 -> 390.2, +0.16%), argmax agreement 197/200 positions (98.5%), mean top-5 overlap 0.972, mean KL 0.00093 nats; SmolLM2-135M first logit 11.318165 -> 11.380736 (11.442013 before the gemm change). A raw `logits[0]` can shift by about 1 (a per-row offset the softmax removes), so compare log-probabilities, not raw logits.
 
 ### Changed
 
 - GGUF Q8_0 linear weights stay 8-bit and run through `Op::QMatMul` with `QuantType::Q8_0` (`QuantizedLlama3Model::from_gguf`, the llama loader only) instead of being dequantized to an f32 copy. Measured on `TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF` `tinyllama-1.1b-chat-v1.0.Q8_0.gguf` (Apache-2.0 per its model card; revision 52e7645ba7c309695bec7ac98f4f005b139cf465; sha256 a4c9bb1dbaa372f6381a035fa5c02ef087aaa1ff1f843a56a22328114f03fc59; kept outside the repo), CPU release, 4 threads, host about 60% busy, executables proven different with cmp, three alternating runs against the same tree without this change (with the 0.26.4 gemm matmul on both sides): peak working set 13,750 MB -> 5,049 MB (2.7x less); plan-once decode-like step (m = 1) median 0.328, 0.340, 0.350 s -> 0.120, 0.116, 0.139 s (2.5-3x); 60-token total 28.9-29.5 s -> 8.5-10.3 s; first-call 140-token prefill wall 13.0-15.3 s -> 10.9-13.3 s. **Prefill kernel time goes UP**: 3.3 s -> 7.1 s in the realize loop (gemm over the dequantized f32 weights beats the int8 kernel at 140 rows); the dequantized path's wall time carries about 10 s of one-time first-call cost for its 4.4 GB of f32 weights, so in steady state it prefills faster than this change. Follow-up row: `QMatMul` for m > 1 dequantizes tiles and calls gemm.
 - **Not measured**: a second prefill call (steady state), GPU backends with this variant, model families other than llama-arch GGUF (phi, qwen, gemma, ... still dequantize Q8_0), a quiet box. Pinned by `fuel-tensor/tests/q8_0_weight_storage.rs` (error against an f64 reference of the dequantized weight within the activation-rounding bound, tolerance sabotage-calibrated, shape mismatch is a typed error).
+
+## v0.28.0 - 2026-10-29
+
+### Changed
+
+- `fuel-kernel-seam` moves from `unpopped-vocab` 0.22 to **0.32.1** (PM task, 2026-10-29): the published `fuel-kernel-seam` 0.26.12 asks for `^0.24` and Baracuda's `baracuda-cuda-seam` carries its own vocab copy, so `OperandDesc`/`ElementKind`/`ArchSku`/`TargetId` were two types in one graph (E0308/E0277). The seam's own source needed no change at 0.32.1 (`cargo check -p fuel-kernel-seam --all-targets`). Its public vocabulary types are re-exported from that dependency, so this is **breaking for seam consumers** (pre-1.0: second digit). `fuel-kernel-seam-types` and `fuel-kernel-seam-announce` do not use the vocabulary and change only in version.
+- `fuel-dispatch` (feature `jit`): the JIT glue (`jit_adopt`, `jit_carrier`, `jit_ingest`, `jit_ingest_probe`, `tests/jit_synth_kernel_live.rs`) now names the vocabulary types from `unpopped_vocab` directly (new optional dependency, enabled by `jit`) instead of through `baracuda_kernels_types`, which at alpha.158 is still on vocab 0.22. `element_kind_to_dtype` declines the new MX element kinds `F4E2M1`, `F6E2M3`, `F6E3M2` (typed decline; no new emit, Slang seam hold stands). The `telemetry`/`baracuda-types` path and `fuel-cuda-backend` stay on the baracuda-resolved vocab 0.22 until Baracuda publishes a vocab-0.32 family.
+- Known and not fixable here: `jit-synth` (`baracuda-cuda-seam`) cannot compile against vocab 0.32 until Baracuda publishes a `baracuda-cuda-seam` that depends on the new `fuel-kernel-seam` and vocab 0.32 (its published alpha.25 is `unpopped-vocab ^0.24` and `fuel-kernel-seam =0.26.12`). Not compiled here (needs the CUDA toolchain).
 
 ## v0.27.1 - 2026-10-29
 
@@ -33,7 +41,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Deprecated
 
-- `fuel-kernel-seam-announce`: `negotiate()` (a plain AND, wrong for provider-only bits) and `SEAM_CAP_JIT_ON_REQUEST` (bit 16 is in the KISS EXT experimental range, not the registry; the registry bit is FEAT 32, a different position). Both are removed in the next breaking release (no number reserved while a breaking PR is held); the deprecated `negotiate()` is pinned by a test until then. `examples/gap315_seam_probe.rs` uses the new function. Bit 16 to 32 moves nothing downstream: the PM grepped baracuda and Unpopped at origin/main for `JIT_ON_REQUEST` and found no hits.
+- `fuel-kernel-seam-announce`: `negotiate()` (a plain AND, wrong for provider-only bits) and `SEAM_CAP_JIT_ON_REQUEST` (bit 16 is in the KISS EXT experimental range, not the registry; the registry bit is FEAT 32, a different position). Both are removed in 0.27.0; the deprecated `negotiate()` is pinned by a test until then. `examples/gap315_seam_probe.rs` uses the new function. Bit 16 to 32 moves nothing downstream: the PM grepped baracuda and Unpopped at origin/main for `JIT_ON_REQUEST` and found no hits.
 
 ## v0.26.32 - 2026-10-26
 
