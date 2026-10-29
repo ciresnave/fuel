@@ -9,12 +9,11 @@
 //! 3. else the **probed** free memory of the device times a reserve fraction
 //!    ([`DEFAULT_RESERVE_FRACTION`]).
 //!
-//! Nothing here is on by default: `PlanOptions` still carries no budget until a caller resolves one
-//! and attaches it with `PlanOptions::with_resolved_device_budget`. The eviction pass only moves a
-//! reload, it does not yet delay it (row 67 I3), so a default-on budget would add copies without
+//! Nothing here is on by default. The realize path applies a budget only when
+//! [`DEVICE_BUDGET_ENV`] is set ([`device_budget_from_env`]); the probed rule is available to a
+//! caller through [`resolve_device_budget`]. The eviction pass reloads eagerly, and the delayed
+//! reload belongs to row 67 I3 (design-gated), so a default-on budget would add copies without
 //! lowering the analysed peak.
-
-use fuel_backend_contract::backend::BackendRuntime;
 
 /// Environment variable holding an explicit budget in bytes (decimal).
 pub const DEVICE_BUDGET_ENV: &str = "FUEL_DEVICE_BUDGET_BYTES";
@@ -73,9 +72,7 @@ pub fn resolve_device_budget(
     available: Option<u64>,
     fraction: f64,
 ) -> Result<Option<ResolvedBudget>, BudgetError> {
-    if !(fraction.is_finite() && fraction > 0.0 && fraction <= 1.0) {
-        return Err(BudgetError::BadFraction(fraction));
-    }
+    check_fraction(fraction)?;
     if let Some(bytes) = explicit {
         return Ok(Some(ResolvedBudget {
             bytes,
@@ -83,40 +80,54 @@ pub fn resolve_device_budget(
         }));
     }
     if let Some(raw) = env {
-        let bytes = raw
-            .trim()
-            .parse::<usize>()
-            .map_err(|_| BudgetError::BadEnv(raw.to_string()))?;
-        return Ok(Some(ResolvedBudget {
-            bytes,
-            source: BudgetSource::Env,
-        }));
+        return parse_env(raw).map(Some);
     }
-    Ok(match available {
-        Some(avail) if avail != u64::MAX => Some(ResolvedBudget {
-            bytes: (avail as f64 * fraction) as usize,
-            source: BudgetSource::Probed {
-                available: avail,
-                fraction,
-            },
-        }),
-        _ => None,
+    Ok(probe(available, fraction))
+}
+
+fn check_fraction(fraction: f64) -> Result<(), BudgetError> {
+    if fraction.is_finite() && fraction > 0.0 && fraction <= 1.0 {
+        Ok(())
+    } else {
+        Err(BudgetError::BadFraction(fraction))
+    }
+}
+
+fn parse_env(raw: &str) -> Result<ResolvedBudget, BudgetError> {
+    let bytes = raw
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| BudgetError::BadEnv(raw.to_string()))?;
+    Ok(ResolvedBudget {
+        bytes,
+        source: BudgetSource::Env,
     })
 }
 
-/// [`resolve_device_budget`] reading the process environment and a live runtime handle.
-pub fn resolve_device_budget_for(
-    explicit: Option<usize>,
-    runtime: &dyn BackendRuntime,
-    fraction: f64,
-) -> Result<Option<ResolvedBudget>, BudgetError> {
-    let env = std::env::var(DEVICE_BUDGET_ENV).ok();
-    resolve_device_budget(
-        explicit,
-        env.as_deref(),
-        runtime.available_bytes(),
-        fraction,
-    )
+/// `u64::MAX` is the "unbounded" convention of reference backends, not a figure to scale.
+fn probe(available: Option<u64>, fraction: f64) -> Option<ResolvedBudget> {
+    let avail = available.filter(|&a| a != u64::MAX)?;
+    Some(ResolvedBudget {
+        bytes: (avail as f64 * fraction) as usize,
+        source: BudgetSource::Probed {
+            available: avail,
+            fraction,
+        },
+    })
+}
+
+/// The opt-in the realize path uses: a budget only when [`DEVICE_BUDGET_ENV`] is set, `None` when
+/// it is unset. A value that is not decimal bytes (or not Unicode) is an error, so a typo in the
+/// override stops the run instead of silently leaving the pass off.
+pub fn device_budget_from_env() -> Result<Option<ResolvedBudget>, BudgetError> {
+    let env = match std::env::var(DEVICE_BUDGET_ENV) {
+        Ok(v) => Some(v),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(raw)) => {
+            return Err(BudgetError::BadEnv(raw.to_string_lossy().into_owned()));
+        }
+    };
+    resolve_device_budget(None, env.as_deref(), None, DEFAULT_RESERVE_FRACTION)
 }
 
 #[cfg(test)]
