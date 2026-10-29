@@ -182,7 +182,7 @@ jobs:
         with:
           # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
           shared-key: check-cpu-${{ steps.cpu.outputs.id }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
 
       # Keeps the Metal crates — this is the ONLY job that can compile
       # fuel-metal-backend / fuel-metal-kernels, so it is the only Metal
@@ -710,7 +710,7 @@ jobs:
         with:
           # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
           shared-key: test-${{ matrix.os }}-cpu-${{ steps.cpu.outputs.id }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
 
       - name: Install lld (Linux only)
         if: runner.os == 'Linux'
@@ -992,7 +992,7 @@ jobs:
         with:
           # `shared-key` REPLACES `key`, so the CPU fingerprint has to live inside it.
           shared-key: clippy-cpu-${{ steps.cpu.outputs.id }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
       - run: cargo clippy --locked --workspace --tests --examples --benches ${{ env.WORKSPACE_EXCLUDES }} -- -D warnings
       # GAP-242: the workspace leg above enables `fuel-dispatch/vulkan` through
       # feature unification, so it never lints the crate at DEFAULT features --
