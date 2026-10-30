@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.31.0 - 2026-10-30
+
+### Changed
+
+- **Breaking for the dependency:** `unpopped-vocab` is pinned to `0.34.3` (was `0.32.1`), crates.io only, so `fuel-kernel-seam` (and the `jit` glue in `fuel-dispatch`) now require `unpopped-vocab ^0.34.3`. The published `fuel-kernel-seam 0.28.0` requires `^0.32.1`, which gave Baracuda two vocabulary copies and type-identity errors (baracuda#288); the seam crates must be republished from this version. Unpopped 0.34.0's adopter-leaf additions (`ScalarExpr::Exec`, `Stmt::Barrier`, `Place::Alloc`, `KernelFn.launch/allocs`, `DagNode`/`DagKey::Exec`) live in the `unpopped` IR crate, which Fuel does not depend on; Fuel names only `unpopped-vocab`, and a `git grep` of the tree finds those names only in three comments of `fuel-kernel-seam-types`, so no exhaustive match needed an arm. Checked: `cargo check -p fuel-kernel-seam -p fuel-kernel-seam-types -p fuel-kernel-seam-announce --all-targets` and `cargo check -p fuel-dispatch --features jit,baracuda-types,telemetry --all-targets` clean; seam crate tests 63/0, `fuel-dispatch --features jit,baracuda-types,telemetry --lib` 976/0. `baracuda-kernels-types` (alpha.158) still resolves `unpopped-vocab 0.22`, so a `--features cuda` or `baracuda-types` graph carries two vocab copies until Baracuda publishes a 0.34 family; that is not changed here and the CUDA-feature builds were NOT re-run.
+
 ## v0.30.9 - 2026-10-30
 
 ### Added
