@@ -43,10 +43,12 @@ strided operand first. The output is a freshly allocated contiguous row-major `C
 other coefficient is fabricated.
 
 **Determinism.** The kernels accumulate in f32 over a scheduler-dependent reduction, and the activations are
-quantized to 8 bits inside the baracuda kernels, so this is `nondeterministic`, `bit_stable_on_same_hardware:
-false`, an audited `none(reason)` precision. The host fallback is the CPU kernel's result. The pre-baked weight
+consumed as f32 by the baracuda kernels (measured on the RTX 4070 against an f64 reference: max error about 1e-7
+of the largest output on the device route, 6e-4 to 8e-4 on the host fallback, whose CPU kernel quantizes the
+activations to 8 bits), so this is `nondeterministic`, `bit_stable_on_same_hardware: false`, an audited
+`none(reason)` precision. The host fallback is the CPU kernel's result. The pre-baked weight
 quantization is a model property, not this kernel's contribution. **Wired, and checked on hardware only by the
-live tests under `scripts/gpu-run.ps1`** (`fuel-dispatch/tests/qmatmul_cuda_live.rs`).
+live tests under `scripts/gpu-run.ps1`** (`fuel-dispatch/tests/baracuda_qmatmul_live.rs`).
 
 ---
 
@@ -119,7 +121,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f32 accumulate over dequantized GGML blocks with the activations quantized to 8 bits inside baracuda's MMVQ; scheduler-dependent reduction order, NOT bit-stable. The host fallback is the CPU kernel."
+  notes: "f32 accumulate over dequantized GGML blocks with f32 activations in baracuda's MMVQ (the host fallback's CPU kernel quantizes them to 8 bits); scheduler-dependent reduction order, NOT bit-stable. The host fallback is the CPU kernel."
 
 determinism: nondeterministic
 ```

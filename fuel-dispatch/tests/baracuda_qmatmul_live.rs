@@ -7,8 +7,11 @@
 //! chunk). Formats: Q4_0 and Q8_0 (the row's target) and Q4_K (a 256-column format).
 //!
 //! The reference dequantizes with `fuel_quantized`'s `to_float` and accumulates in f64, so it shares
-//! no code with the kernels; baracuda quantizes the activations to 8 bits, so the comparison is a
-//! tolerance, not a bit-match, and a sibling test shows the tolerance rejects a wrong answer.
+//! no code with the kernels, so the comparison is a tolerance (the reduction order is scheduler-
+//! dependent), not a bit-match, and a sibling check shows the tolerance rejects a wrong answer.
+//! Measured on the RTX 4070 the device routes agree with the f64 reference to about 1e-7 of the
+//! largest output (the baracuda kernels take f32 activations); the host fallback, whose CPU kernel
+//! quantizes the activations to 8 bits, is off by 6e-4 to 8e-4. The limits below sit between.
 //!
 //! Not `#[ignore]`d: the file is `cfg(feature = "cuda")`, so no CI leg builds it, and
 //! `require_gpu_run_lock` plus `CudaDevice::new` fail loudly without the wrapper or a device.
@@ -63,12 +66,8 @@ struct Run {
     routes: (u64, u64),
 }
 
-/// The route counters are process-wide, so the cases take turns.
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn run(q: QuantType, weights: (Vec<u8>, Vec<f32>), rows: usize, n: usize, k: usize) -> Run {
-    fuel_test_support::require_gpu_run_lock();
-    let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+/// Device 0 and the registered CUDA QMatMul wrapper, looked up the way the executor does.
+fn cuda_kernel() -> (CudaDevice, fuel_dispatch::kernel::KernelRef) {
     let dev = CudaDevice::new(0).expect("cuda device");
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
@@ -76,6 +75,48 @@ fn run(q: QuantType, weights: (Vec<u8>, Vec<f32>), rows: usize, n: usize, k: usi
     let kernel = table
         .lookup(OpKind::QMatMul, &KEY, BackendId::Cuda)
         .expect("QMatMul F32 binding must be registered on CUDA");
+    (dev, kernel)
+}
+
+/// The f64 reference: `x[rows, k]` times the dequantized `w[n, k]` transposed.
+fn reference(x: &[f32], w_deq: &[f32], (rows, n, k): (usize, usize, usize)) -> Vec<f64> {
+    let mut want = vec![0.0f64; rows * n];
+    for r in 0..rows {
+        for o in 0..n {
+            want[r * n + o] = (0..k)
+                .map(|c| f64::from(x[r * k + c]) * f64::from(w_deq[o * k + c]))
+                .sum();
+        }
+    }
+    want
+}
+
+/// The CPU kernel alone on the same Q4_0 problem, timed after a warm-up call.
+fn cpu_kernel_time(
+    x: &[f32],
+    w_bytes: &[u8],
+    (rows, n, k): (usize, usize, usize),
+) -> std::time::Duration {
+    let once = || {
+        let act = fuel_cpu_backend::CpuStorageBytes::from_slice(x);
+        let w = fuel_cpu_backend::CpuStorageBytes::from_bytes(w_bytes);
+        let mut out = fuel_cpu_backend::CpuStorageBytes::from_zero_bytes(rows * n * 4);
+        let t = std::time::Instant::now();
+        fuel_cpu_backend::byte_kernels::qmatmul_q4_0_f32(&act, &w, &mut out, 1, rows, n, k)
+            .expect("cpu qmatmul");
+        t.elapsed()
+    };
+    let _ = once();
+    once()
+}
+
+/// The route counters are process-wide, so the cases take turns.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn run(q: QuantType, weights: (Vec<u8>, Vec<f32>), rows: usize, n: usize, k: usize) -> Run {
+    fuel_test_support::require_gpu_run_lock();
+    let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (dev, kernel) = cuda_kernel();
 
     let (w_bytes, w_deq) = weights;
     let x = data(rows * k, 5);
@@ -115,14 +156,7 @@ fn run(q: QuantType, weights: (Vec<u8>, Vec<f32>), rows: usize, n: usize, k: usi
         _ => panic!("output not on CUDA"),
     };
     let got: Vec<f32> = bytemuck::cast_slice(&got_bytes).to_vec();
-    let mut want = vec![0.0f64; rows * n];
-    for r in 0..rows {
-        for o in 0..n {
-            want[r * n + o] = (0..k)
-                .map(|c| f64::from(x[r * k + c]) * f64::from(w_deq[o * k + c]))
-                .sum();
-        }
-    }
+    let want = reference(&x, &w_deq, (rows, n, k));
     Run { got, want, routes }
 }
 
@@ -143,11 +177,13 @@ fn check(label: &str, r: &Run, device: bool) {
     );
     let scale = r.want.iter().fold(0.0f64, |a, v| a.max(v.abs())).max(1e-3);
     let err = max_err(&r.got, &r.want);
-    // 8-bit activation quantization inside the kernel: a few percent of the largest output.
+    eprintln!("{label}: max_err/scale = {:.3e}", err / scale);
+    // Device routes measured <= 1.1e-7 of scale (limit 1e-5, ~90x margin); the host fallback's
+    // 8-bit activation quantization measured <= 8.4e-4 (limit 5e-3).
+    let limit = if device { 1e-5 } else { 5e-3 } * scale;
     assert!(
-        err <= 5e-2 * scale,
-        "{label}: max_err={err} scale={scale} (limit {})",
-        5e-2 * scale
+        err <= limit,
+        "{label}: max_err={err} scale={scale} (limit {limit})"
     );
     // Sabotage sibling: the same output compared against a reference rotated by one output
     // column must be FAR, so the tolerance cannot be met by a wrong result.
@@ -155,7 +191,7 @@ fn check(label: &str, r: &Run, device: bool) {
     rotated.rotate_left(1);
     let wrong = max_err(&r.got, &rotated);
     assert!(
-        wrong > 5e-2 * scale,
+        wrong > limit,
         "{label}: tolerance too loose, a rotated reference is within it (wrong={wrong})"
     );
 }
@@ -237,26 +273,10 @@ fn the_device_route_beats_the_cpu_kernel_alone_on_a_prefill_shape() {
     let (w_bytes, _) = quantize::<BlockQ4_0>(n, k);
     let x = data(rows * k, 5);
 
-    let cpu_once = || {
-        let act = fuel_cpu_backend::CpuStorageBytes::from_slice(&x);
-        let w = fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes);
-        let mut out = fuel_cpu_backend::CpuStorageBytes::from_zero_bytes(rows * n * 4);
-        let t = Instant::now();
-        fuel_cpu_backend::byte_kernels::qmatmul_q4_0_f32(&act, &w, &mut out, 1, rows, n, k)
-            .expect("cpu qmatmul");
-        t.elapsed()
-    };
-    let _ = cpu_once();
-    let cpu = cpu_once();
+    let cpu = cpu_kernel_time(&x, &w_bytes, (rows, n, k));
 
     fuel_test_support::require_gpu_run_lock();
-    let dev = CudaDevice::new(0).expect("cuda device");
-    let mut table = KernelBindingTable::new();
-    register_cuda_kernels(&mut table);
-    register_baracuda_cuda_kernels(&mut table);
-    let kernel = table
-        .lookup(OpKind::QMatMul, &KEY, BackendId::Cuda)
-        .expect("QMatMul F32 binding must be registered on CUDA");
+    let (dev, kernel) = cuda_kernel();
     let act = upload(&dev, bytemuck::cast_slice(&x), DType::F32);
     let w = upload(&dev, &w_bytes, DType::U32);
     let out = Arc::new(RwLock::new(Storage::new(
