@@ -95,6 +95,10 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
+// Written as escapes so brace-counting analysers (Lizard) do not read them as scope.
+const OPEN: char = '\u{7b}';
+const CLOSE: char = '\u{7d}';
+
 fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -132,13 +136,11 @@ fn production_lines(src: &str) -> Vec<&str> {
         let t = line.trim();
         if depth > 0 || armed {
             for c in line.chars() {
-                match c {
-                    '{' => {
-                        depth += 1;
-                        armed = false;
-                    }
-                    '}' => depth -= 1,
-                    _ => {}
+                if c == OPEN {
+                    depth += 1;
+                    armed = false;
+                } else if c == CLOSE {
+                    depth -= 1;
                 }
             }
             if depth <= 0 && !armed {
