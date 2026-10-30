@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.30.10 - 2026-10-30
+
+### Added
+
+- CUDA `QMatMul` (ROADMAP row 105): `(QMatMul, [F32, U32, F32], Cuda)` is now bound, from `fuel-dispatch/kernel-contracts/cuda/qmatmul.fkc.md`, to baracuda's GGUF MMVQ kernels for Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K and Q6_K: one activation row uses `mmvq_<fmt>`, several rows use the new `fuel_cuda_backend::baracuda::gguf::mmvq_rows_<fmt>` (baracuda's batched MMVQ launcher with one expert and identity routing), and `Q8_1` or a `k` that is not a multiple of the format's read chunk computes on the host through the CPU kernel, so the binding never turns a working model into an error. Before this, quantized weights ran on the CPU with a device round trip per use. `fuel_cuda_backend::baracuda::gguf::mmvq_supports(dtype, ncols)` is the new public predicate for that choice; `fuel_dispatch::dispatch::qmatmul_cpu_by_type` is the CPU kernel choice now shared by the CPU wrapper and the fallback (no behaviour change). Checked on an RTX 4070 Laptop (5 correctness cases against an f64 reference, route counters proving device versus host, and one timing: Q4_0 rows=140 n=2048 k=2048, 2.97 ms on the device against 744 ms for the CPU kernel alone) with `pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-dispatch --features cuda --test baracuda_qmatmul_live`; no CI leg builds CUDA, so CI sees only the host-side contract test `qmatmul_cuda_contract`. End-to-end time to first token is NOT re-measured (the probes are not in the tree).
+
 ## v0.30.9 - 2026-10-30
 
 ### Added
