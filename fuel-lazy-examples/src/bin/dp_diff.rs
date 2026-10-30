@@ -29,6 +29,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("dp_diff", "", &[]);
     eprintln!("Probing + judging + measuring bandwidth (cached if hardware unchanged)...");
     let t0 = std::time::Instant::now();
     let (probe, profile, bandwidth) = prepare_dp_inputs(ScheduleOptions::default())?;

@@ -19,6 +19,7 @@ use fuel::judge::{Judge, ProfileEntry};
 use fuel::probe::ProbeReport;
 
 fn main() {
+    fuel_lazy_examples::cli::standard("judge", "[OUTPUT_JSON_PATH]", &[]);
     eprintln!("Probing devices...");
     let probe = ProbeReport::probe_all();
     eprintln!(

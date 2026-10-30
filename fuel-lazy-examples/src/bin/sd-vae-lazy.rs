@@ -32,6 +32,7 @@ const DEFAULT_REPO: &str = "stable-diffusion-v1-5/stable-diffusion-v1-5";
 const DEFAULT_LATENT_SIZE: usize = 8;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("sd-vae-lazy", "[REPO_ID] [LATENT_SIZE]", &[]);
     let args: Vec<String> = std::env::args().collect();
     let repo_id = args
         .get(1)

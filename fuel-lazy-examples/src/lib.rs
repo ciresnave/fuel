@@ -14,3 +14,5 @@
 //!   no HuggingFace authentication is required. Pass
 //!   `meta-llama/Meta-Llama-3-8B` as the first arg to run Llama 3
 //!   (gated; requires `HF_TOKEN`).
+
+pub mod cli;

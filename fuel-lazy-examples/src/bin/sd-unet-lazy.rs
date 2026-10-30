@@ -29,6 +29,7 @@ use std::time::Instant;
 const DEFAULT_REPO: &str = "stable-diffusion-v1-5/stable-diffusion-v1-5";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("sd-unet-lazy", "[REPO] [LAT_H] [LAT_W]", &[]);
     let args: Vec<String> = std::env::args().collect();
     let repo_id = args
         .get(1)

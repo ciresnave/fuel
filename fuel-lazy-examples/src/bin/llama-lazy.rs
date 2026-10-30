@@ -51,6 +51,7 @@ const DEFAULT_PROMPT: &str = "Once upon a time";
 const DEFAULT_MAX_NEW: usize = 32;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("llama-lazy", "[MODEL_ID] [PROMPT] [MAX_NEW_TOKENS]", &[]);
     let _trace_guard = if std::env::var("FUEL_TRACE").is_ok() {
         let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
             .file("trace.json")

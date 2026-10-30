@@ -34,6 +34,7 @@ use std::time::Instant;
 const DEFAULT_MODEL: &str = "timm/convnext_tiny.fb_in1k";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("convnext-lazy", "[MODEL_ID] [IMAGE_PATH]", &[]);
     let args: Vec<String> = std::env::args().collect();
     let model_id = args
         .get(1)

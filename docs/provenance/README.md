@@ -47,7 +47,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 <!-- provenance-summary:begin -->
 | directory | files | candle | candle-modified | not-traced | ggml | own | data | copy |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| `(root)` | 23 | 4 | 4 |  |  | 15 |  |  |
+| `(root)` | 24 | 4 | 4 |  |  | 16 |  |  |
 | `.cargo` | 1 |  | 1 |  |  |  |  |  |
 | `.github` | 5 | 1 | 2 |  |  | 2 |  |  |
 | `docs` | 186 |  |  |  |  | 186 |  |  |
@@ -73,7 +73,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-kernels-source` | 181 |  |  |  |  | 178 |  | 3 |
 | `fuel-kiss-ref-backend` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-kv-pool` | 8 |  |  |  |  | 5 |  | 3 |
-| `fuel-lazy-examples` | 26 |  |  | 21 |  | 2 |  | 3 |
+| `fuel-lazy-examples` | 27 |  |  | 21 |  | 3 |  | 3 |
 | `fuel-loaders` | 21 |  | 1 | 3 |  | 14 |  | 3 |
 | `fuel-memory` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-metal-backend` | 10 | 1 | 2 |  |  | 4 |  | 3 |
@@ -97,5 +97,5 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-vulkan-backend` | 26 |  |  |  |  | 23 |  | 3 |
 | `fuel-vulkan-kernels` | 183 |  |  |  |  | 2 | 178 | 3 |
 | `scripts` | 71 |  |  | 1 |  | 70 |  |  |
-| **all** | **2034** | **117** | **213** | **253** | **4** | **1138** | **180** | **129** |
+| **all** | **2036** | **117** | **213** | **253** | **4** | **1140** | **180** | **129** |
 <!-- provenance-summary:end -->

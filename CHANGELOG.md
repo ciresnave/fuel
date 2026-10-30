@@ -1,6 +1,13 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.30.6 - 2026-10-30
+
+### Changed
+
+- `fuel-lazy-examples`: all 21 binaries meet the standard command-line contract (ROADMAP row 111, CodeRipper `OPS-011`). New `fuel_lazy_examples::cli::standard`, called first in every `main`: `--version`/`-V` print the version and exit 0, `--help`/`-h` print usage and exit 0, an unknown option exits 2 with the message on stderr; nothing is loaded, opened or written before the arguments are understood (`probe` used to write a file named after its first argument, five binaries hung on any probe, four feature-gated stubs treated flags as positionals). The Vulkan binaries declare their own flags (`--list-devices`, `--device=`, `--gguf=`, `--tokenizer=`). Positional arguments are unchanged.
+- `SECURITY.md` (new): the supported-versions policy. The latest release line receives security fixes; an older line receives a backport when it is small, otherwise the advisory says that line is not fixed and recommends upgrading; no support period is promised (CireSnave 2026-10-29).
+
 ## v0.30.5 - 2026-10-29
 
 ### Changed
