@@ -11,7 +11,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 8% of 411 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 8% of 412 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 302 lines verbatim
@@ -301,7 +301,7 @@ fuel-cuda-backend/src/baracuda/elementwise.rs	own		no lineage; 0 of 319 lines ve
 fuel-cuda-backend/src/baracuda/flip.rs	own		no lineage; 1 of 77 lines verbatim in candle (1%)
 fuel-cuda-backend/src/baracuda/gemm_dense.rs	own		no lineage; 0 of 311 lines verbatim in candle (0%)
 fuel-cuda-backend/src/baracuda/gemm_int.rs	own		no lineage; 0 of 105 lines verbatim in candle (0%)
-fuel-cuda-backend/src/baracuda/gguf.rs	own		no lineage; 1 of 363 lines verbatim in candle (0%)
+fuel-cuda-backend/src/baracuda/gguf.rs	own		no lineage; 2 of 454 lines verbatim in candle (0%)
 fuel-cuda-backend/src/baracuda/indexing.rs	not-traced	candle-metal-kernels/src/kernels/indexing.rs	same file name as candle candle-metal-kernels/src/kernels/indexing.rs; a port or re-expression is presumed until judged
 fuel-cuda-backend/src/baracuda/loss_flce.rs	own		no lineage; 0 of 132 lines verbatim in candle (0%)
 fuel-cuda-backend/src/baracuda/mamba.rs	not-traced	candle-transformers/src/models/mamba.rs	same file name as candle candle-transformers/src/models/mamba.rs; a port or re-expression is presumed until judged
@@ -429,6 +429,7 @@ fuel-dispatch/kernel-contracts/cuda/pad_backward.fkc.md	own		no lineage; 0 of 30
 fuel-dispatch/kernel-contracts/cuda/powi.fkc.md	own		no lineage; 0 of 30 lines verbatim in candle (0%)
 fuel-dispatch/kernel-contracts/cuda/powi_backward.fkc.md	own		no lineage; 0 of 34 lines verbatim in candle (0%)
 fuel-dispatch/kernel-contracts/cuda/powi_inplace.fkc.md	own		no lineage; 0 of 30 lines verbatim in candle (0%)
+fuel-dispatch/kernel-contracts/cuda/qmatmul.fkc.md	own		no lineage; 0 of 57 lines verbatim in candle (0%)
 fuel-dispatch/kernel-contracts/cuda/reduce.fkc.md	own		no lineage; 0 of 159 lines verbatim in candle (0%)
 fuel-dispatch/kernel-contracts/cuda/reduce_to.fkc.md	own		no lineage; 0 of 49 lines verbatim in candle (0%)
 fuel-dispatch/kernel-contracts/cuda/roll.fkc.md	own		no lineage; 0 of 30 lines verbatim in candle (0%)
@@ -500,7 +501,7 @@ fuel-dispatch/kernel-contracts/vulkan/scatter.fkc.md	own		no lineage; 0 of 115 l
 fuel-dispatch/kernel-contracts/vulkan/select.fkc.md	own		no lineage; 0 of 136 lines verbatim in candle (0%)
 fuel-dispatch/kernel-contracts/vulkan/shape.fkc.md	own		no lineage; 0 of 134 lines verbatim in candle (0%)
 fuel-dispatch/kernel-contracts/vulkan/write-slice.fkc.md	own		no lineage; 0 of 93 lines verbatim in candle (0%)
-fuel-dispatch/src/baracuda_dispatch.rs	own		no lineage; 2 of 3399 lines verbatim in candle (0%)
+fuel-dispatch/src/baracuda_dispatch.rs	own		no lineage; 2 of 3497 lines verbatim in candle (0%)
 fuel-dispatch/src/bin/fuel-dev-tools.rs	own		no lineage; 0 of 23 lines verbatim in candle (0%)
 fuel-dispatch/src/cast_fusion.rs	own		no lineage; 0 of 186 lines verbatim in candle (0%)
 fuel-dispatch/src/compiled.rs	own		no lineage; 3 of 436 lines verbatim in candle (1%)
@@ -508,14 +509,14 @@ fuel-dispatch/src/cost.rs	own		no lineage; 2 of 541 lines verbatim in candle (0%
 fuel-dispatch/src/decode_flash.rs	own		no lineage; 4 of 307 lines verbatim in candle (1%)
 fuel-dispatch/src/dev_tools.rs	own		no lineage; 0 of 42 lines verbatim in candle (0%)
 fuel-dispatch/src/device_budget.rs	own		no lineage; 2 of 94 lines verbatim in candle (2%)
-fuel-dispatch/src/dispatch.rs	own		no lineage; 6 of 7119 lines verbatim in candle (0%)
+fuel-dispatch/src/dispatch.rs	own		no lineage; 7 of 7128 lines verbatim in candle (0%)
 fuel-dispatch/src/driver.rs	own		no lineage; 5 of 335 lines verbatim in candle (1%)
 fuel-dispatch/src/fkc/caps_map.rs	own		no lineage; 2 of 260 lines verbatim in candle (1%)
 fuel-dispatch/src/fkc/contract_audit_flip.rs	own		no lineage; 0 of 488 lines verbatim in candle (0%)
 fuel-dispatch/src/fkc/cost_compile.rs	own		no lineage; 1 of 70 lines verbatim in candle (1%)
 fuel-dispatch/src/fkc/cost_expr.rs	own		no lineage; 9 of 302 lines verbatim in candle (3%)
 fuel-dispatch/src/fkc/cpu_link.rs	own		no lineage; 0 of 1358 lines verbatim in candle (0%)
-fuel-dispatch/src/fkc/cuda_link.rs	own		no lineage; 0 of 729 lines verbatim in candle (0%)
+fuel-dispatch/src/fkc/cuda_link.rs	own		no lineage; 0 of 734 lines verbatim in candle (0%)
 fuel-dispatch/src/fkc/error.rs	own		no lineage; 0 of 271 lines verbatim in candle (0%)
 fuel-dispatch/src/fkc/lower.rs	own		no lineage; 2 of 1224 lines verbatim in candle (0%)
 fuel-dispatch/src/fkc/mod.rs	own		no lineage; 0 of 311 lines verbatim in candle (0%)
@@ -624,6 +625,7 @@ fuel-dispatch/tests/baracuda_inplace_expanded_live.rs	own		no lineage; 1 of 127 
 fuel-dispatch/tests/baracuda_norm_live.rs	own		no lineage; 1 of 70 lines verbatim in candle (1%)
 fuel-dispatch/tests/baracuda_pad_live.rs	own		no lineage; 1 of 101 lines verbatim in candle (1%)
 fuel-dispatch/tests/baracuda_powi_live.rs	own		no lineage; 1 of 106 lines verbatim in candle (1%)
+fuel-dispatch/tests/baracuda_qmatmul_live.rs	own		no lineage; 1 of 128 lines verbatim in candle (1%)
 fuel-dispatch/tests/baracuda_reduce_live.rs	own		no lineage; 1 of 65 lines verbatim in candle (2%)
 fuel-dispatch/tests/baracuda_roll_live.rs	own		no lineage; 1 of 73 lines verbatim in candle (1%)
 fuel-dispatch/tests/baracuda_softmax_live.rs	own		no lineage; 1 of 75 lines verbatim in candle (1%)
@@ -642,6 +644,7 @@ fuel-dispatch/tests/kiss_derivation_vectors.rs	own		no lineage; 2 of 270 lines v
 fuel-dispatch/tests/kiss_signed_zero_tie_conformance.rs	own		no lineage; 0 of 136 lines verbatim in candle (0%)
 fuel-dispatch/tests/kiss_structure_key_byte_match.rs	own		no lineage; 0 of 669 lines verbatim in candle (0%)
 fuel-dispatch/tests/outreach_chain_status.rs	own		no lineage; 1 of 102 lines verbatim in candle (1%)
+fuel-dispatch/tests/qmatmul_cuda_contract.rs	own		no lineage; 1 of 47 lines verbatim in candle (2%)
 fuel-dispatch/tests/residency_eviction_live.rs	own		no lineage; 1 of 90 lines verbatim in candle (1%)
 fuel-dispatch/tests/runtime_fusion_optimize_e2e.rs	own		no lineage; 1 of 104 lines verbatim in candle (1%)
 fuel-dispatch/tests/vulkan_deferred_eviction_live.rs	own		no lineage; 1 of 194 lines verbatim in candle (1%)
@@ -1034,7 +1037,7 @@ fuel-ir/tests/gap_refs.rs	own		no lineage; 1 of 258 lines verbatim in candle (0%
 fuel-ir/tests/method_rules_index_join.rs	own		no lineage; 0 of 223 lines verbatim in candle (0%)
 fuel-ir/tests/no_utf8_bom.rs	own		judged: names candle only to describe the fork rename
 fuel-ir/tests/registrar_caller_allowlist.tsv	own		no lineage; 0 of 5 lines verbatim in candle (0%)
-fuel-ir/tests/registrar_callers.rs	own		no lineage; 3 of 176 lines verbatim in candle (2%)
+fuel-ir/tests/registrar_callers.rs	own		no lineage; 3 of 179 lines verbatim in candle (2%)
 fuel-ir/tests/registry_anchors_still_resolve.rs	own		no lineage; 2 of 304 lines verbatim in candle (1%)
 fuel-ir/tests/registry_rows_can_name_an_owner.rs	own		no lineage; 1 of 103 lines verbatim in candle (1%)
 fuel-ir/tests/roadmap_item_citations.rs	own		no lineage; 1 of 138 lines verbatim in candle (1%)
