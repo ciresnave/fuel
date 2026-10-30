@@ -11,7 +11,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 8% of 408 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 8% of 409 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 302 lines verbatim
@@ -22,7 +22,7 @@ LICENSE-MIT	candle	LICENSE-MIT	identical path; 100% of 18 lines verbatim
 Makefile	candle	Makefile	identical path; 33% of 6 lines verbatim
 PATTERNS.md	own		no lineage; 4 of 179 lines verbatim in candle (2%)
 README.md	candle-modified	README.md	same path; 53% of 383 lines verbatim
-ROADMAP.md	own		no lineage; 0 of 2559 lines verbatim in candle (0%)
+ROADMAP.md	own		no lineage; 0 of 2560 lines verbatim in candle (0%)
 SECURITY.md	own		no lineage; 0 of 3 lines verbatim in candle (0%)
 THIRD-PARTY-NOTICES.md	own		judged: the ledger; it reproduces upstream licence texts, which is why git sees a copy of LICENSE-APACHE
 clippy.toml	own		no lineage; 0 of 30 lines verbatim in candle (0%)
@@ -1280,7 +1280,7 @@ fuel-lazy-examples/src/bin/sd-unet-lazy.rs	not-traced		lives in a directory that
 fuel-lazy-examples/src/bin/sd-vae-lazy.rs	not-traced		lives in a directory that mirrors candle-examples/examples/; no same-name file; not judged
 fuel-lazy-examples/src/bin/whisper-lazy.rs	not-traced		lives in a directory that mirrors candle-examples/examples/; no same-name file; not judged
 fuel-lazy-examples/src/bin/yolov8-lazy.rs	not-traced		lives in a directory that mirrors candle-examples/examples/; no same-name file; not judged
-fuel-lazy-examples/src/cli.rs	own		no lineage; 1 of 52 lines verbatim in candle (2%)
+fuel-lazy-examples/src/cli.rs	own		no lineage; 1 of 56 lines verbatim in candle (2%)
 fuel-lazy-examples/src/lib.rs	own		no lineage; 0 of 12 lines verbatim in candle (0%)
 fuel-loaders/Cargo.toml	own		no lineage; 6 of 42 lines verbatim in candle (14%)
 fuel-loaders/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
@@ -1492,6 +1492,7 @@ fuel-tensor/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the roo
 fuel-tensor/examples/gap315_probe.rs	own		no lineage; 1 of 116 lines verbatim in candle (1%)
 fuel-tensor/examples/gap315_reconciliation_test.rs	own		no lineage; 1 of 77 lines verbatim in candle (1%)
 fuel-tensor/src/awq.rs	own		no lineage; 1 of 359 lines verbatim in candle (0%)
+fuel-tensor/src/cpu_accel.rs	own		no lineage; 2 of 61 lines verbatim in candle (3%)
 fuel-tensor/src/cuda_backend/mod.rs	own		no lineage; 2 of 36 lines verbatim in candle (6%)
 fuel-tensor/src/decode_shape.rs	own		no lineage; 2 of 252 lines verbatim in candle (1%)
 fuel-tensor/src/device.rs	candle-modified	candle-core/src/device.rs	rename/copy 38%; 43% of 176 lines verbatim
@@ -1507,7 +1508,7 @@ fuel-tensor/src/lib.rs	not-traced	candle-core/src/lib.rs	9 of 84 lines also appe
 fuel-tensor/src/metal_backend/mod.rs	own		no lineage; 1 of 39 lines verbatim in candle (3%)
 fuel-tensor/src/nf4.rs	own		no lineage; 5 of 576 lines verbatim in candle (1%)
 fuel-tensor/src/persistent_decode.rs	own		no lineage; 3 of 848 lines verbatim in candle (0%)
-fuel-tensor/src/pipelined_bridge.rs	own		no lineage; 2 of 1795 lines verbatim in candle (0%)
+fuel-tensor/src/pipelined_bridge.rs	own		no lineage; 2 of 1796 lines verbatim in candle (0%)
 fuel-tensor/src/planner.rs	own		no lineage; 1 of 66 lines verbatim in candle (2%)
 fuel-tensor/src/reproducibility.rs	own		no lineage; 0 of 67 lines verbatim in candle (0%)
 fuel-tensor/src/scheduling.rs	own		no lineage; 1 of 730 lines verbatim in candle (0%)
