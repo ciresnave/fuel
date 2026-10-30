@@ -6,7 +6,7 @@ This documents the main changes to the `fuel` workspace.
 ### Changed
 
 - Docs only: `docs/design-notes/2026-10-30-qwen35-27b-audit.md` and ROADMAP rows 114 to 124 (Qwen3.8-27B re-audit; row 40 updated). Largest finding: `WeightStorage` keeps only `Q4_0` quantized and `QuantizedLlama3Model::from_gguf` dequantizes every other GGML dtype to f32 at load (row 124, first in the PM's order). Sizes in the rows are estimates; the note tags each fact as read, arithmetic or not measured. No code changed.
- Rig facts added (CireSnave, 2026-10-30): audit note section 4b; first target is single-card (Vulkan MI50, then CUDA P40 behind Baracuda SA-13); rows 114, 120, 121 deferred, row 119 raised.
+ Rig facts added (CireSnave, 2026-10-30): audit note section 4b; first target is single-card (Vulkan MI50, then CUDA P40 behind Baracuda SA-13); rows 114, 120, 121 deferred, row 119 raised; rows 125 (device selector) and 126 (Linux gpu-run/cuda-build design) added.
 
 ## v0.31.0 - 2026-10-30
 
