@@ -1359,6 +1359,9 @@ pub fn cost_attn_backward_cpu(
 /// matmul dequantizes inline; the dequant arithmetic is exact for
 /// the quantization scheme's block format, and the F32 matmul
 /// accumulator stays deterministic. Bit-identical on same hardware.
+///
+/// NOT a statement of closeness to the exact product: the kernel quantizes the activations to
+/// 8 bits as ggml does and is 3e-3 to 8e-3 off it (ROADMAP row 115, a documented property).
 pub const QMATMUL_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
     bit_stable_on_same_hardware: true,
     max_ulp: None,

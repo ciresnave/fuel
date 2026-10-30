@@ -20,9 +20,12 @@ kernel by the `OpParams::QMatMul.quant_type` discriminant and by the row count `
 - `batch * m > 1` → baracuda `mmvq_rows_<fmt>` (`fuel-cuda-backend/src/baracuda/gguf.rs`): the batched MMVQ
   launcher driven with one expert and the identity routing, which is exactly `rows x k` times `n x k`.
 - Formats: Q4_0, Q4_1, Q5_0, Q5_1, Q8_0 (column read chunk 64) and Q2_K, Q3_K, Q4_K (`Q4_K_M`), Q5_K, Q6_K
-  (chunk 256). `Q8_1`, or a `k` that is not a multiple of the format's read chunk, has no baracuda kernel:
-  the wrapper then computes on the host through the CPU kernel the CPU binding uses (copy down, compute,
-  copy up), so this binding is never an error where the CPU path worked.
+  (chunk 256). A `k` that is not a multiple of the format's read chunk (in practice Q4_0, Q4_1, Q5_0, Q5_1
+  and Q8_0 with `k % 64 == 32`; the K-quants need `k % 256 == 0` anyway) has no baracuda kernel: the wrapper
+  then dequantizes the weights on the host and multiplies with the f32 activations (copy down, compute in
+  f64, copy up), which is as accurate as the device route. `Q8_1` also has no baracuda kernel, and no
+  dequantization either (GAP-125); it keeps the CPU kernel's result, which is outside the bound below.
+  This binding is never an error where the CPU path worked.
 
 **As-built binding model — one wrapper `KernelRef` at one key (route-picking is *internal*)**, the same
 shape as `vulkan/qmatmul.fkc.md`. The per-format kernels and the host fallback are alternatives *inside*
@@ -42,12 +45,24 @@ strided operand first. The output is a freshly allocated contiguous row-major `C
 **Cost provenance.** `judge_measured`: the Judge bootstraps it. The derivable GEMM FLOP hint is recorded; no
 other coefficient is fabricated.
 
-**Determinism.** The kernels accumulate in f32 over a scheduler-dependent reduction, and the activations are
-consumed as f32 by the baracuda kernels (measured on the RTX 4070 against an f64 reference: max error about 1e-7
-of the largest output on the device route, 6e-4 to 8e-4 on the host fallback, whose CPU kernel quantizes the
-activations to 8 bits), so this is `nondeterministic`, `bit_stable_on_same_hardware: false`, an audited
-`none(reason)` precision. The host fallback is the CPU kernel's result. The pre-baked weight
-quantization is a model property, not this kernel's contribution. **Wired, and checked on hardware only by the
+**Determinism and accuracy.** The kernels accumulate in f32 over a scheduler-dependent reduction and consume
+the activations as f32, so this is `nondeterministic`, `bit_stable_on_same_hardware: false`. **Declared
+`max_relative: 0.0004` and `max_absolute: 0.0004`**, under the metric every claim in the verification ledger uses
+(`abs = |out - ref|`, `rel = |out - ref| / max(|ref|, 1.0)`, per element, inputs uniform in `[-1, 1)`), against the
+f64 product of the f32 activations and the dequantized weights. Earned in the ledger by `fuel-dev-tools
+seed-cuda-accuracy` (`fkc/verify/accuracy_qmatmul.rs`; without a ledger record the importer downgrades the claim
+to UNAUDITED, which is what kept the planner from choosing this kernel): Q4_0, Q8_0 and Q4_K, 11 shapes (rows 1
+to 140 including ragged 3, 7, 17, 5; `k` 96 to 8192; `n` 17 to 2048), seeds 1 to 4, both routes of the wrapper, on
+the RTX 4070 Laptop. **Measured worst: abs 3.8e-5 (Q8_0 rows=5 n=200 k=8192 seed=2), rel 3.2e-5 (Q4_0 same shape,
+seed 3); the error grows with `k`, small-`k` cases are around 1e-7.** The bound has about 10x margin over that
+and sits under the planner's default accuracy bound (1e-3). Not audited: `k` above 8192, formats other than the
+three, any other GPU or input distribution. `fuel-dispatch/tests/baracuda_qmatmul_audit.rs` is the independent
+scale-relative audit (`max|err| / max|ref|`, worst 4.3e-7 on the device route) with the CPU kernel alongside, and
+its injected-error control (1% on every block scale) must exceed this bound. The CPU `QMatMul` kernel is
+bit-stable but about 3e-3 to 8e-3 off the exact product, because it quantizes the activations to 8 bits as ggml
+does; this kernel differs from the CPU kernel by about that much, and the CPU kernel is the less exact of the two.
+The pre-baked weight quantization is a model property, not this kernel's contribution.
+**Wired, and checked on hardware only by the
 live tests under `scripts/gpu-run.ps1`** (`fuel-dispatch/tests/baracuda_qmatmul_live.rs`).
 
 ---
@@ -118,10 +133,10 @@ cost:
 precision:
   bit_stable_on_same_hardware: false
   max_ulp: ~
-  max_relative: ~
-  max_absolute: ~
+  max_relative: 0.0004                  # MEASURED (fuel-dev-tools seed-cuda-accuracy): worst rel 3.2e-5, abs 3.8e-5 at k=8192, Q4_0/Q8_0/Q4_K, host-fallback shapes included
+  max_absolute: 0.0004
   audited: true
-  notes: "f32 accumulate over dequantized GGML blocks with f32 activations in baracuda's MMVQ (the host fallback's CPU kernel quantizes them to 8 bits); scheduler-dependent reduction order, NOT bit-stable. The host fallback is the CPU kernel."
+  notes: "rel = |out-ref|/max(|ref|,1), abs = |out-ref|, per element, inputs uniform [-1,1), against the f64 product of f32 activations and dequantized weights; earned by seed-cuda-accuracy over Q4_0/Q8_0/Q4_K, k to 8192, both routes; Q8_1 is excluded and keeps the CPU kernel (about 7e-3). f32 accumulate over dequantized GGML blocks with f32 activations in baracuda's MMVQ and the host fallback; scheduler-dependent reduction order, NOT bit-stable. The host fallback dequantizes on the host and multiplies in f64."
 
 determinism: nondeterministic
 ```
