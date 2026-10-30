@@ -18,7 +18,7 @@
 //! is run as information only, at `m = 6, k = 128, n = 64` and at `m = 140, k = 2048,
 //! n = 2048`: at BOTH it did NOT reach the CUDA binding (measured 2026-10-30:
 //! counters unchanged), so the cost placer put the op elsewhere. Why is not
-//! established; ROADMAP row 114 owns it.
+//! established; ROADMAP row 128 owns it.
 //!
 //! Numerics: the 5e-2 bound is a sanity bound, not a calibration. Measured on the
 //! RTX 4070 at this shape the scale-relative error was ~5e-7; that is one shape and
@@ -196,7 +196,7 @@ fn gap029_step0_q4_0_prefill_shape_on_cuda() {
     let c2 = calls();
     // Information only, no assertion: the same op through the PRODUCTION realize, where cost-based
     // placement is on. Measured 2026-10-30 neither shape reached the CUDA binding (counters
-    // unchanged), so the op was placed elsewhere. Why is not established here (ROADMAP row 114).
+    // unchanged), so the op was placed elsewhere. Why is not established here (ROADMAP row 128).
     for shape in [(6, K, N), (140, 2048, 2048)] {
         let before = calls();
         let _ = realize_q4_0(shape, &dev, true);
