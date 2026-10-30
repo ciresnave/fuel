@@ -11,7 +11,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 8% of 409 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 8% of 410 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 302 lines verbatim
@@ -1492,7 +1492,7 @@ fuel-tensor/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the roo
 fuel-tensor/examples/gap315_probe.rs	own		no lineage; 1 of 116 lines verbatim in candle (1%)
 fuel-tensor/examples/gap315_reconciliation_test.rs	own		no lineage; 1 of 77 lines verbatim in candle (1%)
 fuel-tensor/src/awq.rs	own		no lineage; 1 of 359 lines verbatim in candle (0%)
-fuel-tensor/src/cpu_accel.rs	own		no lineage; 2 of 61 lines verbatim in candle (3%)
+fuel-tensor/src/cpu_accel.rs	own		no lineage; 2 of 67 lines verbatim in candle (3%)
 fuel-tensor/src/cuda_backend/mod.rs	own		no lineage; 2 of 36 lines verbatim in candle (6%)
 fuel-tensor/src/decode_shape.rs	own		no lineage; 2 of 252 lines verbatim in candle (1%)
 fuel-tensor/src/device.rs	candle-modified	candle-core/src/device.rs	rename/copy 38%; 43% of 176 lines verbatim

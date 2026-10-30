@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.30.9 - 2026-10-30
+
+### Added
+
+- Gate `fuel-ir/tests/registrar_callers.rs` (ROADMAP row 66 step c): a kernel registrar (`pub fn register_*kernels*`) or an optimizer pass (`insert_*`/`fuse_*`/`promote_*`/`lower_*` in `fuel-graph/src/opt.rs` and `fuel-dispatch/src/optimize.rs`) with no production caller fails unless `registrar_caller_allowlist.tsv` has an owned row with an expiry date. A row fails when its name is gone, when it gains a production caller, or when it expires. Measured at this commit: 19 in the population, 15 called; the four rows are `fuse_linear`, `insert_evict_reload`, `lower_const_placement` and `promote_views_for_liveness` (expiry 2026-12-31). It cannot see a caller that is itself never called (so `fuel_tensor::scheduling`'s wrappers of `insert_copies` satisfy it), and it counts a caller behind a cargo feature. Metal has no registrar to find: ROADMAP row 113 records that, NOT STARTED. Test-only change.
+
 ## v0.30.8 - 2026-10-30
 
 ### Added
