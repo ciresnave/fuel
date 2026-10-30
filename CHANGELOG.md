@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.31.8 - 2026-10-30
+
+### Changed
+
+- Q8_0, Q4_K and Q6_K GGUF weights now stay quantized (`WeightStorage::Ggml`) in nine more loaders: `lazy_quantized_{gemma3,glm4,lfm2,phi3,qwen2,qwen3,qwen3_moe,smollm3,t5}` (ROADMAP row 124 step 2). Before, those loaders expanded every non-`Q4_0` tensor to f32 at load. Verified end to end for Qwen3 only (`tests/gguf_resident_quantized_qwen3.rs`: resident bytes under a third of f32, logits within 4% of the dequantized model, a 10% scale error caught, red without the change); the other eight are checked by compile and clippy.
+
 ## v0.31.5 - 2026-10-30
 
 ### Changed
