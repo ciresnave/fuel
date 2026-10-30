@@ -16,6 +16,11 @@
 
 #[cfg(not(feature = "vulkan"))]
 fn main() {
+    fuel_lazy_examples::cli::standard(
+        "phi-lazy-vulkan",
+        "[MODEL_ID] [PROMPT] [MAX_NEW_TOKENS] [--list-devices] [--device=N] [--gguf=PATH] [--tokenizer=PATH]",
+        &["--list-devices", "--device=", "--gguf=", "--tokenizer="],
+    );
     eprintln!("This binary requires the `vulkan` feature.");
     eprintln!("Run: cargo run --release --bin phi-lazy-vulkan --features vulkan");
     std::process::exit(1);
@@ -23,6 +28,11 @@ fn main() {
 
 #[cfg(feature = "vulkan")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard(
+        "phi-lazy-vulkan",
+        "[MODEL_ID] [PROMPT] [MAX_NEW_TOKENS] [--list-devices] [--device=N] [--gguf=PATH] [--tokenizer=PATH]",
+        &["--list-devices", "--device=", "--gguf=", "--tokenizer="],
+    );
     use fuel::lazy::SamplingStrategy;
     use fuel::{DType, Device};
     use fuel_model_llama::LlamaTokenizer;

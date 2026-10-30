@@ -26,6 +26,7 @@
 
 #[cfg(not(feature = "vulkan"))]
 fn main() {
+    fuel_lazy_examples::cli::standard("llama-finetune-vulkan", "", &[]);
     eprintln!("This binary requires the `vulkan` feature.");
     eprintln!("Run: cargo run --release --bin llama-finetune-vulkan --features vulkan");
     std::process::exit(1);
@@ -33,6 +34,7 @@ fn main() {
 
 #[cfg(feature = "vulkan")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("llama-finetune-vulkan", "", &[]);
     use fuel::lazy::WeightStorage;
     use fuel::lazy_llama2c::Llama2cModel;
     use fuel::{Device, Shape};

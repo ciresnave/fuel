@@ -13,6 +13,7 @@
 use fuel::probe::ProbeReport;
 
 fn main() {
+    fuel_lazy_examples::cli::standard("probe", "[OUTPUT_PATH]", &[]);
     let report = ProbeReport::probe_all();
     println!("Probe report (version {}):", report.version);
     println!("  {} device(s) total", report.devices.len());

@@ -32,6 +32,7 @@ use std::io::Write;
 use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("yolov8-lazy", "[IMAGE_SIZE]", &[]);
     let args: Vec<String> = std::env::args().collect();
     let image_size: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(64);
 

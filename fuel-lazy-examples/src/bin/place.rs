@@ -29,6 +29,7 @@ fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_backend_contract::DynBackendDev
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("place", "", &[]);
     eprintln!("Phase 6b end-to-end demo");
     eprintln!("========================");
 

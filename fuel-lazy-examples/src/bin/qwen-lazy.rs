@@ -38,6 +38,7 @@ const DEFAULT_PROMPT: &str = "The quick brown fox";
 const DEFAULT_MAX_NEW: usize = 32;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("qwen-lazy", "[MODEL_ID] [PROMPT] [MAX_NEW_TOKENS]", &[]);
     let args: Vec<String> = std::env::args().collect();
     let model_id = args
         .get(1)
