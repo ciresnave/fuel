@@ -5491,6 +5491,12 @@ fn qmatmul_generic_f32<T: fuel_quantized::GgmlType>(
 
 /// Q4_0 quantized matmul. Activations F32, weights `[n,
 /// k/32]` `BlockQ4_0`s, output F32.
+///
+/// **Accuracy is ggml's, not the exact product's** (ROADMAP row 129, not a defect): like ggml's
+/// CPU path (`vec_dot_type = Q8_0` for Q4_0 and Q8_0, `Q8_K` for the K-quants) the activations
+/// are quantized to 8 bits before the integer dot, so the result is about 3e-3 to 8e-3 off the
+/// f64 product of the f32 activations and the dequantized weights (scale-relative, measured).
+/// Do not change this toward the exact product: it would stop matching ggml's reference output.
 pub fn qmatmul_q4_0_f32(
     activations: &CpuStorageBytes,
     weight_bytes: &CpuStorageBytes,

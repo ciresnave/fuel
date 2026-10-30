@@ -11,7 +11,8 @@
 //! dependent), not a bit-match, and a sibling check shows the tolerance rejects a wrong answer.
 //! Measured on the RTX 4070 the device routes agree with the f64 reference to about 1e-7 of the
 //! largest output (the baracuda kernels take f32 activations); the host fallback, whose CPU kernel
-//! quantizes the activations to 8 bits, is off by 6e-4 to 8e-4. The limits below sit between.
+//! quantizes the activations to 8 bits, was off by 6e-4 to 8e-4; the fallback now dequantizes the
+//! weights and multiplies in f32, so both routes share the 1e-5 limit below.
 //!
 //! Not `#[ignore]`d: the file is `cfg(feature = "cuda")`, so no CI leg builds it, and
 //! `require_gpu_run_lock` plus `CudaDevice::new` fail loudly without the wrapper or a device.
@@ -179,9 +180,9 @@ fn check(label: &str, r: &Run, device: bool) {
     let scale = r.want.iter().fold(0.0f64, |a, v| a.max(v.abs())).max(1e-3);
     let err = max_err(&r.got, &r.want);
     eprintln!("{label}: max_err/scale = {:.3e}", err / scale);
-    // Device routes measured <= 1.1e-7 of scale (limit 1e-5, ~90x margin); the host fallback's
-    // 8-bit activation quantization measured <= 8.4e-4 (limit 5e-3).
-    let limit = if device { 1e-5 } else { 5e-3 } * scale;
+    // Both routes are f32-activation paths now: the contract's declared bound (see
+    // `baracuda_qmatmul_audit`, which reads it from the contract).
+    let limit = 1e-5 * scale;
     assert!(
         err <= limit,
         "{label}: max_err={err} scale={scale} (limit {limit})"

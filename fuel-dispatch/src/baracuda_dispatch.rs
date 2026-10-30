@@ -872,33 +872,85 @@ pub mod qmatmul {
         Ok(Some(out))
     }
 
-    /// The host route for what the device kernels cannot run: copy both operands down, run the CPU
-    /// kernel, copy the result up.
+    /// `out[r, o] = sum_c act[r, c] * w[o, c]` for `rows` activation rows against an `n x k`
+    /// weight matrix, accumulated in f64 and split across threads by output row.
+    fn host_matmul_f32(act: &[f32], w: &[f32], (rows, n, k): (usize, usize, usize)) -> Vec<f32> {
+        let mut out = vec![0.0f32; rows * n];
+        let workers = std::thread::available_parallelism().map_or(1, |p| p.get());
+        let per = (rows * n).div_ceil(workers).max(1);
+        std::thread::scope(|scope| {
+            for (chunk_index, chunk) in out.chunks_mut(per).enumerate() {
+                scope.spawn(move || {
+                    for (j, slot) in chunk.iter_mut().enumerate() {
+                        let flat = chunk_index * per + j;
+                        let (r, o) = (flat / n, flat % n);
+                        let a = &act[r * k..(r + 1) * k];
+                        let wr = &w[o * k..(o + 1) * k];
+                        let sum: f64 = a
+                            .iter()
+                            .zip(wr)
+                            .map(|(x, y)| f64::from(*x) * f64::from(*y))
+                            .sum();
+                        *slot = sum as f32;
+                    }
+                });
+            }
+        });
+        out
+    }
+
+    /// The host route for what the device kernels cannot run. Every format except `Q8_1`:
+    /// dequantize the weights and multiply with f32 activations, so the result carries the same
+    /// accuracy as the device route (the audit in `tests/baracuda_qmatmul_audit.rs`). `Q8_1` has no
+    /// dequantization (GAP-125) and is not a weight format models store, so it keeps the CPU
+    /// kernel's result, which quantizes the activations to 8 bits (about 7e-3 of the largest
+    /// output) and is outside the contract's declared bound.
     fn on_host(
         q: QuantType,
         w: &CudaStorageBytes,
         act: &CudaStorageBytes,
         (batch_count, m, n, k): (usize, usize, usize, usize),
     ) -> Result<CudaStorageBytes> {
-        let act_cpu = fuel_cpu_backend::CpuStorageBytes::from_bytes(&act.to_cpu_bytes()?);
-        let w_cpu = fuel_cpu_backend::CpuStorageBytes::from_bytes(&w.to_cpu_bytes()?);
-        let out_bytes = batch_count
-            .checked_mul(m)
-            .and_then(|r| r.checked_mul(n))
-            .and_then(|e| e.checked_mul(std::mem::size_of::<f32>()))
-            .ok_or_else(|| Error::Msg("qmatmul_f32: output size overflows".into()).bt())?;
-        let mut out_cpu = fuel_cpu_backend::CpuStorageBytes::from_zero_bytes(out_bytes);
-        crate::dispatch::qmatmul_cpu_by_type(
-            q,
-            &act_cpu,
-            &w_cpu,
-            &mut out_cpu,
-            batch_count,
-            m,
-            n,
-            k,
-        )?;
-        CudaStorageBytes::from_cpu_bytes(w.device(), out_cpu.bytes())
+        let overflow = || Error::Msg("qmatmul_f32: output size overflows".into()).bt();
+        let rows = batch_count.checked_mul(m).ok_or_else(overflow)?;
+        let out_elems = rows.checked_mul(n).ok_or_else(overflow)?;
+        let (w_host, act_host) = (w.to_cpu_bytes()?, act.to_cpu_bytes()?);
+        let Some(dt) = ggml(q) else {
+            let act_cpu = fuel_cpu_backend::CpuStorageBytes::from_bytes(&act_host);
+            let w_cpu = fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_host);
+            let mut out_cpu = fuel_cpu_backend::CpuStorageBytes::from_zero_bytes(
+                out_elems
+                    .checked_mul(std::mem::size_of::<f32>())
+                    .ok_or_else(overflow)?,
+            );
+            crate::dispatch::qmatmul_cpu_by_type(
+                q,
+                &act_cpu,
+                &w_cpu,
+                &mut out_cpu,
+                batch_count,
+                m,
+                n,
+                k,
+            )?;
+            return CudaStorageBytes::from_cpu_bytes(w.device(), out_cpu.bytes());
+        };
+        let w_f32 = fuel_quantized::dequant_ggml_bytes(&w_host, dt, "qmatmul_f32 host fallback")?;
+        let act_f32: Vec<f32> = act_host
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let (need_w, need_act) = (n.checked_mul(k), rows.checked_mul(k));
+        if need_w != Some(w_f32.len()) || need_act.is_none_or(|e| e > act_f32.len()) {
+            return Err(Error::Msg(format!(
+                "qmatmul_f32 host fallback: weights hold {} values (need n*k = {n}x{k}), activations {} (need {rows}x{k})",
+                w_f32.len(),
+                act_f32.len(),
+            ))
+            .bt());
+        }
+        let out = host_matmul_f32(&act_f32, &w_f32, (rows, n, k));
+        CudaStorageBytes::from_cpu_bytes(w.device(), bytemuck::cast_slice(&out))
     }
 
     pub fn qmatmul_f32(
