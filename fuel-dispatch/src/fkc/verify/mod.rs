@@ -78,6 +78,8 @@ mod accuracy_elementwise;
 #[cfg(all(feature = "dev-tools", feature = "cuda"))]
 mod accuracy_half;
 #[cfg(all(feature = "dev-tools", feature = "cuda"))]
+mod accuracy_qmatmul;
+#[cfg(all(feature = "dev-tools", feature = "cuda"))]
 mod accuracy_reduce;
 mod bit_stability;
 mod exact_ref;
