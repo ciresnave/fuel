@@ -27,6 +27,7 @@ const DEFAULT_MODEL: &str = "bert-base-uncased";
 const DEFAULT_PROMPT: &str = "The quick brown fox jumps over the lazy dog.";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("bert-lazy", "[MODEL_ID] [PROMPT]", &[]);
     let args: Vec<String> = std::env::args().collect();
     let model_id = args
         .get(1)

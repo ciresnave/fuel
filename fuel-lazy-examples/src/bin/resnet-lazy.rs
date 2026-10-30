@@ -32,6 +32,7 @@ use std::time::Instant;
 const DEFAULT_MODEL: &str = "lmz/candle-resnet";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("resnet-lazy", "[VARIANT] [MODEL_ID]", &[]);
     let args: Vec<String> = std::env::args().collect();
     let variant = args.get(1).map(|s| s.as_str()).unwrap_or("18");
     let model_id = args

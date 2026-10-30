@@ -11,6 +11,7 @@ use fuel::probe::ProbeReport;
 use fuel::transfer_cost::BandwidthMatrix;
 
 fn main() {
+    fuel_lazy_examples::cli::standard("bandwidth", "", &[]);
     let probe = ProbeReport::probe_all();
     eprintln!(
         "Probed {} device(s) across {} equivalence class(es).",

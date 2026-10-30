@@ -4,6 +4,7 @@
 // Usage: cargo run --release --bin gguf-inspect -- path/to/model.gguf
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("gguf-inspect", "<PATH_TO_MODEL.gguf>", &[]);
     use fuel::quantized::gguf_mmap::MmapedContent;
     let path = std::env::args().nth(1).expect("usage: gguf-inspect <path>");
     let mc = MmapedContent::from_path(&path)?;

@@ -11,6 +11,11 @@
 
 #[cfg(not(feature = "cuda"))]
 fn main() {
+    fuel_lazy_examples::cli::standard(
+        "llama-lazy-cuda",
+        "[MODEL_ID] [PROMPT] [MAX_NEW_TOKENS]",
+        &[],
+    );
     eprintln!("This binary requires the `cuda` feature.");
     eprintln!("Run: cargo run --release --bin llama-lazy-cuda --features cuda");
     std::process::exit(1);
@@ -18,6 +23,11 @@ fn main() {
 
 #[cfg(feature = "cuda")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard(
+        "llama-lazy-cuda",
+        "[MODEL_ID] [PROMPT] [MAX_NEW_TOKENS]",
+        &[],
+    );
     use fuel::DType;
     use fuel::lazy::SamplingStrategy;
     use fuel::lazy_llama2c::Llama2cModel;

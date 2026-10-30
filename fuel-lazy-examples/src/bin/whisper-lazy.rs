@@ -34,6 +34,7 @@ const DEFAULT_MODEL: &str = "openai/whisper-tiny";
 const DEFAULT_MAX_NEW: usize = 16;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("whisper-lazy", "[MODEL_ID] [MAX_NEW_TOKENS]", &[]);
     let args: Vec<String> = std::env::args().collect();
     let model_id = args
         .get(1)

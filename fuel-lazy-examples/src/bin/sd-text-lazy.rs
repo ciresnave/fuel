@@ -28,6 +28,7 @@ const DEFAULT_REPO: &str = "stable-diffusion-v1-5/stable-diffusion-v1-5";
 const DEFAULT_PROMPT: &str = "a photo of an astronaut riding a horse on mars";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fuel_lazy_examples::cli::standard("sd-text-lazy", "[REPO_ID] [PROMPT]", &[]);
     let args: Vec<String> = std::env::args().collect();
     let repo_id = args
         .get(1)
