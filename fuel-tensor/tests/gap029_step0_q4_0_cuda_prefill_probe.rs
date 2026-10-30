@@ -17,7 +17,7 @@
 //! suppressed, so the op stays on the CUDA device). The production `realize_one_as`
 //! is asserted too, at `m = 6, k = 128, n = 64` and at `m = 140, k = 2048,
 //! n = 2048`: it must reach the binding as well. It did not until the contract's
-//! accuracy claim was backed by the verification ledger (ROADMAP row 114); the
+//! accuracy claim was backed by the verification ledger (ROADMAP row 128); the
 //! planner's accuracy-preference filter had dropped the kernel for the bit-stable
 //! CPU one.
 //!
@@ -198,7 +198,7 @@ fn gap029_step0_q4_0_prefill_shape_on_cuda() {
     // The PRODUCTION realize (cost-based placement on) must reach the binding too, at the tiny
     // shape and at a prefill-sized one. Before the CUDA contract carried a ledger-backed accuracy
     // claim the planner's AccuracyPreferenceFilter dropped this kernel in favour of the bit-stable
-    // CPU one and neither shape reached it (ROADMAP row 114).
+    // CPU one and neither shape reached it (ROADMAP row 128).
     for shape in [(6, K, N), (140, 2048, 2048)] {
         let before = calls();
         let _ = realize_q4_0(shape, &dev, true);

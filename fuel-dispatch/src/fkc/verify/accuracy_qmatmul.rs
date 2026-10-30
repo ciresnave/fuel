@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The CUDA `QMatMul` accuracy measurement (GAP-154, ROADMAP row 114): the registered
+//! The CUDA `QMatMul` accuracy measurement (GAP-154, ROADMAP row 128): the registered
 //! `qmatmul_f32` binding driven through the same invoker as the other CUDA claims, against an
 //! `f64` product of the f32 activations and the DEQUANTIZED weights.
 //!

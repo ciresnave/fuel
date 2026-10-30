@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Accuracy audit of the CUDA `QMatMul` binding (GAP-154, ROADMAP row 114): the error of
+//! Accuracy audit of the CUDA `QMatMul` binding (GAP-154, ROADMAP row 128): the error of
 //! `baracuda_dispatch::qmatmul::qmatmul_f32` over a spread of shapes, formats and seeds, against an
 //! f64 reference built from the dequantized weights, and against the CPU kernel it replaces.
 //!

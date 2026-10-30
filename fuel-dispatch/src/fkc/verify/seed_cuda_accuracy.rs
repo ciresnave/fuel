@@ -490,7 +490,7 @@ mod tests {
     /// `qmatmul_f32` is not bit-stable, so it is outside `cases()` (which asserts that). Its claim
     /// constant must equal the contract's numbers, and once the ledger backs them the registered
     /// entry must carry them and meet the planner's default accuracy bound; otherwise the importer
-    /// downgrades it to UNAUDITED and the planner prefers the CPU kernel (ROADMAP row 114).
+    /// downgrades it to UNAUDITED and the planner prefers the CPU kernel (ROADMAP row 128).
     #[test]
     fn the_qmatmul_claim_matches_the_contract_and_reaches_the_entry() {
         let text =

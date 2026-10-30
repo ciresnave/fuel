@@ -85,7 +85,7 @@ fn a_misspelled_entry_point_is_refused_not_silently_dropped() {
 
 /// The accuracy claim must survive the import: the planner's `AccuracyPreferenceFilter` drops a
 /// kernel with no `max_relative`/`max_absolute` claim whenever a bit-stable CPU sibling exists,
-/// which is how the production realize missed this binding (ROADMAP row 114).
+/// which is how the production realize missed this binding (ROADMAP row 128).
 #[test]
 fn the_declared_accuracy_claim_reaches_the_binding_entry() {
     let provider = import_bundle_str(CONTRACT, &Link(SYMBOL)).expect("contract must import");

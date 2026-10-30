@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! GAP-335, binding half closed by ROADMAP row 105 (0.30.10): a CUDA `QMatMul` dispatcher binding exists.
 //! This file guards only that the binding is registered. It does NOT show the production realize selects
-//! it: measured 2026-10-30 it does not (ROADMAP row 114).
+//! it: measured 2026-10-30 it does not (ROADMAP row 128).
 //!
 //! This file began as the detector for the opposite state (no binding; a lazy `qmatmul` on a CUDA
 //! device never reached a CUDA quantized kernel) and was written to fail the day a binding was

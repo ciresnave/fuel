@@ -20,7 +20,7 @@ fuel-graph = { workspace = true }
 # unconditional core infrastructure.
 fuel-kernel-seam-types = { workspace = true }
 # kiss-ref advisory cross-check (cuda-gated verify path only) — see the `cuda` feature.
-fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", version = "0.30.11", optional = true }
+fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", version = "0.31.3", optional = true }
 # kiss-ref-core (github.com/ThinkersJournal/kiss-ref, crates.io "0.4") — the SINGLE
 # cross-project source of truth for the ULP-distance metric. `fkc::verify::ulp::
 # ulp_distance` delegates to `kiss_ref_core::ulp_distance_f32` so Fuel's verify stack
@@ -69,8 +69,6 @@ baracuda-nvrtc = { workspace = true, optional = true }
 # providing the nvrtc feature the seam crate needs). Crates.io
 # (exact pin) — NOT a ../baracuda path dep, so it honors the reference-only rule.
 baracuda-cuda-seam = { workspace = true, optional = true, features = ["nvrtc"] }
-# Dequantizes the weights for the CUDA QMatMul wrapper's host fallback (`baracuda_dispatch::qmatmul`).
-fuel-quantized = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 half = { workspace = true }
 smallvec = { workspace = true }
@@ -155,7 +153,7 @@ baracuda-types = ["dep:baracuda-kernels-types"]
 # Per-backend dispatch wrappers. Feature flags propagate the same shape
 # fuel-memory used: each GPU backend's registration entry-point is
 # gated behind its feature.
-cuda = ["dep:fuel-cuda-backend", "dep:fuel-quantized", "baracuda-types", "dep:baracuda-nvrtc", "fuel-memory/cuda", "fuel-hardware/cuda", "dep:fuel-kiss-ref-backend"]
+cuda = ["dep:fuel-cuda-backend", "baracuda-types", "dep:baracuda-nvrtc", "fuel-memory/cuda", "fuel-hardware/cuda", "dep:fuel-kiss-ref-backend"]
 vulkan = ["dep:fuel-vulkan-backend", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
 metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
 # Baracuda dispatch-telemetry / miss-reporting emission (docs/session-prompts/
