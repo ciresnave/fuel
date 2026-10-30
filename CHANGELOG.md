@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.31.2 - 2026-10-30
+
+### Added
+
+- CUDA `QMatMul` binding (ROADMAP row 105): `(QMatMul, [F32, U32, F32], Cuda)` is now registered, from `fuel-dispatch/kernel-contracts/cuda/qmatmul.fkc.md`, onto baracuda's GGUF MMVQ kernels for Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K and Q6_K: one activation row uses `mmvq_<fmt>`, several rows use the new `fuel_cuda_backend::baracuda::gguf::mmvq_rows_<fmt>` (baracuda's batched MMVQ launcher with one expert and identity routing), and `Q8_1` or a `k` that is not a multiple of the format's read chunk computes on the host through the CPU kernel. `fuel_cuda_backend::baracuda::gguf::mmvq_supports(dtype, ncols)` is the new public predicate for that choice; `fuel_dispatch::dispatch::qmatmul_cpu_by_type` is the CPU kernel choice now shared by the CPU wrapper and the fallback (no behaviour change). **What is verified:** on an RTX 4070 Laptop, `pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-dispatch --features cuda --test baracuda_qmatmul_live` passes 6/6: Q4_0, Q8_0 and Q4_K cases against an f64 reference (device routes within about 1e-7 of the largest output, limit 1e-5; the host fallback, whose CPU kernel quantizes activations to 8 bits, within 6e-4 to 8e-4, limit 5e-3), route counters proving device versus host, a rotated-reference sabotage, and one timing (Q4_0 rows=140 n=2048 k=2048: 3.06 ms on the device including readback against 685 ms for the CPU kernel alone). **What is NOT verified, and is a defect:** the production lazy realize (`realize_one_as`, cost placement on) did NOT reach this binding in `gap029_step0_q4_0_cuda_prefill_probe`, at m=6,k=128,n=64 or at m=140,k=2048,n=2048 (route counters unchanged); with placement suppressed it does. So a model realized in production is not shown to use the binding, and time to first token is NOT re-measured. Why the placer does not choose it is not established; ROADMAP row 128 owns it and GAP-335 stays open for the reach half. Also: the host-side contract test `qmatmul_cuda_contract` and the guard `gap335_cuda_qmatmul_binding` (the old no-binding detector, flipped on purpose) run in CI; no CI leg builds CUDA. GAP-154 is re-opened as the numerical audit of the now-existing route.
+
 ## v0.31.1 - 2026-10-30
 
 ### Changed

@@ -1381,6 +1381,13 @@ pub static CUDA_AWQ_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[cuda_ep!(
     crate::baracuda_dispatch::awq::awq_matmul_f16
 )];
 
+/// CUDA `qmatmul` (GGML block-quant matmul, F32 activations; `OpKind::QMatMul`): symbol -> production wrapper.
+/// Contract: `fuel-dispatch/kernel-contracts/cuda/qmatmul.fkc.md`.
+pub static CUDA_QMATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[cuda_ep!(
+    "qmatmul_f32",
+    crate::baracuda_dispatch::qmatmul::qmatmul_f32
+)];
+
 /// CUDA `gemm_dense` family (dense FP matmul facade (gemm_dense at OpKind::MatMul)): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `fuel-dispatch/kernel-contracts/cuda/gemm_dense.fkc.md`.
 pub static CUDA_GEMM_DENSE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
@@ -1542,6 +1549,7 @@ impl LinkRegistry for CudaLinkRegistry {
             .chain(CUDA_PAD_BACKWARD_ENTRY_POINTS.iter())
             .chain(CUDA_CAUSAL_CONV1D_ENTRY_POINTS.iter())
             .chain(CUDA_AWQ_MATMUL_ENTRY_POINTS.iter())
+            .chain(CUDA_QMATMUL_ENTRY_POINTS.iter())
             .chain(CUDA_GEMM_DENSE_ENTRY_POINTS.iter())
             .chain(CUDA_GEMM_INT_ENTRY_POINTS.iter())
             .chain(CUDA_INDEXING_ENTRY_POINTS.iter())
