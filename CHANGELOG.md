@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.31.5 - 2026-10-30
+
+### Changed
+
+- Docs only: `docs/design-notes/2026-10-30-hybrid-decode-state-row-117.md` (ROADMAP row 117 design before code: a `Fixed` state variant, functional state rebind, scheduler limits) and a correction to the Qwen3.8-27B audit note, which wrongly said `LayerStateSpec::Slots` could describe a Gated DeltaNet layer's state (`Slots` is a per-token growing buffer; GDN state is fixed-size).
+
 ## v0.31.1 - 2026-10-30
 
 ### Changed
