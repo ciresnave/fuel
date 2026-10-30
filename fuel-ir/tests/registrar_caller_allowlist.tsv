@@ -1,0 +1,5 @@
+# name	owner	expiry(YYYY-MM-DD)	reason. Hand-edited; the gate is fuel-ir/tests/registrar_callers.rs (ROADMAP row 66 step c).
+fuse_linear	Fuel lane (ROADMAP row 66)	2026-12-31	deliberate test oracle for linear fusion, not a production pass; delete the row or wire it by the expiry
+insert_evict_reload	Fuel lane (ROADMAP row 66)	2026-12-31	the wrapper has no production caller (insert_evict_reload_in does); wire it or remove it by the expiry
+lower_const_placement	Fuel lane (ROADMAP row 66)	2026-12-31	no production caller; wire it into the optimize path or remove it by the expiry
+promote_views_for_liveness	Fuel lane (ROADMAP row 66)	2026-12-31	no production caller (only fuel-graph tests); wire it or remove it by the expiry
