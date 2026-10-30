@@ -10,7 +10,7 @@
 //! stay in force, and [`cpu_accel_report`] says why, so a user can ask "why not MKL".
 //!
 //! Status: wired, NOT run on hardware by CI (no hosted runner has oneMKL). The once-only logic in
-//! [`install_once`] is feature-independent and unit-tested in every build.
+//! `install_once` is feature-independent and unit-tested in every build.
 
 #[cfg(any(feature = "onemkl", test))]
 use std::sync::OnceLock;
@@ -62,7 +62,7 @@ pub(crate) fn ensure_installed() {
 }
 
 /// The install result per vendor backend that this build enables, as `(name, status)`. A backend
-/// whose feature is off is absent; one not yet attempted (no lazy realize has run) is absent too.
+/// whose feature is off is absent, and so is one before the first lazy realize has run.
 pub fn cpu_accel_report() -> Vec<(&'static str, AccelStatus)> {
     #[allow(unused_mut)]
     let mut out: Vec<(&'static str, AccelStatus)> = Vec::new();
