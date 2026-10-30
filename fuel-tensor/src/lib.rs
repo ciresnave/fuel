@@ -43,6 +43,7 @@
 #![allow(clippy::identity_op)]
 
 pub mod awq;
+pub mod cpu_accel;
 pub mod cuda_backend;
 pub mod decode_shape;
 pub mod device;
