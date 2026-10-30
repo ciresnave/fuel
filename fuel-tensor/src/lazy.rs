@@ -8380,6 +8380,18 @@ pub enum WeightStorage {
         in_features: usize,
         out_features: usize,
     },
+    /// Any other GGML block format that `Op::QMatMul` has a kernel for (Q8_0, Q4_K, Q6_K, ...),
+    /// kept in its on-disk block layout `[out_features, in_features / block]` so a GGUF tensor
+    /// stays quantized from load to the matmul (ROADMAP row 124). Same representation as
+    /// [`Self::Q4_0`] (the byte stream as `u32` words, a 1-D `U32` const in the graph, applied
+    /// through `qmatmul`), plus the block format.
+    Ggml {
+        qtype: fuel_graph::QuantType,
+        words: Arc<[u32]>,
+        bytes_len: usize,
+        in_features: usize,
+        out_features: usize,
+    },
     /// An AWQ 4-bit linear (HuggingFace `*-AWQ`, GEMM version) in the
     /// `AWQ_MATMUL` kernel layout, as graph-independent host buffers. The
     /// graph sees it through `NodeHandle::awq_matmul` operands
@@ -8410,12 +8422,84 @@ pub enum WeightStorage {
 }
 
 impl WeightStorage {
+    /// Keep a GGUF weight tensor quantized (ROADMAP row 124): `bytes` is the tensor's block
+    /// stream in GGUF's native `[out_features, in_features]` order. Returns `None` when the
+    /// tensor must take the dequantize-to-f32 path instead: the format has no `QMatMul` kernel
+    /// here (only Q8_0, Q4_K and Q6_K are admitted; `Q4_0` has its own variant), or
+    /// `in_features` is not a whole number of blocks (32 for Q8_0, 256 for the K-quants), or the
+    /// byte count is not `out_features * in_features / block * bytes_per_block`. A caller that
+    /// gets `None` for a quantized dtype is taking the 4x-memory path and should say so.
+    pub fn from_ggml_bytes(
+        dtype: fuel_ir::quantized::GgmlDType,
+        bytes: &[u8],
+        in_features: usize,
+        out_features: usize,
+    ) -> Option<Self> {
+        use fuel_ir::quantized::GgmlDType;
+        let qtype = match dtype {
+            GgmlDType::Q8_0 => fuel_graph::QuantType::Q8_0,
+            GgmlDType::Q4K => fuel_graph::QuantType::Q4_K_M,
+            GgmlDType::Q6K => fuel_graph::QuantType::Q6K,
+            _ => return None,
+        };
+        let block = qtype.elements_per_block();
+        if in_features == 0 || !in_features.is_multiple_of(block) {
+            return None;
+        }
+        if bytes.len() != out_features * (in_features / block) * qtype.bytes_per_block() {
+            return None;
+        }
+        // The graph const is U32 words; pad the tail to a whole word.
+        let mut padded = bytes.to_vec();
+        padded.resize(bytes.len().div_ceil(4) * 4, 0);
+        let words: Vec<u32> = padded
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
+            .collect();
+        Some(Self::Ggml {
+            qtype,
+            words: Arc::from(words),
+            bytes_len: bytes.len(),
+            in_features,
+            out_features,
+        })
+    }
+
+    /// Bytes this weight holds in host memory (the adapter of a `WithLoRA` included). The
+    /// instrument for "did this tensor stay quantized": a Q4_K weight is `n*k/256*144` bytes,
+    /// the same tensor dequantized to `F32` is `n*k*4`.
+    pub fn resident_bytes(&self) -> usize {
+        match self {
+            Self::F32(a) => a.len() * std::mem::size_of::<f32>(),
+            Self::BF16(a) => a.len() * std::mem::size_of::<half::bf16>(),
+            Self::Q4_0 { bytes_len, .. } | Self::Ggml { bytes_len, .. } => *bytes_len,
+            Self::Awq(w) => {
+                w.weight.len() * std::mem::size_of::<u32>()
+                    + w.zeros.len() * std::mem::size_of::<u32>()
+                    + w.scales.len() * std::mem::size_of::<half::f16>()
+            }
+            Self::WithLoRA {
+                base,
+                lora_a,
+                lora_b,
+                ..
+            } => base.resident_bytes() + (lora_a.len() + lora_b.len()) * std::mem::size_of::<f32>(),
+        }
+    }
+
     pub fn elem_count(&self) -> usize {
         match self {
             Self::F32(a) => a.len(),
             Self::BF16(a) => a.len(),
             // Logical element count for a Q4_0 weight matrix is n*k.
             Self::Q4_0 {
+                in_features,
+                out_features,
+                ..
+            }
+            | Self::Ggml {
                 in_features,
                 out_features,
                 ..
@@ -8436,7 +8520,7 @@ impl WeightStorage {
             // Q4_0 surfaces as U32 at the graph level (raw bytes
             // reinterpreted). Callers that care about the "actual"
             // quantization type should match on the variant directly.
-            Self::Q4_0 { .. } => fuel_ir::DType::U32,
+            Self::Q4_0 { .. } | Self::Ggml { .. } => fuel_ir::DType::U32,
             // AWQ surfaces as U32 for the same reason (packed nibbles).
             Self::Awq(_) => fuel_ir::DType::U32,
             // WithLoRA exposes the base's dtype (the LoRA adapter is
@@ -8463,7 +8547,7 @@ impl WeightStorage {
         match self {
             Self::F32(a) => anchor.const_f32_like(a.clone(), shape),
             Self::BF16(a) => anchor.const_bf16_like(a.clone(), shape),
-            Self::Q4_0 { words, .. } => {
+            Self::Q4_0 { words, .. } | Self::Ggml { words, .. } => {
                 let _ = shape; // shape arg unused — Q4_0 const is 1-D U32
                 // Arc-clone the precomputed u32 view; no byte copy.
                 anchor.const_u32_like(Arc::clone(words), Shape::from_dims(&[words.len()]))
@@ -8579,6 +8663,21 @@ impl WeightStorage {
                     in_features,
                     out_features,
                 )
+            }
+            Self::Ggml {
+                qtype,
+                in_features: expected_in,
+                out_features: expected_out,
+                ..
+            } => {
+                if *expected_in != in_features || *expected_out != out_features {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "WeightStorage::Ggml({qtype:?}) shape mismatch: stored                          [{expected_in}, {expected_out}], requested                          [{in_features}, {out_features}]",
+                    ))
+                    .bt());
+                }
+                let w_bytes = self.const_like(x, Shape::from_dims(&[in_features, out_features]))?;
+                x.qmatmul(&w_bytes, *qtype, in_features, out_features)
             }
             Self::Awq(w) => {
                 if w.ic != in_features || w.oc != out_features {
