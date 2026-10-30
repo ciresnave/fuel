@@ -24,25 +24,30 @@ pub enum Outcome {
 /// Classify `args` (without the program name). The first version or help flag wins over a later
 /// unknown option; an unknown option wins over nothing.
 pub fn classify(args: &[String], known: &[&str]) -> Outcome {
-    for a in args {
-        match a.as_str() {
-            "--version" | "-V" => return Outcome::Version,
-            "--help" | "-h" => return Outcome::Help,
-            _ => {}
-        }
+    if let Some(o) = args.iter().find_map(|a| info_flag(a)) {
+        return o;
     }
-    for a in args {
-        if !a.starts_with('-') || a == "-" {
-            continue;
-        }
-        let is_known = known
-            .iter()
-            .any(|k| a == k || (k.ends_with('=') && a.starts_with(k)));
-        if !is_known {
-            return Outcome::Unknown(a.clone());
-        }
+    match args.iter().find(|a| is_unknown_option(a, known)) {
+        Some(a) => Outcome::Unknown(a.clone()),
+        None => Outcome::Run,
     }
-    Outcome::Run
+}
+
+fn info_flag(a: &str) -> Option<Outcome> {
+    match a {
+        "--version" | "-V" => Some(Outcome::Version),
+        "--help" | "-h" => Some(Outcome::Help),
+        _ => None,
+    }
+}
+
+fn is_unknown_option(a: &str, known: &[&str]) -> bool {
+    if !a.starts_with('-') || a == "-" {
+        return false;
+    }
+    !known
+        .iter()
+        .any(|k| a == *k || (k.ends_with('=') && a.starts_with(k)))
 }
 
 /// Apply [`classify`] to the process arguments: print and exit for `--version`, `--help` or an
