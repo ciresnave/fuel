@@ -314,12 +314,12 @@ fn from_ggml_bytes_refuses_what_it_cannot_keep() {
     let q8 = vec![0_u8; 34 * (256 / 32) * 4]; // 4 rows of 256 in Q8_0
     assert!(WeightStorage::from_ggml_bytes(GgmlDType::Q8_0, &q8, 256, 4).is_some());
     // In_features not a whole number of 256-blocks for a K-quant.
-    assert!(WeightStorage::from_ggml_bytes(GgmlDType::Q4K, &vec![0; 144 * 3], 96, 8).is_none());
+    assert!(WeightStorage::from_ggml_bytes(GgmlDType::Q4K, &[0; 144 * 3], 96, 8).is_none());
     // Byte count that does not match out * in / block * bytes_per_block.
     assert!(WeightStorage::from_ggml_bytes(GgmlDType::Q8_0, &q8[..q8.len() - 1], 256, 4).is_none());
     // A format with no QMatMul kernel here, and f32.
-    assert!(WeightStorage::from_ggml_bytes(GgmlDType::Q5K, &vec![0; 176 * 4], 256, 4).is_none());
-    assert!(WeightStorage::from_ggml_bytes(GgmlDType::F32, &vec![0; 4 * 4], 4, 1).is_none());
+    assert!(WeightStorage::from_ggml_bytes(GgmlDType::Q5K, &[0; 176 * 4], 256, 4).is_none());
+    assert!(WeightStorage::from_ggml_bytes(GgmlDType::F32, &[0; 4 * 4], 4, 1).is_none());
     // Resident bytes of what it kept: the block bytes, not 4 bytes per element.
     let w = WeightStorage::from_ggml_bytes(GgmlDType::Q8_0, &q8, 256, 4).unwrap();
     assert_eq!(w.resident_bytes(), q8.len());
