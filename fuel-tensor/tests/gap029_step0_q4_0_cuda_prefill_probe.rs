@@ -1,35 +1,45 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! GAP-029 Step 0, relabelled by GAP-335: a Q4_0 `qmatmul` realized on a CUDA
-//! device through the normal lazy path, at `m = 1` and at `m = 6`, checked for
+//! GAP-029 Step 0, re-pointed by ROADMAP row 105 (which closed GAP-335): a Q4_0
+//! `qmatmul` realized on a CUDA device at `m = 1` and at `m = 6`, checked for
 //! SANE values against an exact dequant reference.
 //!
-//! ## What this does NOT show
+//! ## What this shows, and what it does not
 //!
 //! It was written to ask whether a prefill-shaped (`m > 1`) Q4_0 matmul reaches
-//! CUDA's `CudaStorage::matmul_q4_0` and its `total_rows != 1` guard. **It cannot
-//! answer that, and never could: the dispatcher has no CUDA `QMatMul` binding
-//! (GAP-335), and it had none when this file was written.** So neither `m = 1`
-//! nor `m = 6` can reach `matmul_q4_0`. The realize takes some other path
-//! (recipe decomposition or another placement), and WHICH path is unmeasured.
-//! The `m = 1` run is therefore not a positive control for the quantized CUDA
-//! kernel, and "m = 6 did not hit the guard" is true only because nothing does.
+//! CUDA's `CudaStorage::matmul_q4_0` and its `total_rows != 1` guard. That
+//! question is moot: it never could, and the CUDA `QMatMul` binding row 105 added
+//! does not use `matmul_q4_0`. The realize is now pinned to the binding by its
+//! route counters (`baracuda_dispatch::qmatmul::DEVICE_CALLS` / `HOST_CALLS`):
+//! both shapes must run on the baracuda MMVQ kernels (`m = 1` the decode GEMV,
+//! `m = 6` the batched `mmvq_rows_*` launch) and neither on the host fallback.
 //!
-//! What it does check: realizing a quantized matmul on a CUDA `Device` succeeds
-//! at both shapes, and the result is within a loose bound of the exact
-//! reference. The device-free detector for the missing binding (and the note
-//! to re-point this test if one is added) is GAP-335's.
+//! The first two realizes use `realize_one_reference_as` (cost-based placement
+//! suppressed, so the op stays on the CUDA device). The production `realize_one_as`
+//! is asserted too, at `m = 6, k = 128, n = 64` and at `m = 140, k = 2048,
+//! n = 2048`: it must reach the binding as well. It did not until the contract's
+//! accuracy claim was backed by the verification ledger (ROADMAP row 128); the
+//! planner's accuracy-preference filter had dropped the kernel for the bit-stable
+//! CPU one.
+//!
+//! Numerics: the 5e-2 bound is a sanity bound, not a calibration. Measured on the
+//! RTX 4070 at this shape the scale-relative error was ~5e-7; that is one shape and
+//! is not a numerical audit of the `m > 1` route (GAP-154, re-opened by row 105).
+//! The sabotage-checked comparison is `fuel-dispatch/tests/baracuda_qmatmul_live.rs`.
 //!
 //! Live-GPU: `#[ignore]`d so a plain `cargo test` skips it. Run via
 //! `scripts/gpu-run.ps1`.
 
 #![cfg(feature = "cuda")]
 
+use std::sync::atomic::Ordering::Relaxed;
+
+use fuel_dispatch::baracuda_dispatch::qmatmul;
 use fuel_graph::QuantType;
 use fuel_ir::Shape;
 use fuel_quantized::{BlockQ4_0, GgmlType};
 use fuel_tensor::Device;
 use fuel_tensor::lazy::Tensor;
-use fuel_tensor::pipelined_bridge::realize_one_as;
+use fuel_tensor::pipelined_bridge::{realize_one_as, realize_one_reference_as};
 
 /// Outcome of one realize attempt, with enough detail to tell a real bail from
 /// a broken probe.
@@ -41,7 +51,11 @@ enum Outcome {
 /// Build `[m, k] @ dequant(W)^T -> [m, n]` as a Q4_0 `qmatmul` and realize it on
 /// `dev` through the normal (fully-optimized) lazy path. Also returns the exact
 /// dequant reference so the caller can check numerics.
-fn realize_q4_0(m: usize, k: usize, n: usize, dev: &Device) -> (Outcome, Vec<f32>) {
+fn realize_q4_0(
+    (m, k, n): (usize, usize, usize),
+    dev: &Device,
+    cost_placement: bool,
+) -> (Outcome, Vec<f32>) {
     // Deterministic, well-scaled weights; quantize to real Q4_0 blocks.
     let w_f32: Vec<f32> = (0..n * k)
         .map(|i| ((i as f32) * 0.021).sin() * 0.7)
@@ -94,7 +108,12 @@ fn realize_q4_0(m: usize, k: usize, n: usize, dev: &Device) -> (Outcome, Vec<f32
     let t = y.graph_tensor();
     let graph = t.graph().clone();
     let id = t.id();
-    let outcome = match realize_one_as::<f32>(&graph, id, dev) {
+    let realized = if cost_placement {
+        realize_one_as::<f32>(&graph, id, dev)
+    } else {
+        realize_one_reference_as::<f32>(&graph, id, dev)
+    };
+    let outcome = match realized {
         Ok(v) => Outcome::Ok(v),
         Err(e) => Outcome::Err(format!("{e:?}")),
     };
@@ -165,8 +184,33 @@ fn gap029_step0_q4_0_prefill_shape_on_cuda() {
     // Measure BOTH arms before asserting anything, so one run reports the whole
     // picture. The first version panicked inside the positive control and
     // therefore never reached the measurement it existed to enable.
-    let (ctl, ctl_want) = realize_q4_0(1, K, N, &dev);
-    let (probe, probe_want) = realize_q4_0(6, K, N, &dev);
+    let calls = || {
+        (
+            qmatmul::DEVICE_CALLS.load(Relaxed),
+            qmatmul::HOST_CALLS.load(Relaxed),
+        )
+    };
+    let c0 = calls();
+    let (ctl, ctl_want) = realize_q4_0((1, K, N), &dev, false);
+    let c1 = calls();
+    let (probe, probe_want) = realize_q4_0((6, K, N), &dev, false);
+    let c2 = calls();
+    // The PRODUCTION realize (cost-based placement on) must reach the binding too, at the tiny
+    // shape and at a prefill-sized one. Before the CUDA contract carried a ledger-backed accuracy
+    // claim the planner's AccuracyPreferenceFilter dropped this kernel in favour of the bit-stable
+    // CPU one and neither shape reached it (ROADMAP row 128).
+    for shape in [(6, K, N), (140, 2048, 2048)] {
+        let before = calls();
+        let _ = realize_q4_0(shape, &dev, true);
+        let after = calls();
+        eprintln!(
+            "[GAP-029 step0] production realize (cost placement on) (m,k,n)={shape:?}: (device, host) calls {before:?}->{after:?}"
+        );
+        assert!(
+            after.0 > before.0 && after.1 == before.1,
+            "the production realize did not run QMatMul on the CUDA device route at {shape:?}: {before:?} -> {after:?}"
+        );
+    }
 
     // ---- m = 1 (decode shape) must realize and be sane. ---------------------
     //
@@ -175,9 +219,10 @@ fn gap029_step0_q4_0_prefill_shape_on_cuda() {
     // element figure was then shown to be one near-zero-crossing output
     // (median relative error 1.74e-4, scale-relative 1.97e-4). The earlier
     // explanation, that "the CUDA path is a different algorithm: baracuda's
-    // batched MMVQ", is WITHDRAWN: no CUDA QMatMul binding exists (GAP-335), so
-    // that kernel never ran. The 5e-2 bound below is NOT calibrated for the path
-    // actually taken, which is unmeasured. It only catches O(1) breakage.
+    // batched MMVQ", was WITHDRAWN while no CUDA QMatMul binding existed, because
+    // that kernel never ran. Row 105 added the binding, and the counters above now
+    // show the asserted realizes run on baracuda's MMVQ kernels. The 5e-2 bound is
+    // a sanity bound, not a calibrated one: it only catches O(1) breakage.
     //
     // NOT claimed: that any particular kernel is numerically correct.
     const SANE: f32 = 5e-2;
@@ -189,7 +234,7 @@ fn gap029_step0_q4_0_prefill_shape_on_cuda() {
     let ctl_scale = scale_rel(&ctl_got, &ctl_want);
     let ctl_med = median_rel(&ctl_got, &ctl_want);
     eprintln!(
-        "[GAP-029 step0] m=1 ({} outputs) realized on a CUDA device (path unpinned). \
+        "[GAP-029 step0] m=1 ({} outputs) realized on a CUDA device (CUDA QMatMul binding). \
          max_rel {ctl_rel:.4e} | scale_rel {ctl_scale:.4e} | median_rel \
          {ctl_med:.4e}  (max_rel is inflated by near-zero-crossing outputs; \
          scale_rel/median_rel are the trustworthy columns)",
@@ -208,9 +253,10 @@ fn gap029_step0_q4_0_prefill_shape_on_cuda() {
             let sc = scale_rel(&got, &probe_want);
             let med = median_rel(&got, &probe_want);
             eprintln!(
-                "[GAP-029 step0] m=6 ({} outputs) realized on a CUDA device (path \
-                 unpinned). max_rel {rel:.4e} | scale_rel {sc:.4e} | median_rel {med:.4e}. \
-                 Not evidence about matmul_q4_0, which no path reaches (GAP-335).",
+                "[GAP-029 step0] m=6 ({} outputs) realized on a CUDA device (CUDA QMatMul \
+                 binding, batched MMVQ). max_rel {rel:.4e} | scale_rel {sc:.4e} | \
+                 median_rel {med:.4e}. Not evidence about matmul_q4_0, which the binding \
+                 does not use.",
                 got.len(),
             );
             assert!(

@@ -31,6 +31,7 @@ use super::accuracy_common::{
 };
 use super::accuracy_elementwise::{BINARY_SPECS, UNARY_SPECS, measure_binary, measure_unary};
 use super::accuracy_half::{measure_half_matmul, measure_half_rms_norm, measure_half_softmax};
+use super::accuracy_qmatmul::measure_qmatmul;
 use super::accuracy_reduce::{Fold, measure_reduce};
 use super::bit_stability::{HostTensor, KernelInvoker, VerifyError};
 use super::invoker_cuda::CudaInvoker;
@@ -144,6 +145,13 @@ pub(crate) const SOFTMAX_F32_CLAIM: Claim = Claim {
     max_relative: 1.0e-5,
     max_absolute: 1.0e-5,
 };
+/// `qmatmul_f32` (`kernel-contracts/cuda/qmatmul.fkc.md`), unit-scale uniform inputs, Q4_0 / Q8_0 /
+/// Q4_K, `k` up to 8192, both routes of the wrapper. Measured worst 3.8e-5 abs / 3.2e-5 rel (at
+/// k = 8192, growing with k).
+pub(crate) const QMATMUL_F32_CLAIM: Claim = Claim {
+    max_relative: 4.0e-4,
+    max_absolute: 4.0e-4,
+};
 /// ONE CUDA device for the whole process. baracuda's cuBLAS handle pool is keyed by the context
 /// ADDRESS (fixed in baracuda alpha.16), so dropping a context and creating the next can revive a
 /// handle bound to the dead one: `status 5` from `gemm_dense_{f16,bf16}` (GAP-370). Every
@@ -198,6 +206,11 @@ pub(crate) fn measure_cuda_f32_accuracy() -> Result<(String, Vec<OpAccuracy>), V
             SOFTMAX_F32_CLAIM,
         )?,
     ];
+    ops.push(measure_qmatmul(
+        &run,
+        entry(OpKind::QMatMul, &[DType::F32, DType::U32, DType::F32])?,
+        QMATMUL_F32_CLAIM,
+    )?);
     for spec in UNARY_SPECS {
         let e = entry(spec.op, &[DType::F32; 2])?;
         ops.push(measure_unary(
@@ -472,6 +485,43 @@ mod tests {
                 "{kernel}: contract max_absolute differs from the claim constant"
             );
         }
+    }
+
+    /// `qmatmul_f32` is not bit-stable, so it is outside `cases()` (which asserts that). Its claim
+    /// constant must equal the contract's numbers, and once the ledger backs them the registered
+    /// entry must carry them and meet the planner's default accuracy bound; otherwise the importer
+    /// downgrades it to UNAUDITED and the planner prefers the CPU kernel (ROADMAP row 128).
+    #[test]
+    fn the_qmatmul_claim_matches_the_contract_and_reaches_the_entry() {
+        let text =
+            include_str!("../../../kernel-contracts/cuda/qmatmul.fkc.md").replace("\r\n", "\n");
+        let at = text.find("kernel: qmatmul_f32\n").expect("section present");
+        let rest = &text[at..];
+        let prec = &rest[rest.find("precision:").expect("precision block")..];
+        let prec = &prec[..prec.find("audited:").expect("precision block ends")];
+        assert!(prec.contains(&format!("max_relative: {}", QMATMUL_F32_CLAIM.max_relative)));
+        assert!(prec.contains(&format!("max_absolute: {}", QMATMUL_F32_CLAIM.max_absolute)));
+        let mut table = KernelBindingTable::new();
+        crate::baracuda_dispatch::register_baracuda_cuda_kernels(&mut table);
+        let e = find_entry(
+            &table,
+            OpKind::QMatMul,
+            &[DType::F32, DType::U32, DType::F32],
+            BackendId::Cuda,
+        )
+        .expect("QMatMul entry");
+        assert_eq!(
+            e.precision.max_relative,
+            Some(QMATMUL_F32_CLAIM.max_relative)
+        );
+        assert_eq!(
+            e.precision.max_absolute,
+            Some(QMATMUL_F32_CLAIM.max_absolute)
+        );
+        assert!(crate::ranker::filters::meets_accuracy_bound(
+            &e.precision,
+            &crate::ranker::filters::DEFAULT_ACCURACY_BOUND
+        ));
     }
 
     /// What the import gate leaves on the registered entries once the ledger backs the claims:
