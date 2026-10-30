@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.31.6 - 2026-10-30
+
+### Changed
+
+- Docs only: `docs/design-notes/2026-10-30-qwen35-composed-forward-row-115.md` (ROADMAP row 115 before code: the Gated DeltaNet and gated-attention formulas read from the HuggingFace reference, the op mapping, the oracle plan, and an f32 CPU reference run of `Qwen/Qwen3.5-0.8B` whose whole-sequence and cached-decode logits agree to 1.8e-5).
+
 ## v0.31.5 - 2026-10-30
 
 ### Changed
