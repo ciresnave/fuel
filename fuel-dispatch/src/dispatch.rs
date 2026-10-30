@@ -2463,62 +2463,19 @@ cpu_rope_wrapper!(
     fuel_cpu_backend::byte_kernels::rope_f64
 );
 
-/// Dispatch wrapper for `(QMatMul, F32, Cpu)`. Two inputs:
-/// activations (F32) and quantized weight bytes (U32-typed).
-/// `OpParams::QMatMul` carries the quant_type + (batch, m, n, k);
-/// the wrapper picks the right typed kernel based on quant_type.
-///
-/// `pub(crate)` so the FKC `CpuLinkRegistry` can resolve the linear-quant fused
-/// bundle's `qmatmul_cpu` `entry_point` symbol to this wrapper
-/// (`CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`).
-pub(crate) fn qmatmul_f32_cpu_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
-    params: &OpParams,
+/// The per-`QuantType` host kernel choice shared by [`qmatmul_f32_cpu_wrapper`] and the CUDA
+/// wrapper's host fallback (`baracuda_dispatch`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn qmatmul_cpu_by_type(
+    quant_type: fuel_graph::QuantType,
+    act_cpu: &fuel_cpu_backend::CpuStorageBytes,
+    w_cpu: &fuel_cpu_backend::CpuStorageBytes,
+    out_cpu: &mut fuel_cpu_backend::CpuStorageBytes,
+    batch_count: usize,
+    m: usize,
+    n: usize,
+    k: usize,
 ) -> Result<()> {
-    if inputs.len() != 2 {
-        return Err(Error::Msg(format!(
-            "qmatmul wrapper expects 2 inputs (activations, weight_bytes), got {}",
-            inputs.len(),
-        ))
-        .bt());
-    }
-    if outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "qmatmul wrapper expects 1 output, got {}",
-            outputs.len(),
-        ))
-        .bt());
-    }
-    let (quant_type, batch_count, m, n, k) = match params {
-        OpParams::QMatMul {
-            quant_type,
-            batch_count,
-            m,
-            n,
-            k,
-        } => (*quant_type, *batch_count, *m, *n, *k),
-        other => {
-            return Err(Error::Msg(format!(
-                "qmatmul wrapper expects OpParams::QMatMul, got {other:?}",
-            ))
-            .bt());
-        }
-    };
-    let act_guard = read_storage(&inputs[0])?;
-    let w_guard = read_storage(&inputs[1])?;
-    if w_guard.dtype != DType::U32 {
-        return Err(Error::Msg(format!(
-            "qmatmul: weight bytes must be U32-typed (raw block stream), got {:?}",
-            w_guard.dtype,
-        ))
-        .bt());
-    }
-    let mut out_guard = write_storage(&outputs[0])?;
-    let act_cpu = cpu_input(&act_guard)?;
-    let w_cpu = cpu_input(&w_guard)?;
-    let out_cpu = cpu_output(&mut out_guard)?;
     use fuel_graph::QuantType;
     match quant_type {
         QuantType::Q4_0 => fuel_cpu_backend::byte_kernels::qmatmul_q4_0_f32(
@@ -2621,6 +2578,65 @@ pub(crate) fn qmatmul_f32_cpu_wrapper(
             k,
         ),
     }
+}
+
+/// Dispatch wrapper for `(QMatMul, F32, Cpu)`. Two inputs:
+/// activations (F32) and quantized weight bytes (U32-typed).
+/// `OpParams::QMatMul` carries the quant_type + (batch, m, n, k);
+/// the wrapper picks the right typed kernel based on quant_type.
+///
+/// `pub(crate)` so the FKC `CpuLinkRegistry` can resolve the linear-quant fused
+/// bundle's `qmatmul_cpu` `entry_point` symbol to this wrapper
+/// (`CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`).
+pub(crate) fn qmatmul_f32_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 {
+        return Err(Error::Msg(format!(
+            "qmatmul wrapper expects 2 inputs (activations, weight_bytes), got {}",
+            inputs.len(),
+        ))
+        .bt());
+    }
+    if outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "qmatmul wrapper expects 1 output, got {}",
+            outputs.len(),
+        ))
+        .bt());
+    }
+    let (quant_type, batch_count, m, n, k) = match params {
+        OpParams::QMatMul {
+            quant_type,
+            batch_count,
+            m,
+            n,
+            k,
+        } => (*quant_type, *batch_count, *m, *n, *k),
+        other => {
+            return Err(Error::Msg(format!(
+                "qmatmul wrapper expects OpParams::QMatMul, got {other:?}",
+            ))
+            .bt());
+        }
+    };
+    let act_guard = read_storage(&inputs[0])?;
+    let w_guard = read_storage(&inputs[1])?;
+    if w_guard.dtype != DType::U32 {
+        return Err(Error::Msg(format!(
+            "qmatmul: weight bytes must be U32-typed (raw block stream), got {:?}",
+            w_guard.dtype,
+        ))
+        .bt());
+    }
+    let mut out_guard = write_storage(&outputs[0])?;
+    let act_cpu = cpu_input(&act_guard)?;
+    let w_cpu = cpu_input(&w_guard)?;
+    let out_cpu = cpu_output(&mut out_guard)?;
+    qmatmul_cpu_by_type(quant_type, act_cpu, w_cpu, out_cpu, batch_count, m, n, k)
 }
 
 /// Dispatch wrapper for `(WriteSlice, *, Cpu)`. Dtype-agnostic — the

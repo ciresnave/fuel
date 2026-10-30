@@ -252,6 +252,15 @@ pub(crate) fn mmvq_format(dtype: GgmlDType) -> Result<MmvqFormat> {
     })
 }
 
+/// Whether baracuda's MMVQ kernels can run `dtype` with `ncols` columns: the dtype has an MMVQ
+/// kernel and `ncols` is a multiple of both its block size and its column read chunk. The dispatch
+/// layer asks this to pick the device kernel or a host fallback instead of failing at run time.
+pub fn mmvq_supports(dtype: GgmlDType, ncols: usize) -> bool {
+    mmvq_format(dtype).is_ok_and(|f| {
+        ncols > 0 && ncols.is_multiple_of(f.block_elems) && ncols.is_multiple_of(f.read_chunk)
+    })
+}
+
 /// The caller-supplied arguments that `validate_mmvq_extent` checks.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MmvqCall {
@@ -589,6 +598,191 @@ gguf_mmvq!(mmvq_q5_k, q5_K, Q5K, "mmvq_q5_K");
 gguf_mmvq!(mmvq_q6_k, q6_K, Q6K, "mmvq_q6_K");
 gguf_mmvq!(mmvq_q8_k, q8_K, Q8K, "mmvq_q8_K");
 
+/// Everything the batched MMVQ launcher is called with, already validated, for one expert and the
+/// identity routing (which is a plain `m_rows x ncols` by `nrows x ncols` quantized matmul).
+struct RowsCall {
+    nrows: i32,
+    ncols: i32,
+    weights: *const std::ffi::c_void,
+    activations: *const std::ffi::c_void,
+    sorted_token_ids: *const i32,
+    expert_offsets: *const i32,
+    output: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+}
+
+/// The dimension checks for `mmvq_rows_run`: the weight and one-row activation extents through
+/// `validate_mmvq_extent` (stride 1, offset 0), then the whole `m_rows`-row activation block and the
+/// output size. Returns the output size in bytes.
+fn check_rows_extents(
+    weights: &CudaStorageBytes,
+    activations: &CudaStorageBytes,
+    dtype: GgmlDType,
+    (ncols, nrows, m_rows): (usize, usize, usize),
+    op_label: &'static str,
+) -> Result<usize> {
+    validate_mmvq_extent(
+        op_label,
+        mmvq_format(dtype)?,
+        MmvqCall {
+            w_len_bytes: weights.len_bytes(),
+            w_start_byte_offset: 0,
+            act_len_bytes: activations.len_bytes(),
+            act_start_offset: 0,
+            stride_y: 1,
+            ncols,
+            nrows,
+        },
+    )?;
+    let f32_bytes = std::mem::size_of::<f32>();
+    let act_need = m_rows
+        .checked_mul(ncols)
+        .and_then(|e| e.checked_mul(f32_bytes))
+        .ok_or_else(|| mmvq_overflow(op_label))?;
+    if act_need > activations.len_bytes() {
+        return Err(mmvq_err(
+            op_label,
+            format!(
+                "activation block needs {act_need} bytes ({m_rows} rows of {ncols}) but the buffer holds {}",
+                activations.len_bytes(),
+            ),
+        ));
+    }
+    m_rows
+        .checked_mul(nrows)
+        .and_then(|e| e.checked_mul(f32_bytes))
+        .ok_or_else(|| mmvq_overflow(op_label))
+}
+
+/// A `usize` dimension as the `i32` the FFI takes, or the typed overflow error.
+fn dim_i32(op_label: &'static str, v: usize, dim_index: usize) -> Result<i32> {
+    i32::try_from(v).map_err(|_| {
+        Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            op: op_label,
+            dim_index,
+            dim_value: v,
+        })
+    })
+}
+
+/// `out[row, r] = sum_c W[r, c] * act[row, c]` for `m_rows` contiguous f32 activation rows and a
+/// block-packed `nrows x ncols` weight matrix; output is `m_rows x nrows` f32. `launch` makes the
+/// FFI call for the format (see `gguf_mmvq_rows!`) and returns its status.
+fn mmvq_rows_run(
+    weights: &CudaStorageBytes,
+    activations: &CudaStorageBytes,
+    dtype: GgmlDType,
+    dims: (usize, usize, usize),
+    launch: impl FnOnce(&RowsCall) -> i32,
+    op_label: &'static str,
+) -> Result<CudaStorageBytes> {
+    let (ncols, nrows, m_rows) = dims;
+    let device = weights.device().clone();
+    if activations.device().id() != device.id() {
+        return Err(Error::Msg(format!(
+            "{op_label}: weights and activations on different CUDA devices",
+        ))
+        .bt());
+    }
+    let out_bytes = check_rows_extents(weights, activations, dtype, dims, op_label)?;
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let m_i32 = dim_i32(op_label, m_rows, 2)?;
+    // One expert owning tokens [0, m): identity routing.
+    let ids: Vec<u8> = (0..m_i32).flat_map(|i| i.to_ne_bytes()).collect();
+    let offsets: Vec<u8> = [0_i32, m_i32]
+        .iter()
+        .flat_map(|i| i.to_ne_bytes())
+        .collect();
+    let ids_dev = CudaStorageBytes::from_cpu_bytes(&device, &ids)?;
+    let offsets_dev = CudaStorageBytes::from_cpu_bytes(&device, &offsets)?;
+    let scratch = Workspace::alloc(&device, m_rows * std::mem::size_of::<i32>())?;
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let call = RowsCall {
+        nrows: dim_i32(op_label, nrows, 1)?,
+        ncols: dim_i32(op_label, ncols, 0)?,
+        weights: weights.buffer().as_raw().0 as *const std::ffi::c_void,
+        activations: activations.buffer().as_raw().0 as *const std::ffi::c_void,
+        sorted_token_ids: ids_dev.buffer().as_raw().0 as *const i32,
+        expert_offsets: offsets_dev.buffer().as_raw().0 as *const i32,
+        output: out_buf.as_raw().0 as *mut std::ffi::c_void,
+        workspace: scratch.as_raw(),
+        workspace_bytes: scratch.bytes(),
+        stream: device.stream().as_raw(),
+    };
+    let status = launch(&call);
+    check(status, op_label)?;
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
+}
+
+macro_rules! gguf_mmvq_rows {
+    ($name:ident, $sys_stem:ident, $dtype:ident, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("Baracuda GGUF `", $op_label, "` over `m_rows` activation rows (batched MMVQ, one expert, identity routing).")]
+            pub fn $name(
+                weights: &CudaStorageBytes,
+                activations: &CudaStorageBytes,
+                ncols: usize,
+                nrows: usize,
+                m_rows: usize,
+            ) -> Result<CudaStorageBytes> {
+                mmvq_rows_run(
+                    weights,
+                    activations,
+                    GgmlDType::$dtype,
+                    (ncols, nrows, m_rows),
+                    |c| {
+                        // SAFETY: `mmvq_rows_run` built `c` from device buffers on one device and
+                        // checked, before this call: W's read extent and one activation row
+                        // (`validate_mmvq_extent`), all `m_rows` activation rows, the id and
+                        // offset buffers it just built (`4 * m_rows` and 8 bytes), a workspace of
+                        // `m_rows * 4` bytes as the launcher requires, and `m_rows * nrows` f32 of
+                        // output. `topk_weights` is null (weight 1.0) and `top_k == 1` (plain
+                        // store, no output aliasing).
+                        unsafe {
+                            sys::[<baracuda_kernels_mmvq_ $sys_stem _batched_run>](
+                                1,
+                                c.nrows,
+                                c.ncols,
+                                c.weights,
+                                c.activations,
+                                c.sorted_token_ids,
+                                c.expert_offsets,
+                                std::ptr::null(),
+                                c.output,
+                                1,
+                                c.workspace,
+                                c.workspace_bytes,
+                                c.stream,
+                            )
+                        }
+                    },
+                    $op_label,
+                )
+            }
+        }
+    };
+}
+
+gguf_mmvq_rows!(mmvq_rows_q4_0, q4_0, Q4_0, "mmvq_rows_q4_0");
+gguf_mmvq_rows!(mmvq_rows_q4_1, q4_1, Q4_1, "mmvq_rows_q4_1");
+gguf_mmvq_rows!(mmvq_rows_q5_0, q5_0, Q5_0, "mmvq_rows_q5_0");
+gguf_mmvq_rows!(mmvq_rows_q5_1, q5_1, Q5_1, "mmvq_rows_q5_1");
+gguf_mmvq_rows!(mmvq_rows_q8_0, q8_0, Q8_0, "mmvq_rows_q8_0");
+gguf_mmvq_rows!(mmvq_rows_q2_k, q2_K, Q2K, "mmvq_rows_q2_K");
+gguf_mmvq_rows!(mmvq_rows_q3_k, q3_K, Q3K, "mmvq_rows_q3_K");
+gguf_mmvq_rows!(mmvq_rows_q4_k, q4_K, Q4K, "mmvq_rows_q4_K");
+gguf_mmvq_rows!(mmvq_rows_q5_k, q5_K, Q5K, "mmvq_rows_q5_K");
+gguf_mmvq_rows!(mmvq_rows_q6_k, q6_K, Q6K, "mmvq_rows_q6_K");
+gguf_mmvq_rows!(mmvq_rows_q8_k, q8_K, Q8K, "mmvq_rows_q8_K");
+
 /// GAP-331: the MMVQ argument checks, without a device. Every decline test
 /// breaks exactly one predicate and pins that predicate's message, so a
 /// different check cannot satisfy it; each has an accepted neighbour, so an
@@ -683,6 +877,23 @@ mod tests {
     /// Pins the table against baracuda-kernels 0.0.1-alpha.79's
     /// `required_alignment` and the kernels' read chunks. Re-check it at every
     /// baracuda bump.
+    #[test]
+    fn mmvq_supports_follows_the_read_chunk_and_the_format_table() {
+        // Type-0/1: block 32, read chunk 64. K-quants: block and chunk 256.
+        assert!(mmvq_supports(GgmlDType::Q4_0, 128));
+        assert!(
+            !mmvq_supports(GgmlDType::Q4_0, 96),
+            "multiple of the block, not of the chunk"
+        );
+        assert!(!mmvq_supports(GgmlDType::Q4_0, 0));
+        assert!(mmvq_supports(GgmlDType::Q8_0, 64));
+        assert!(mmvq_supports(GgmlDType::Q4K, 256));
+        assert!(!mmvq_supports(GgmlDType::Q4K, 128));
+        // A dtype baracuda has no MMVQ kernel for is never supported, whatever the columns.
+        assert!(!mmvq_supports(GgmlDType::Q8_1, 256));
+        assert!(!mmvq_supports(GgmlDType::F32, 256));
+    }
+
     #[test]
     fn mmvq_format_table_matches_baracuda() {
         // (dtype, alignment, read chunk, block elems, block bytes)

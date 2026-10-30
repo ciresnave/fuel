@@ -779,6 +779,232 @@ pub mod conv1d {
 }
 
 // ===========================================================================
+// QMatMul — baracuda GGUF MMVQ (ROADMAP row 105)
+// ===========================================================================
+//
+// `(QMatMul, [F32, U32, F32], Cuda)`: F32 activations `[batch*m, k]` against a GGML block-packed
+// weight `[n, k/block]`, F32 output `[batch*m, n]`. Without this binding the quantized weights ran on
+// the CPU with a device round trip per use (row 105's measurement). One wrapper picks by
+// `quant_type` and row count:
+//   * `batch*m == 1` -> baracuda `mmvq_<fmt>` (decode gemv),
+//   * `batch*m  > 1` -> baracuda `mmvq_rows_<fmt>` (the batched MMVQ launcher with one expert).
+// A format or `k` baracuda has no kernel for (`Q8_1`, or `k` not a multiple of the format's read
+// chunk) is computed on the host through the same CPU kernel the CPU binding uses, so registering
+// this binding never turns a working quantized model into an error.
+
+pub mod qmatmul {
+    use super::*;
+    use fuel_cuda_backend::CudaStorageBytes;
+    use fuel_cuda_backend::baracuda::gguf as bk;
+    use fuel_graph::QuantType;
+    use fuel_ir::quantized::GgmlDType;
+
+    /// How many calls ran on the device kernels and how many took the host fallback, since
+    /// process start. The live test reads the deltas to prove which route a case took.
+    pub static DEVICE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    pub static HOST_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// `QuantType` -> the baracuda format, or `None` when baracuda has no MMVQ kernel for it.
+    fn ggml(q: QuantType) -> Option<GgmlDType> {
+        match q {
+            QuantType::Q4_0 => Some(GgmlDType::Q4_0),
+            QuantType::Q4_1 => Some(GgmlDType::Q4_1),
+            QuantType::Q5_0 => Some(GgmlDType::Q5_0),
+            QuantType::Q5_1 => Some(GgmlDType::Q5_1),
+            QuantType::Q8_0 => Some(GgmlDType::Q8_0),
+            QuantType::Q2K => Some(GgmlDType::Q2K),
+            QuantType::Q3K => Some(GgmlDType::Q3K),
+            QuantType::Q4_K_M => Some(GgmlDType::Q4K),
+            QuantType::Q5K => Some(GgmlDType::Q5K),
+            QuantType::Q6K => Some(GgmlDType::Q6K),
+            QuantType::Q8_1 => None,
+        }
+    }
+
+    type OneRow = fn(
+        &CudaStorageBytes,
+        &CudaStorageBytes,
+        Option<&Layout>,
+        i64,
+        usize,
+        usize,
+    ) -> Result<CudaStorageBytes>;
+    type Rows =
+        fn(&CudaStorageBytes, &CudaStorageBytes, usize, usize, usize) -> Result<CudaStorageBytes>;
+
+    /// The device kernels for `q`: `(one row, many rows)`.
+    fn kernels(q: QuantType) -> Option<(OneRow, Rows)> {
+        Some(match q {
+            QuantType::Q4_0 => (bk::mmvq_q4_0, bk::mmvq_rows_q4_0),
+            QuantType::Q4_1 => (bk::mmvq_q4_1, bk::mmvq_rows_q4_1),
+            QuantType::Q5_0 => (bk::mmvq_q5_0, bk::mmvq_rows_q5_0),
+            QuantType::Q5_1 => (bk::mmvq_q5_1, bk::mmvq_rows_q5_1),
+            QuantType::Q8_0 => (bk::mmvq_q8_0, bk::mmvq_rows_q8_0),
+            QuantType::Q2K => (bk::mmvq_q2_k, bk::mmvq_rows_q2_k),
+            QuantType::Q3K => (bk::mmvq_q3_k, bk::mmvq_rows_q3_k),
+            QuantType::Q4_K_M => (bk::mmvq_q4_k, bk::mmvq_rows_q4_k),
+            QuantType::Q5K => (bk::mmvq_q5_k, bk::mmvq_rows_q5_k),
+            QuantType::Q6K => (bk::mmvq_q6_k, bk::mmvq_rows_q6_k),
+            QuantType::Q8_1 => return None,
+        })
+    }
+
+    /// Run on the device when baracuda can, else `None`.
+    fn on_device(
+        q: QuantType,
+        w: &CudaStorageBytes,
+        act: &CudaStorageBytes,
+        rows: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<Option<CudaStorageBytes>> {
+        let (Some(dt), Some((one, many))) = (ggml(q), kernels(q)) else {
+            return Ok(None);
+        };
+        if !bk::mmvq_supports(dt, k) {
+            return Ok(None);
+        }
+        let out = if rows == 1 {
+            one(w, act, None, 0, k, n)?
+        } else {
+            many(w, act, k, n, rows)?
+        };
+        Ok(Some(out))
+    }
+
+    /// `out[r, o] = sum_c act[r, c] * w[o, c]` for `rows` activation rows against an `n x k`
+    /// weight matrix, accumulated in f64 and split across threads by output row.
+    fn host_matmul_f32(act: &[f32], w: &[f32], (rows, n, k): (usize, usize, usize)) -> Vec<f32> {
+        let mut out = vec![0.0f32; rows * n];
+        let workers = std::thread::available_parallelism().map_or(1, |p| p.get());
+        let per = (rows * n).div_ceil(workers).max(1);
+        std::thread::scope(|scope| {
+            for (chunk_index, chunk) in out.chunks_mut(per).enumerate() {
+                scope.spawn(move || {
+                    for (j, slot) in chunk.iter_mut().enumerate() {
+                        let flat = chunk_index * per + j;
+                        let (r, o) = (flat / n, flat % n);
+                        let a = &act[r * k..(r + 1) * k];
+                        let wr = &w[o * k..(o + 1) * k];
+                        let sum: f64 = a
+                            .iter()
+                            .zip(wr)
+                            .map(|(x, y)| f64::from(*x) * f64::from(*y))
+                            .sum();
+                        *slot = sum as f32;
+                    }
+                });
+            }
+        });
+        out
+    }
+
+    /// The host route for what the device kernels cannot run. Every format except `Q8_1`:
+    /// dequantize the weights and multiply with f32 activations, so the result carries the same
+    /// accuracy as the device route (the audit in `tests/baracuda_qmatmul_audit.rs`). `Q8_1` has no
+    /// dequantization (GAP-125) and is not a weight format models store, so it keeps the CPU
+    /// kernel's result, which quantizes the activations to 8 bits (about 7e-3 of the largest
+    /// output) and is outside the contract's declared bound.
+    fn on_host(
+        q: QuantType,
+        w: &CudaStorageBytes,
+        act: &CudaStorageBytes,
+        (batch_count, m, n, k): (usize, usize, usize, usize),
+    ) -> Result<CudaStorageBytes> {
+        let overflow = || Error::Msg("qmatmul_f32: output size overflows".into()).bt();
+        let rows = batch_count.checked_mul(m).ok_or_else(overflow)?;
+        let out_elems = rows.checked_mul(n).ok_or_else(overflow)?;
+        let (w_host, act_host) = (w.to_cpu_bytes()?, act.to_cpu_bytes()?);
+        let Some(dt) = ggml(q) else {
+            let act_cpu = fuel_cpu_backend::CpuStorageBytes::from_bytes(&act_host);
+            let w_cpu = fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_host);
+            let mut out_cpu = fuel_cpu_backend::CpuStorageBytes::from_zero_bytes(
+                out_elems
+                    .checked_mul(std::mem::size_of::<f32>())
+                    .ok_or_else(overflow)?,
+            );
+            crate::dispatch::qmatmul_cpu_by_type(
+                q,
+                &act_cpu,
+                &w_cpu,
+                &mut out_cpu,
+                batch_count,
+                m,
+                n,
+                k,
+            )?;
+            return CudaStorageBytes::from_cpu_bytes(w.device(), out_cpu.bytes());
+        };
+        let w_f32 = fuel_quantized::dequant_ggml_bytes(&w_host, dt, "qmatmul_f32 host fallback")?;
+        let act_f32: Vec<f32> = act_host
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let (need_w, need_act) = (n.checked_mul(k), rows.checked_mul(k));
+        if need_w != Some(w_f32.len()) || need_act.is_none_or(|e| e > act_f32.len()) {
+            return Err(Error::Msg(format!(
+                "qmatmul_f32 host fallback: weights hold {} values (need n*k = {n}x{k}), activations {} (need {rows}x{k})",
+                w_f32.len(),
+                act_f32.len(),
+            ))
+            .bt());
+        }
+        let out = host_matmul_f32(&act_f32, &w_f32, (rows, n, k));
+        CudaStorageBytes::from_cpu_bytes(w.device(), bytemuck::cast_slice(&out))
+    }
+
+    pub fn qmatmul_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        params: &OpParams,
+    ) -> Result<()> {
+        if inputs.len() != 2 || outputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "qmatmul_f32: expected 2 inputs (activations, weight bytes) + 1 output, got {} + {}",
+                inputs.len(),
+                outputs.len(),
+            ))
+            .bt());
+        }
+        let OpParams::QMatMul {
+            quant_type,
+            batch_count,
+            m,
+            n,
+            k,
+        } = params
+        else {
+            return Err(Error::Msg(format!(
+                "qmatmul_f32: expected OpParams::QMatMul, got {params:?}"
+            ))
+            .bt());
+        };
+        let (q, batch_count, m, n, k) = (*quant_type, *batch_count, *m, *n, *k);
+        let act_guard = read_storage(&inputs[0])?;
+        let w_guard = read_storage(&inputs[1])?;
+        let act = cuda_input(&act_guard)?;
+        let w = cuda_input(&w_guard)?;
+        let rows = batch_count
+            .checked_mul(m)
+            .ok_or_else(|| Error::Msg("qmatmul_f32: batch * m overflows".into()).bt())?;
+        let result = match on_device(q, w, act, rows, n, k)? {
+            Some(r) => {
+                DEVICE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                r
+            }
+            None => {
+                HOST_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                on_host(q, w, act, (batch_count, m, n, k))?
+            }
+        };
+        let mut out_guard = write_storage(&outputs[0])?;
+        *cuda_output(&mut out_guard)? = result;
+        Ok(())
+    }
+}
+
+// ===========================================================================
 // AwqMatmul — baracuda W4A16 AWQ GEMM (ROADMAP row 31a)
 // ===========================================================================
 //
@@ -4000,6 +4226,27 @@ fn register_cuda_causal_conv1d_from_contract(table: &mut KernelBindingTable) {
         .expect("CUDA causal_conv1d contract must register into the binding table");
 }
 
+/// The authored CUDA (baracuda) QMatMul kernel contract (`include_str!`), imported by
+/// [`register_cuda_qmatmul_from_contract`] - the SOLE registration path.
+const CUDA_QMATMUL_CONTRACT: &str = include_str!("../kernel-contracts/cuda/qmatmul.fkc.md");
+
+/// Register the CUDA QMatMul binding (ROADMAP row 105) FROM its FKC contract. Runs BEFORE
+/// `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_qmatmul_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_QMATMUL_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA qmatmul contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda qmatmul contract declares no fused ops"
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA qmatmul contract must register into the binding table");
+}
+
 /// The authored CUDA (baracuda) AWQ matmul kernel contract (`include_str!`), imported by
 /// [`register_cuda_awq_matmul_from_contract`] - the SOLE registration path.
 const CUDA_AWQ_MATMUL_CONTRACT: &str = include_str!("../kernel-contracts/cuda/awq_matmul.fkc.md");
@@ -4233,6 +4480,7 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     register_cuda_pad_backward_from_contract(table);
     register_cuda_causal_conv1d_from_contract(table);
     register_cuda_awq_matmul_from_contract(table);
+    register_cuda_qmatmul_from_contract(table);
     register_cuda_indexing_from_contract(table);
 
     // ----- GROUP 6 MatMul facades (gemm_dense f32/f64/f16/bf16 + gemm_int
