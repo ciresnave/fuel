@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.31.4 - 2026-10-30
+
+### Added
+
+- `WeightStorage::Ggml { qtype, .. }`, `WeightStorage::from_ggml_bytes` and `WeightStorage::resident_bytes` (ROADMAP row 124, step 1): a Q8_0, Q4_K or Q6_K weight tensor of a GGUF now stays quantized from load to `Op::QMatMul` in `QuantizedLlama3Model::from_gguf` instead of being expanded to f32 (4x or more the memory; a tensor whose `in_features` is not a whole number of blocks still takes the f32 path). Other `lazy_quantized_*` loaders are unchanged. `WeightStorage` gained a variant, so an exhaustive `match` on it needs an arm (`fuel-nn`'s `Conv2d::absorb_bn` got one); `fuel-tensor`, `fuel-nn` and `fuel-transformers` build and `clippy --tests -D warnings` clean, other crates were not compiled and name no variant that would need one. Test `fuel-transformers/tests/gguf_resident_quantized.rs` (CPU only; no GPU run, no real GGUF).
+
 ## v0.31.1 - 2026-10-30
 
 ### Changed

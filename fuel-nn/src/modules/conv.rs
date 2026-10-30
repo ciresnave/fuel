@@ -385,9 +385,9 @@ impl Conv2d {
         let weight_f32: Vec<f32> = match &self.weight {
             WeightStorage::F32(a) => a.iter().copied().collect(),
             WeightStorage::BF16(a) => a.iter().map(|v| v.to_f32()).collect(),
-            WeightStorage::Q4_0 { .. } => {
+            WeightStorage::Q4_0 { .. } | WeightStorage::Ggml { .. } => {
                 return Err(fuel_ir::error::Error::Msg(
-                    "Conv2d::absorb_bn: Q4_0 weights cannot be folded \
+                    "Conv2d::absorb_bn: Q4_0 / GGML block weights cannot be folded \
                      with a following BatchNorm (no lossless host f32 \
                      view). Dequantize first, fold, then requantize if \
                      desired."
@@ -443,7 +443,10 @@ impl Conv2d {
                 WeightStorage::BF16(Arc::from(as_bf16))
             }
             // The Q4_0 / WithLoRA arms returned early above.
-            WeightStorage::Q4_0 { .. } | WeightStorage::Awq(_) | WeightStorage::WithLoRA { .. } => {
+            WeightStorage::Q4_0 { .. }
+            | WeightStorage::Ggml { .. }
+            | WeightStorage::Awq(_)
+            | WeightStorage::WithLoRA { .. } => {
                 unreachable!()
             }
         };
