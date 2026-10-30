@@ -12,6 +12,7 @@
 //! Status: wired, NOT run on hardware by CI (no hosted runner has oneMKL). The once-only logic in
 //! [`install_once`] is feature-independent and unit-tested in every build.
 
+#[cfg(any(feature = "onemkl", test))]
 use std::sync::OnceLock;
 
 /// What happened when a backend's kernels were considered for installation.
@@ -25,6 +26,7 @@ pub enum AccelStatus {
 
 /// Run `probe` then, if it passed, `register`, at most once per `cell`; later calls return the
 /// recorded status without calling either closure again.
+#[cfg(any(feature = "onemkl", test))]
 pub(crate) fn install_once(
     cell: &OnceLock<AccelStatus>,
     probe: impl FnOnce() -> Result<(), String>,
