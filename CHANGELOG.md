@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.30.7 - 2026-10-30
+
+### Added
+
+- `fuel_tensor::cpu_accel` (ROADMAP row 66, MKL step): with `--features onemkl`, the first lazy realize probes oneMKL once (`probe_mkl_loadable`) and, if it loads, adds `register_mkl_cpu_kernels` to the global binding table, so MKL's matmul is offered to the judge (it had no production caller). A library that is not loadable is not an error: nothing is registered, the scalar CPU kernels stay in force, and `cpu_accel_report()` returns `NotLoadable(why)`. Wired, NOT run on hardware by CI: no hosted runner has oneMKL, so only the feature-independent once-only tests run there (registers once across repeated calls; a failed probe registers nothing and stays failed); the feature-on test passed locally only (ROADMAP row 112 adds a self-hosted job). `mkl_rt` is a load-time import: a `--features onemkl` binary without the MKL bin directory on `PATH` exits `STATUS_DLL_NOT_FOUND` before any probe, so the silent fallback holds only where the DLL is discoverable. AOCL, Metal and the CI check for unregistered kernels are the next PRs of row 66.
+
 ## v0.30.6 - 2026-10-30
 
 ### Changed

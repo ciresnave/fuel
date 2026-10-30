@@ -895,6 +895,7 @@ fn build_optimized_graph(
         options = options.with_telemetry(hooks);
     }
 
+    crate::cpu_accel::ensure_installed();
     let bindings_guard = global_bindings();
     let mut g = graph
         .write()
