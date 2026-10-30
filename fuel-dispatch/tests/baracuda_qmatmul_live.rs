@@ -68,6 +68,7 @@ struct Run {
 
 /// Device 0 and the registered CUDA QMatMul wrapper, looked up the way the executor does.
 fn cuda_kernel() -> (CudaDevice, fuel_dispatch::kernel::KernelRef) {
+    fuel_test_support::require_gpu_run_lock();
     let dev = CudaDevice::new(0).expect("cuda device");
     let mut table = KernelBindingTable::new();
     register_cuda_kernels(&mut table);
