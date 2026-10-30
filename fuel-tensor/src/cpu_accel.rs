@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! One-time install of the vendor CPU BLAS kernels (oneMKL, behind the `onemkl` feature) into the
+//! One-time install of the vendor CPU BLAS kernels (oneMKL behind the `onemkl` feature, AOCL behind `aocl`) into the
 //! global binding table (ROADMAP row 66).
 //!
 //! `fuel_mkl_cpu_backend::register_mkl_cpu_kernels` had no production caller: building with
@@ -9,10 +9,10 @@
 //! A library that is NOT loadable is not an error: nothing is registered, the scalar CPU kernels
 //! stay in force, and [`cpu_accel_report`] says why, so a user can ask "why not MKL".
 //!
-//! Status: wired, NOT run on hardware by CI (no hosted runner has oneMKL). The once-only logic in
+//! Status: wired, NOT run on hardware by CI (no hosted runner has oneMKL or AOCL). The once-only logic in
 //! `install_once` is feature-independent and unit-tested in every build.
 
-#[cfg(any(feature = "onemkl", test))]
+#[cfg(any(feature = "onemkl", feature = "aocl", test))]
 use std::sync::OnceLock;
 
 /// What happened when a backend's kernels were considered for installation.
@@ -26,7 +26,7 @@ pub enum AccelStatus {
 
 /// Run `probe` then, if it passed, `register`, at most once per `cell`; later calls return the
 /// recorded status without calling either closure again.
-#[cfg(any(feature = "onemkl", test))]
+#[cfg(any(feature = "onemkl", feature = "aocl", test))]
 pub(crate) fn install_once(
     cell: &OnceLock<AccelStatus>,
     probe: impl FnOnce() -> Result<(), String>,
@@ -44,6 +44,8 @@ pub(crate) fn install_once(
 
 #[cfg(feature = "onemkl")]
 static MKL: OnceLock<AccelStatus> = OnceLock::new();
+#[cfg(feature = "aocl")]
+static AOCL: OnceLock<AccelStatus> = OnceLock::new();
 
 /// Install every enabled vendor CPU backend, once. Cheap after the first call.
 pub(crate) fn ensure_installed() {
@@ -59,6 +61,18 @@ pub(crate) fn ensure_installed() {
             },
         );
     }
+    #[cfg(feature = "aocl")]
+    {
+        install_once(
+            &AOCL,
+            || fuel_aocl_cpu_backend::probe_aocl_loadable().map_err(|e| format!("{e:?}")),
+            || {
+                fuel_dispatch::dispatch::extend_global_bindings(
+                    fuel_aocl_cpu_backend::register_aocl_cpu_kernels,
+                )
+            },
+        );
+    }
 }
 
 /// The install result per vendor backend that this build enables, as `(name, status)`. A backend
@@ -69,6 +83,10 @@ pub fn cpu_accel_report() -> Vec<(&'static str, AccelStatus)> {
     #[cfg(feature = "onemkl")]
     if let Some(s) = MKL.get() {
         out.push(("mkl", s.clone()));
+    }
+    #[cfg(feature = "aocl")]
+    if let Some(s) = AOCL.get() {
+        out.push(("aocl", s.clone()));
     }
     out
 }
@@ -114,14 +132,14 @@ mod tests {
         assert_eq!(registered.load(Ordering::SeqCst), 0);
     }
 
-    #[cfg(feature = "onemkl")]
+    #[cfg(any(feature = "onemkl", feature = "aocl"))]
     #[test]
-    fn ensure_installed_records_a_status_once_with_the_feature_on() {
+    fn ensure_installed_records_a_status_once_with_the_features_on() {
         ensure_installed();
         let first = cpu_accel_report();
         ensure_installed();
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].0, "mkl");
+        let expected = usize::from(cfg!(feature = "onemkl")) + usize::from(cfg!(feature = "aocl"));
+        assert_eq!(first.len(), expected);
         assert_eq!(cpu_accel_report(), first);
     }
 }
