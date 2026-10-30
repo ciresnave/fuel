@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.30.8 - 2026-10-30
+
+### Added
+
+- `fuel_tensor::cpu_accel` (ROADMAP row 66, AOCL step): with `--features aocl`, the first lazy realize probes AMD AOCL BLIS once (`probe_aocl_loadable`) and, if it loads, adds `register_aocl_cpu_kernels` to the global binding table, the same once-only install and `cpu_accel_report()` entry (`aocl`) as oneMKL in 0.30.7. Wired, NOT run on hardware by CI: no hosted runner has AOCL, so only the feature-independent once-only tests run there. Locally the feature-on build compiles, but its test exe exits `STATUS_DLL_NOT_FOUND` even with `amd-blis\lib\LP64` on `PATH`, so the AOCL feature-on test has NOT been run anywhere. A `--features aocl` binary needs the AOCL DLL at load time. Metal and the CI check for unregistered kernels are the remaining PRs of row 66.
+
 ## v0.30.7 - 2026-10-30
 
 ### Added
