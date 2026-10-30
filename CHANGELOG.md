@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.31.1 - 2026-10-30
+
+### Changed
+
+- Docs only: `docs/design-notes/2026-10-30-qwen35-27b-audit.md` and ROADMAP rows 114 to 124 (Qwen3.8-27B re-audit; row 40 updated). Largest finding: `WeightStorage` keeps only `Q4_0` quantized and `QuantizedLlama3Model::from_gguf` dequantizes every other GGML dtype to f32 at load (row 124, first in the PM's order). Sizes in the rows are estimates; the note tags each fact as read, arithmetic or not measured. No code changed.
+
 ## v0.31.0 - 2026-10-30
 
 ### Changed
