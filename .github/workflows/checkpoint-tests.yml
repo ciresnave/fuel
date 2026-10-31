@@ -1,0 +1,62 @@
+# Tests that need a real model checkpoint from the Hugging Face Hub, on the self-hosted Windows runner (ROADMAP row 130).
+# Policy: agentlife docs/RUNNER-SETUP.md (push to main + workflow_dispatch only, NO pull_request trigger, no secrets).
+# CireSnave 2026-10-16: tests GitHub cannot run go to a self-hosted run with the same conditions, never `#[ignore]`.
+#
+# CONDITIONS: Hub network (public repos, no token), `FUEL_REQUIRE_HUB=1` so a missing checkpoint FAILS instead of
+# declaring a skip, and Python on PATH for `pip install huggingface_hub` (the step fails loudly without it).
+# The checkpoint is fetched into a per-job HF_HOME under RUNNER_TEMP; an ephemeral runner starts empty, so every
+# run downloads it (about 1.7 GB for Qwen3.5-0.8B).
+#
+# WHAT THIS COVERS: the tests that read `Qwen/Qwen3.5-0.8B` (ROADMAP row 115). Add a step per new checkpoint test.
+# WHAT IT DOES NOT COVER: GPU. This is CPU, f32.
+name: checkpoint-tests
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  FUEL_REQUIRE_HUB: "1"
+
+jobs:
+  qwen35-gated-deltanet:
+    name: Qwen3.5-0.8B Gated DeltaNet oracles (self-hosted)
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Toolchain visible to this account (fails loudly)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($t in 'rustup', 'cargo', 'rustc', 'python') {
+            $c = Get-Command $t -ErrorAction SilentlyContinue
+            if (-not $c) { throw "$t is NOT on PATH for this account; the job cannot run" }
+            "$t : $($c.Source)"
+          }
+          rustc --version
+
+      - name: Fetch the checkpoint into a job-local HF cache
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hf = Join-Path $env:RUNNER_TEMP 'hf'
+          "HF_HOME=$hf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          python -m pip install --quiet huggingface_hub
+          if ($LASTEXITCODE -ne 0) { throw "pip install huggingface_hub failed ($LASTEXITCODE)" }
+          $env:HF_HOME = $hf
+          python -c "from huggingface_hub import hf_hub_download as d; [d('Qwen/Qwen3.5-0.8B', f) for f in ('config.json', 'model.safetensors-00001-of-00001.safetensors')]"
+          if ($LASTEXITCODE -ne 0) { throw "checkpoint download failed ($LASTEXITCODE)" }
+
+      - name: cargo test (the two Gated DeltaNet oracles)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test -j 4 --locked --release -p fuel-transformers --test qwen3_5_gdn_mixer --test qwen3_5_gdn_recurrence -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "cargo test exit $LASTEXITCODE" }
