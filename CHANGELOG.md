@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.34.9 - 2026-10-31
+
+### Added
+
+- ROADMAP row 134, slice 1: `.github/workflows/lavapipe-vulkan.yml` runs every live Vulkan test (`vulkan_dispatch_live`, `--ignored`) on Lavapipe (subgroup size 8) on a hosted Linux runner, a CPU job. `FUEL_REQUIRE_VULKAN=1` makes `backend_or_skip` panic when no device is found instead of skipping every test green. The leg is expected to be RED on main until the subgroup partial-combine kernels are fixed (slice 2); it is not a required check.
+
 ## v0.34.4 - 2026-10-31
 
 ### Added

@@ -1,0 +1,50 @@
+# The live Vulkan tests on Lavapipe (Mesa's CPU Vulkan), on a hosted Linux runner (ROADMAP row 134).
+# Lavapipe reports subgroup size 8, which the NVIDIA (32) and AMD (32/64) devices we test on never do. Kernels that combine
+# per-subgroup partials in the first subgroup only are wrong below 16 lanes (vulkane#133), so this leg is the born-red for
+# that defect. It is a CPU job: no GPU is needed or used.
+# CONDITIONS: `FUEL_REQUIRE_VULKAN=1` so a missing device FAILS instead of every live test skipping green.
+# TRIGGERS: push to main, workflow_dispatch, and pull_request only for the files that can change the answer.
+name: lavapipe-vulkan
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/lavapipe-vulkan.yml"
+      - "fuel-kernels-source/**"
+      - "fuel-vulkan-kernels/**"
+      - "fuel-vulkan-backend/**"
+      - "fuel-dispatch/tests/vulkan_dispatch_live.rs"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  FUEL_REQUIRE_VULKAN: "1"
+
+jobs:
+  live-vulkan-lavapipe:
+    name: Live Vulkan tests on Lavapipe (subgroup 8)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Lavapipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          vulkaninfo --summary
+
+      - name: The device is Lavapipe and reports its subgroup size
+        run: |
+          vulkaninfo | grep -E "deviceName|driverName|subgroupSize|shaderFloat64" | sort -u
+
+      - name: cargo test (live Vulkan tests, every one, failures do not stop the run)
+        run: |
+          set -o pipefail
+          cargo test -j 2 --locked -p fuel-dispatch --features vulkan --test vulkan_dispatch_live --no-fail-fast -- --ignored --test-threads=1 2>&1 | tee lavapipe.log
+          grep -E "^test result" lavapipe.log

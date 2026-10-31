@@ -66,7 +66,13 @@ fn backend_or_skip() -> Option<VkTest> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let backend = SHARED
         .get_or_init(|| VulkanBackend::new().ok().map(Arc::new))
-        .clone()?;
+        .clone();
+    // `FUEL_REQUIRE_VULKAN=1` turns "no device" from a green skip into a failure, so a CI job
+    // that is supposed to have a (software) Vulkan device cannot pass by running nothing.
+    if backend.is_none() && std::env::var_os("FUEL_REQUIRE_VULKAN").is_some_and(|v| v == "1") {
+        panic!("FUEL_REQUIRE_VULKAN=1 but VulkanBackend::new() found no usable device");
+    }
+    let backend = backend?;
     Some(VkTest {
         _serial: serial,
         backend,
