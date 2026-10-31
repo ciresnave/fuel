@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.34.6 - 2026-10-31
+
+### Fixed
+
+- `SamplingStrategy::Temperature { temp: 0.0 }` is documented as "effectively greedy" but `sample_logits` set the inverse temperature to 1.0 and sampled from the UNSCALED softmax, so a caller asking for greedy through the temperature knob got random tokens (the fix is in `fuel-tensor/src/lazy.rs`). `temp <= 0.0` and NaN are now greedy. New `fuel-tensor/tests/sampling_temperature_zero.rs`: temp 0.0 failed on every draw before the fix; a positive-temperature control proves the harness can see non-greedy output. Not changed: `spec_softmax_temp` (speculative decode) has the same `temp == 0.0` shortcut and is a separate decision (a one-hot distribution would change the accept rule).
+
 ## v0.34.5 - 2026-10-31
 
 ### Fixed
