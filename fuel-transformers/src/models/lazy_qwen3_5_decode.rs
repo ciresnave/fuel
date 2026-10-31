@@ -96,6 +96,33 @@ fn gdn_past(x: &Tensor, c: &LayerCache, m: &Qwen3_5Model) -> Result<Option<GdnSt
     }))
 }
 
+fn attn_past(c: &LayerCache) -> Option<AttnPast<'_>> {
+    match c {
+        LayerCache::Attn { k, v, len } => Some(AttnPast { k, v, len: *len }),
+        _ => None,
+    }
+}
+
+fn mixer_cached(
+    x: &Tensor,
+    layer: &Qwen3_5Layer,
+    cache: &LayerCache,
+    m: &Qwen3_5Model,
+) -> Result<(Tensor, NewState)> {
+    match &layer.mixer {
+        Qwen3_5Mixer::GatedDeltaNet(w) => {
+            let past = gdn_past(x, cache, m)?;
+            let (y, st) = gated_delta_net_mixer(x, w, &m.config, past.as_ref())?;
+            Ok((y, NewState::Gdn(st)))
+        }
+        Qwen3_5Mixer::FullAttention(w) => {
+            let (y, k, v) =
+                gated_full_attention_cached(x, w, &m.config, attn_past(cache).as_ref())?;
+            Ok((y, NewState::Attn { k, v }))
+        }
+    }
+}
+
 fn layer_cached(
     h: &Tensor,
     layer: &Qwen3_5Layer,
@@ -104,21 +131,7 @@ fn layer_cached(
 ) -> Result<(Tensor, NewState)> {
     let cfg = &m.config;
     let x = h.rms_norm_affine(Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
-    let (mixed, new) = match &layer.mixer {
-        Qwen3_5Mixer::GatedDeltaNet(w) => {
-            let past = gdn_past(&x, cache, m)?;
-            let (y, st) = gated_delta_net_mixer(&x, w, cfg, past.as_ref())?;
-            (y, NewState::Gdn(st))
-        }
-        Qwen3_5Mixer::FullAttention(w) => {
-            let past = match cache {
-                LayerCache::Attn { k, v, len } => Some(AttnPast { k, v, len: *len }),
-                _ => None,
-            };
-            let (y, k, v) = gated_full_attention_cached(&x, w, cfg, past.as_ref())?;
-            (y, NewState::Attn { k, v })
-        }
-    };
+    let (mixed, new) = mixer_cached(&x, layer, cache, m)?;
     Ok((mlp_block(&h.add(&mixed)?, layer, cfg)?, new))
 }
 
@@ -144,7 +157,6 @@ impl Qwen3_5Model {
                 Error::Msg("Qwen3_5Model::decode: cache is from another model".into()).bt(),
             );
         }
-        let t = tokens.len();
         let mut h = Tensor::embed_tokens(
             Arc::clone(&w.token_embedding),
             cfg.vocab_size,
@@ -152,7 +164,7 @@ impl Qwen3_5Model {
             tokens,
             &Device::cpu(),
         )?
-        .reshape(Shape::from_dims(&[t, cfg.hidden_size]))?;
+        .reshape(Shape::from_dims(&[tokens.len(), cfg.hidden_size]))?;
         let mut news = Vec::with_capacity(w.layers.len());
         for (layer, c) in w.layers.iter().zip(&cache.layers) {
             let (next, new) = layer_cached(&h, layer, c, self)?;
@@ -163,38 +175,47 @@ impl Qwen3_5Model {
         let logits = w
             .output
             .apply_linear(&normed, cfg.hidden_size, cfg.vocab_size)?;
-        let mut targets: Vec<&Tensor> = vec![&logits];
-        for n in &news {
-            match n {
-                NewState::Gdn(s) => targets.extend([&s.recurrent, &s.conv_window]),
-                NewState::Attn { k, v } => targets.extend([k, v]),
-            }
-        }
-        let mut out = realize_many_f32(&targets).into_iter();
-        let logits = out
-            .next()
-            .ok_or_else(|| Error::Msg("Qwen3_5Model::decode: no logits".into()).bt())?;
-        let start = cache.len;
-        let mut next = || {
-            out.next()
-                .ok_or_else(|| Error::Msg("Qwen3_5Model::decode: missing cache entry".into()).bt())
-        };
-        let mut stored = Vec::with_capacity(news.len());
-        for n in &news {
-            stored.push(match n {
-                NewState::Gdn(_) => LayerCache::Gdn {
-                    recurrent: next()?,
-                    conv_window: next()?,
-                },
-                NewState::Attn { .. } => LayerCache::Attn {
-                    k: next()?,
-                    v: next()?,
-                    len: start + t,
-                },
-            });
-        }
+        let (logits, stored) = realize_step(&logits, &news, cache.len + tokens.len())?;
         cache.layers = stored;
-        cache.len = start + t;
+        cache.len += tokens.len();
         Ok(logits)
     }
+}
+
+/// Realise the logits and every new cache entry in one walk; `len` is the position after this call.
+fn realize_step(
+    logits: &Tensor,
+    news: &[NewState],
+    len: usize,
+) -> Result<(Vec<f32>, Vec<LayerCache>)> {
+    let mut targets: Vec<&Tensor> = vec![logits];
+    for n in news {
+        match n {
+            NewState::Gdn(s) => targets.extend([&s.recurrent, &s.conv_window]),
+            NewState::Attn { k, v } => targets.extend([k, v]),
+        }
+    }
+    let mut out = realize_many_f32(&targets).into_iter();
+    let logits = out
+        .next()
+        .ok_or_else(|| Error::Msg("Qwen3_5Model::decode: no logits".into()).bt())?;
+    let mut next = || {
+        out.next()
+            .ok_or_else(|| Error::Msg("Qwen3_5Model::decode: missing cache entry".into()).bt())
+    };
+    let mut stored = Vec::with_capacity(news.len());
+    for n in news {
+        stored.push(match n {
+            NewState::Gdn(_) => LayerCache::Gdn {
+                recurrent: next()?,
+                conv_window: next()?,
+            },
+            NewState::Attn { .. } => LayerCache::Attn {
+                k: next()?,
+                v: next()?,
+                len,
+            },
+        });
+    }
+    Ok((logits, stored))
 }

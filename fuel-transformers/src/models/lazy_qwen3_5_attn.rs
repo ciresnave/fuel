@@ -103,6 +103,46 @@ pub fn gated_full_attention(
     Ok(gated_full_attention_cached(x, w, cfg, None)?.0)
 }
 
+/// The keys and values with the cached ones in front: `[1, n_kv_heads, past.len + T, head_dim]`.
+fn with_past(
+    x: &Tensor,
+    k: Tensor,
+    v: Tensor,
+    past: Option<&AttnPast<'_>>,
+    cfg: &Qwen3_5Config,
+) -> Result<(Tensor, Tensor)> {
+    let Some(p) = past else { return Ok((k, v)) };
+    let dims = Shape::from_dims(&[1, cfg.num_key_value_heads, p.len, cfg.head_dim]);
+    let past_k = x.const_f32_like(p.k.to_vec(), dims.clone())?;
+    let past_v = x.const_f32_like(p.v.to_vec(), dims)?;
+    Ok((past_k.concat(&k, 2)?, past_v.concat(&v, 2)?))
+}
+
+/// Causal softmax attention of `q` over the (already grown) `k`, `v`, heads merged: `[T, nh * hd]`.
+fn attend(
+    x: &Tensor,
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    start: usize,
+    cfg: &Qwen3_5Config,
+) -> Result<Tensor> {
+    let t = x.shape().dims()[0];
+    let (nh, hd) = (cfg.num_attention_heads, cfg.head_dim);
+    let n_rep = nh / cfg.num_key_value_heads;
+    let k_rep = k.repeat_interleave(1_usize, n_rep)?;
+    let v_rep = v.repeat_interleave(1_usize, n_rep)?;
+    let scores = q
+        .matmul(&k_rep.transpose()?)?
+        .mul_scalar(1.0 / (hd as f64).sqrt())
+        .broadcast_add(&causal_mask(x, t, start)?)?;
+    scores
+        .softmax_last_dim()?
+        .matmul(&v_rep)?
+        .merge_heads()?
+        .reshape(Shape::from_dims(&[t, nh * hd]))
+}
+
 /// [`gated_full_attention`] for `T` new tokens after `past`: the new tokens take positions
 /// `past.len..past.len + T`. Returns `(y [T, hidden], k, v)` where `k` and `v` are the grown
 /// `[1, n_kv_heads, past.len + T, head_dim]` keys and values to store for the next call.
@@ -112,37 +152,13 @@ pub fn gated_full_attention_cached(
     cfg: &Qwen3_5Config,
     past: Option<&AttnPast<'_>>,
 ) -> Result<(Tensor, Tensor, Tensor)> {
-    let t = x.shape().dims()[0];
-    let (nh, nkv, hd) = (
-        cfg.num_attention_heads,
-        cfg.num_key_value_heads,
-        cfg.head_dim,
-    );
     let start = past.map_or(0, |p| p.len);
     let (q, k, v, gate) = project(x, w, cfg, start)?;
-    let (k, v) = match past {
-        None => (k, v),
-        Some(p) => {
-            let dims = Shape::from_dims(&[1, nkv, p.len, hd]);
-            let past_k = x.const_f32_like(p.k.to_vec(), dims.clone())?;
-            let past_v = x.const_f32_like(p.v.to_vec(), dims)?;
-            (past_k.concat(&k, 2)?, past_v.concat(&v, 2)?)
-        }
-    };
-    let n_rep = nh / nkv;
-    let k_rep = k.repeat_interleave(1_usize, n_rep)?;
-    let v_rep = v.repeat_interleave(1_usize, n_rep)?;
-    let scores = q
-        .matmul(&k_rep.transpose()?)?
-        .mul_scalar(1.0 / (hd as f64).sqrt())
-        .broadcast_add(&causal_mask(x, t, start)?)?;
-    let ctx = scores
-        .softmax_last_dim()?
-        .matmul(&v_rep)?
-        .merge_heads()?
-        .reshape(Shape::from_dims(&[t, nh * hd]))?;
+    let (k, v) = with_past(x, k, v, past, cfg)?;
+    let ctx = attend(x, &q, &k, &v, start, cfg)?;
+    let nhd = cfg.num_attention_heads * cfg.head_dim;
     let y = w
         .o_proj
-        .apply_linear(&ctx.mul(&gate.sigmoid())?, nh * hd, cfg.hidden_size)?;
+        .apply_linear(&ctx.mul(&gate.sigmoid())?, nhd, cfg.hidden_size)?;
     Ok((y, k, v))
 }
