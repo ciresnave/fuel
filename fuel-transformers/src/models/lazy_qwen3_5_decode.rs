@@ -144,27 +144,37 @@ impl Qwen3_5Model {
         }
     }
 
-    /// Feed `tokens` after the `cache.len()` tokens already consumed and return their logits
-    /// `[tokens.len(), vocab]` (row-major). The cache is only updated when the call succeeds.
-    pub fn decode(&self, cache: &mut Qwen3_5Cache, tokens: &[u32]) -> Result<Vec<f32>> {
-        let cfg = &self.config;
-        let w = &self.weights;
+    fn check_call(&self, cache: &Qwen3_5Cache, tokens: &[u32]) -> Result<()> {
         if tokens.is_empty() {
             return Err(Error::Msg("Qwen3_5Model::decode: no tokens".into()).bt());
         }
-        if cache.layers.len() != w.layers.len() {
+        if cache.layers.len() != self.weights.layers.len() {
             return Err(
                 Error::Msg("Qwen3_5Model::decode: cache is from another model".into()).bt(),
             );
         }
-        let mut h = Tensor::embed_tokens(
-            Arc::clone(&w.token_embedding),
+        Ok(())
+    }
+
+    fn embed(&self, tokens: &[u32]) -> Result<Tensor> {
+        let cfg = &self.config;
+        Tensor::embed_tokens(
+            Arc::clone(&self.weights.token_embedding),
             cfg.vocab_size,
             cfg.hidden_size,
             tokens,
             &Device::cpu(),
         )?
-        .reshape(Shape::from_dims(&[tokens.len(), cfg.hidden_size]))?;
+        .reshape(Shape::from_dims(&[tokens.len(), cfg.hidden_size]))
+    }
+
+    /// Feed `tokens` after the `cache.len()` tokens already consumed and return their logits
+    /// `[tokens.len(), vocab]` (row-major). The cache is only updated when the call succeeds.
+    pub fn decode(&self, cache: &mut Qwen3_5Cache, tokens: &[u32]) -> Result<Vec<f32>> {
+        let cfg = &self.config;
+        let w = &self.weights;
+        self.check_call(cache, tokens)?;
+        let mut h = self.embed(tokens)?;
         let mut news = Vec::with_capacity(w.layers.len());
         for (layer, c) in w.layers.iter().zip(&cache.layers) {
             let (next, new) = layer_cached(&h, layer, c, self)?;
@@ -199,23 +209,32 @@ fn realize_step(
     let logits = out
         .next()
         .ok_or_else(|| Error::Msg("Qwen3_5Model::decode: no logits".into()).bt())?;
+    let stored = news
+        .iter()
+        .map(|n| stored_entry(n, len, &mut out))
+        .collect::<Result<Vec<_>>>()?;
+    Ok((logits, stored))
+}
+
+/// Take the realised buffers of one layer's new state off `out`, in the order they were queued.
+fn stored_entry(
+    n: &NewState,
+    len: usize,
+    out: &mut impl Iterator<Item = Vec<f32>>,
+) -> Result<LayerCache> {
     let mut next = || {
         out.next()
             .ok_or_else(|| Error::Msg("Qwen3_5Model::decode: missing cache entry".into()).bt())
     };
-    let mut stored = Vec::with_capacity(news.len());
-    for n in news {
-        stored.push(match n {
-            NewState::Gdn(_) => LayerCache::Gdn {
-                recurrent: next()?,
-                conv_window: next()?,
-            },
-            NewState::Attn { .. } => LayerCache::Attn {
-                k: next()?,
-                v: next()?,
-                len,
-            },
-        });
-    }
-    Ok((logits, stored))
+    Ok(match n {
+        NewState::Gdn(_) => LayerCache::Gdn {
+            recurrent: next()?,
+            conv_window: next()?,
+        },
+        NewState::Attn { .. } => LayerCache::Attn {
+            k: next()?,
+            v: next()?,
+            len,
+        },
+    })
 }

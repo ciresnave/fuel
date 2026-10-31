@@ -132,15 +132,26 @@ fn attend(
     let n_rep = nh / cfg.num_key_value_heads;
     let k_rep = k.repeat_interleave(1_usize, n_rep)?;
     let v_rep = v.repeat_interleave(1_usize, n_rep)?;
-    let scores = q
-        .matmul(&k_rep.transpose()?)?
-        .mul_scalar(1.0 / (hd as f64).sqrt())
-        .broadcast_add(&causal_mask(x, t, start)?)?;
-    scores
-        .softmax_last_dim()?
+    let probs = attention_probs(x, q, &k_rep, start, hd)?;
+    probs
         .matmul(&v_rep)?
         .merge_heads()?
         .reshape(Shape::from_dims(&[t, nh * hd]))
+}
+
+/// `softmax(q k^T / sqrt(hd) + causal mask)` with the keys already repeated to the query heads.
+fn attention_probs(
+    x: &Tensor,
+    q: &Tensor,
+    k_rep: &Tensor,
+    start: usize,
+    hd: usize,
+) -> Result<Tensor> {
+    let t = x.shape().dims()[0];
+    q.matmul(&k_rep.transpose()?)?
+        .mul_scalar(1.0 / (hd as f64).sqrt())
+        .broadcast_add(&causal_mask(x, t, start)?)?
+        .softmax_last_dim()
 }
 
 /// [`gated_full_attention`] for `T` new tokens after `past`: the new tokens take positions
