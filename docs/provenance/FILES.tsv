@@ -655,7 +655,7 @@ fuel-dispatch/tests/qmatmul_cuda_contract.rs	own		no lineage; 1 of 66 lines verb
 fuel-dispatch/tests/residency_eviction_live.rs	own		no lineage; 1 of 90 lines verbatim in candle (1%)
 fuel-dispatch/tests/runtime_fusion_optimize_e2e.rs	own		no lineage; 1 of 104 lines verbatim in candle (1%)
 fuel-dispatch/tests/vulkan_deferred_eviction_live.rs	own		no lineage; 1 of 194 lines verbatim in candle (1%)
-fuel-dispatch/tests/vulkan_dispatch_live.rs	own		no lineage; 3 of 5213 lines verbatim in candle (0%)
+fuel-dispatch/tests/vulkan_dispatch_live.rs	own		no lineage; 3 of 5196 lines verbatim in candle (0%)
 fuel-dispatch/tests/vulkan_write_slice_rotating_live.rs	own		no lineage; 1 of 117 lines verbatim in candle (1%)
 fuel-examples/Cargo.toml	candle-modified	candle-examples/Cargo.toml	rename/copy 54%; 80% of 60 lines verbatim
 fuel-examples/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
@@ -974,6 +974,7 @@ fuel-inference/src/chunked_prefill.rs	own		no lineage; 2 of 180 lines verbatim i
 fuel-inference/src/context_compress.rs	own		no lineage; 3 of 184 lines verbatim in candle (2%)
 fuel-inference/src/decode_state_spec.rs	own		no lineage; 5 of 302 lines verbatim in candle (2%)
 fuel-inference/src/eviction.rs	own		no lineage; 2 of 247 lines verbatim in candle (1%)
+fuel-inference/src/hybrid_session.rs	own		no lineage; 2 of 158 lines verbatim in candle (1%)
 fuel-inference/src/hybrid_state.rs	own		no lineage; 0 of 98 lines verbatim in candle (0%)
 fuel-inference/src/kv_compress.rs	own		no lineage; 2 of 327 lines verbatim in candle (1%)
 fuel-inference/src/lib.rs	own		no lineage; 1 of 90 lines verbatim in candle (1%)
@@ -1246,7 +1247,7 @@ fuel-kernels-source/kernels/triangular_b8.slang	own		no lineage; 0 of 19 lines v
 fuel-kernels-source/kernels/unary.slang	own		no lineage; 0 of 69 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/unary_bf16.slang	own		no lineage; 0 of 63 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/unary_f16.slang	own		no lineage; 0 of 41 lines verbatim in candle (0%)
-fuel-kernels-source/kernels/unary_f64.slang	own		no lineage; 0 of 346 lines verbatim in candle (0%)
+fuel-kernels-source/kernels/unary_f64.slang	own		no lineage; 0 of 338 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/write_slice_b1.slang	own		no lineage; 0 of 35 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/write_slice_b2.slang	own		no lineage; 0 of 36 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/write_slice_b4.slang	own		no lineage; 0 of 33 lines verbatim in candle (0%)

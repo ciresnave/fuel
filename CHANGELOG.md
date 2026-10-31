@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - Vulkan f64 `exp` (and `sigmoid`, `silu`, `tanh` through it) returned 0.0 or a huge garbage double of either sign for `x < ~-708.4`: `poly_exp_d` scaled by `2^k` through `pow2_int`, whose bit pattern is valid only for `k >= -1022`, and the clamp at `x = -745` lets `k` reach -1075. Reported by vulkane (PR 132) for its copy of the same code. `unary_f64.slang` now scales in two steps (`2^(k+200)`, then `2^-200`) below `k = -1022`, so the result rounds once into the subnormal range; `unary_f64.spv` is regenerated. New live test `vulkan_dispatch_unary_exp_f64_underflow_sweep` (3001 points over [-745, -700]): 2418 points wrong before the fix, 0 after, on the local Vulkan adapter via `scripts/gpu-run.ps1`. `softmax_f64` is not affected (it calls the native `exp`, not `poly_exp_d`). Only `exp` is swept; sigmoid, silu and tanh at large arguments share the fix but are not swept.
 
+## v0.34.4 - 2026-10-31
+
+### Added
+
+- ROADMAP row 117, scheduler: `fuel_inference::hybrid_session` adds `HybridDecodeModel` (an associated `Cache`, `new_cache`, `step`), `HybridSession` and `HybridSessionScheduler` (round-robin, per-session sampler and RNG, eos and budget, `reap_finished`, `resident_bytes`), and an impl for `Qwen3_5Model` over its existing `Qwen3_5Cache`. `DecodeModel`, `SessionScheduler` and their impls are unchanged. `step` must leave the cache unchanged on `Err`; a failed step finishes only that session. Checked on a toy hybrid model against a whole-history reference, with a negative control for the all-or-nothing rule. Not run on a real Qwen3.5 checkpoint through the scheduler, not batched, and plan-once decode for a hybrid is still unbuilt.
+
 ## v0.34.3 - 2026-10-31
 
 ### Added
