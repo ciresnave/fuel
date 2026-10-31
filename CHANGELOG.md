@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.32.1 - 2026-10-30
+
+### Added
+
+- ROADMAP row 115, steps 1-2: `fuel-transformers/src/models/lazy_qwen3_5_gdn.rs` composes the Qwen3.5 Gated DeltaNet recurrence and one token mixer (`gated_delta_net_mixer`, with a carried `GdnState`) from base lazy ops, token loop unrolled, correct-but-slow (chunkwise prefill is row 116). Not yet wired into `Qwen3_5Model::forward`, which still returns its typed refusal (GAP-368 narrowed, not closed). Oracles: `tests/qwen3_5_gdn_recurrence.rs` (4 tests against HuggingFace vectors, including an f64 defect-sensitivity reference; sabotaging the decay reddened them) and `tests/qwen3_5_gdn_mixer.rs` (3 tests on the REAL `Qwen/Qwen3.5-0.8B` weights against committed activations in `tests/fixtures/qwen3_5_0_8b_gdn_mixer_reference.safetensors`, produced by `scripts/qwen35_reference/mixer_ref.py`): layers 0 and 1 match within about 1.1e-6 relative, a carried-state run equals the whole-sequence run, and a wrong-layer control is 0.42 off. **Where the checkpoint tests run:** GitHub-hosted CI has no checkpoint, so they declare a skip there; no self-hosted test job exists yet (only the compile check) and Fuel has no measurements file, so they are run by hand with `FUEL_REQUIRE_HUB=1 cargo test --release -p fuel-transformers --test qwen3_5_gdn_mixer` on a machine with `Qwen/Qwen3.5-0.8B` cached, and the output is pasted in the PR. A self-hosted test job is a workflow follow-up. Not covered: gated full-attention, full decoder layer, decode, bf16, Vulkan.
+
 ## v0.32.0 - 2026-10-30
 
 ### Changed
