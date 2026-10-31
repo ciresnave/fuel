@@ -1759,7 +1759,7 @@ fuel-transformers/tests/nms_tests.rs	candle	candle-transformers/tests/nms_tests.
 fuel-transformers/tests/phase6a_anchor_oracle.rs	own		no lineage; 0 of 123 lines verbatim in candle (0%)
 fuel-transformers/tests/phase6b_cuda_anchor.rs	own		no lineage; 0 of 254 lines verbatim in candle (0%)
 fuel-transformers/tests/qwen3_5_gdn_mixer.rs	own		no lineage; 0 of 95 lines verbatim in candle (0%)
-fuel-transformers/tests/qwen3_5_gdn_recurrence.rs	own		no lineage; 3 of 87 lines verbatim in candle (3%)
+fuel-transformers/tests/qwen3_5_gdn_recurrence.rs	own		no lineage; 3 of 91 lines verbatim in candle (3%)
 fuel-transformers/tests/qwen3_5_loader_oracle.rs	own		no lineage; 0 of 117 lines verbatim in candle (0%)
 fuel-transformers/tests/qwen3_awq_mlmf_slice_a.rs	own		no lineage; 2 of 83 lines verbatim in candle (2%)
 fuel-transformers/tests/qwen3_awq_oracle.rs	own		no lineage; 1 of 125 lines verbatim in candle (1%)

@@ -176,6 +176,22 @@ fn gated_output(
     )
 }
 
+/// `beta = sigmoid(b)` and the log-decay `g = -exp(A_log) * softplus(a + dt_bias)`, both `[T, nv]`.
+fn beta_and_decay(
+    x: &Tensor,
+    a: &Tensor,
+    b: &Tensor,
+    w: &GatedDeltaNetWeights,
+    nv: usize,
+) -> Result<(Tensor, Tensor)> {
+    let beta = b.sigmoid();
+    let dt_bias = x.const_f32_like(Arc::clone(&w.dt_bias), Shape::from_dims(&[nv]))?;
+    let neg_exp_a: Vec<f32> = w.a_log.iter().map(|v| -v.exp()).collect();
+    let neg_exp_a = x.const_f32_like(neg_exp_a, Shape::from_dims(&[nv]))?;
+    let g = softplus(&a.broadcast_add(&dt_bias)?)?.broadcast_mul(&neg_exp_a)?;
+    Ok((beta, g))
+}
+
 /// One Gated DeltaNet token mixer over `x [T, hidden]` (already input-normed), as the HuggingFace
 /// `Qwen3_5GatedDeltaNet.forward` computes it. Returns `(y [T, hidden], new_state)`; `state` is
 /// `None` for the start of a sequence.
@@ -221,11 +237,7 @@ pub fn gated_delta_net_mixer(
         (q, k)
     };
 
-    let beta = b.sigmoid();
-    let dt_bias = x.const_f32_like(Arc::clone(&w.dt_bias), Shape::from_dims(&[nv]))?;
-    let neg_exp_a: Vec<f32> = w.a_log.iter().map(|v| -v.exp()).collect();
-    let neg_exp_a = x.const_f32_like(neg_exp_a, Shape::from_dims(&[nv]))?;
-    let g = softplus(&a.broadcast_add(&dt_bias)?)?.broadcast_mul(&neg_exp_a)?;
+    let (beta, g) = beta_and_decay(x, &a, &b, w, nv)?;
 
     let prev = state.map(|s| &s.recurrent);
     let (core, recurrent) = gated_delta_recurrence(&q, &k, &v, &g, &beta, prev)?;
