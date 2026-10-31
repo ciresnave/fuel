@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.34.4 - 2026-10-31
+
+### Added
+
+- ROADMAP row 117, scheduler: `fuel_inference::hybrid_session` adds `HybridDecodeModel` (an associated `Cache`, `new_cache`, `step`), `HybridSession` and `HybridSessionScheduler` (round-robin, per-session sampler and RNG, eos and budget, `reap_finished`, `resident_bytes`), and an impl for `Qwen3_5Model` over its existing `Qwen3_5Cache`. `DecodeModel`, `SessionScheduler` and their impls are unchanged. `step` must leave the cache unchanged on `Err`; a failed step finishes only that session. Checked on a toy hybrid model against a whole-history reference, with a negative control for the all-or-nothing rule. Not run on a real Qwen3.5 checkpoint through the scheduler, not batched, and plan-once decode for a hybrid is still unbuilt.
+
 ## v0.34.3 - 2026-10-31
 
 ### Added
