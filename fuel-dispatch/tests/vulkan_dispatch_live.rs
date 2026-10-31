@@ -1193,7 +1193,7 @@ fn vulkan_dispatch_unary_exp_f64_underflow_sweep() {
             && if e >= f64::MIN_POSITIVE {
                 ((g - e) / e).abs() <= 1e-12
             } else {
-                (g - e).abs() <= 4.0 * 4.9406564584124654e-324
+                (g - e).abs() <= 4.0 * f64::from_bits(1)
             };
         if !ok {
             bad.push((*x, *g, e));
