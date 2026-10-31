@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.34.7 - 2026-10-31
+
+### Docs
+
+- ROADMAP rows 132 (KV export and restore for Lightbulb checkpoints, lightbulb#275), 133 (sampling controls: top_k, top_p, min_p, penalties, logprobs) and 134 (subgroup partial-combine drops partials below 16 lanes, read from source in 27 kernels). Nothing is built; all three rows are NOT STARTED.
+
 ## v0.34.6 - 2026-10-31
 
 ### Fixed
