@@ -6,12 +6,13 @@ path	class	candle_source	basis
 .gitattributes	own		no lineage; 0 of 17 lines verbatim in candle (0%)
 .github/CODEOWNERS	own		no lineage; 0 of 1 lines verbatim in candle (0%)
 .github/dependabot.yml	candle	.github/dependabot.yml	identical path; 100% of 2 lines verbatim
+.github/workflows/checkpoint-tests.yml	own		no lineage; 0 of 29 lines verbatim in candle (0%)
 .github/workflows/cuda-metal-compile-check.yml	own		no lineage; 0 of 73 lines verbatim in candle (0%)
 .github/workflows/rust-ci.yml	candle-modified	.github/workflows/rust-ci.yml	same path; 3% of 940 lines verbatim
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 422 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 423 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -22,7 +23,7 @@ LICENSE-MIT	candle	LICENSE-MIT	identical path; 100% of 18 lines verbatim
 Makefile	candle	Makefile	identical path; 33% of 6 lines verbatim
 PATTERNS.md	own		no lineage; 4 of 179 lines verbatim in candle (2%)
 README.md	candle-modified	README.md	same path; 53% of 383 lines verbatim
-ROADMAP.md	own		no lineage; 0 of 2577 lines verbatim in candle (0%)
+ROADMAP.md	own		no lineage; 0 of 2578 lines verbatim in candle (0%)
 SECURITY.md	own		no lineage; 0 of 3 lines verbatim in candle (0%)
 THIRD-PARTY-NOTICES.md	own		judged: the ledger; it reproduces upstream licence texts, which is why git sees a copy of LICENSE-APACHE
 clippy.toml	own		no lineage; 0 of 30 lines verbatim in candle (0%)
@@ -1693,6 +1694,7 @@ fuel-transformers/src/models/lazy_qwen2.rs	not-traced	candle-transformers/src/mo
 fuel-transformers/src/models/lazy_qwen2_moe.rs	not-traced	candle-transformers/src/models/qwen2_moe.rs	same file name as candle candle-transformers/src/models/qwen2_moe.rs; a port or re-expression is presumed until judged
 fuel-transformers/src/models/lazy_qwen3.rs	not-traced	candle-transformers/src/models/llama.rs	50 of 1141 lines also appear in candle (mostly candle-transformers/src/models/llama.rs); not judged
 fuel-transformers/src/models/lazy_qwen3_5.rs	not-traced	candle-transformers/src/models/granitemoehybrid.rs	24 of 339 lines also appear in candle (mostly candle-transformers/src/models/granitemoehybrid.rs); not judged
+fuel-transformers/src/models/lazy_qwen3_5_gdn.rs	not-traced		lives in a directory that mirrors candle-transformers/src/models/; no same-name file; not judged
 fuel-transformers/src/models/lazy_qwen3_moe.rs	not-traced	candle-transformers/src/models/granite.rs	33 of 700 lines also appear in candle (mostly candle-transformers/src/models/granite.rs); not judged
 fuel-transformers/src/models/lazy_qwen3_vl.rs	not-traced		lives in a directory that mirrors candle-transformers/src/models/; no same-name file; not judged
 fuel-transformers/src/models/lazy_qwen3_vl_text.rs	not-traced	candle-transformers/src/models/llama.rs	25 of 621 lines also appear in candle (mostly candle-transformers/src/models/llama.rs); not judged
@@ -1747,6 +1749,8 @@ fuel-transformers/tests/fixtures/qwen3_0_6b_awq_greedy.PROVENANCE.md	own		no lin
 fuel-transformers/tests/fixtures/qwen3_0_6b_awq_greedy.json	own		no lineage; 0 of 13 lines verbatim in candle (0%)
 fuel-transformers/tests/fixtures/qwen3_0_6b_cpu_reference.PROVENANCE.md	own		no lineage; 0 of 25 lines verbatim in candle (0%)
 fuel-transformers/tests/fixtures/qwen3_0_6b_cpu_reference.json	own		no lineage; 0 of 67 lines verbatim in candle (0%)
+fuel-transformers/tests/fixtures/qwen3_5_0_8b_gdn_mixer_reference.PROVENANCE.md	own		no lineage; 0 of 8 lines verbatim in candle (0%)
+fuel-transformers/tests/fixtures/qwen3_5_0_8b_gdn_mixer_reference.safetensors	data		binary file; no path or similarity match to a candle file
 fuel-transformers/tests/gap314_spatial_population.rs	own		no lineage; 0 of 154 lines verbatim in candle (0%)
 fuel-transformers/tests/generation_tests.rs	candle-modified	candle-transformers/tests/generation_tests.rs	rename/copy 64%; 67% of 39 lines verbatim
 fuel-transformers/tests/gguf_resident_quantized.rs	own		no lineage; 3 of 147 lines verbatim in candle (2%)
@@ -1754,6 +1758,8 @@ fuel-transformers/tests/gguf_resident_quantized_qwen3.rs	own		no lineage; 3 of 1
 fuel-transformers/tests/nms_tests.rs	candle	candle-transformers/tests/nms_tests.rs	rename/copy 96%; 94% of 54 lines verbatim
 fuel-transformers/tests/phase6a_anchor_oracle.rs	own		no lineage; 0 of 123 lines verbatim in candle (0%)
 fuel-transformers/tests/phase6b_cuda_anchor.rs	own		no lineage; 0 of 254 lines verbatim in candle (0%)
+fuel-transformers/tests/qwen3_5_gdn_mixer.rs	own		no lineage; 0 of 95 lines verbatim in candle (0%)
+fuel-transformers/tests/qwen3_5_gdn_recurrence.rs	own		no lineage; 3 of 91 lines verbatim in candle (3%)
 fuel-transformers/tests/qwen3_5_loader_oracle.rs	own		no lineage; 0 of 117 lines verbatim in candle (0%)
 fuel-transformers/tests/qwen3_awq_mlmf_slice_a.rs	own		no lineage; 2 of 83 lines verbatim in candle (2%)
 fuel-transformers/tests/qwen3_awq_oracle.rs	own		no lineage; 1 of 125 lines verbatim in candle (1%)
@@ -2002,6 +2008,7 @@ scripts/judge_compare.py	own		no lineage; 0 of 25 lines verbatim in candle (0%)
 scripts/packaged-escapes-allowlist.txt	own		no lineage; 0 of 13 lines verbatim in candle (0%)
 scripts/panic_census.py	own		no lineage; 1 of 178 lines verbatim in candle (1%)
 scripts/provenance.py	own		judged: names candle only to describe the fork
+scripts/qwen35_reference/mixer_ref.py	own		no lineage; 0 of 25 lines verbatim in candle (0%)
 scripts/rename_dyn_impl.py	own		no lineage; 0 of 132 lines verbatim in candle (0%)
 scripts/round1-notes/lazy_metavoice.txt	own		no lineage; 0 of 4 lines verbatim in candle (0%)
 scripts/round1-notes/lazy_mimi_conv_transpose.txt	own		no lineage; 0 of 5 lines verbatim in candle (0%)
