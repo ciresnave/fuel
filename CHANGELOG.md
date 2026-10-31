@@ -1,6 +1,43 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.32.0 - 2026-10-30
+
+### Changed
+
+- **Breaking (pre-1.0 minor):** the workspace pin `unpopped-vocab` moves 0.34.3 -> 0.35.0 (upstream breaking: tree-sitter 0.27 in `Frontend::parse`, which needs Rust 1.90; the pinned toolchain is 1.98). `fuel-kernel-seam` re-exposes the vocabulary types, so its consumers see the 0.35 types, and a `baracuda-cuda-seam` emitter on 0.35 now shares one vocab copy with the seam. Fuel calls no parse API: no source change. `baracuda-kernels-types` (alpha.158) still resolves `unpopped-vocab` 0.22 for the telemetry/CUDA paths until Baracuda publishes a 0.35 family. Checked: `cargo check -p fuel-kernel-seam -p fuel-dispatch --features fuel-dispatch/jit --all-targets` and `cargo test -p fuel-kernel-seam` (3 passed). Not run: CUDA/Vulkan builds, workspace test suite (CI).
+
+## v0.31.7 - 2026-10-30
+
+### Changed
+
+- Q8_0, Q4_K and Q6_K GGUF weights now stay quantized (`WeightStorage::Ggml`) in nine more loaders: `lazy_quantized_{gemma3,glm4,lfm2,phi3,qwen2,qwen3,qwen3_moe,smollm3,t5}` (ROADMAP row 124 step 2). Before, those loaders expanded every non-`Q4_0` tensor to f32 at load. Verified end to end for Qwen3 only (`tests/gguf_resident_quantized_qwen3.rs`: resident bytes under a third of f32, logits within 4% of the dequantized model, a 10% scale error caught, red without the change); the other eight are checked by compile and clippy.
+
+## v0.31.6 - 2026-10-30
+
+### Changed
+
+- Docs only: `docs/design-notes/2026-10-30-qwen35-composed-forward-row-115.md` (ROADMAP row 115 before code: the Gated DeltaNet and gated-attention formulas read from the HuggingFace reference, the op mapping, the oracle plan, and an f32 CPU reference run of `Qwen/Qwen3.5-0.8B` whose whole-sequence and cached-decode logits agree to 1.8e-5).
+
+## v0.31.5 - 2026-10-30
+
+### Changed
+
+- Docs only: `docs/design-notes/2026-10-30-hybrid-decode-state-row-117.md` (ROADMAP row 117 design before code: a `Fixed` state variant, functional state rebind, scheduler limits) and a correction to the Qwen3.8-27B audit note, which wrongly said `LayerStateSpec::Slots` could describe a Gated DeltaNet layer's state (`Slots` is a per-token growing buffer; GDN state is fixed-size).
+
+## v0.31.4 - 2026-10-30
+
+### Added
+
+- `WeightStorage::Ggml { qtype, .. }`, `WeightStorage::from_ggml_bytes` and `WeightStorage::resident_bytes` (ROADMAP row 124, step 1): a Q8_0, Q4_K or Q6_K weight tensor of a GGUF now stays quantized from load to `Op::QMatMul` in `QuantizedLlama3Model::from_gguf` instead of being expanded to f32 (4x or more the memory; a tensor whose `in_features` is not a whole number of blocks still takes the f32 path). Other `lazy_quantized_*` loaders are unchanged. `WeightStorage` gained a variant, so an exhaustive `match` on it needs an arm (`fuel-nn`'s `Conv2d::absorb_bn` got one); `fuel-tensor`, `fuel-nn` and `fuel-transformers` build and `clippy --tests -D warnings` clean, other crates were not compiled and name no variant that would need one. Test `fuel-transformers/tests/gguf_resident_quantized.rs` (CPU only; no GPU run, no real GGUF).
+
+## v0.31.3 - 2026-10-30
+
+### Changed
+
+- CUDA `QMatMul` now carries a ledger-backed accuracy claim, so the production realize reaches it (ROADMAP row 128, GAP-154, GAP-335). Why it did not before: the importer downgrades any numeric precision claim with no passing verification-ledger record to UNAUDITED, and the planner's `AccuracyPreferenceFilter` then dropped the unclaimed, non-bit-stable CUDA kernel in favour of the bit-stable CPU one, so `realize_one_as` ran QMatMul on the CPU at m=6,k=128,n=64 and at m=140,k=2048,n=2048 (found by bisecting with a temporary print in `plan.rs`: two candidates enumerated, one after the filter chain). Now `kernel-contracts/cuda/qmatmul.fkc.md` declares `max_relative: 0.0004` and `max_absolute: 0.0004` (the ledger's metric: per element, `rel = |err| / max(|ref|, 1)`, inputs uniform in [-1, 1)), earned by `fuel-dev-tools seed-cuda-accuracy` (new `fkc/verify/accuracy_qmatmul.rs`): Q4_0, Q8_0 and Q4_K, 11 shapes, seeds 1 to 4, `k` up to 8192, both routes, RTX 4070 Laptop. **Measured worst: abs 3.8e-5 and rel 3.2e-5, both at k=8192; small-k cases are around 1e-7; the bound has about 10x margin and the error grows with k, so k above 8192 is not covered.** Two new ledger records (`fkc-verified-ledger.json`). The production realize now reaches the binding at both shapes (probe `gap029_step0_q4_0_cuda_prefill_probe` asserts it; before the claim the same run left the route counters unchanged). `tests/baracuda_qmatmul_audit.rs` is the independent audit: scale-relative error (`max|err|/max|ref|`) vs the f64 product, worst 4.3e-7 on the device route, with the CPU kernel alongside, and an injected 1% block-scale error must exceed the declared bound. Cost ranking is untouched (both static costs are 0; the Judge bootstraps), so reach on a given model still depends on the Judge's measurements; time to first token is NOT re-measured.
+- **Behaviour change, not Breaking:** the CUDA `QMatMul` host fallback (a `k` off the format's 64-column read chunk, which in practice means Q4_0, Q4_1, Q5_0, Q5_1 and Q8_0 with `k % 64 == 32`; the K-quants need `k % 256 == 0` anyway) now dequantizes the weights on the host and multiplies in f64 instead of calling the CPU kernel, so it is as accurate as the device route (about 4e-8 scale-relative instead of 3e-3 to 8e-3). It was introduced in 0.30.10 and never released with the old numerics; `git grep` finds no caller or test comparing against the CPU kernel's values (the live test's fallback cases used a 5e-3 limit and now use 1e-5). `Q8_1` keeps the CPU kernel (no dequantization, GAP-125; not a weight format any GGUF stores) and is outside the claim. **Cost, measured in the unoptimized test profile on the RTX 4070 box** (`host_fallback_cost_on_the_shapes_that_take_it`): Q4_0 n=2048 k=2080, one row 376 ms vs 5.7 ms for the CPU kernel alone, 140 rows 1.60 s (copies included) vs 670 ms. A decode-shaped fallback call is therefore about 66x slower than before in that profile; a release-profile number was not taken. Which real models hit it was not measured: it needs a hidden or intermediate size that is 32 mod 64.
+
 ## v0.31.2 - 2026-10-30
 
 ### Added

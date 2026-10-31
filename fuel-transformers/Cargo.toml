@@ -82,6 +82,8 @@ fuel-nn = { path = "../fuel-nn" }
 # test (tests/qwen3_cpu_yardstick.rs) needs `anyhow::{anyhow, bail}` for its
 # GGUF-metadata loading path, mirroring fuel-examples/examples/quantized-qwen3.
 anyhow = { workspace = true }
+# tests/gguf_resident_quantized.rs writes its synthetic GGUF to a temp file.
+tempfile = { workspace = true }
 
 [[example]]
 name = "qwen3_yardstick_tool"

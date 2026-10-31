@@ -13,12 +13,13 @@
 //! both shapes must run on the baracuda MMVQ kernels (`m = 1` the decode GEMV,
 //! `m = 6` the batched `mmvq_rows_*` launch) and neither on the host fallback.
 //!
-//! The asserted realizes use `realize_one_reference_as` (cost-based placement
+//! The first two realizes use `realize_one_reference_as` (cost-based placement
 //! suppressed, so the op stays on the CUDA device). The production `realize_one_as`
-//! is run as information only, at `m = 6, k = 128, n = 64` and at `m = 140, k = 2048,
-//! n = 2048`: at BOTH it did NOT reach the CUDA binding (measured 2026-10-30:
-//! counters unchanged), so the cost placer put the op elsewhere. Why is not
-//! established; ROADMAP row 128 owns it.
+//! is asserted too, at `m = 6, k = 128, n = 64` and at `m = 140, k = 2048,
+//! n = 2048`: it must reach the binding as well. It did not until the contract's
+//! accuracy claim was backed by the verification ledger (ROADMAP row 128); the
+//! planner's accuracy-preference filter had dropped the kernel for the bit-stable
+//! CPU one.
 //!
 //! Numerics: the 5e-2 bound is a sanity bound, not a calibration. Measured on the
 //! RTX 4070 at this shape the scale-relative error was ~5e-7; that is one shape and
@@ -194,28 +195,22 @@ fn gap029_step0_q4_0_prefill_shape_on_cuda() {
     let c1 = calls();
     let (probe, probe_want) = realize_q4_0((6, K, N), &dev, false);
     let c2 = calls();
-    // Information only, no assertion: the same op through the PRODUCTION realize, where cost-based
-    // placement is on. Measured 2026-10-30 neither shape reached the CUDA binding (counters
-    // unchanged), so the op was placed elsewhere. Why is not established here (ROADMAP row 128).
+    // The PRODUCTION realize (cost-based placement on) must reach the binding too, at the tiny
+    // shape and at a prefill-sized one. Before the CUDA contract carried a ledger-backed accuracy
+    // claim the planner's AccuracyPreferenceFilter dropped this kernel in favour of the bit-stable
+    // CPU one and neither shape reached it (ROADMAP row 128).
     for shape in [(6, K, N), (140, 2048, 2048)] {
         let before = calls();
         let _ = realize_q4_0(shape, &dev, true);
+        let after = calls();
         eprintln!(
-            "[GAP-029 step0] production realize (cost placement on) (m,k,n)={shape:?}: (device, host) calls {before:?}->{:?}",
-            calls()
+            "[GAP-029 step0] production realize (cost placement on) (m,k,n)={shape:?}: (device, host) calls {before:?}->{after:?}"
+        );
+        assert!(
+            after.0 > before.0 && after.1 == before.1,
+            "the production realize did not run QMatMul on the CUDA device route at {shape:?}: {before:?} -> {after:?}"
         );
     }
-    // The path is pinned by the route counters of the CUDA QMatMul binding (row 105): each realize
-    // must have run its QMatMul on the baracuda kernels, and neither on the host fallback.
-    eprintln!("[GAP-029 step0] (device, host) calls: m=1 {c0:?}->{c1:?}, m=6 {c1:?}->{c2:?}");
-    assert!(
-        c1.0 > c0.0 && c1.1 == c0.1,
-        "m=1 did not run on the CUDA QMatMul device route: {c0:?} -> {c1:?}"
-    );
-    assert!(
-        c2.0 > c1.0 && c2.1 == c1.1,
-        "m=6 did not run on the CUDA QMatMul device route: {c1:?} -> {c2:?}"
-    );
 
     // ---- m = 1 (decode shape) must realize and be sane. ---------------------
     //

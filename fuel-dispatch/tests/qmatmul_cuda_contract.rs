@@ -82,3 +82,36 @@ fn a_misspelled_entry_point_is_refused_not_silently_dropped() {
         "error should name the unresolved symbol: {err}"
     );
 }
+
+/// The accuracy claim must survive the import: the planner's `AccuracyPreferenceFilter` drops a
+/// kernel with no `max_relative`/`max_absolute` claim whenever a bit-stable CPU sibling exists,
+/// which is how the production realize missed this binding (ROADMAP row 128).
+#[test]
+fn the_declared_accuracy_claim_reaches_the_binding_entry() {
+    let provider = import_bundle_str(CONTRACT, &Link(SYMBOL)).expect("contract must import");
+    let mut table = KernelBindingTable::new();
+    let mut fused = FusedKernelRegistry::new();
+    provider
+        .register_into(&mut table, &mut fused)
+        .expect("contract must register");
+    let entries = table.lookup_alternatives(OpKind::QMatMul, &KEY, BackendId::Cuda);
+    assert_eq!(entries.len(), 1, "one CUDA QMatMul entry");
+    let p = entries[0].precision;
+    assert_eq!(
+        p.max_relative,
+        Some(4.0e-4),
+        "the ledger-backed bound must reach the entry: {p:?}"
+    );
+    assert_eq!(p.max_absolute, Some(4.0e-4), "{p:?}");
+    assert!(
+        !p.bit_stable_on_same_hardware,
+        "the kernels are not bit-stable"
+    );
+    assert!(
+        fuel_dispatch::ranker::filters::meets_accuracy_bound(
+            &p,
+            &fuel_dispatch::ranker::filters::DEFAULT_ACCURACY_BOUND
+        ),
+        "the entry must meet the planner's default accuracy bound, or it loses to the CPU kernel"
+    );
+}

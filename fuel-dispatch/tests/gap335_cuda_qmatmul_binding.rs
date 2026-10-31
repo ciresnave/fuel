@@ -178,6 +178,14 @@ fn the_cuda_registration_file_loads_the_contract_and_nothing_registers_qmatmul_b
                 .lines()
                 .any(|l| l.trim() == "register_cuda_qmatmul_from_contract(table);");
         }
+        // `fkc/verify/` measures and pins the registered entry (it looks it up, never registers).
+        if path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .contains("/fkc/verify/")
+        {
+            continue;
+        }
         for line in cuda_qmatmul_lines(&text) {
             by_hand.push(format!("{}:{line}", path.display()));
         }

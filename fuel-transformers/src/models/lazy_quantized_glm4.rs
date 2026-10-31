@@ -275,6 +275,14 @@ impl QuantizedGlm4Model {
                     out_features,
                 }),
                 _ => {
+                    // Q8_0 / Q4_K / Q6_K stay quantized (ROADMAP row 124); anything else, or a
+                    // tensor whose in_features is not a whole number of blocks, takes the
+                    // dequantize-to-F32 path below.
+                    if let Some(w) =
+                        WeightStorage::from_ggml_bytes(dt, bytes, in_features, out_features)
+                    {
+                        return Ok(w);
+                    }
                     // Dequantize to F32 and transpose [out, in] → [in, out].
                     let f32_out_in = dequant_bytes_to_f32(bytes, dt, name)?;
                     let mut f32_in_out = vec![0.0_f32; expected];
