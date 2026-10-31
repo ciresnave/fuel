@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.33.1 - 2026-10-31
+
+### Added
+
+- ROADMAP row 115, step 3: `fuel-transformers/src/models/lazy_qwen3_5_attn.rs` composes the Qwen3.5 gated full-attention token mixer (`gated_full_attention`: per-head query/gate split of `q_proj`, zero-centred q/k norms, rotate-half rotary on the first `int(head_dim * partial_rotary_factor)` dimensions, GQA, causal softmax, `sigmoid(gate)`, `o_proj`) from base lazy ops. Prefill from position 0 only (no KV cache yet); not wired into `Qwen3_5Model::forward` (typed refusal stays, GAP-368 narrowed, not closed). Oracle `tests/qwen3_5_attention.rs` (3 tests) on the REAL `Qwen/Qwen3.5-0.8B` weights against committed activations (`tests/fixtures/qwen3_5_0_8b_attn_reference.safetensors`, `scripts/qwen35_reference/attn_ref.py`): layers 3 and 7 match HuggingFace within 1.2e-6 and 3.0e-7 relative; a layer-7-weights control is 1.34 off; a 3-token prefix equals the first 3 rows of the 8-token run (6e-8). By hand (not kept as tests): dropping the `sigmoid` moved layer 3 to 34 relative error and rotating all `head_dim` instead of the partial width to 0.066. Like the Gated DeltaNet oracles it needs the checkpoint, so it SKIPS on GitHub and runs in `checkpoint-tests.yml` on the self-hosted runner (ROADMAP row 130), which has not run anywhere yet; the numbers above are from a by-hand `FUEL_REQUIRE_HUB=1` run. Not covered: KV-cached decode, the decoder layer and whole forward, bf16, Vulkan, CUDA.
+
 ## v0.33.0 - 2026-10-31
 
 ### Changed
