@@ -1,11 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
-## v0.33.3 - 2026-10-31
+## v0.34.1 - 2026-10-31
 
 ### Added
 
 - ROADMAP row 115, step 5: cached decode for Qwen3.5. `Qwen3_5Model::new_cache` / `decode(&mut Qwen3_5Cache, &[u32]) -> Vec<f32>` (`fuel-transformers/src/models/lazy_qwen3_5_decode.rs`) feed `T` tokens after the ones already consumed, carrying each full-attention layer's keys and values and each Gated DeltaNet layer's `(S, conv window)` between calls as host data; `gated_full_attention_cached` (`lazy_qwen3_5_attn.rs`) takes the past keys and values and positions the new tokens after them. Composed unfused f32 CPU path, one graph per call; NOT the plan-once decode session (row 117). `Qwen3_5Model::forward` stays a typed refusal because it is stateless; its message now points at `prefill_logits` / `decode`. `docs/gaps.md` GAP-368 is NARROWED, not closed (no fused kernel, no GPU path, no chunked prefill). Tests in `tests/qwen3_5_forward.rs` on the REAL `Qwen/Qwen3.5-0.8B` weights: token-at-a-time decode matches HuggingFace's own cached decode (top-10 token ids identical at all 8 steps, values within 2.6e-6 relative); 5 tokens then 3 from the carried cache equal the whole-sequence rows within 1.8e-6, while the last 3 from a fresh cache are 0.54 off. Like the other checkpoint tests it SKIPS on GitHub and runs in `checkpoint-tests.yml` (ROADMAP row 130, not yet run anywhere); the numbers are from a by-hand `FUEL_REQUIRE_HUB=1` run. Not covered: bf16, Vulkan, CUDA, speed (per-token cost grows with the unrolled graph; chunked prefill is row 116). Docs: ROADMAP row 131 (one device inventory with free memory, for Lightbulb).
+
+## v0.34.0 - 2026-10-31
+
+### Changed
+
+- **Breaking (pre-1.0 minor):** the workspace pin `unpopped-vocab` moves 0.36.0 -> 0.38.1 (upstream breaking in 0.37 and 0.38). `fuel-kernel-seam` re-exposes the vocabulary types, so its consumers see the 0.38 types; Baracuda moves to 0.38 after the seam trio is published, so one vocab copy remains in `baracuda-cuda-seam`. `baracuda-kernels-types` (alpha.158) still resolves `unpopped-vocab` 0.22 for the telemetry/CUDA paths until Baracuda publishes a 0.38 family. No source change: the code compiles untouched. Checked: `cargo check -p fuel-kernel-seam -p fuel-dispatch --features fuel-dispatch/jit --all-targets` and `cargo test -p fuel-kernel-seam`. Not run: CUDA/Vulkan builds, workspace test suite (CI).
 
 ## v0.33.2 - 2026-10-31
 
