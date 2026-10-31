@@ -84,7 +84,7 @@ pub fn gated_delta_recurrence(
     Ok((out, s))
 }
 
-/// `softplus(x) = max(x, 0) + ln(1 + exp(-|x|))`: exact in f32 and branch-free (the naive
+/// `softplus(x) = max(x, 0) + ln(1 + exp(-|x|))`: exact in f32 and branch-free (the direct
 /// `ln(1 + exp(x))` overflows for large `x`).
 pub fn softplus(x: &Tensor) -> Result<Tensor> {
     x.relu().add(&x.abs().neg().exp().add_scalar(1.0).log())
