@@ -257,7 +257,7 @@ baracuda-cublas        = { version = "0.0.1-alpha.158" }
 baracuda-cudnn-sys     = { version = "0.0.1-alpha.147" }
 baracuda-cudnn         = { version = "0.0.1-alpha.147", features = ["half-crate"] }
 baracuda-curand-sys    = { version = "0.0.1-alpha.147" }
-baracuda-curand        = { version = "0.0.1-alpha.147" }
+baracuda-curand        = { version = "0.1.0-alpha.25" }
 baracuda-nvrtc-sys     = { version = "0.0.1-alpha.153" }
 baracuda-nvrtc         = { version = "0.0.1-alpha.153" }
 # The live JIT synthesizer (BaracudaSynthesizer, the fuel-kernel-seam Synthesizer
