@@ -138,50 +138,35 @@ fn projections() -> Vec<(String, usize, usize)> {
     v
 }
 
+/// The tensors that stay f32 in both files: `(name, dims, values)`.
+fn dense_tensors(rng: &mut Lcg) -> Vec<(String, Vec<u64>, Vec<f32>)> {
+    let mut v = vec![(
+        "token_embd.weight".to_string(),
+        vec![H as u64, VOCAB as u64],
+        rng.vec(H * VOCAB),
+    )];
+    for l in 0..LAYERS {
+        for n in ["attn_norm", "ffn_norm"] {
+            v.push((format!("blk.{l}.{n}.weight"), vec![H as u64], vec![1.0; H]));
+        }
+        for n in ["attn_q_norm", "attn_k_norm"] {
+            v.push((format!("blk.{l}.{n}.weight"), vec![64], vec![1.0; 64]));
+        }
+    }
+    v.push(("output_norm.weight".into(), vec![H as u64], vec![1.0; H]));
+    v
+}
+
 /// Returns `(quantized file, dequantized-f32 file, quantized bytes of the projections)`.
 fn files<B: GgmlType>(code: u32, plain_gain: f32) -> (Vec<u8>, Vec<u8>, usize) {
     let mut rng = Lcg(0x5eed);
     let mut quant = Vec::new();
     let mut plain = Vec::new();
     let mut qbytes = 0;
-    let both = |q: &mut Vec<T>, p: &mut Vec<T>, name: &str, dims: &[u64], v: Vec<f32>| {
-        q.push(f32_tensor(name, dims, &v));
-        p.push(f32_tensor(name, dims, &v));
-    };
-    both(
-        &mut quant,
-        &mut plain,
-        "token_embd.weight",
-        &[H as u64, VOCAB as u64],
-        rng.vec(H * VOCAB),
-    );
-    for l in 0..LAYERS {
-        for n in ["attn_norm", "ffn_norm"] {
-            both(
-                &mut quant,
-                &mut plain,
-                &format!("blk.{l}.{n}.weight"),
-                &[H as u64],
-                vec![1.0; H],
-            );
-        }
-        for n in ["attn_q_norm", "attn_k_norm"] {
-            both(
-                &mut quant,
-                &mut plain,
-                &format!("blk.{l}.{n}.weight"),
-                &[64],
-                vec![1.0; 64],
-            );
-        }
+    for (name, dims, values) in dense_tensors(&mut rng) {
+        quant.push(f32_tensor(&name, &dims, &values));
+        plain.push(f32_tensor(&name, &dims, &values));
     }
-    both(
-        &mut quant,
-        &mut plain,
-        "output_norm.weight",
-        &[H as u64],
-        vec![1.0; H],
-    );
     for (name, o, i) in projections() {
         let w = rng.vec(o * i);
         let (bytes, back) = quantize::<B>(&w);
