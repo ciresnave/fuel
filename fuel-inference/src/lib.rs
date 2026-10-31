@@ -139,6 +139,8 @@ pub mod kv_compress;
 
 pub mod decode_state_spec;
 
+pub mod hybrid_state;
+
 /// Memory-aware inference scheduler with priority queuing and
 /// eviction-pressure admission control.
 pub mod scheduler;

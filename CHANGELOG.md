@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.34.3 - 2026-10-31
+
+### Added
+
+- ROADMAP row 117, step 4 (container): `fuel_inference::hybrid_state::FixedState` holds the fixed-size state of a hybrid model's session, one f32 buffer per `FixedSlot` of a `HybridGeometry`. `FixedState::replace` swaps a step's output buffers in as one unit and leaves the previous state untouched when a layer count, slot count or element count is wrong (the functional rebind of the design note, section 4). A non-f32 slot is refused at construction. Checked on a toy hybrid (two recurrent layers and an attention layer): per-token decode equals the whole sequence at every position, the state bytes do not grow, a bad step changes nothing. Not wired into `SessionScheduler`, and not measured on Qwen3.5; plan-once decode for a hybrid is still unbuilt.
+
 ## v0.34.2 - 2026-10-31
 
 ### Added
