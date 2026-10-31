@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.32.3 - 2026-10-31
+
+### Added
+
+- ROADMAP row 115, step 4: `fuel-transformers/src/models/lazy_qwen3_5_forward.rs` composes the Qwen3.5 decoder layer (`decoder_layer`: zero-centred input norm, the Gated DeltaNet or gated full-attention mixer, residual, post-attention norm, SwiGLU MLP, residual) and the whole 24-layer prefill from position 0 (`Qwen3_5Model::prefill_stages`, `prefill_logits`). `Qwen3_5Model::forward` still returns its typed refusal (GAP-368 narrowed, NOT closed): cached decode needs KV-cached attention and the carried Gated DeltaNet state wired through the stack. Oracle `tests/qwen3_5_forward.rs` (3 tests) on the REAL `Qwen/Qwen3.5-0.8B` weights against committed activations (`tests/fixtures/qwen3_5_0_8b_forward_reference.safetensors`, 199 KB, `scripts/qwen35_reference/forward_ref.py`; activations and top-10 logits only): embedding exact, layers 0, 1, 3, 23 and the final norm within 5e-6 relative, top-10 token ids per position identical to HuggingFace with values within 3.9e-6; Fuel layer 1 against reference layer 3 is 0.51 off. f32 CPU only. The reference also stores top-10 logits of token-at-a-time cached decode, unused until decode lands. The test needs the checkpoint, so it SKIPS on GitHub and is a step of `checkpoint-tests.yml` (ROADMAP row 130, not yet run anywhere); the numbers above are from a by-hand `FUEL_REQUIRE_HUB=1` run. Not covered: cached decode, bf16, Vulkan, CUDA, speed (the Gated DeltaNet token loop is unrolled into graph nodes; chunked prefill is row 116).
+
 ## v0.32.2 - 2026-10-31
 
 ### Added

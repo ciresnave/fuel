@@ -54,9 +54,9 @@ jobs:
           python -c "from huggingface_hub import hf_hub_download as d; [d('Qwen/Qwen3.5-0.8B', f) for f in ('config.json', 'model.safetensors-00001-of-00001.safetensors')]"
           if ($LASTEXITCODE -ne 0) { throw "checkpoint download failed ($LASTEXITCODE)" }
 
-      - name: cargo test (the Gated DeltaNet and attention oracles)
+      - name: cargo test (the Gated DeltaNet, attention and whole-forward oracles)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo test -j 4 --locked --release -p fuel-transformers --test qwen3_5_gdn_mixer --test qwen3_5_gdn_recurrence --test qwen3_5_attention -- --nocapture
+          cargo test -j 4 --locked --release -p fuel-transformers --test qwen3_5_gdn_mixer --test qwen3_5_gdn_recurrence --test qwen3_5_attention --test qwen3_5_forward -- --nocapture
           if ($LASTEXITCODE -ne 0) { throw "cargo test exit $LASTEXITCODE" }
