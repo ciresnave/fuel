@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - `SamplingStrategy::Temperature { temp: 0.0 }` is documented as "effectively greedy" but `sample_logits` set the inverse temperature to 1.0 and sampled from the UNSCALED softmax, so a caller asking for greedy through the temperature knob got random tokens (the fix is in `fuel-tensor/src/lazy.rs`). `temp <= 0.0` and NaN are now greedy. New `fuel-tensor/tests/sampling_temperature_zero.rs`: temp 0.0 failed on every draw before the fix; a positive-temperature control proves the harness can see non-greedy output. Not changed: `spec_softmax_temp` (speculative decode) has the same `temp == 0.0` shortcut and is a separate decision (a one-hot distribution would change the accept rule).
 
+## v0.34.5 - 2026-10-31
+
+### Fixed
+
+- Vulkan f64 `exp` (and `sigmoid`, `silu`, `tanh` through it) returned 0.0 or a huge garbage double of either sign for `x < ~-708.4`: `poly_exp_d` scaled by `2^k` through `pow2_int`, whose bit pattern is valid only for `k >= -1022`, and the clamp at `x = -745` lets `k` reach -1075. Reported by vulkane (PR 132) for its copy of the same code. `unary_f64.slang` now scales in two steps (`2^(k+200)`, then `2^-200`) below `k = -1022`, so the result rounds once into the subnormal range; `unary_f64.spv` is regenerated. `vulkan_dispatch_unary_exp_f64` now also runs a 3001-point sweep over [-745, -700] (no new `#[ignore]`): 2418 points wrong before the fix, 0 after, on the local Vulkan adapter via `scripts/gpu-run.ps1`. `softmax_f64` is not affected (it calls the native `exp`, not `poly_exp_d`). Only `exp` is swept; sigmoid, silu and tanh at large arguments share the fix but are not swept.
+
 ## v0.34.4 - 2026-10-31
 
 ### Added
