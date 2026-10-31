@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - **Breaking (pre-1.0 minor):** the workspace pin `unpopped-vocab` moves 0.34.3 -> 0.35.0 (upstream breaking: tree-sitter 0.27 in `Frontend::parse`, which needs Rust 1.90; the pinned toolchain is 1.98). `fuel-kernel-seam` re-exposes the vocabulary types, so its consumers see the 0.35 types, and a `baracuda-cuda-seam` emitter on 0.35 now shares one vocab copy with the seam. Fuel calls no parse API: no source change. `baracuda-kernels-types` (alpha.158) still resolves `unpopped-vocab` 0.22 for the telemetry/CUDA paths until Baracuda publishes a 0.35 family. Checked: `cargo check -p fuel-kernel-seam -p fuel-dispatch --features fuel-dispatch/jit --all-targets` and `cargo test -p fuel-kernel-seam` (3 passed). Not run: CUDA/Vulkan builds, workspace test suite (CI).
 
+## v0.31.7 - 2026-10-30
+
+### Changed
+
+- Q8_0, Q4_K and Q6_K GGUF weights now stay quantized (`WeightStorage::Ggml`) in nine more loaders: `lazy_quantized_{gemma3,glm4,lfm2,phi3,qwen2,qwen3,qwen3_moe,smollm3,t5}` (ROADMAP row 124 step 2). Before, those loaders expanded every non-`Q4_0` tensor to f32 at load. Verified end to end for Qwen3 only (`tests/gguf_resident_quantized_qwen3.rs`: resident bytes under a third of f32, logits within 4% of the dequantized model, a 10% scale error caught, red without the change); the other eight are checked by compile and clippy.
+
 ## v0.31.6 - 2026-10-30
 
 ### Changed
