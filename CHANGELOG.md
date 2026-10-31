@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.34.2 - 2026-10-31
+
+### Added
+
+- ROADMAP row 117, steps 2 and 3: `LayerStateSpec::Fixed(Vec<FixedSlot>)` and `FixedSlot { shape, dtype }` (`fuel-inference/src/decode_state_spec.rs`) describe state that is overwritten every step and never grows (a Gated DeltaNet layer's `(S, conv window)`), with `LayerStateSpec::fixed_slots()`. `slots()` returns nothing for a `Fixed` layer, `kv_dims()` stays `None`, and `collapse_uniform` still refuses a model with one. `HybridGeometry::from_specs` builds the scheduler's view of a hybrid model (the attention layers' uniform `(n_kv_heads, head_dim)` plus per-layer kinds) and refuses an empty list, a model with no attention layer, non-uniform attention layers and `Slots` layers. The `Fixed` variant is matched only inside `decode_state_spec.rs` (no other `match` on `LayerStateSpec` exists in the workspace at this ref). No scheduler consumes it yet.
+
 ## v0.34.1 - 2026-10-31
 
 ### Added

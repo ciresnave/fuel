@@ -64,7 +64,7 @@
 //! than no fix**, because it consumes the attention that would have caught it.
 //! The allocator-side assumption is tracked separately; nothing here removes it.
 
-use fuel_ir::{Error, Result};
+use fuel_ir::{DType, Error, Result};
 
 /// One per-token state buffer a layer appends to during decode.
 ///
@@ -92,6 +92,32 @@ impl StateSlot {
     }
 }
 
+/// One buffer a layer keeps at a FIXED size and overwrites every step (a recurrent state, a conv
+/// window). Unlike a [`StateSlot`] it has no sequence axis and never grows: describing it as a
+/// `StateSlot` type-checks and allocates a cache that grows by the state's size per token.
+/// The dtype is carried because such a state is often f32 under bf16 weights.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedSlot {
+    /// Full shape of the buffer.
+    pub shape: Vec<usize>,
+    /// Element type of the buffer.
+    pub dtype: DType,
+}
+
+impl FixedSlot {
+    pub fn new(shape: impl Into<Vec<usize>>, dtype: DType) -> Self {
+        Self {
+            shape: shape.into(),
+            dtype,
+        }
+    }
+
+    /// Host bytes of the buffer (the empty product is 1: a scalar).
+    pub fn bytes(&self) -> usize {
+        self.shape.iter().product::<usize>() * self.dtype.size_in_bytes()
+    }
+}
+
 /// The decode state ONE layer requires.
 ///
 /// Note the contract is deliberately *"the state this layer requires"* and not
@@ -107,6 +133,10 @@ pub enum LayerStateSpec {
     /// A general slot list: MLA's `[latent, k_pe]`, or any future layer whose
     /// per-token state is not per-head K/V.
     Slots(Vec<StateSlot>),
+    /// Fixed-size state overwritten every step: a Gated DeltaNet layer's `(S, conv window)`
+    /// (ROADMAP row 117) or a ShortConv window (GAP-098). Named for the property that varies
+    /// (fixed vs growing), not for the first model that needs it.
+    Fixed(Vec<FixedSlot>),
 }
 
 impl LayerStateSpec {
@@ -123,6 +153,16 @@ impl LayerStateSpec {
                 vec![StateSlot::new(t.clone()), StateSlot::new(t)]
             }
             Self::Slots(s) => s.clone(),
+            // Fixed state is not per-token; it must never appear in the growing-slot view.
+            Self::Fixed(_) => Vec::new(),
+        }
+    }
+
+    /// The fixed-size buffers of this layer (empty for a growing-state layer).
+    pub fn fixed_slots(&self) -> &[FixedSlot] {
+        match self {
+            Self::Fixed(f) => f,
+            Self::KeyValue { .. } | Self::Slots(_) => &[],
         }
     }
 
@@ -139,7 +179,7 @@ impl LayerStateSpec {
                 n_kv_heads,
                 head_dim,
             } => Some((*n_kv_heads, *head_dim)),
-            Self::Slots(_) => None,
+            Self::Slots(_) | Self::Fixed(_) => None,
         }
     }
 
@@ -197,6 +237,107 @@ impl LayerStateSpec {
             }
         }
         Ok((n_kv_heads, head_dim))
+    }
+}
+
+/// What one layer of a hybrid model keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HybridLayer {
+    /// Full attention: per-token K and V in the shared KV cache.
+    Attention,
+    /// Fixed-size state held outside the KV cache, per session.
+    Fixed(Vec<FixedSlot>),
+}
+
+/// The geometry a scheduler needs for a hybrid model (ROADMAP row 117): the attention layers'
+/// uniform `(n_kv_heads, head_dim)` plus the per-layer kinds, so a `KvCache` is allocated for the
+/// attention layers only and a separate fixed-state container for the rest. It is built by a
+/// fallible constructor that refuses what it cannot describe, as [`LayerStateSpec::collapse_uniform`]
+/// does, rather than picking layer 0 and moving on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HybridGeometry {
+    n_kv_heads: usize,
+    head_dim: usize,
+    layers: Vec<HybridLayer>,
+}
+
+impl HybridGeometry {
+    /// Build from one spec per layer. Refuses an empty list, a layer that is neither per-head KV
+    /// nor fixed-size state (`Slots`), a model with no attention layer, and attention layers whose
+    /// `(n_kv_heads, head_dim)` differ.
+    pub fn from_specs(specs: &[LayerStateSpec]) -> Result<Self> {
+        if specs.is_empty() {
+            return Err(Error::Msg("HybridGeometry::from_specs: no layers".into()).bt());
+        }
+        let mut kv: Option<(usize, usize)> = None;
+        let mut layers = Vec::with_capacity(specs.len());
+        for (i, s) in specs.iter().enumerate() {
+            layers.push(Self::layer(i, s, &mut kv)?);
+        }
+        let (n_kv_heads, head_dim) = kv.ok_or_else(|| {
+            Error::Msg("HybridGeometry::from_specs: no attention layer to size a KV cache".into())
+                .bt()
+        })?;
+        Ok(Self {
+            n_kv_heads,
+            head_dim,
+            layers,
+        })
+    }
+
+    fn layer(i: usize, s: &LayerStateSpec, kv: &mut Option<(usize, usize)>) -> Result<HybridLayer> {
+        match s {
+            LayerStateSpec::KeyValue {
+                n_kv_heads,
+                head_dim,
+            } => {
+                let d = (*n_kv_heads, *head_dim);
+                let first = *kv.get_or_insert(d);
+                if first != d {
+                    return Err(Error::Msg(format!(
+                        "HybridGeometry::from_specs: attention layer {i} is {d:?} but an \
+                         earlier one is {first:?}; one KV cache cannot hold both"
+                    ))
+                    .bt());
+                }
+                Ok(HybridLayer::Attention)
+            }
+            LayerStateSpec::Fixed(f) => Ok(HybridLayer::Fixed(f.clone())),
+            LayerStateSpec::Slots(_) => Err(Error::Msg(format!(
+                "HybridGeometry::from_specs: layer {i} keeps growing non-KV slots \
+                 (e.g. MLA); a hybrid geometry describes KV and fixed state only"
+            ))
+            .bt()),
+        }
+    }
+
+    /// The attention layers' `(n_kv_heads, head_dim)`.
+    pub fn kv_dims(&self) -> (usize, usize) {
+        (self.n_kv_heads, self.head_dim)
+    }
+
+    /// Every layer, in order.
+    pub fn layers(&self) -> &[HybridLayer] {
+        &self.layers
+    }
+
+    /// How many layers use the KV cache.
+    pub fn attention_layers(&self) -> usize {
+        self.layers
+            .iter()
+            .filter(|l| matches!(l, HybridLayer::Attention))
+            .count()
+    }
+
+    /// Fixed-state bytes per session, independent of context length.
+    pub fn fixed_bytes_per_session(&self) -> usize {
+        self.layers
+            .iter()
+            .map(|l| match l {
+                HybridLayer::Fixed(f) => f.iter().map(FixedSlot::bytes).sum(),
+                HybridLayer::Attention => 0,
+            })
+            .sum()
     }
 }
 
@@ -312,6 +453,76 @@ mod tests {
     #[test]
     fn zero_layers_refuses_rather_than_returning_a_default() {
         assert!(LayerStateSpec::collapse_uniform(&[]).is_err());
+    }
+
+    fn gdn() -> LayerStateSpec {
+        LayerStateSpec::Fixed(vec![
+            FixedSlot::new(vec![4, 8, 8], DType::F32),
+            FixedSlot::new(vec![1, 24, 3], DType::F32),
+        ])
+    }
+
+    #[test]
+    fn fixed_state_is_not_in_the_growing_slot_view() {
+        let f = gdn();
+        assert!(f.slots().is_empty(), "fixed state must not be per-token");
+        assert_eq!(f.fixed_slots().len(), 2);
+        assert_eq!(f.kv_dims(), None);
+        // Positive control: a KV layer has growing slots and no fixed ones.
+        assert_eq!(kv(8, 64).slots().len(), 2);
+        assert!(kv(8, 64).fixed_slots().is_empty());
+    }
+
+    #[test]
+    fn a_fixed_layer_refuses_to_collapse() {
+        let specs = vec![kv(8, 64), gdn(), kv(8, 64)];
+        let err = LayerStateSpec::collapse_uniform(&specs)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("wrong state"), "{err}");
+        assert!(LayerStateSpec::collapse_uniform(&[gdn(), kv(8, 64)]).is_err());
+    }
+
+    #[test]
+    fn fixed_slot_bytes_use_the_dtype() {
+        assert_eq!(FixedSlot::new(vec![4, 8, 8], DType::F32).bytes(), 1024);
+        assert_eq!(FixedSlot::new(vec![4, 8, 8], DType::BF16).bytes(), 512);
+    }
+
+    #[test]
+    fn hybrid_geometry_separates_attention_from_fixed_layers() {
+        let specs = vec![
+            gdn(),
+            gdn(),
+            gdn(),
+            kv(2, 16),
+            gdn(),
+            gdn(),
+            gdn(),
+            kv(2, 16),
+        ];
+        let g = HybridGeometry::from_specs(&specs).unwrap();
+        assert_eq!(g.kv_dims(), (2, 16));
+        assert_eq!(g.layers().len(), 8);
+        assert_eq!(g.attention_layers(), 2);
+        assert_eq!(g.fixed_bytes_per_session(), 6 * (1024 + 288));
+    }
+
+    #[test]
+    fn hybrid_geometry_refuses_what_it_cannot_describe() {
+        let mut non_uniform = vec![gdn(), kv(2, 16), kv(4, 16)];
+        let e = HybridGeometry::from_specs(&non_uniform)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("layer 2"), "{e}");
+        non_uniform[2] = kv(2, 16);
+        assert!(HybridGeometry::from_specs(&non_uniform).is_ok());
+        assert!(HybridGeometry::from_specs(&[]).is_err());
+        assert!(HybridGeometry::from_specs(&[gdn(), gdn()]).is_err());
+        let e = HybridGeometry::from_specs(&[kv(2, 16), mla(512, 64)])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("layer 1"), "{e}");
     }
 
     // ----------------------------------------------------------------------
