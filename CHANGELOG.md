@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.32.0 - 2026-10-30
+
+### Changed
+
+- **Breaking (pre-1.0 minor):** the workspace pin `unpopped-vocab` moves 0.34.3 -> 0.35.0 (upstream breaking: tree-sitter 0.27 in `Frontend::parse`, which needs Rust 1.90; the pinned toolchain is 1.98). `fuel-kernel-seam` re-exposes the vocabulary types, so its consumers see the 0.35 types, and a `baracuda-cuda-seam` emitter on 0.35 now shares one vocab copy with the seam. Fuel calls no parse API: no source change. `baracuda-kernels-types` (alpha.158) still resolves `unpopped-vocab` 0.22 for the telemetry/CUDA paths until Baracuda publishes a 0.35 family. Checked: `cargo check -p fuel-kernel-seam -p fuel-dispatch --features fuel-dispatch/jit --all-targets` and `cargo test -p fuel-kernel-seam` (3 passed). Not run: CUDA/Vulkan builds, workspace test suite (CI).
+
 ## v0.31.6 - 2026-10-30
 
 ### Changed
