@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.34.5 - 2026-10-31
+
+### Fixed
+
+- Vulkan f64 `exp` (and `sigmoid`, `silu`, `tanh` through it) returned 0.0 or a huge garbage double of either sign for `x < ~-708.4`: `poly_exp_d` scaled by `2^k` through `pow2_int`, whose bit pattern is valid only for `k >= -1022`, and the clamp at `x = -745` lets `k` reach -1075. Reported by vulkane (PR 132) for its copy of the same code. `unary_f64.slang` now scales in two steps (`2^(k+200)`, then `2^-200`) below `k = -1022`, so the result rounds once into the subnormal range; `unary_f64.spv` is regenerated. New live test `vulkan_dispatch_unary_exp_f64_underflow_sweep` (3001 points over [-745, -700]): 2418 points wrong before the fix, 0 after, on the local Vulkan adapter via `scripts/gpu-run.ps1`. `softmax_f64` is not affected (it calls the native `exp`, not `poly_exp_d`). Only `exp` is swept; sigmoid, silu and tanh at large arguments share the fix but are not swept.
+
 ## v0.34.3 - 2026-10-31
 
 ### Added
