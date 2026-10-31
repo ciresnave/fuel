@@ -267,6 +267,17 @@ double poly_exp_d(double x) {
     // Multiply by 2^k. pow2_int(k) is an exact power of 2, so both
     // er_hi and er_lo scale exactly; their sum then rounds to give
     // the f64 result to ~1 ULP.
+    //
+    // pow2_int is valid only for k >= -1022 (biased exponent >= 1). Below that the
+    // shifted bits wrap: k = -1023 gives 0.0 and k <= -1024 gives a huge double of either
+    // sign. The result is subnormal there (x < ~-708.4), so scale in two exact-power steps:
+    // 2^(k+200) keeps the product normal (k >= -1075), and the final 2^-200 is the single
+    // rounding into the subnormal range.
+    if (k < -1022) {
+        double pa = pow2_int(k + 200);
+        double pb = pow2_int(-200);
+        return (er_hi * pa + er_lo * pa) * pb;
+    }
     double pk = pow2_int(k);
     return er_hi * pk + er_lo * pk;
 }

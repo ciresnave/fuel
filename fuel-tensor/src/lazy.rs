@@ -9452,10 +9452,19 @@ pub enum SamplingStrategy {
     #[default]
     Greedy,
     /// Temperature-scaled sampling with a deterministic seed. `temp`
-    /// is the softmax temperature (`1.0` is unscaled, `0.0` is
-    /// effectively greedy, higher values spread probability mass).
+    /// is the softmax temperature (`1.0` is unscaled, `temp <= 0.0` or NaN is
+    /// greedy, higher values spread probability mass).
     /// The seed makes sampling reproducible.
     Temperature { temp: f32, seed: u64 },
+}
+
+fn argmax_logits(logits: &[f32]) -> u32 {
+    let (i, _) = logits
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .expect("sample_logits: empty logits");
+    i as u32
 }
 
 /// Pick the next token from a logits vector using the configured
@@ -9463,18 +9472,16 @@ pub enum SamplingStrategy {
 /// future non-cached callers can share it.
 pub fn sample_logits(logits: &[f32], strategy: SamplingStrategy, rng_state: &mut u64) -> u32 {
     match strategy {
-        SamplingStrategy::Greedy => {
-            let (i, _) = logits
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .expect("sample_logits: empty logits");
-            i as u32
+        SamplingStrategy::Greedy => argmax_logits(logits),
+        // `temp <= 0.0` (and NaN) is the greedy limit: documented as "effectively greedy". It
+        // used to scale by 1.0 and sample from the unscaled softmax.
+        SamplingStrategy::Temperature { temp, .. } if temp.is_nan() || temp <= 0.0 => {
+            argmax_logits(logits)
         }
         SamplingStrategy::Temperature { temp, .. } => {
-            // Stable softmax over optionally temperature-scaled logits,
+            // Stable softmax over temperature-scaled logits,
             // then a deterministic multinomial draw.
-            let inv_temp = if temp == 0.0 { 1.0 } else { 1.0 / temp };
+            let inv_temp = 1.0 / temp;
             let scaled: Vec<f32> = logits.iter().map(|&x| x * inv_temp).collect();
             let max = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let exp: Vec<f32> = scaled.iter().map(|&x| (x - max).exp()).collect();

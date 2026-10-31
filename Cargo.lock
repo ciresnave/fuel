@@ -1953,8 +1953,8 @@ dependencies = [
  "fuel-graph",
  "fuel-hardware",
  "fuel-ir",
- "fuel-kernel-seam 0.34.7",
- "fuel-kernel-seam-types 0.34.7",
+ "fuel-kernel-seam 0.34.6",
+ "fuel-kernel-seam-types 0.34.6",
  "fuel-kiss-ref-backend",
  "fuel-memory",
  "fuel-metal-backend",
@@ -2047,7 +2047,7 @@ dependencies = [
  "fuel-backend-contract",
  "fuel-cpu-backend",
  "fuel-ir",
- "fuel-kernel-seam-types 0.34.7",
+ "fuel-kernel-seam-types 0.34.6",
  "half",
 ]
 
@@ -2113,7 +2113,7 @@ dependencies = [
 name = "fuel-kernel-seam"
 version = "0.34.7"
 dependencies = [
- "fuel-kernel-seam-types 0.34.7",
+ "fuel-kernel-seam-types 0.34.6",
  "unpopped-vocab 0.38.1",
 ]
 
@@ -2140,7 +2140,7 @@ name = "fuel-kiss-ref-backend"
 version = "0.34.7"
 dependencies = [
  "fuel-ir",
- "fuel-kernel-seam-types 0.34.7",
+ "fuel-kernel-seam-types 0.34.6",
  "half",
  "kiss-classify-vocab",
  "kiss-ops-vocab",
