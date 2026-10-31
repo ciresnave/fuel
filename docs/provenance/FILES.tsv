@@ -15,7 +15,7 @@ path	class	candle_source	basis
 CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 425 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
-Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
+Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 303 lines verbatim
 GLOSSARY.md	own		no lineage; 0 of 56 lines verbatim in candle (0%)
 GUIDE.md	own		no lineage; 2 of 168 lines verbatim in candle (1%)
 LICENSE-APACHE	candle	LICENSE-APACHE	same path; 100% of 164 lines verbatim
@@ -1693,9 +1693,8 @@ fuel-transformers/src/models/lazy_quantized_whisper.rs	not-traced		names candle 
 fuel-transformers/src/models/lazy_qwen2.rs	not-traced	candle-transformers/src/models/llama.rs	44 of 961 lines also appear in candle (mostly candle-transformers/src/models/llama.rs); not judged
 fuel-transformers/src/models/lazy_qwen2_moe.rs	not-traced	candle-transformers/src/models/qwen2_moe.rs	same file name as candle candle-transformers/src/models/qwen2_moe.rs; a port or re-expression is presumed until judged
 fuel-transformers/src/models/lazy_qwen3.rs	not-traced	candle-transformers/src/models/llama.rs	50 of 1141 lines also appear in candle (mostly candle-transformers/src/models/llama.rs); not judged
-fuel-transformers/src/models/lazy_qwen3_5.rs	not-traced	candle-transformers/src/models/granitemoehybrid.rs	24 of 341 lines also appear in candle (mostly candle-transformers/src/models/granitemoehybrid.rs); not judged
+fuel-transformers/src/models/lazy_qwen3_5.rs	not-traced	candle-transformers/src/models/granitemoehybrid.rs	24 of 339 lines also appear in candle (mostly candle-transformers/src/models/granitemoehybrid.rs); not judged
 fuel-transformers/src/models/lazy_qwen3_5_attn.rs	not-traced		lives in a directory that mirrors candle-transformers/src/models/; no same-name file; not judged
-fuel-transformers/src/models/lazy_qwen3_5_forward.rs	not-traced		lives in a directory that mirrors candle-transformers/src/models/; no same-name file; not judged
 fuel-transformers/src/models/lazy_qwen3_5_gdn.rs	not-traced		lives in a directory that mirrors candle-transformers/src/models/; no same-name file; not judged
 fuel-transformers/src/models/lazy_qwen3_moe.rs	not-traced	candle-transformers/src/models/granite.rs	33 of 700 lines also appear in candle (mostly candle-transformers/src/models/granite.rs); not judged
 fuel-transformers/src/models/lazy_qwen3_vl.rs	not-traced		lives in a directory that mirrors candle-transformers/src/models/; no same-name file; not judged
@@ -1753,8 +1752,6 @@ fuel-transformers/tests/fixtures/qwen3_0_6b_cpu_reference.PROVENANCE.md	own		no 
 fuel-transformers/tests/fixtures/qwen3_0_6b_cpu_reference.json	own		no lineage; 0 of 67 lines verbatim in candle (0%)
 fuel-transformers/tests/fixtures/qwen3_5_0_8b_attn_reference.PROVENANCE.md	own		no lineage; 0 of 8 lines verbatim in candle (0%)
 fuel-transformers/tests/fixtures/qwen3_5_0_8b_attn_reference.safetensors	data		binary file; no path or similarity match to a candle file
-fuel-transformers/tests/fixtures/qwen3_5_0_8b_forward_reference.PROVENANCE.md	own		no lineage; 0 of 10 lines verbatim in candle (0%)
-fuel-transformers/tests/fixtures/qwen3_5_0_8b_forward_reference.safetensors	data		binary file; no path or similarity match to a candle file
 fuel-transformers/tests/fixtures/qwen3_5_0_8b_gdn_mixer_reference.PROVENANCE.md	own		no lineage; 0 of 8 lines verbatim in candle (0%)
 fuel-transformers/tests/fixtures/qwen3_5_0_8b_gdn_mixer_reference.safetensors	data		binary file; no path or similarity match to a candle file
 fuel-transformers/tests/gap314_spatial_population.rs	own		no lineage; 0 of 154 lines verbatim in candle (0%)
@@ -1765,7 +1762,6 @@ fuel-transformers/tests/nms_tests.rs	candle	candle-transformers/tests/nms_tests.
 fuel-transformers/tests/phase6a_anchor_oracle.rs	own		no lineage; 0 of 123 lines verbatim in candle (0%)
 fuel-transformers/tests/phase6b_cuda_anchor.rs	own		no lineage; 0 of 254 lines verbatim in candle (0%)
 fuel-transformers/tests/qwen3_5_attention.rs	own		no lineage; 0 of 80 lines verbatim in candle (0%)
-fuel-transformers/tests/qwen3_5_forward.rs	own		no lineage; 0 of 89 lines verbatim in candle (0%)
 fuel-transformers/tests/qwen3_5_gdn_mixer.rs	own		no lineage; 0 of 95 lines verbatim in candle (0%)
 fuel-transformers/tests/qwen3_5_gdn_recurrence.rs	own		no lineage; 3 of 91 lines verbatim in candle (3%)
 fuel-transformers/tests/qwen3_5_loader_oracle.rs	own		no lineage; 0 of 117 lines verbatim in candle (0%)
@@ -2017,7 +2013,6 @@ scripts/packaged-escapes-allowlist.txt	own		no lineage; 0 of 13 lines verbatim i
 scripts/panic_census.py	own		no lineage; 1 of 178 lines verbatim in candle (1%)
 scripts/provenance.py	own		judged: names candle only to describe the fork
 scripts/qwen35_reference/attn_ref.py	own		no lineage; 0 of 25 lines verbatim in candle (0%)
-scripts/qwen35_reference/forward_ref.py	own		no lineage; 0 of 32 lines verbatim in candle (0%)
 scripts/qwen35_reference/mixer_ref.py	own		no lineage; 0 of 25 lines verbatim in candle (0%)
 scripts/rename_dyn_impl.py	own		no lineage; 0 of 132 lines verbatim in candle (0%)
 scripts/round1-notes/lazy_metavoice.txt	own		no lineage; 0 of 4 lines verbatim in candle (0%)
