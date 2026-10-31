@@ -1174,18 +1174,14 @@ fn check_f64(label: &str, got: &[f64], expected: &[f64], tol: f64) -> f64 {
 /// `poly_exp_d` scales by `2^k` through `pow2_int`, whose bit pattern is only valid for
 /// `k >= -1022`. For `x < ~-708.4` (`k <= -1023`) it returned 0.0 or a huge garbage double of
 /// either sign (vulkane PR 132 measured 2758 of 3001 points wrong in [-745, -708.4]). This sweeps
-/// the whole underflow neighbourhood, so a regression to the old scaling fails on VALUE: every
+/// the whole underflow neighbourhood (called from `vulkan_dispatch_unary_exp_f64`, so it adds no
+/// `#[ignore]` to the ratchet), so a regression to the old scaling fails on VALUE: every
 /// result must be non-negative, and equal to libm's `exp` to 1e-12 relative where the result is
 /// a normal double, or within 4 smallest subnormals where it is subnormal.
-#[test]
-#[ignore]
-fn vulkan_dispatch_unary_exp_f64_underflow_sweep() {
-    let Some(backend) = backend_or_skip() else {
-        return;
-    };
+fn exp_f64_underflow_sweep(backend: &Arc<VulkanBackend>) {
     let host: Vec<f64> = (0..=3000).map(|i| -745.0 + (i as f64) * 0.015).collect();
     assert!(host.iter().any(|x| *x < -708.4) && host.iter().any(|x| *x > -708.4));
-    let got = run_unary_f64(&backend, OpKind::ExpElementwise, &host);
+    let got = run_unary_f64(backend, OpKind::ExpElementwise, &host);
     let mut bad = Vec::new();
     for (x, g) in host.iter().zip(&got) {
         let e = x.exp();
@@ -1249,6 +1245,7 @@ fn vulkan_dispatch_unary_exp_f64() {
     // exp(700), the worst case before the DD upgrade was 75 ULP.
     let worst = check_f64("exp f64", &got, &expected, 5e-16);
     eprintln!("exp f64: worst rel err = {worst:e}");
+    exp_f64_underflow_sweep(&backend);
 }
 
 #[test]
