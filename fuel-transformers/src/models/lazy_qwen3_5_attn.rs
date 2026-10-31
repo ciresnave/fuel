@@ -45,11 +45,7 @@ fn project(
     cfg: &Qwen3_5Config,
 ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
     let t = x.shape().dims()[0];
-    let (nh, nkv, hd) = (
-        cfg.num_attention_heads,
-        cfg.num_key_value_heads,
-        cfg.head_dim,
-    );
+    let (nh, hd) = (cfg.num_attention_heads, cfg.head_dim);
     let q_dim = cfg.attn_q_dim();
     if !cfg.attn_output_gate {
         return Err(Error::Msg(
