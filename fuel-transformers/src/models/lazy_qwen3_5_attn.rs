@@ -2,8 +2,8 @@
 //! The gated full-attention token mixer of Qwen3.5, composed from base lazy ops. ROADMAP row 115
 //! (`docs/design-notes/2026-10-30-qwen35-composed-forward-row-115.md`, section 3).
 //!
-//! Prefill from position 0 only: there is no KV cache here yet, so a decode step recomputes the
-//! whole prefix. The cached form is a later step of row 115.
+//! [`gated_full_attention`] is a prefill from position 0. [`gated_full_attention_cached`] takes the
+//! keys and values of earlier tokens as host data and returns the grown ones.
 
 use crate::models::lazy_qwen3_5::{FullAttentionWeights, Qwen3_5Config};
 use fuel_ir::Shape;
@@ -16,15 +16,26 @@ pub fn rotary_dim(cfg: &Qwen3_5Config) -> usize {
     (cfg.head_dim as f64 * cfg.partial_rotary_factor) as usize
 }
 
-/// Additive causal mask `[1, 1, t, t]`: 0 on and below the diagonal, `-inf` above.
-fn causal_mask(anchor: &Tensor, t: usize) -> Result<Tensor> {
-    let mut data = vec![0.0_f32; t * t];
+/// Additive causal mask `[1, 1, t, past + t]` for `t` new queries after `past` cached tokens:
+/// query `i` (absolute position `past + i`) sees keys `0..=past + i`; the rest are `-inf`.
+fn causal_mask(anchor: &Tensor, t: usize, past: usize) -> Result<Tensor> {
+    let total = past + t;
+    let mut data = vec![0.0_f32; t * total];
     for i in 0..t {
-        for j in (i + 1)..t {
-            data[i * t + j] = f32::NEG_INFINITY;
+        for j in (past + i + 1)..total {
+            data[i * total + j] = f32::NEG_INFINITY;
         }
     }
-    anchor.const_f32_like(data, Shape::from_dims(&[1, 1, t, t]))
+    anchor.const_f32_like(data, Shape::from_dims(&[1, 1, t, total]))
+}
+
+/// The keys and values of the tokens already seen by one attention layer, as host data in the
+/// `[n_kv_heads, len, head_dim]` layout (post-norm, post-rotary keys).
+#[derive(Debug, Clone)]
+pub struct AttnPast<'a> {
+    pub k: &'a [f32],
+    pub v: &'a [f32],
+    pub len: usize,
 }
 
 /// A key or value projection `[T, hidden] -> [1, nkv, T, hd]`.
@@ -43,6 +54,7 @@ fn project(
     x: &Tensor,
     w: &FullAttentionWeights,
     cfg: &Qwen3_5Config,
+    start_pos: usize,
 ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
     let t = x.shape().dims()[0];
     let (nh, hd) = (cfg.num_attention_heads, cfg.head_dim);
@@ -71,7 +83,7 @@ fn project(
     let k = k.rms_norm_affine(Arc::clone(&w.k_norm_gain), cfg.rms_norm_eps)?;
     // Rotate-half over the first `rotary_dim` of each head; the rest passes through.
     let rd = rotary_dim(cfg);
-    let (cos, sin) = x.rope_tables_const(cfg.rope_theta, 0, t, rd);
+    let (cos, sin) = x.rope_tables_const(cfg.rope_theta, start_pos, t, rd);
     Ok((
         q.rope_partial(&cos, &sin, rd)?,
         k.rope_partial(&cos, &sin, rd)?,
@@ -88,25 +100,49 @@ pub fn gated_full_attention(
     w: &FullAttentionWeights,
     cfg: &Qwen3_5Config,
 ) -> Result<Tensor> {
+    Ok(gated_full_attention_cached(x, w, cfg, None)?.0)
+}
+
+/// [`gated_full_attention`] for `T` new tokens after `past`: the new tokens take positions
+/// `past.len..past.len + T`. Returns `(y [T, hidden], k, v)` where `k` and `v` are the grown
+/// `[1, n_kv_heads, past.len + T, head_dim]` keys and values to store for the next call.
+pub fn gated_full_attention_cached(
+    x: &Tensor,
+    w: &FullAttentionWeights,
+    cfg: &Qwen3_5Config,
+    past: Option<&AttnPast<'_>>,
+) -> Result<(Tensor, Tensor, Tensor)> {
     let t = x.shape().dims()[0];
     let (nh, nkv, hd) = (
         cfg.num_attention_heads,
         cfg.num_key_value_heads,
         cfg.head_dim,
     );
-    let (q, k, v, gate) = project(x, w, cfg)?;
+    let start = past.map_or(0, |p| p.len);
+    let (q, k, v, gate) = project(x, w, cfg, start)?;
+    let (k, v) = match past {
+        None => (k, v),
+        Some(p) => {
+            let dims = Shape::from_dims(&[1, nkv, p.len, hd]);
+            let past_k = x.const_f32_like(p.k.to_vec(), dims.clone())?;
+            let past_v = x.const_f32_like(p.v.to_vec(), dims)?;
+            (past_k.concat(&k, 2)?, past_v.concat(&v, 2)?)
+        }
+    };
     let n_rep = nh / nkv;
-    let k = k.repeat_interleave(1_usize, n_rep)?;
-    let v = v.repeat_interleave(1_usize, n_rep)?;
+    let k_rep = k.repeat_interleave(1_usize, n_rep)?;
+    let v_rep = v.repeat_interleave(1_usize, n_rep)?;
     let scores = q
-        .matmul(&k.transpose()?)?
+        .matmul(&k_rep.transpose()?)?
         .mul_scalar(1.0 / (hd as f64).sqrt())
-        .broadcast_add(&causal_mask(x, t)?)?;
+        .broadcast_add(&causal_mask(x, t, start)?)?;
     let ctx = scores
         .softmax_last_dim()?
-        .matmul(&v)?
+        .matmul(&v_rep)?
         .merge_heads()?
         .reshape(Shape::from_dims(&[t, nh * hd]))?;
-    w.o_proj
-        .apply_linear(&ctx.mul(&gate.sigmoid())?, nh * hd, cfg.hidden_size)
+    let y = w
+        .o_proj
+        .apply_linear(&ctx.mul(&gate.sigmoid())?, nh * hd, cfg.hidden_size)?;
+    Ok((y, k, v))
 }

@@ -14,15 +14,8 @@ use fuel_ir::error::{Error, Result};
 use fuel_tensor::{Device, lazy::Tensor};
 use std::sync::Arc;
 
-/// One decoder layer over `h [T, hidden]`:
-/// `h + mixer(norm(h))`, then `h + down(silu(gate(norm(h))) * up(norm(h)))`.
-pub fn decoder_layer(h: &Tensor, layer: &Qwen3_5Layer, cfg: &Qwen3_5Config) -> Result<Tensor> {
-    let x = h.rms_norm_affine(Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
-    let mixed = match &layer.mixer {
-        Qwen3_5Mixer::GatedDeltaNet(w) => gated_delta_net_mixer(&x, w, cfg, None)?.0,
-        Qwen3_5Mixer::FullAttention(w) => gated_full_attention(&x, w, cfg)?,
-    };
-    let h = h.add(&mixed)?;
+/// The feed-forward half of a decoder layer: `h + down(silu(gate(norm(h))) * up(norm(h)))`.
+pub(crate) fn mlp_block(h: &Tensor, layer: &Qwen3_5Layer, cfg: &Qwen3_5Config) -> Result<Tensor> {
     let x = h.rms_norm_affine(Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
     let (hid, inter) = (cfg.hidden_size, cfg.intermediate_size);
     let gate = layer.ffn_gate.apply_linear(&x, hid, inter)?;
@@ -31,6 +24,17 @@ pub fn decoder_layer(h: &Tensor, layer: &Qwen3_5Layer, cfg: &Qwen3_5Config) -> R
         .ffn_down
         .apply_linear(&gate.silu().mul(&up)?, inter, hid)?;
     h.add(&mlp)
+}
+
+/// One decoder layer over `h [T, hidden]`:
+/// `h + mixer(norm(h))`, then `h + down(silu(gate(norm(h))) * up(norm(h)))`.
+pub fn decoder_layer(h: &Tensor, layer: &Qwen3_5Layer, cfg: &Qwen3_5Config) -> Result<Tensor> {
+    let x = h.rms_norm_affine(Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
+    let mixed = match &layer.mixer {
+        Qwen3_5Mixer::GatedDeltaNet(w) => gated_delta_net_mixer(&x, w, cfg, None)?.0,
+        Qwen3_5Mixer::FullAttention(w) => gated_full_attention(&x, w, cfg)?,
+    };
+    mlp_block(&h.add(&mixed)?, layer, cfg)
 }
 
 /// Every stage of a prefill, unrealised: the embedding, the output of each decoder layer, the

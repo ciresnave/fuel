@@ -17,10 +17,10 @@
 //!
 //! # Scope
 //!
-//! This is the loader plus the model type. [`Qwen3_5Model::forward`] (cached decode) returns a typed
-//! error: the KV-cached attention layers and the carried Gated DeltaNet state are not wired in yet
-//! (ROADMAP row 115, `docs/gaps.md` GAP-368). The whole-sequence forward from position 0 exists as
-//! `Qwen3_5Model::prefill_logits` (`lazy_qwen3_5_forward`).
+//! This is the loader plus the model type. [`Qwen3_5Model::forward`] is stateless and returns a typed
+//! error (`docs/gaps.md` GAP-368, narrowed): the forward is `Qwen3_5Model::prefill_logits`
+//! (`lazy_qwen3_5_forward`) and cached decode is `Qwen3_5Model::decode` with a `Qwen3_5Cache`
+//! (`lazy_qwen3_5_decode`), composed from base ops in f32 on the CPU (ROADMAP row 115).
 //!
 //! # Norm convention
 //!
@@ -509,12 +509,13 @@ pub struct Qwen3_5Model {
 }
 
 impl Qwen3_5Model {
-    /// Always an error until the Gated DeltaNet recurrence exists (ROADMAP row 40 stages 2-3,
-    /// `docs/gaps.md` GAP-368). A typed refusal, not a wrong answer.
+    /// Always an error: this entry point is stateless, and decode needs a cache. Use
+    /// [`Qwen3_5Model::prefill_logits`] or [`Qwen3_5Model::decode`] (ROADMAP row 115;
+    /// `docs/gaps.md` GAP-368 is narrowed, not closed). A typed refusal, not a wrong answer.
     pub fn forward(&self, _tokens: &[u32], _start_pos: usize) -> Result<Tensor> {
         Err(msg(
-            "Qwen3_5Model::forward: the Gated DeltaNet recurrence is not implemented (GAP-368, \
-             ROADMAP row 40); only the loader exists"
+            "Qwen3_5Model::forward: stateless entry point, use prefill_logits or decode \
+             with a cache (GAP-368, ROADMAP row 115)"
                 .to_string(),
         ))
     }
