@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.33.0 - 2026-10-31
+
+### Changed
+
+- **Breaking (pre-1.0 minor):** the workspace pin `unpopped-vocab` moves 0.35.0 -> 0.36.0 (upstream breaking, unpopped 0.36.0). `fuel-kernel-seam` re-exposes the vocabulary types, so its consumers see the 0.36 types; Baracuda is held on this so a 0.36 emitter and the seam share one vocab copy. `baracuda-kernels-types` (alpha.158) still resolves `unpopped-vocab` 0.22 for the telemetry/CUDA paths until Baracuda publishes a 0.36 family. No source change: the code compiles untouched. Checked: `cargo check -p fuel-kernel-seam -p fuel-dispatch --features fuel-dispatch/jit --all-targets` and `cargo test -p fuel-kernel-seam`. Not run: CUDA/Vulkan builds, workspace test suite (CI).
+
 ## v0.32.1 - 2026-10-30
 
 ### Added
