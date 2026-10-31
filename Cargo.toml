@@ -252,7 +252,7 @@ baracuda-core          = { version = "0.0.1-alpha.158" }
 baracuda-cuda-sys      = { version = "0.0.1-alpha.158" }
 baracuda-driver        = { version = "0.0.1-alpha.158" }
 baracuda-runtime       = { version = "0.0.1-alpha.147" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.158" }
+baracuda-cublas-sys    = { version = "0.1.0-alpha.25" }
 baracuda-cublas        = { version = "0.0.1-alpha.158" }
 baracuda-cudnn-sys     = { version = "0.0.1-alpha.147" }
 baracuda-cudnn         = { version = "0.0.1-alpha.147", features = ["half-crate"] }
