@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! The gated full-attention token mixer of Qwen3.5, composed from base lazy ops. ROADMAP row 115
+//! (`docs/design-notes/2026-10-30-qwen35-composed-forward-row-115.md`, section 3).
+//!
+//! Prefill from position 0 only: there is no KV cache here yet, so a decode step recomputes the
+//! whole prefix. The cached form is a later step of row 115.
+
+use crate::models::lazy_qwen3_5::{FullAttentionWeights, Qwen3_5Config};
+use fuel_ir::Shape;
+use fuel_ir::error::{Error, Result};
+use fuel_tensor::lazy::{Tensor, WeightStorage};
+use std::sync::Arc;
+
+/// Rotated width of each head: `int(head_dim * partial_rotary_factor)`.
+pub fn rotary_dim(cfg: &Qwen3_5Config) -> usize {
+    (cfg.head_dim as f64 * cfg.partial_rotary_factor) as usize
+}
+
+/// Additive causal mask `[1, 1, t, t]`: 0 on and below the diagonal, `-inf` above.
+fn causal_mask(anchor: &Tensor, t: usize) -> Result<Tensor> {
+    let mut data = vec![0.0_f32; t * t];
+    for i in 0..t {
+        for j in (i + 1)..t {
+            data[i * t + j] = f32::NEG_INFINITY;
+        }
+    }
+    anchor.const_f32_like(data, Shape::from_dims(&[1, 1, t, t]))
+}
+
+/// A key or value projection `[T, hidden] -> [1, nkv, T, hd]`.
+fn head_projection(x: &Tensor, proj: &WeightStorage, cfg: &Qwen3_5Config) -> Result<Tensor> {
+    let t = x.shape().dims()[0];
+    let (nkv, hd) = (cfg.num_key_value_heads, cfg.head_dim);
+    proj.apply_linear(x, cfg.hidden_size, nkv * hd)?
+        .reshape(Shape::from_dims(&[1, t, nkv * hd]))?
+        .split_heads(nkv, hd)
+}
+
+/// The query, gate, key and value of one layer, each in the attention layout:
+/// `q [1, nh, T, hd]`, `k` and `v [1, nkv, T, hd]` (q and k normed and rotated), and the output
+/// gate `[T, nh * hd]`.
+fn project(
+    x: &Tensor,
+    w: &FullAttentionWeights,
+    cfg: &Qwen3_5Config,
+) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+    let t = x.shape().dims()[0];
+    let (nh, nkv, hd) = (
+        cfg.num_attention_heads,
+        cfg.num_key_value_heads,
+        cfg.head_dim,
+    );
+    let q_dim = cfg.attn_q_dim();
+    if !cfg.attn_output_gate {
+        return Err(Error::Msg(
+            "gated_full_attention: attn_output_gate = false is not supported by this layer".into(),
+        )
+        .bt());
+    }
+    // `q_proj` is `[T, nh * 2 * hd]`; per head, the first `hd` is the query and the next `hd` the gate.
+    let qg = w
+        .q_proj
+        .apply_linear(x, cfg.hidden_size, 2 * q_dim)?
+        .reshape(Shape::from_dims(&[t, nh, 2 * hd]))?;
+    let q = qg
+        .narrow(2, 0, hd)?
+        .reshape(Shape::from_dims(&[1, t, q_dim]))?
+        .split_heads(nh, hd)?;
+    let gate = qg
+        .narrow(2, hd, hd)?
+        .reshape(Shape::from_dims(&[t, q_dim]))?;
+    let k = head_projection(x, &w.k_proj, cfg)?;
+    let v = head_projection(x, &w.v_proj, cfg)?;
+    let q = q.rms_norm_affine(Arc::clone(&w.q_norm_gain), cfg.rms_norm_eps)?;
+    let k = k.rms_norm_affine(Arc::clone(&w.k_norm_gain), cfg.rms_norm_eps)?;
+    // Rotate-half over the first `rotary_dim` of each head; the rest passes through.
+    let rd = rotary_dim(cfg);
+    let (cos, sin) = x.rope_tables_const(cfg.rope_theta, 0, t, rd);
+    Ok((
+        q.rope_partial(&cos, &sin, rd)?,
+        k.rope_partial(&cos, &sin, rd)?,
+        v,
+        gate,
+    ))
+}
+
+/// One gated full-attention token mixer over `x [T, hidden]` (already input-normed), as the
+/// HuggingFace `Qwen3_5Attention.forward` computes it for text: GQA, scale `head_dim^-0.5`,
+/// causal, output multiplied by `sigmoid(gate)`, then `o_proj`. Returns `[T, hidden]`.
+pub fn gated_full_attention(
+    x: &Tensor,
+    w: &FullAttentionWeights,
+    cfg: &Qwen3_5Config,
+) -> Result<Tensor> {
+    let t = x.shape().dims()[0];
+    let (nh, nkv, hd) = (
+        cfg.num_attention_heads,
+        cfg.num_key_value_heads,
+        cfg.head_dim,
+    );
+    let (q, k, v, gate) = project(x, w, cfg)?;
+    let n_rep = nh / nkv;
+    let k = k.repeat_interleave(1_usize, n_rep)?;
+    let v = v.repeat_interleave(1_usize, n_rep)?;
+    let scores = q
+        .matmul(&k.transpose()?)?
+        .mul_scalar(1.0 / (hd as f64).sqrt())
+        .broadcast_add(&causal_mask(x, t)?)?;
+    let ctx = scores
+        .softmax_last_dim()?
+        .matmul(&v)?
+        .merge_heads()?
+        .reshape(Shape::from_dims(&[t, nh * hd]))?;
+    w.o_proj
+        .apply_linear(&ctx.mul(&gate.sigmoid())?, nh * hd, cfg.hidden_size)
+}
