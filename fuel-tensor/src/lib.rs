@@ -60,6 +60,7 @@ pub mod persistent_decode;
 pub mod pipelined_bridge;
 pub mod planner;
 pub mod reproducibility;
+pub mod sampling;
 pub mod scheduling;
 pub mod test_utils;
 #[cfg(feature = "vulkan")]
