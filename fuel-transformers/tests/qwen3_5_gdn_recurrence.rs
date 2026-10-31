@@ -318,6 +318,50 @@ fn l2(x: &[f64], eps: f64) -> Vec<f64> {
     x.iter().map(|v| v / n).collect()
 }
 
+/// One head's q and k as the reference sees them: l2-normalised and q scaled, unless a `defect` skips that.
+fn prepare_qk(q: &[f32], k: &[f32], defect: Defect) -> (Vec<f64>, Vec<f64>) {
+    let mut qv: Vec<f64> = q.iter().map(|&x| x as f64).collect();
+    let mut kv: Vec<f64> = k.iter().map(|&x| x as f64).collect();
+    if defect != Defect::NoL2Norm {
+        qv = l2(&qv, 1e-6);
+        kv = l2(&kv, 1e-6);
+    }
+    if defect != Defect::NoQScale {
+        for x in qv.iter_mut() {
+            *x /= (DK as f64).sqrt();
+        }
+    }
+    (qv, kv)
+}
+
+/// One token of one head: decay `sh`, apply the delta rule with key `kv`, write the output row.
+fn head_update(
+    sh: &mut [f64],
+    qv: &[f64],
+    kv: &[f64],
+    v: &[f32],
+    decay: f64,
+    b: f64,
+    out: &mut [f64],
+) {
+    for x in sh.iter_mut() {
+        *x *= decay;
+    }
+    let mut delta = [0.0_f64; DV];
+    for (j, d) in delta.iter_mut().enumerate() {
+        let mem: f64 = (0..DK).map(|i| sh[i * DV + j] * kv[i]).sum();
+        *d = (v[j] as f64 - mem) * b;
+    }
+    for i in 0..DK {
+        for (j, d) in delta.iter().enumerate() {
+            sh[i * DV + j] += kv[i] * d;
+        }
+    }
+    for (j, o) in out.iter_mut().enumerate() {
+        *o = (0..DK).map(|i| sh[i * DV + j] * qv[i]).sum();
+    }
+}
+
 /// Plain f64 recurrence; tensors are indexed `[t][h]` as `t * NV + h`. Returns (out, final state).
 #[allow(clippy::too_many_arguments)]
 fn reference(
@@ -339,40 +383,21 @@ fn reference(
         for h in 0..NV {
             let qi = (t * NV + h) * DK;
             let vi = (t * NV + h) * DV;
-            let mut qv: Vec<f64> = q[qi..qi + DK].iter().map(|&x| x as f64).collect();
-            let mut kv: Vec<f64> = k[qi..qi + DK].iter().map(|&x| x as f64).collect();
-            if defect != Defect::NoL2Norm {
-                qv = l2(&qv, 1e-6);
-                kv = l2(&kv, 1e-6);
-            }
-            if defect != Defect::NoQScale {
-                for x in qv.iter_mut() {
-                    *x /= (DK as f64).sqrt();
-                }
-            }
-            let sh = &mut s[h * DK * DV..(h + 1) * DK * DV];
+            let (qv, kv) = prepare_qk(&q[qi..qi + DK], &k[qi..qi + DK], defect);
             let decay = if defect == Defect::NoDecay {
                 1.0
             } else {
                 (g[t * NV + h] as f64).exp()
             };
-            for x in sh.iter_mut() {
-                *x *= decay;
-            }
-            let b = beta[t * NV + h] as f64;
-            let mut delta = [0.0_f64; DV];
-            for (j, d) in delta.iter_mut().enumerate() {
-                let mem: f64 = (0..DK).map(|i| sh[i * DV + j] * kv[i]).sum();
-                *d = (v[vi + j] as f64 - mem) * b;
-            }
-            for i in 0..DK {
-                for (j, d) in delta.iter().enumerate() {
-                    sh[i * DV + j] += kv[i] * d;
-                }
-            }
-            for j in 0..DV {
-                out[vi + j] = (0..DK).map(|i| sh[i * DV + j] * qv[i]).sum();
-            }
+            head_update(
+                &mut s[h * DK * DV..(h + 1) * DK * DV],
+                &qv,
+                &kv,
+                &v[vi..vi + DV],
+                decay,
+                beta[t * NV + h] as f64,
+                &mut out[vi..vi + DV],
+            );
         }
     }
     (out, s)

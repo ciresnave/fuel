@@ -19,6 +19,37 @@ pub fn l2norm_last(x: &Tensor, eps: f64) -> Result<Tensor> {
     x.broadcast_mul(&inv)
 }
 
+/// One token of the delta rule: returns `(o_t [1, nv, dv], next state)`. `q` and `k` are already normalised.
+fn delta_step(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    g: &Tensor,
+    beta: &Tensor,
+    s: &Tensor,
+    t: usize,
+) -> Result<(Tensor, Tensor)> {
+    let (nv, dk) = (q.shape().dims()[1], q.shape().dims()[2]);
+    let dv = v.shape().dims()[2];
+    let q_t = q.narrow(0, t, 1)?.reshape(Shape::from_dims(&[nv, 1, dk]))?;
+    let k_t = k.narrow(0, t, 1)?.reshape(Shape::from_dims(&[nv, 1, dk]))?;
+    let k_col = k_t.transpose_last_two()?;
+    let v_t = v.narrow(0, t, 1)?.reshape(Shape::from_dims(&[nv, 1, dv]))?;
+    let decay = g
+        .narrow(0, t, 1)?
+        .reshape(Shape::from_dims(&[nv, 1, 1]))?
+        .exp();
+    let beta_t = beta
+        .narrow(0, t, 1)?
+        .reshape(Shape::from_dims(&[nv, 1, 1]))?;
+    let s = s.broadcast_mul(&decay)?;
+    let kv = k_t.matmul(&s)?;
+    let delta = v_t.sub(&kv)?.broadcast_mul(&beta_t)?;
+    let s = s.add(&k_col.matmul(&delta)?)?;
+    let o_t = q_t.matmul(&s)?.reshape(Shape::from_dims(&[1, nv, dv]))?;
+    Ok((o_t, s))
+}
+
 /// The delta-rule recurrence over `T` tokens, per value head, in the reference's order:
 ///
 /// ```text
@@ -58,22 +89,8 @@ pub fn gated_delta_recurrence(
     };
     let mut out: Option<Tensor> = None;
     for t in 0..t_len {
-        let q_t = q.narrow(0, t, 1)?.reshape(Shape::from_dims(&[nv, 1, dk]))?;
-        let k_t = k.narrow(0, t, 1)?.reshape(Shape::from_dims(&[nv, 1, dk]))?;
-        let k_col = k_t.transpose_last_two()?;
-        let v_t = v.narrow(0, t, 1)?.reshape(Shape::from_dims(&[nv, 1, dv]))?;
-        let decay = g
-            .narrow(0, t, 1)?
-            .reshape(Shape::from_dims(&[nv, 1, 1]))?
-            .exp();
-        let beta_t = beta
-            .narrow(0, t, 1)?
-            .reshape(Shape::from_dims(&[nv, 1, 1]))?;
-        s = s.broadcast_mul(&decay)?;
-        let kv = k_t.matmul(&s)?;
-        let delta = v_t.sub(&kv)?.broadcast_mul(&beta_t)?;
-        s = s.add(&k_col.matmul(&delta)?)?;
-        let o_t = q_t.matmul(&s)?.reshape(Shape::from_dims(&[1, nv, dv]))?;
+        let (o_t, next) = delta_step(&q, &k, v, g, beta, &s, t)?;
+        s = next;
         out = Some(match out {
             None => o_t,
             Some(prev) => prev.concat(&o_t, 0)?,
@@ -100,32 +117,18 @@ pub struct GdnState {
     pub conv_window: Tensor,
 }
 
-/// One Gated DeltaNet token mixer over `x [T, hidden]` (already input-normed), as the HuggingFace
-/// `Qwen3_5GatedDeltaNet.forward` computes it. Returns `(y [T, hidden], new_state)`; `state` is
-/// `None` for the start of a sequence.
-pub fn gated_delta_net_mixer(
+/// Depthwise causal conv + SiLU over the channel axis, with the carried window as left context.
+/// Returns `(conv output [T, conv_dim], new window [1, conv_dim, K - 1])`.
+fn conv_stage(
     x: &Tensor,
+    mixed: &Tensor,
     w: &GatedDeltaNetWeights,
     cfg: &Qwen3_5Config,
     state: Option<&GdnState>,
-) -> Result<(Tensor, GdnState)> {
+) -> Result<(Tensor, Tensor)> {
     let t_len = x.shape().dims()[0];
-    let h = cfg.hidden_size;
-    let (nk, nv) = (cfg.linear_num_key_heads, cfg.linear_num_value_heads);
-    let (dk, dv) = (cfg.linear_key_head_dim, cfg.linear_value_head_dim);
-    let (key_dim, value_dim, conv_dim) = (
-        cfg.linear_key_dim(),
-        cfg.linear_value_dim(),
-        cfg.linear_conv_dim(),
-    );
+    let conv_dim = cfg.linear_conv_dim();
     let kern = cfg.linear_conv_kernel_dim;
-
-    let mixed = w.in_proj_qkv.apply_linear(x, h, conv_dim)?;
-    let z = w.in_proj_z.apply_linear(x, h, value_dim)?;
-    let b = w.in_proj_b.apply_linear(x, h, nv)?;
-    let a = w.in_proj_a.apply_linear(x, h, nv)?;
-
-    // Depthwise causal conv + SiLU over the channel axis, with the carried window as left context.
     let chan_major = mixed
         .transpose()?
         .reshape(Shape::from_dims(&[1, conv_dim, t_len]))?;
@@ -144,9 +147,60 @@ pub fn gated_delta_net_mixer(
     let conv_b = x.const_f32_like(vec![0.0_f32; conv_dim], Shape::from_dims(&[conv_dim]))?;
     let conv_out = padded.causal_conv1d(&conv_w, &conv_b, true); // [1, conv_dim, T]
     let new_window = padded.narrow(2, t_len, kern - 1)?;
-    let mixed = conv_out
+    let out = conv_out
         .reshape(Shape::from_dims(&[conv_dim, t_len]))?
-        .transpose()?; // [T, conv_dim]
+        .transpose()?;
+    Ok((out, new_window))
+}
+
+/// Gated RMS norm per value head, `weight * rms_norm(core) * silu(z)`, then the output projection.
+fn gated_output(
+    x: &Tensor,
+    core: &Tensor,
+    z: &Tensor,
+    w: &GatedDeltaNetWeights,
+    cfg: &Qwen3_5Config,
+) -> Result<Tensor> {
+    let t_len = x.shape().dims()[0];
+    let (nv, dv) = (cfg.linear_num_value_heads, cfg.linear_value_head_dim);
+    let value_dim = cfg.linear_value_dim();
+    let ms = core.sqr().mean_keepdim(2_usize)?;
+    let normed = core.broadcast_mul(&ms.add_scalar(cfg.rms_norm_eps).rsqrt())?;
+    let gain = x.const_f32_like(Arc::clone(&w.norm_gain), Shape::from_dims(&[dv]))?;
+    let z = z.reshape(Shape::from_dims(&[t_len, nv, dv]))?;
+    let gated = normed.broadcast_mul(&gain)?.mul(&z.silu())?;
+    w.out_proj.apply_linear(
+        &gated.reshape(Shape::from_dims(&[t_len, value_dim]))?,
+        value_dim,
+        cfg.hidden_size,
+    )
+}
+
+/// One Gated DeltaNet token mixer over `x [T, hidden]` (already input-normed), as the HuggingFace
+/// `Qwen3_5GatedDeltaNet.forward` computes it. Returns `(y [T, hidden], new_state)`; `state` is
+/// `None` for the start of a sequence.
+pub fn gated_delta_net_mixer(
+    x: &Tensor,
+    w: &GatedDeltaNetWeights,
+    cfg: &Qwen3_5Config,
+    state: Option<&GdnState>,
+) -> Result<(Tensor, GdnState)> {
+    let t_len = x.shape().dims()[0];
+    let h = cfg.hidden_size;
+    let (nk, nv) = (cfg.linear_num_key_heads, cfg.linear_num_value_heads);
+    let (dk, dv) = (cfg.linear_key_head_dim, cfg.linear_value_head_dim);
+    let (key_dim, value_dim, conv_dim) = (
+        cfg.linear_key_dim(),
+        cfg.linear_value_dim(),
+        cfg.linear_conv_dim(),
+    );
+
+    let mixed = w.in_proj_qkv.apply_linear(x, h, conv_dim)?;
+    let z = w.in_proj_z.apply_linear(x, h, value_dim)?;
+    let b = w.in_proj_b.apply_linear(x, h, nv)?;
+    let a = w.in_proj_a.apply_linear(x, h, nv)?;
+
+    let (mixed, new_window) = conv_stage(x, &mixed, w, cfg, state)?;
 
     let q = mixed
         .narrow(1, 0, key_dim)?
@@ -176,17 +230,7 @@ pub fn gated_delta_net_mixer(
     let prev = state.map(|s| &s.recurrent);
     let (core, recurrent) = gated_delta_recurrence(&q, &k, &v, &g, &beta, prev)?;
 
-    // Gated RMS norm per value head: weight * rms_norm(o) * silu(z).
-    let ms = core.sqr().mean_keepdim(2_usize)?;
-    let normed = core.broadcast_mul(&ms.add_scalar(cfg.rms_norm_eps).rsqrt())?;
-    let gain = x.const_f32_like(Arc::clone(&w.norm_gain), Shape::from_dims(&[dv]))?;
-    let z = z.reshape(Shape::from_dims(&[t_len, nv, dv]))?;
-    let gated = normed.broadcast_mul(&gain)?.mul(&z.silu())?;
-    let y = w.out_proj.apply_linear(
-        &gated.reshape(Shape::from_dims(&[t_len, value_dim]))?,
-        value_dim,
-        h,
-    )?;
+    let y = gated_output(x, &core, &z, w, cfg)?;
     Ok((
         y,
         GdnState {
