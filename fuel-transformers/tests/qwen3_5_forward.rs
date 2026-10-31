@@ -172,3 +172,63 @@ fn the_logits_top_ten_match_huggingface() {
     eprintln!("top-{TOP} logit values, worst relative error over {t} rows: {worst:e}");
     assert!(worst < TOL, "{worst:e}");
 }
+
+fn top_ten(row: &[f32]) -> (Vec<i64>, Vec<f32>) {
+    let mut order: Vec<usize> = (0..VOCAB).collect();
+    order.sort_by(|a, b| row[*b].total_cmp(&row[*a]));
+    (
+        order[..TOP].iter().map(|&i| i as i64).collect(),
+        order[..TOP].iter().map(|&i| row[i]).collect(),
+    )
+}
+
+/// One token per call with the carried cache against HuggingFace's own token-at-a-time cached
+/// decode (`step_top_*` in the fixture): same top-10 ids, values close.
+#[test]
+fn token_at_a_time_decode_matches_huggingface_cached_decode() {
+    let Some(f) = fixture() else { return };
+    let want_ids = i64s(&f.reference, "step_top_ids");
+    let want_vals = f32s(&f.reference, "step_top_vals");
+    let mut cache = f.model.new_cache();
+    let mut worst = 0.0_f64;
+    for (i, tok) in f.tokens.iter().enumerate() {
+        let logits = f.model.decode(&mut cache, &[*tok]).unwrap();
+        assert_eq!(logits.len(), VOCAB);
+        assert_eq!(cache.len(), i + 1);
+        let (ids, vals) = top_ten(&logits);
+        let mut got = ids.clone();
+        got.sort_unstable();
+        let mut want = want_ids[i * TOP..(i + 1) * TOP].to_vec();
+        want.sort_unstable();
+        assert_eq!(ids[0], want_ids[i * TOP], "step {i}: argmax differs");
+        assert_eq!(got, want, "step {i}: top-{TOP} sets differ");
+        worst = worst.max(max_rel(&vals, &want_vals[i * TOP..(i + 1) * TOP]));
+    }
+    eprintln!(
+        "decode top-{TOP} values, worst relative error over {} steps: {worst:e}",
+        f.tokens.len()
+    );
+    assert!(worst < TOL, "{worst:e}");
+}
+
+/// Five tokens, then three more from the carried cache, equal the whole-sequence rows 5..8; a
+/// fresh cache for the last three does not (the control that the state is doing the work).
+#[test]
+fn a_split_decode_equals_the_whole_sequence() {
+    let Some(f) = fixture() else { return };
+    let whole = f.model.prefill_logits(&f.tokens).unwrap().realize_f32();
+    let want = &whole[5 * VOCAB..];
+    let mut cache = f.model.new_cache();
+    f.model.decode(&mut cache, &f.tokens[..5]).unwrap();
+    let carried = f.model.decode(&mut cache, &f.tokens[5..]).unwrap();
+    let rel = max_rel(&carried, want);
+    eprintln!("5 + 3 carried vs whole (last 3 rows): {rel:e}");
+    assert!(rel < TOL, "{rel:e}");
+    let fresh = f
+        .model
+        .decode(&mut f.model.new_cache(), &f.tokens[5..])
+        .unwrap();
+    let off = max_rel(&fresh, want);
+    eprintln!("last 3 from a fresh cache vs whole: {off:e}");
+    assert!(off > 100.0 * TOL, "the control cannot tell: {off:e}");
+}
