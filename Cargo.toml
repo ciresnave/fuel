@@ -248,7 +248,7 @@ criterion = { version = "0.8", default-features = false }
 # (also carries kernelgen breadth: base_offset/where-select/hetero-dropout/
 # argsort/topk/im2col — all off-key, no STRUCTURE_KEY_VERSION bump).
 baracuda-types         = { version = "0.0.1-alpha.158", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.158" }
+baracuda-core          = { version = "0.1.0-alpha.25" }
 baracuda-cuda-sys      = { version = "0.0.1-alpha.158" }
 baracuda-driver        = { version = "0.0.1-alpha.158" }
 baracuda-runtime       = { version = "0.0.1-alpha.147" }
