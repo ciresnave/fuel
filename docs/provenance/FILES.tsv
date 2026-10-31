@@ -12,7 +12,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 431 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 432 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 303 lines verbatim
@@ -1525,6 +1525,7 @@ fuel-tensor/src/persistent_decode.rs	own		no lineage; 3 of 848 lines verbatim in
 fuel-tensor/src/pipelined_bridge.rs	own		no lineage; 2 of 1796 lines verbatim in candle (0%)
 fuel-tensor/src/planner.rs	own		no lineage; 1 of 66 lines verbatim in candle (2%)
 fuel-tensor/src/reproducibility.rs	own		no lineage; 0 of 67 lines verbatim in candle (0%)
+fuel-tensor/src/sampling.rs	not-traced	candle-examples/examples/stable-diffusion-3/sampling.rs	same file name as candle candle-examples/examples/stable-diffusion-3/sampling.rs; a port or re-expression is presumed until judged
 fuel-tensor/src/scheduling.rs	own		no lineage; 1 of 730 lines verbatim in candle (0%)
 fuel-tensor/src/test_utils.rs	not-traced	candle-core/src/test_utils.rs	same file name as candle candle-core/src/test_utils.rs; a port or re-expression is presumed until judged
 fuel-tensor/src/vulkan_backend.rs	own		no lineage; 0 of 36 lines verbatim in candle (0%)
