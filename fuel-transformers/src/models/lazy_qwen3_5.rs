@@ -17,8 +17,10 @@
 //!
 //! # Scope
 //!
-//! This is the loader only. [`Qwen3_5Model::forward`] returns a typed error: the Gated DeltaNet
-//! recurrence is not built yet (ROADMAP row 40 stages 2 and 3, `docs/gaps.md` GAP-368).
+//! This is the loader plus the model type. [`Qwen3_5Model::forward`] (cached decode) returns a typed
+//! error: the KV-cached attention layers and the carried Gated DeltaNet state are not wired in yet
+//! (ROADMAP row 115, `docs/gaps.md` GAP-368). The whole-sequence forward from position 0 exists as
+//! `Qwen3_5Model::prefill_logits` (`lazy_qwen3_5_forward`).
 //!
 //! # Norm convention
 //!
