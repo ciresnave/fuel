@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.18 - 2026-11-01
+
+### Added
+
+- ROADMAP rows 136 to 139 and a design note (`docs/design-notes/2026-11-01-seams-and-cleanup-program.md`) for the work of splitting more of Fuel into separate projects, in a fixed order: measure the structure (136), clean up separation of concerns near the candidate seams (137), define the seams as tested interface crates (138), and only then split, one seam at a time and with its own go (139). Documentation only.
+
 ## v0.35.17 - 2026-11-01
 
 ### Added
