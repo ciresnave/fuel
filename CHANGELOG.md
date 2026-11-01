@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - Vulkan: a Q8_0 QMatMul with one activation row (decode) now runs a fused dequantize-in-the-dot-product gemv (`qmatvec_q8_0`) instead of dequantizing the whole weight to an f32 scratch buffer first (ROADMAP row 119, slice 1). Prefill (more than one row) is unchanged. Q6_K QMatMul now has a Vulkan path at all (`qmatvec_q6_k`, slice 2; it re-reads the weight once per row when there is more than one row, and before it `qmatmul_vk` returned a "not wired" error). Both are checked against an exact host oracle on the RTX 4070. Measured on the same card: single-row Q8_0 decode is 4.3x to 5.4x faster than the old dequantize-then-matmul path on Qwen3.5-4B shapes (ssm_out 467 to 108 us, a 9216 x 2560 projection 1094 to 204 us).
 
+## v0.35.14 - 2026-11-01
+
+### Added
+
+- `fuel_hardware::inventory::inventory()`: one call listing every device of every compiled-in backend with its name, total bytes and FREE bytes (CUDA `cuMemGetInfo`, Vulkan `VK_EXT_memory_budget`, host available memory), keyed by backend and device index, so a placement layer need not probe the OS itself (ROADMAP row 131). `free_bytes` is `None` when a device cannot report it. Checked live on this box for the CPU, CUDA and both Vulkan GPUs (Vulkan device index order was not stable between two runs, so identify devices by name, not index).
+
 ## v0.35.13 - 2026-11-01
 
 ### Fixed

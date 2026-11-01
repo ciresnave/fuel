@@ -191,7 +191,3 @@ required-features = ["vulkan"]
 [[example]]
 name = "contiguize_vulkan_check"
 required-features = ["vulkan"]
-
-[[example]]
-name = "qmv_bench"
-required-features = ["vulkan"]
