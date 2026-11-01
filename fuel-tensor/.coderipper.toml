@@ -1,0 +1,7 @@
+# CodeRipper's own file for this crate (read when `coderipper sweep --workspace` judges fuel-tensor as a member).
+
+[[allow]]
+check = "unused-return-values"
+file = "src/inference_context.rs"
+symbol = "remove"
+reason = "InferenceContext::remove mirrors HashMap::remove: it hands back the evicted storage Arc to a caller that wants it, and every present caller drops it to release the persistent entry. Changing the return to unit would be a breaking change to a published signature for no gain."
