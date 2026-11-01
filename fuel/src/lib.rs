@@ -27,7 +27,8 @@ pub use fuel_tensor::metal_backend;
 pub use fuel_tensor::vulkan_backend;
 pub use fuel_tensor::{
     cuda_backend, decode_shape, factories, inference_context, judge, kv_block_pool_device, lazy,
-    lazy_latent_cache, nf4, persistent_decode, pipelined_bridge, planner, scheduling, test_utils,
+    lazy_latent_cache, nf4, persistent_decode, pipelined_bridge, planner, sampling, scheduling,
+    test_utils,
 };
 
 /// Error types, re-exported from `fuel-ir`.

@@ -60,6 +60,7 @@ use fuel::inference_context::{
 use fuel::kv_block_pool::{KvBlockPool, KvGeometry, PoolCapacity, PrefixId, SessionHandle};
 use fuel::kv_block_pool_device::{DeviceEvicted, DeviceKvPool};
 use fuel::lazy::{SamplingStrategy, sample_logits};
+use fuel::sampling::{SamplingParams, sample_with_params};
 use fuel_model_llama::LlamaModel;
 
 /// The KV memory budget a [`SessionScheduler`] admits sessions against — the
@@ -704,6 +705,8 @@ pub struct SessionState {
     pub(crate) tokens: Vec<u32>,
     pub(crate) rng_state: u64,
     pub(crate) strategy: SamplingStrategy,
+    /// Full sampling controls, when the session was admitted with them; `None` = `strategy` alone.
+    pub(crate) params: Option<SamplingParams>,
     /// EOS token ids — stopping on ANY of them (LLaMA-3-style multi-EOS
     /// checkpoints declare several). `None` after construction means
     /// normalized-empty too (see [`normalize_eos_ids`]), so there is one
@@ -717,6 +720,49 @@ pub struct SessionState {
     pub(crate) id: SessionId,
     /// Just the GENERATED tail (excludes the prompt) — for reporting.
     pub(crate) new_tokens: Vec<u32>,
+}
+
+/// Sample a session's next token. With no `params` this is the legacy path
+/// ([`sample_logits`] on the session's [`SamplingStrategy`]); with `params` it is
+/// [`sample_with_params`] over the session's own token history (prompt plus generated), so the
+/// penalties see what the session has actually emitted. One function for every scheduler, so the
+/// serial, paged and hybrid arms cannot drift apart.
+pub(crate) fn sample_next(
+    strategy: SamplingStrategy,
+    params: Option<&SamplingParams>,
+    logits: &[f32],
+    history: &[u32],
+    rng_state: &mut u64,
+) -> fuel::Result<u32> {
+    match params {
+        None => Ok(sample_logits(logits, strategy, rng_state)),
+        Some(p) => Ok(sample_with_params(logits, p, history, rng_state)?.token),
+    }
+}
+
+/// Check a `SamplingParams` handed to an `add_session_with_params` and give back the
+/// [`SamplingStrategy`] that stands in for it in a session's legacy `strategy` field (its seed also
+/// seeds the session's RNG). Logprobs are not carried by any scheduler yet (ROADMAP row 133, slice
+/// 3), so asking for them is an error here rather than a silent drop.
+pub(crate) fn admit_params(params: &SamplingParams) -> fuel::Result<SamplingStrategy> {
+    params.validate(usize::MAX)?;
+    if params.logprobs.is_some() {
+        return Err(Error::Msg(
+            "add_session_with_params: logprobs are not returned by the schedulers yet (ROADMAP row 133, slice 3)"
+                .to_string(),
+        )
+        .bt());
+    }
+    Ok(
+        if params.temperature.is_nan() || params.temperature <= 0.0 {
+            SamplingStrategy::Greedy
+        } else {
+            SamplingStrategy::Temperature {
+                temp: params.temperature,
+                seed: params.seed,
+            }
+        },
+    )
 }
 
 impl SessionState {
@@ -767,6 +813,7 @@ impl SessionState {
             tokens: prompt.to_vec(),
             rng_state,
             strategy,
+            params: None,
             eos_ids: normalize_eos_ids(eos_ids),
             remaining: max_new,
             phase: SessionPhase::Prefill,
@@ -808,7 +855,13 @@ impl SessionState {
             Some(l) => l,
             None => return Ok(None),
         };
-        let next = sample_logits(&logits, self.strategy, &mut self.rng_state);
+        let next = sample_next(
+            self.strategy,
+            self.params.as_ref(),
+            &logits,
+            &self.tokens,
+            &mut self.rng_state,
+        )?;
         self.tokens.push(next);
         self.new_tokens.push(next);
         self.remaining = self.remaining.saturating_sub(1);
@@ -1112,6 +1165,27 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         self.kv_handles.insert(id, handle);
         self.next_id += 1;
         self.sessions.push(state);
+        Ok(id)
+    }
+
+    /// [`add_session`](Self::add_session) with the full sampling controls (top_k, top_p, min_p,
+    /// penalties; ROADMAP row 133). The session's penalties read its own token history (prompt plus
+    /// generated) and its RNG is seeded from `params.seed`. Errors, admitting nothing, on invalid
+    /// params or on `logprobs` (not carried yet, slice 3) as well as on everything `add_session`
+    /// refuses.
+    pub fn add_session_with_params(
+        &mut self,
+        prompt: &[u32],
+        params: SamplingParams,
+        eos_ids: Option<Vec<u32>>,
+        max_new: usize,
+    ) -> fuel::Result<SessionId> {
+        let strategy = admit_params(&params)?;
+        let id = self.add_session(prompt, strategy, eos_ids, max_new)?;
+        if let Some(s) = self.sessions.last_mut() {
+            s.rng_state = params.seed;
+            s.params = Some(params);
+        }
         Ok(id)
     }
 
@@ -1535,6 +1609,8 @@ struct PagedSession {
     new_tokens: Vec<u32>,
     rng_state: u64,
     strategy: SamplingStrategy,
+    /// Full sampling controls, when admitted with them; `None` = `strategy` alone.
+    params: Option<SamplingParams>,
     /// EOS token ids — stops on ANY of them, normalized via
     /// `normalize_eos_ids` (same contract as `SessionState::eos_ids`).
     eos_ids: Option<Vec<u32>>,
@@ -1816,6 +1892,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             new_tokens: Vec::new(),
             rng_state,
             strategy,
+            params: None,
             eos_ids: normalize_eos_ids(eos_ids),
             remaining: max_new,
             phase: SessionPhase::Prefill,
@@ -1830,6 +1907,25 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         });
         self.next_id += 1;
         self.counters.admitted += 1;
+        Ok(id)
+    }
+
+    /// [`add_session`](Self::add_session) with the full sampling controls (ROADMAP row 133); see
+    /// [`SessionScheduler::add_session_with_params`]. A sampling error on a later step finishes
+    /// that session with a recorded error and leaves the others untouched.
+    pub fn add_session_with_params(
+        &mut self,
+        prompt: &[u32],
+        params: SamplingParams,
+        eos_ids: Option<Vec<u32>>,
+        max_new: usize,
+    ) -> fuel::Result<SessionId> {
+        let strategy = admit_params(&params)?;
+        let id = self.add_session(prompt, strategy, eos_ids, max_new)?;
+        if let Some(s) = self.sessions.last_mut() {
+            s.rng_state = params.seed;
+            s.params = Some(params);
+        }
         Ok(id)
     }
 
@@ -1947,6 +2043,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             new_tokens: Vec::new(),
             rng_state,
             strategy,
+            params: None,
             eos_ids: normalize_eos_ids(eos_ids),
             remaining: max_new,
             phase: SessionPhase::Prefill,
@@ -2207,7 +2304,20 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         if let Some(buf) = s.captured_logits.as_mut() {
             buf.push(logits.clone());
         }
-        let next = sample_logits(&logits, s.strategy, &mut s.rng_state);
+        let next = match sample_next(
+            s.strategy,
+            s.params.as_ref(),
+            &logits,
+            &s.tokens,
+            &mut s.rng_state,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                let msg = format!("sampling failed: {e}");
+                self.finish_error(idx, msg, report);
+                return;
+            }
+        };
         s.tokens.push(next);
         s.new_tokens.push(next);
         s.remaining = s.remaining.saturating_sub(1);
@@ -5396,6 +5506,245 @@ mod tests {
         assert_eq!(
             toks, inner_out,
             "unscaled wrapper diverged from its inner model"
+        );
+    }
+    // ---------------- ROADMAP row 133, slice 2: SamplingParams through the schedulers ----------------
+
+    fn greedy_params() -> SamplingParams {
+        SamplingParams::default()
+    }
+
+    /// The penalties read the session's own history (prompt plus generated), not a global one.
+    /// Control first: the same logits, the legacy greedy path, pick the penalised token.
+    #[test]
+    fn params_penalties_read_the_sessions_own_history() {
+        let cfg = tiny_cfg();
+        let new = |params: Option<SamplingParams>| {
+            let mut s = SessionState::new(
+                SessionId(0),
+                dims(&cfg),
+                &[1, 2],
+                SamplingStrategy::Greedy,
+                None,
+                3,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
+            s.params = params;
+            // The unpenalised argmax is token 2, which is already in the history.
+            s.last_logits = Some(vec![0.0, 0.1, 0.9, 0.5, 0.3]);
+            s
+        };
+        let mut legacy = new(None);
+        assert_eq!(
+            legacy.sample_and_append().unwrap(),
+            Some(2),
+            "control: no params, argmax"
+        );
+        let mut penalised = new(Some(SamplingParams {
+            presence_penalty: 10.0,
+            ..greedy_params()
+        }));
+        assert_eq!(
+            penalised.sample_and_append().unwrap(),
+            Some(3),
+            "token 2 is in the history, so the presence penalty moves the pick to the runner-up"
+        );
+        // A session with the same logits but a different history sees a different penalty set.
+        let mut other = SessionState::new(
+            SessionId(1),
+            dims(&cfg),
+            &[3, 4],
+            SamplingStrategy::Greedy,
+            None,
+            3,
+            &Device::cpu(),
+            DType::F32,
+        )
+        .unwrap();
+        other.params = Some(SamplingParams {
+            presence_penalty: 10.0,
+            ..greedy_params()
+        });
+        other.last_logits = Some(vec![0.0, 0.1, 0.9, 0.5, 0.3]);
+        assert_eq!(
+            other.sample_and_append().unwrap(),
+            Some(2),
+            "its history is [3, 4]"
+        );
+    }
+
+    /// `admit_params` is the one gate for every scheduler: bad params and logprobs are refused.
+    #[test]
+    fn admit_params_refuses_invalid_params_and_logprobs() {
+        assert!(matches!(
+            admit_params(&greedy_params()).unwrap(),
+            SamplingStrategy::Greedy
+        ));
+        assert!(matches!(
+            admit_params(&SamplingParams {
+                temperature: 0.7,
+                seed: 9,
+                ..greedy_params()
+            })
+            .unwrap(),
+            SamplingStrategy::Temperature { seed: 9, .. }
+        ));
+        let bad = SamplingParams {
+            top_k: Some(0),
+            ..greedy_params()
+        };
+        assert!(admit_params(&bad).is_err(), "top_k 0 is invalid");
+        let lp = SamplingParams {
+            logprobs: Some(2),
+            ..greedy_params()
+        };
+        let err = admit_params(&lp).unwrap_err().to_string();
+        assert!(err.contains("slice 3"), "{err}");
+    }
+
+    /// A temperature-only `SamplingParams` reduces to the legacy `Temperature` strategy: the
+    /// serial scheduler produces the same tokens either way (the reduction, end to end).
+    #[test]
+    fn serial_scheduler_params_reduce_to_the_strategy_path() {
+        let model = tiny_model(31);
+        let budget = KvBudget {
+            block_size: 8,
+            num_blocks: 8,
+        };
+        let run = |with_params: bool| {
+            let mut sched = SessionScheduler::new(
+                &model,
+                Device::cpu(),
+                DType::F32,
+                SchedulePolicy::RoundRobin,
+                budget,
+            )
+            .unwrap();
+            let id = if with_params {
+                sched
+                    .add_session_with_params(
+                        &[1, 2, 3],
+                        SamplingParams {
+                            temperature: 0.9,
+                            seed: 11,
+                            ..greedy_params()
+                        },
+                        None,
+                        5,
+                    )
+                    .unwrap()
+            } else {
+                sched
+                    .add_session(
+                        &[1, 2, 3],
+                        SamplingStrategy::Temperature {
+                            temp: 0.9,
+                            seed: 11,
+                        },
+                        None,
+                        5,
+                    )
+                    .unwrap()
+            };
+            let done = sched.run_to_completion().unwrap();
+            done.into_iter().find(|(i, _)| *i == id).unwrap().1
+        };
+        assert_eq!(run(true), run(false));
+    }
+
+    /// Refused admissions consume nothing (serial scheduler).
+    #[test]
+    fn serial_scheduler_refuses_bad_params_and_admits_nothing() {
+        let model = tiny_model(31);
+        let budget = KvBudget {
+            block_size: 8,
+            num_blocks: 8,
+        };
+        let mut sched = SessionScheduler::new(
+            &model,
+            Device::cpu(),
+            DType::F32,
+            SchedulePolicy::RoundRobin,
+            budget,
+        )
+        .unwrap();
+        let free = sched.kv_free_blocks();
+        let bad = SamplingParams {
+            top_p: Some(0.0),
+            ..greedy_params()
+        };
+        assert!(
+            sched
+                .add_session_with_params(&[1, 2], bad, None, 3)
+                .is_err()
+        );
+        let lp = SamplingParams {
+            logprobs: Some(1),
+            ..greedy_params()
+        };
+        assert!(sched.add_session_with_params(&[1, 2], lp, None, 3).is_err());
+        assert_eq!(
+            sched.kv_free_blocks(),
+            free,
+            "nothing reserved by a refusal"
+        );
+    }
+
+    /// The paged scheduler honours the same reduction: greedy `SamplingParams` equals `Greedy`.
+    #[test]
+    fn paged_scheduler_params_reduce_to_the_strategy_path() {
+        let model = tiny_model(31);
+        let run = |with_params: bool| {
+            let mut sched =
+                PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu())
+                    .unwrap();
+            let id = if with_params {
+                sched
+                    .add_session_with_params(&[1, 2, 3], greedy_params(), None, 5)
+                    .unwrap()
+            } else {
+                sched
+                    .add_session(&[1, 2, 3], SamplingStrategy::Greedy, None, 5)
+                    .unwrap()
+            };
+            let done = sched.run_to_completion();
+            done.into_iter().find(|(i, _)| *i == id).unwrap().1
+        };
+        assert_eq!(run(true), run(false));
+    }
+
+    /// Non-finite logits are a typed sampling error on the params path: the paged scheduler finishes
+    /// THAT session with a recorded error and the other session still samples its token.
+    #[test]
+    fn paged_scheduler_sampling_error_isolates_the_session() {
+        let model = tiny_model(31);
+        let mut sched =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let vocab = tiny_cfg().vocab_size;
+        let bad = sched
+            .add_session_with_params(&[1, 2, 3], greedy_params(), None, 3)
+            .unwrap();
+        let good = sched
+            .add_session_with_params(&[1, 2, 3], greedy_params(), None, 3)
+            .unwrap();
+        sched.sessions[0].last_logits = Some(vec![f32::NAN; vocab]);
+        sched.sessions[1].last_logits = Some(vec![0.5; vocab]);
+        let mut report = StepReport::default();
+        sched.sample(0, &mut report);
+        sched.sample(1, &mut report);
+        assert_eq!(report.errored.len(), 1, "{report:?}");
+        assert_eq!(report.errored[0].0, bad);
+        assert!(
+            report.errored[0].1.contains("sampling failed"),
+            "{report:?}"
+        );
+        assert_eq!(sched.sessions[0].phase, SessionPhase::Finished);
+        assert_eq!(
+            report.advanced,
+            vec![good],
+            "the other session sampled normally"
         );
     }
 }

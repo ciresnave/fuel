@@ -13,7 +13,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 444 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 445 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -975,12 +975,12 @@ fuel-inference/src/chunked_prefill.rs	own		no lineage; 2 of 180 lines verbatim i
 fuel-inference/src/context_compress.rs	own		no lineage; 3 of 184 lines verbatim in candle (2%)
 fuel-inference/src/decode_state_spec.rs	own		no lineage; 5 of 302 lines verbatim in candle (2%)
 fuel-inference/src/eviction.rs	own		no lineage; 2 of 247 lines verbatim in candle (1%)
-fuel-inference/src/hybrid_session.rs	own		no lineage; 2 of 158 lines verbatim in candle (1%)
+fuel-inference/src/hybrid_session.rs	own		no lineage; 2 of 212 lines verbatim in candle (1%)
 fuel-inference/src/hybrid_state.rs	own		no lineage; 0 of 98 lines verbatim in candle (0%)
 fuel-inference/src/kv_compress.rs	own		no lineage; 2 of 327 lines verbatim in candle (1%)
 fuel-inference/src/lib.rs	own		no lineage; 1 of 90 lines verbatim in candle (1%)
 fuel-inference/src/moe_routing.rs	own		no lineage; 2 of 238 lines verbatim in candle (1%)
-fuel-inference/src/multi_session.rs	own		no lineage; 9 of 2672 lines verbatim in candle (0%)
+fuel-inference/src/multi_session.rs	own		no lineage; 9 of 2797 lines verbatim in candle (0%)
 fuel-inference/src/ngram_draft.rs	own		no lineage; 1 of 112 lines verbatim in candle (1%)
 fuel-inference/src/prefix_cache.rs	own		no lineage; 6 of 182 lines verbatim in candle (3%)
 fuel-inference/src/scheduler.rs	not-traced	candle-transformers/src/models/z_image/scheduler.rs	same file name as candle candle-transformers/src/models/z_image/scheduler.rs; a port or re-expression is presumed until judged
