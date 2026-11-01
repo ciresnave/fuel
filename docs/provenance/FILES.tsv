@@ -13,7 +13,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 452 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 453 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -24,7 +24,7 @@ LICENSE-MIT	candle	LICENSE-MIT	identical path; 100% of 18 lines verbatim
 Makefile	candle	Makefile	identical path; 33% of 6 lines verbatim
 PATTERNS.md	own		no lineage; 4 of 179 lines verbatim in candle (2%)
 README.md	candle-modified	README.md	same path; 53% of 383 lines verbatim
-ROADMAP.md	own		no lineage; 0 of 2583 lines verbatim in candle (0%)
+ROADMAP.md	own		no lineage; 0 of 2587 lines verbatim in candle (0%)
 SECURITY.md	own		no lineage; 0 of 3 lines verbatim in candle (0%)
 THIRD-PARTY-NOTICES.md	own		judged: the ledger; it reproduces upstream licence texts, which is why git sees a copy of LICENSE-APACHE
 clippy.toml	own		no lineage; 0 of 30 lines verbatim in candle (0%)
@@ -58,6 +58,9 @@ docs/design-notes/2026-10-30-kquant-resident-weights.md	own		no lineage; 0 of 42
 docs/design-notes/2026-10-30-qwen35-27b-audit.md	own		no lineage; 0 of 167 lines verbatim in candle (0%)
 docs/design-notes/2026-10-30-qwen35-composed-forward-row-115.md	own		no lineage; 0 of 68 lines verbatim in candle (0%)
 docs/design-notes/2026-11-01-qwen35-gguf-header.md	own		no lineage; 0 of 51 lines verbatim in candle (0%)
+docs/design-notes/2026-11-01-seam-s3-executor-backends.md	own		no lineage; 0 of 118 lines verbatim in candle (0%)
+docs/design-notes/2026-11-01-seams-and-cleanup-program.md	own		no lineage; 0 of 76 lines verbatim in candle (0%)
+docs/design-notes/2026-11-01-structure-measurement.md	own		no lineage; 0 of 163 lines verbatim in candle (0%)
 docs/design/facade-inversion-recipe.md	own		no lineage; 0 of 216 lines verbatim in candle (0%)
 docs/design/gaps-status-conversion-table.md	own		no lineage; 0 of 80 lines verbatim in candle (0%)
 docs/design/gaps-status-vocabulary.md	own		no lineage; 0 of 213 lines verbatim in candle (0%)
@@ -2081,5 +2084,6 @@ scripts/sharedop_assert_census.py	own		no lineage; 1 of 250 lines verbatim in ca
 scripts/spirv_audit.py	own		no lineage; 1 of 86 lines verbatim in candle (1%)
 scripts/split_use_fuel_storage.py	own		no lineage; 1 of 40 lines verbatim in candle (2%)
 scripts/step5_sweep.py	own		no lineage; 0 of 63 lines verbatim in candle (0%)
+scripts/structure_report.py	own		no lineage; 1 of 253 lines verbatim in candle (0%)
 scripts/sync-packaged-notices.py	own		judged: names candle only to describe its licences
 scripts/verify-packaged-crates.py	own		judged: names candle only to describe its licences
