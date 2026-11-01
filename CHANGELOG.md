@@ -5,7 +5,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Fixed
 
-- CI: the portfolio job's SEC-002 step (gitleaks) reports one `generic-api-key` finding at `fuel-dispatch/src/dispatch.rs:5008`. It is a false positive in history, not in the tree: a code comment in two commits on main (`734febbdd`, `ea224011d`). One `[[allow]]` entry in `.coderipper.toml` (rule, that file, that line, with the reason) waives it; no path-wide exclusion. The line cannot drift because the finding is in those two immutable commits. This clears SEC-002 only: the same job still reports other findings of medium severity or above (SUP-004, reachability, licence, ci-security, unused-return-values), which are not part of this change.
+- CI: the portfolio job's SEC-002 step (gitleaks) reports one `generic-api-key` finding at `fuel-dispatch/src/dispatch.rs:5008`. It is a false positive in history, not in the tree: a code comment in commit `734febbdd` on main (an earlier copy of the same change, `ea224011d`, is on other branches only). One `[[allow]]` entry in `.coderipper.toml` (rule, that file, that line, with the reason) waives it; no path-wide exclusion. The line cannot drift because the finding is in that immutable commit. This clears SEC-002 only: the same job still reports other findings of medium severity or above (SUP-004, reachability, licence, ci-security, unused-return-values), which are not part of this change.
 
 ## v0.35.2 - 2026-11-01
 
