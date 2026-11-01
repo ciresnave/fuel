@@ -7,3 +7,9 @@ name = "fuel-metal-kernels"
 needs = "xcrun"
 reason = "compiles to nothing off macOS, so coderipper's per-run positive controls (sentinel functions) cannot fire"
 owner = "fuel lane"
+
+[[allow]]
+check = "SEC-002"
+file = "fuel-dispatch/src/dispatch.rs"
+lines = "5008"
+reason = "gitleaks generic-api-key false positive in HISTORY, not in the tree: commits 734febbdd and ea224011d (both on main, both 'migrate CPU shape-ops family to FKC-contract registration') have a code comment at this line reading 'Keys: Flip/Roll/Concat/CumSum [T, T]'; the rule took the word 'Keys:' as an API-key name and the op list as its value (secret = 'Flip/Roll/Concat/CumSum'). There is no credential. The line number is fixed because the finding sits in those two immutable commits, so the entry does not move when dispatch.rs changes; the file at HEAD has different text at line 5008."
