@@ -5,7 +5,7 @@ This documents the main changes to the `fuel` workspace.
 
 ### Added
 
-- `fuel_hardware::inventory::inventory()`: one call listing every device of every compiled-in backend with its name, total bytes and FREE bytes (CUDA `cuMemGetInfo`, Vulkan `VK_EXT_memory_budget`, host available memory), keyed by backend and device index, so a placement layer need not probe the OS itself (ROADMAP row 131). `free_bytes` is `None` when a device cannot report it. Checked live on this box for the CPU and both Vulkan GPUs; the CUDA arm is written but was not built here.
+- `fuel_hardware::inventory::inventory()`: one call listing every device of every compiled-in backend with its name, total bytes and FREE bytes (CUDA `cuMemGetInfo`, Vulkan `VK_EXT_memory_budget`, host available memory), keyed by backend and device index, so a placement layer need not probe the OS itself (ROADMAP row 131). `free_bytes` is `None` when a device cannot report it. Checked live on this box for the CPU, CUDA and both Vulkan GPUs (Vulkan device index order was not stable between two runs, so identify devices by name, not index).
 
 ## v0.35.12 - 2026-11-01
 
