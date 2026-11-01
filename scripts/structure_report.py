@@ -7,9 +7,9 @@ Run from the repository root:  python scripts/structure_report.py [--window N] [
 Every number is computed from `git ls-files` (never a disk walk), `cargo metadata --no-deps` and
 `git log --first-parent REF`, and every definition is in the docstring of the function that computes
 it, so another tool (CodeRipper's architecture and modularity rules) can be validated against the
-same definitions. Positive controls are asserted at the end of each section.
+same definitions. A failed control prints `CONTROL FAILED` and exits non-zero.
 
-Definitions, in one place:
+Definitions, in one place (the same text is in docs/design-notes/2026-11-01-structure-measurement.md):
   member        a package in the workspace (`cargo metadata --no-deps`).
   edge          member A depends on member B in A's manifest. kind = normal | dev. `optional` marks a
                 normal edge that exists only behind a feature of A.
@@ -18,23 +18,23 @@ Definitions, in one place:
   backend crate a member whose tier-file layer is `backends`, `vendor backends` or `reference backend`.
   kernel crate  layer `kernels`.
   generic crate every other member (neither backend nor kernel).
-  backend leak  in a generic crate, in a `.rs` file under `src/` (tests/ counted separately): a line
-                with `feature = "cuda"|"vulkan"|"metal"|"mkl"|"aocl"` inside a `cfg`, or the path
-                `BackendId::X` or `DeviceLocation::{Cuda,Vulkan,Metal}`, or a source file or module
-                directory whose name contains cuda, vulkan or metal. Lines are counted as written;
-                `#[cfg(test)]` code inside `src/` is NOT separated (stated limitation).
+  backend leak  in a generic crate, in a `.rs` file under `src/` (tests/ counted separately), after
+                removing `//` comments: a line with `feature = "cuda"|"vulkan"|"metal"|"mkl"|"aocl"`
+                (a cfg line), or the path `BackendId::X` or `DeviceLocation::{Cuda,Vulkan,Metal}` (a
+                backend-path use), or a source file or directory whose name contains cuda, vulkan or
+                metal. `#[cfg(test)]` code inside `src/` is NOT separated (stated limitation).
   commit-crates the set of members with at least one changed file in a commit, ignoring files named
-                Cargo.toml, Cargo.lock, *.md, and anything outside member directories (version-bump
-                and docs noise). Commits are the first-parent commits of REF (one per squash-merged PR).
+                Cargo.toml, Cargo.lock, *.md, and anything outside member directories. Commits are the
+                first-parent commits of REF (one per squash-merged PR).
   sweep         a commit touching more than SWEEP crates (default 12); reported with and without.
   co-change     for crates A and B: c(A,B) commits touching both; J = c / (n(A) + n(B) - c).
   seam census   for a LEFT group L and a RIGHT group R: every path in L's `.rs` files that starts with
-                the lib name of a crate in R (`fuel_x::...`). `use` statements are brace-expanded so
-                each imported leaf is one site; other occurrences are one site each. A glob import
-                (`use fuel_x::*` or `::*`) is counted separately and not as an item. An ITEM is the
-                path after the crate name truncated after its first segment that starts with an
-                uppercase letter, else truncated to 3 segments. Reported both ways (L uses R, and R
-                uses L = back-edges at source level).
+                the lib name of a crate in R (`fuel_x::...`), comments removed. `use` statements are
+                brace-expanded so each imported leaf is one site; other occurrences are one site each.
+                A glob import is counted separately and not as an item. An ITEM is the path after the
+                crate name cut after its first segment that starts with an uppercase letter, else cut
+                to 3 segments. A site is UP-TIER when the referring crate's tier is lower than the
+                named crate's (a source-level back-edge by the tier file's own order).
 """
 
 import argparse
@@ -42,16 +42,38 @@ import collections
 import itertools
 import json
 import re
-import subprocess
+import shutil
+import subprocess  # nosec B404 - runs git and cargo by argv list, no shell; developer-run measurement script
 import sys
 from pathlib import Path
 
-ROOT = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
+REF_OK = re.compile(r"^[A-Za-z0-9._/@^~-]+$")
+GIT = shutil.which("git") or "git"
+CARGO = shutil.which("cargo") or "cargo"
 
 
-def sh(*args, **kw):
-    return subprocess.check_output(args, text=True, cwd=ROOT, encoding="utf-8", errors="replace", **kw)
+def run(argv, cwd=None):
+    """The one place a subprocess starts. argv is a list of fixed tool paths (resolved with
+    shutil.which) and arguments built here or validated (`--ref` against REF_OK); no shell."""
+    # nosec B603 - argv list, no shell, tools resolved by shutil.which
+    # nosemgrep - the only caller-supplied argument is the ref, validated by REF_OK in main()
+    done = subprocess.run(argv, check=True, capture_output=True, text=True,  # nosec B603  # nosemgrep
+                          encoding="utf-8", errors="replace", cwd=cwd)
+    return done.stdout
 
+
+ROOT = Path(run([GIT, "rev-parse", "--show-toplevel"]).strip())
+
+
+def git(*args):
+    return run([GIT, *args], cwd=ROOT)
+
+
+def require(ok, message):
+    """A control. Unlike `assert` it survives `python -O`."""
+    if not ok:
+        print(f"CONTROL FAILED: {message}")
+        sys.exit(2)
 
 
 def code_only(txt):
@@ -61,86 +83,100 @@ def code_only(txt):
     for ln in txt.splitlines():
         if ln.lstrip().startswith("//"):
             continue
-        i = ln.find("//")
-        while i != -1:
-            if (i == 0 or ln[i - 1] != ":") and ln[:i].count('"') % 2 == 0:
-                ln = ln[:i]
-                break
-            i = ln.find("//", i + 2)
-        out.append(ln)
+        out.append(cut_trailing_comment(ln))
     return chr(10).join(out)
+
+
+def cut_trailing_comment(ln):
+    i = ln.find("//")
+    while i != -1:
+        if (i == 0 or ln[i - 1] != ":") and ln[:i].count('"') % 2 == 0:
+            return ln[:i]
+        i = ln.find("//", i + 2)
+    return ln
+
+
+def read_code(path):
+    return code_only((ROOT / path).read_text(encoding="utf-8", errors="replace"))
 
 
 # ----------------------------------------------------------------------------------------------- load
 def load_workspace():
-    meta = json.loads(sh("cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"))
+    meta = json.loads(run([CARGO, "metadata", "--no-deps", "--format-version", "1", "--offline"], cwd=ROOT))
     members = {}
     for p in meta["packages"]:
         mdir = Path(p["manifest_path"]).parent.resolve().relative_to(ROOT.resolve()).as_posix()
         members[p["name"]] = {"dir": mdir if mdir != "." else "", "deps": p["dependencies"]}
-    edges = []
-    for name, m in members.items():
-        for d in m["deps"]:
-            if d["name"] in members:
-                edges.append((name, d["name"], d["kind"] or "normal", bool(d.get("optional"))))
+    edges = [(n, d["name"], d["kind"] or "normal", bool(d.get("optional")))
+             for n, m in members.items() for d in m["deps"] if d["name"] in members]
     return members, edges
 
 
 def load_tiers():
     tiers = {}
-    for ln in (ROOT / "fuel-ir/tests/crate_dependency_tiers.txt").read_text(encoding="utf-8").splitlines():
-        if not ln.strip() or ln.lstrip().startswith("#"):
-            continue
+    text = (ROOT / "fuel-ir/tests/crate_dependency_tiers.txt").read_text(encoding="utf-8")
+    for ln in text.splitlines():
         parts = ln.split("\t")
-        if len(parts) >= 3:
+        if ln.strip() and not ln.lstrip().startswith("#") and len(parts) >= 3:
             tiers[parts[0]] = (int(parts[1]), parts[2])
     return tiers
 
 
+def member_dirs(members):
+    return sorted(((m["dir"], n) for n, m in members.items() if m["dir"]), key=lambda t: -len(t[0]))
+
+
+def crate_of(path, dirs):
+    for d, n in dirs:
+        if path.startswith(d + "/"):
+            return n, path[len(d) + 1:]
+    return None, path
+
+
 def tracked_rs(members):
-    """{crate: [paths]} of tracked .rs files, from the index, split by src/ vs elsewhere."""
-    files = sh("git", "ls-files", "-z", "--", "*.rs").split("\0")
+    """{crate: {"src": [paths], "other": [paths]}} of tracked .rs files, from the index."""
+    dirs = member_dirs(members)
     by_crate = collections.defaultdict(lambda: {"src": [], "other": []})
-    dirs = sorted(((m["dir"], n) for n, m in members.items() if m["dir"]), key=lambda t: -len(t[0]))
-    for f in files:
-        if not f:
-            continue
-        for d, n in dirs:
-            if f.startswith(d + "/"):
-                rel = f[len(d) + 1:]
-                by_crate[n]["src" if rel.startswith("src/") else "other"].append(f)
-                break
+    for f in filter(None, git("ls-files", "-z", "--", "*.rs").split("\0")):
+        crate, rel = crate_of(f, dirs)
+        if crate:
+            by_crate[crate]["src" if rel.startswith("src/") else "other"].append(f)
     return by_crate
 
 
 # ----------------------------------------------------------------------------------------------- A
+def violations(edges, tiers, kind):
+    return [e for e in edges if e[2] == kind and e[0] in tiers and e[1] in tiers and tiers[e[0]][0] < tiers[e[1]][0]]
+
+
+def names(pairs):
+    return ", ".join(f"{a}->{b}" for a, b, *_ in pairs) or "none"
+
+
+def top(counter, n=8):
+    return ", ".join(f"{k} {v}" for k, v in counter.most_common(n))
+
+
 def section_graph(members, edges, tiers):
-    out = []
     normal = [e for e in edges if e[2] == "normal"]
-    dev = [e for e in edges if e[2] == "dev"]
-    opt = [e for e in normal if e[3]]
     judged = [e for e in normal if e[0] in tiers and e[1] in tiers]
-    viol = [e for e in judged if tiers[e[0]][0] < tiers[e[1]][0]]
-    dev_viol = [e for e in dev if e[0] in tiers and e[1] in tiers and tiers[e[0]][0] < tiers[e[1]][0]]
     unplaced = sorted(n for n in members if n not in tiers)
     stale = sorted(n for n in tiers if n not in members)
-    out.append(f"members {len(members)}; edges normal {len(normal)} (optional {len(opt)}), dev {len(dev)}")
-    out.append(f"tier file places {len(tiers) - len(stale)} of {len(members)} members; unplaced: {', '.join(unplaced) or 'none'}")
-    out.append(f"tier-file entries naming a non-member (stale): {', '.join(stale) or 'none'}")
-    out.append(f"judged normal edges {len(judged)} of {len(normal)}; DIRECTION VIOLATIONS {len(viol)}: "
-               + (", ".join(f"{a}->{b}" for a, b, *_ in viol) or "none"))
-    out.append(f"dev-edge direction violations (not gated): {len(dev_viol)}: "
-               + (", ".join(f"{a}->{b}" for a, b, *_ in dev_viol) or "none"))
-    fin = collections.Counter(b for a, b, *_ in normal)
-    fout = collections.Counter(a for a, b, *_ in normal)
-    out.append("top fan-in (normal): " + ", ".join(f"{n} {c}" for n, c in fin.most_common(8)))
-    out.append("top fan-out (normal): " + ", ".join(f"{n} {c}" for n, c in fout.most_common(8)))
-    be = {n for n, (t, layer) in tiers.items() if layer in ("backends", "vendor backends", "reference backend")}
-    opt_to_backend = sorted((a, b) for a, b, k, o in normal if o and b in be and a not in be)
-    out.append("optional edges from a non-backend crate to a backend crate: " + (", ".join(f"{a}->{b}" for a, b in opt_to_backend) or "none"))
-    assert ("fuel-tensor", "fuel-ir", "normal", False) in edges, "control: fuel-tensor -> fuel-ir must exist"
-    out.append("control ok: fuel-tensor -> fuel-ir edge present")
-    return out
+    backend = {n for n, (_, layer) in tiers.items() if layer in ("backends", "vendor backends", "reference backend")}
+    opt_to_backend = sorted((a, b) for a, b, _, o in normal if o and b in backend and a not in backend)
+    require(("fuel-tensor", "fuel-ir", "normal", False) in edges, "fuel-tensor -> fuel-ir edge must exist")
+    return [
+        f"members {len(members)}; edges normal {len(normal)} (optional {sum(1 for e in normal if e[3])}), dev {len(edges) - len(normal)}",
+        f"tier file places {len(tiers) - len(stale)} of {len(members)} members; unplaced: {', '.join(unplaced) or 'none'}",
+        f"tier-file entries naming a non-member (stale): {', '.join(stale) or 'none'}",
+        f"judged normal edges {len(judged)} of {len(normal)}; DIRECTION VIOLATIONS {len(violations(edges, tiers, 'normal'))}: "
+        + names(violations(edges, tiers, "normal")),
+        f"dev-edge direction violations (not gated): {len(violations(edges, tiers, 'dev'))}: " + names(violations(edges, tiers, "dev")),
+        "top fan-in (normal): " + top(collections.Counter(b for _, b, *_ in normal)),
+        "top fan-out (normal): " + top(collections.Counter(a for a, *_ in normal)),
+        "optional edges from a non-backend crate to a backend crate: " + names(opt_to_backend),
+        "control ok: fuel-tensor -> fuel-ir edge present",
+    ]
 
 
 # ----------------------------------------------------------------------------------------------- C
@@ -149,106 +185,110 @@ LEAK_ID = re.compile(r"\b(BackendId::(Cuda|Vulkan|Metal|Mkl|Aocl)|DeviceLocation
 LEAK_NAME = re.compile(r"(cuda|vulkan|metal)", re.I)
 
 
+def named_for_backend(path):
+    parts = Path(path).parts
+    return bool(LEAK_NAME.search(parts[-1])) or any(LEAK_NAME.search(p) for p in parts[:-1] if p != "tests")
+
+
+def count_leaks(files, with_names):
+    cfg = ids = 0
+    named = []
+    for f in files:
+        txt = read_code(f)
+        cfg += len(LEAK_CFG.findall(txt))
+        ids += len(LEAK_ID.findall(txt))
+        if with_names and named_for_backend(f):
+            named.append(f)
+    return cfg, ids, named
+
+
+def leak_row(crate, rs):
+    cfg_s, id_s, named = count_leaks(rs[crate]["src"], True)
+    cfg_t, id_t, _ = count_leaks(rs[crate]["other"], False)
+    return (crate, cfg_s, id_s, len(named), cfg_t, id_t)
+
+
+def top_leak_files(crate, rs):
+    per = []
+    for f in rs[crate]["src"]:
+        t = read_code(f)
+        per.append((len(LEAK_CFG.findall(t)) + len(LEAK_ID.findall(t)), f))
+    per.sort(reverse=True)
+    return f"   top {crate} src files by backend-path+cfg lines: " + "; ".join(
+        f"{f.split('/', 1)[1]} {n}" for n, f in per[:5] if n)
+
+
 def section_leaks(members, tiers, rs):
-    out = []
-    kinds = {n: tiers.get(n, (0, ""))[1] for n in members}
-    backend = {n for n, k in kinds.items() if k in ("backends", "vendor backends", "reference backend")}
-    kernel = {n for n, k in kinds.items() if k == "kernels"}
-    generic = [n for n in members if n not in backend and n not in kernel]
-    rows = []
-    for n in sorted(generic):
-        cfg_s = id_s = cfg_t = id_t = 0
-        name_files = []
-        for part in ("src", "other"):
-            for f in rs[n][part]:
-                txt = code_only((ROOT / f).read_text(encoding="utf-8", errors="replace"))
-                cfg = len(LEAK_CFG.findall(txt))
-                ids = len(LEAK_ID.findall(txt))
-                if part == "src":
-                    cfg_s += cfg
-                    id_s += ids
-                    if LEAK_NAME.search(Path(f).name) or any(LEAK_NAME.search(p) for p in Path(f).parts[:-1] if p not in ("tests",)):
-                        name_files.append(f)
-                else:
-                    cfg_t += cfg
-                    id_t += ids
-        if cfg_s or id_s or cfg_t or id_t or name_files:
-            rows.append((n, cfg_s, id_s, len(name_files), cfg_t, id_t))
-    out.append("generic crate | src cfg(feature=backend) | src BackendId/DeviceLocation::X | src files/dirs named for a backend | tests cfg | tests ids")
-    for r in sorted(rows, key=lambda r: -(r[1] + r[2])):
-        out.append(" | ".join(map(str, r)))
-    for crate in ("fuel-dispatch", "fuel-tensor"):
-        per = []
-        for f in rs[crate]["src"]:
-            t = code_only((ROOT / f).read_text(encoding="utf-8", errors="replace"))
-            per.append((len(LEAK_CFG.findall(t)) + len(LEAK_ID.findall(t)), f))
-        per.sort(reverse=True)
-        out.append(f"   top {crate} src files by backend-path+cfg lines: " + "; ".join(f"{f.split('/', 1)[1]} {n}" for n, f in per[:5] if n))
-    tot_cfg = sum(r[1] for r in rows)
-    tot_id = sum(r[2] for r in rows)
+    skip = {n for n in members if tiers.get(n, (0, ""))[1] in ("backends", "vendor backends", "reference backend", "kernels")}
+    rows = [leak_row(n, rs) for n in sorted(set(members) - skip)]
+    rows = [r for r in rows if any(r[1:])]
+    rows.sort(key=lambda r: -(r[1] + r[2]))
+    tot_cfg, tot_id = sum(r[1] for r in rows), sum(r[2] for r in rows)
+    require(tot_cfg + tot_id > 0, "the scan must find the known backend modules")
+    out = ["generic crate | src cfg(feature=backend) | src BackendId/DeviceLocation::X | src files/dirs named for a backend | tests cfg | tests ids"]
+    out += [" | ".join(map(str, r)) for r in rows]
+    out += [top_leak_files(c, rs) for c in ("fuel-dispatch", "fuel-tensor")]
     out.append(f"TOTAL in generic crates' src: {tot_cfg} cfg lines, {tot_id} backend-path uses, across {sum(1 for r in rows if r[1] or r[2])} crates")
-    # positive control: a backend crate must match its own name patterns when scanned the same way
-    ctl = sum(len(LEAK_ID.findall(code_only((ROOT / f).read_text(encoding="utf-8", errors="replace"))))
-              for f in rs["fuel-dispatch"]["src"])
-    assert tot_cfg + tot_id > 0, "control: the scan must find the known fuel-tensor backend modules"
-    out.append(f"control ok: scan is non-empty (fuel-dispatch src alone has {ctl} backend-path uses)")
+    out.append("control ok: scan is non-empty")
     return out
 
 
 # ----------------------------------------------------------------------------------------------- B
-def section_cochange(members, ref, window, sweep):
-    out = []
-    dirs = sorted(((m["dir"], n) for n, m in members.items() if m["dir"]), key=lambda t: -len(t[0]))
-    raw = sh("git", "log", ref, "--first-parent", f"-n{window}", "--name-only", "--format=@@%H %cs").split("\n")
-    commits = []
-    cur = None
-    for ln in raw:
+def parse_commits(members, ref, window):
+    dirs = member_dirs(members)
+    commits, cur = [], None
+    for ln in git("log", ref, "--first-parent", f"-n{window}", "--name-only", "--format=@@%H %cs").split("\n"):
         if ln.startswith("@@"):
-            cur = {"sha": ln[2:10], "date": ln.split()[1], "crates": set()}
+            cur = {"date": ln.split()[1], "crates": set()}
             commits.append(cur)
-        elif ln.strip() and cur is not None:
-            base = ln.rsplit("/", 1)[-1]
-            if base in ("Cargo.toml", "Cargo.lock") or base.endswith(".md"):
-                continue
-            for d, n in dirs:
-                if ln.startswith(d + "/"):
-                    cur["crates"].add(n)
-                    break
-    commits = [c for c in commits if c["crates"]]
-    out.append(f"window: {len(commits)} first-parent commits touching at least one member's code, {commits[-1]['date']} to {commits[0]['date']} (ref {ref}, first {window} commits)")
-    sweeps = [c for c in commits if len(c["crates"]) > sweep]
-    out.append(f"sweeps (> {sweep} crates in one commit): {len(sweeps)}; shown with and without")
+        elif ln.strip() and cur is not None and counts_as_code(ln):
+            crate, _ = crate_of(ln, dirs)
+            if crate:
+                cur["crates"].add(crate)
+    return [c for c in commits if c["crates"]]
 
-    def matrix(cs):
-        n = collections.Counter()
-        c = collections.Counter()
-        for x in cs:
-            for a in x["crates"]:
-                n[a] += 1
-            for a, b in itertools.combinations(sorted(x["crates"]), 2):
-                c[(a, b)] += 1
-        return n, c
 
-    for label, cs in (("ALL commits", commits), (f"WITHOUT sweeps", [c for c in commits if len(c["crates"]) <= sweep])):
-        n, c = matrix(cs)
-        out.append(f"-- {label}: {len(cs)} commits; most-changed crates: " + ", ".join(f"{k} {v}" for k, v in n.most_common(10)))
-        pairs = [(a, b, v, v / (n[a] + n[b] - v)) for (a, b), v in c.items() if v >= 5]
-        pairs.sort(key=lambda t: -t[3])
-        out.append("   pairs with c>=5 by Jaccard (A, B, c, J): " + "; ".join(f"{a}+{b} {v} {j:.2f}" for a, b, v, j in pairs[:12]))
+def counts_as_code(path):
+    base = path.rsplit("/", 1)[-1]
+    return base not in ("Cargo.toml", "Cargo.lock") and not base.endswith(".md")
+
+
+def cochange_matrix(commits):
+    n, c = collections.Counter(), collections.Counter()
+    for x in commits:
+        n.update(x["crates"])
+        c.update(itertools.combinations(sorted(x["crates"]), 2))
+    return n, c
+
+
+def pair_summary(n, c):
+    pairs = [(a, b, v, v / (n[a] + n[b] - v)) for (a, b), v in c.items() if v >= 5]
+    pairs.sort(key=lambda t: -t[3])
+    return "; ".join(f"{a}+{b} {v} {j:.2f}" for a, b, v, j in pairs[:12])
+
+
+def section_cochange(members, ref, window, sweep):
+    commits = parse_commits(members, ref, window)
+    out = [f"window: {len(commits)} first-parent commits touching at least one member's code, {commits[-1]['date']} to {commits[0]['date']} (ref {ref}, first {window} commits)"]
+    out.append(f"sweeps (> {sweep} crates in one commit): {sum(1 for c in commits if len(c['crates']) > sweep)}; shown with and without")
+    for label, cs in (("ALL commits", commits), ("WITHOUT sweeps", [c for c in commits if len(c["crates"]) <= sweep])):
+        n, c = cochange_matrix(cs)
+        out.append(f"-- {label}: {len(cs)} commits; most-changed crates: " + top(n, 10))
+        out.append("   pairs with c>=5 by Jaccard (A, B, c, J): " + pair_summary(n, c))
     return out, commits
 
 
+def seam_line(name, commits, left, right):
+    l = sum(1 for c in commits if c["crates"] & left and not c["crates"] & right)
+    r = sum(1 for c in commits if c["crates"] & right and not c["crates"] & left)
+    both = sum(1 for c in commits if c["crates"] & left and c["crates"] & right)
+    share = f"{both / (l + both):.0%}" if l + both else "n/a"
+    return f"{name}: left-only {l}, right-only {r}, both {both} (of {l + r + both}); share of left commits that also touch right = {share}"
+
+
 def seam_cochange(commits, groups, sweep):
-    out = []
     use = [c for c in commits if len(c["crates"]) <= sweep]
-    for name, (L, R) in groups.items():
-        l = sum(1 for c in use if c["crates"] & L and not c["crates"] & R)
-        r = sum(1 for c in use if c["crates"] & R and not c["crates"] & L)
-        both = sum(1 for c in use if c["crates"] & L and c["crates"] & R)
-        tot = l + r + both
-        out.append(f"{name}: left-only {l}, right-only {r}, both {both} (of {tot}); share of left commits that also touch right = "
-                   + (f"{both / (l + both):.0%}" if l + both else "n/a"))
-    return out
+    return [seam_line(name, use, left, right) for name, (left, right) in groups.items()]
 
 
 # ----------------------------------------------------------------------------------------------- E
@@ -256,33 +296,32 @@ USE_STMT = re.compile(r"\buse\s+(fuel_[a-z0-9_]+(?:::[^;]*)?);", re.S)
 PATH_TOK = re.compile(r"\b(fuel_[a-z0-9_]+)((?:::[A-Za-z_][A-Za-z0-9_]*)+)")
 
 
+def split_top(body):
+    """Split `a, b::{c, d}, e` at top-level commas."""
+    parts, depth, start = [], 0, 0
+    for i, ch in enumerate(body):
+        depth += (ch == "{") - (ch == "}")
+        if ch == "," and depth == 0:
+            parts.append(body[start:i])
+            start = i + 1
+    parts.append(body[start:])
+    return [p for p in parts if p]
+
+
 def expand(path):
     """Brace-expand a use path into leaf paths; '*' leaves stay as a trailing '::*'."""
     path = re.sub(r"\s+", "", path)
-    m = re.search(r"\{", path)
-    if not m:
+    open_at = path.find("{")
+    if open_at < 0:
         return [path]
-    depth, i = 0, m.start()
-    parts, start = [], m.start() + 1
-    for j in range(m.start(), len(path)):
-        ch = path[j]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                parts.append(path[start:j])
-                end = j
-                break
-        elif ch == "," and depth == 1:
-            parts.append(path[start:j])
-            start = j + 1
-    prefix, suffix = path[:m.start()], path[end + 1:]
-    res = []
-    for p in parts:
-        if p:
-            res.extend(expand(prefix + p + suffix))
-    return res
+    depth, close = 0, len(path) - 1
+    for j in range(open_at, len(path)):
+        depth += (path[j] == "{") - (path[j] == "}")
+        if depth == 0:
+            close = j
+            break
+    prefix, suffix = path[:open_at], path[close + 1:]
+    return [leaf for part in split_top(path[open_at + 1:close]) for leaf in expand(prefix + part + suffix)]
 
 
 def item_of(segs):
@@ -294,33 +333,33 @@ def item_of(segs):
     return "::".join(out)
 
 
+def refs_in(txt):
+    """Every `fuel_x::...` path in a source text, as a list of segment lists."""
+    refs = [[s for s in leaf.split("::") if s] for m in USE_STMT.finditer(txt) for leaf in expand(m.group(1))]
+    rest = USE_STMT.sub(" ", txt)
+    refs += [[m.group(1)] + [s for s in m.group(2).split("::") if s] for m in PATH_TOK.finditer(rest)]
+    return refs
+
+
+def record(segs, crate, path, sites, globs, nfiles):
+    if segs[-1] in ("*", "self") and len(segs) <= 2:
+        globs[(crate, segs[0])] += 1
+        return
+    if segs[-1] == "*":
+        globs[(crate, segs[0])] += 1
+        segs = segs[:-1]
+    key = (crate, segs[0], item_of(segs[1:]) if len(segs) > 1 else "(crate)")
+    sites[key] += 1
+    nfiles[key].add(path)
+
+
 def census(files, target_libs):
     """files: list of (referring crate, path). Returns sites[(referrer, lib, item)], globs, files-per-key."""
-    sites = collections.Counter()
-    globs = collections.Counter()
-    nfiles = collections.defaultdict(set)
-    for crate, f in files:
-        txt = code_only((ROOT / f).read_text(encoding="utf-8", errors="replace"))
-        txt_nouse = USE_STMT.sub(" ", txt)
-        refs = []
-        for m in USE_STMT.finditer(txt):
-            for leaf in expand(m.group(1)):
-                refs.append([s for s in leaf.split("::") if s])
-        for m in PATH_TOK.finditer(txt_nouse):
-            refs.append([m.group(1)] + [s for s in m.group(2).split("::") if s])
-        for segs in refs:
-            lib = segs[0]
-            if lib not in target_libs:
-                continue
-            if segs[-1] in ("*", "self") and len(segs) <= 2:
-                globs[(crate, lib)] += 1
-                continue
-            if segs[-1] == "*":
-                globs[(crate, lib)] += 1
-                segs = segs[:-1]
-            key = (crate, lib, item_of(segs[1:]) if len(segs) > 1 else "(crate)")
-            sites[key] += 1
-            nfiles[key].add(f)
+    sites, globs, nfiles = collections.Counter(), collections.Counter(), collections.defaultdict(set)
+    for crate, path in files:
+        for segs in refs_in(read_code(path)):
+            if segs[0] in target_libs:
+                record(segs, crate, path, sites, globs, nfiles)
     return sites, globs, nfiles
 
 
@@ -328,84 +367,99 @@ def lib_name(crate):
     return crate.replace("-", "_")
 
 
+def up_tier(sites, tiers, lib2crate):
+    n = 0
+    for (ref, lib, _), c in sites.items():
+        t1, t2 = tiers.get(ref), tiers.get(lib2crate.get(lib, ""))
+        if t1 and t2 and t1[0] < t2[0]:
+            n += c
+    return n
+
+
+def tier_range(group, tiers):
+    ts = sorted({tiers[n][0] for n in group if n in tiers})
+    return f"tiers {ts[0]}-{ts[-1]}" if ts else "no tier"
+
+
+def merged(sites):
+    d = collections.Counter()
+    for (_, lib, it), c in sites.items():
+        d[(lib, it)] += c
+    return d
+
+
+def files_of(group, rs):
+    return [(n, f) for n in sorted(group) for part in ("src", "other") for f in rs[n][part]]
+
+
+def seam_census_lines(name, left, right, rs, tiers, lib2crate):
+    s1, g1, nf1 = census(files_of(left, rs), {lib_name(n) for n in right})
+    s2, g2, _ = census(files_of(right, rs), {lib_name(n) for n in left})
+    d1, d2 = merged(s1), merged(s2)
+    nfiles = len({f for fs in nf1.values() for f in fs})
+    out = [f"{name} [LEFT {tier_range(left, tiers)}; RIGHT {tier_range(right, tiers)}]: "
+           f"LEFT->RIGHT {sum(s1.values())} sites ({up_tier(s1, tiers, lib2crate)} up-tier), {len(d1)} distinct items, {sum(g1.values())} globs, in {nfiles} files"
+           f"; RIGHT->LEFT {sum(s2.values())} sites ({up_tier(s2, tiers, lib2crate)} up-tier), {len(d2)} distinct items, {sum(g2.values())} globs",
+           "   top items LEFT->RIGHT: " + ", ".join(f"{lib}::{it} {c}" for (lib, it), c in d1.most_common(6))]
+    if d2:
+        out.append("   top items RIGHT->LEFT: " + ", ".join(f"{lib}::{it} {c}" for (lib, it), c in d2.most_common(6)))
+    return out
+
+
 def section_census(members, rs, groups, tiers):
-    out = []
     lib2crate = {lib_name(n): n for n in members}
-
-    def up(sites):
-        """Sites where the referring crate has a LOWER tier than the crate it names (a source-level
-        back-edge by the tier file's own order). Unplaced crates are not judged."""
-        n = 0
-        for (ref, lib, _), c in sites.items():
-            t1, t2 = tiers.get(ref), tiers.get(lib2crate.get(lib, ""))
-            if t1 and t2 and t1[0] < t2[0]:
-                n += c
-        return n
-
-    for name, (L, R) in groups.items():
-        def files_of(group):
-            return [(n, f) for n in sorted(group) for part in ("src", "other") for f in rs[n][part]]
-        s1, g1, nf1 = census(files_of(L), {lib_name(n) for n in R})
-        s2, g2, nf2 = census(files_of(R), {lib_name(n) for n in L})
-        files_l = {f for fs in nf1.values() for f in fs}
-
-        def trange(g):
-            ts = sorted({tiers[n][0] for n in g if n in tiers})
-            return f"tiers {ts[0]}-{ts[-1]}" if ts else "no tier"
-
-        d1 = collections.Counter()
-        for (_, lib, it), c in s1.items():
-            d1[(lib, it)] += c
-        d2 = collections.Counter()
-        for (_, lib, it), c in s2.items():
-            d2[(lib, it)] += c
-        out.append(f"{name} [LEFT {trange(L)}; RIGHT {trange(R)}]: LEFT->RIGHT {sum(s1.values())} sites ({up(s1)} up-tier), {len(d1)} distinct items, {sum(g1.values())} globs, in {len(files_l)} files"
-                   f"; RIGHT->LEFT {sum(s2.values())} sites ({up(s2)} up-tier), {len(d2)} distinct items, {sum(g2.values())} globs")
-        out.append("   top items LEFT->RIGHT: " + ", ".join(f"{lib}::{it} {c}" for (lib, it), c in d1.most_common(6)))
-        if d2:
-            out.append("   top items RIGHT->LEFT: " + ", ".join(f"{lib}::{it} {c}" for (lib, it), c in d2.most_common(6)))
-        ups = [(ref, lib, it, c) for (ref, lib, it), c in list(s1.items()) + list(s2.items())
-               if tiers.get(ref) and tiers.get(lib2crate.get(lib, "")) and tiers[ref][0] < tiers[lib2crate[lib]][0]]
-        if ups:
-            out.append("   up-tier sites by (referrer -> crate): " + ", ".join(
-                f"{r}->{l.replace('_', '-')} {c}" for (r, l), c in collections.Counter(
-                    {(r, l): sum(x[3] for x in ups if x[0] == r and x[1] == l) for r, l, _, _ in ups}).most_common(8)))
+    out = []
+    for name, (left, right) in groups.items():
+        out += seam_census_lines(name, left, right, rs, tiers, lib2crate)
     s, _, _ = census([("fuel-tensor", f) for f in rs["fuel-tensor"]["src"]], {"fuel_ir"})
-    assert sum(s.values()) > 0, "control: fuel-tensor must reference fuel_ir"
+    require(sum(s.values()) > 0, "fuel-tensor must reference fuel_ir")
     out.append(f"control ok: fuel-tensor src references fuel_ir at {sum(s.values())} sites")
     return out
 
 
 # ----------------------------------------------------------------------------------------------- main
+CORE = {"fuel-ir", "fuel-graph", "fuel-memory", "fuel-dispatch", "fuel-tensor", "fuel-hardware", "fuel-backend-contract"}
+BACKENDS = {"fuel-cpu-backend", "fuel-cuda-backend", "fuel-vulkan-backend", "fuel-metal-backend",
+            "fuel-aocl-cpu-backend", "fuel-mkl-cpu-backend", "fuel-kiss-ref-backend"}
+MODELS = {"fuel-nn", "fuel-training", "fuel-posttrain", "fuel-datasets", "fuel-model-core", "fuel-model-llama",
+          "fuel-model-phi", "fuel-transformers", "fuel-inference", "fuel-parallel"}
+KERNELS = {"fuel-kernels-source", "fuel-vulkan-kernels", "fuel-metal-kernels", "fuel-cpu-kernels"}
+SEAMS = {
+    "S1 formats+interchange vs core": ({"fuel-formats", "fuel-loaders", "fuel-onnx"}, CORE),
+    "S2 hardware vs dispatch+tensor": ({"fuel-hardware"}, {"fuel-dispatch", "fuel-tensor"}),
+    "S3 executor (tensor+dispatch) vs backends": ({"fuel-tensor", "fuel-dispatch"}, BACKENDS),
+    "S4 models+nn+training vs core": (MODELS, CORE),
+    "S5 kernels vs backends": (KERNELS, BACKENDS),
+}
+
+
+def build_groups(members):
+    return {k: ({x for x in left if x in members}, {x for x in right if x in members}) for k, (left, right) in SEAMS.items()}
+
+
+def emit(title, lines):
+    print(f"\n## {title}")
+    print("\n".join(lines))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ref", default="origin/main")
     ap.add_argument("--window", type=int, default=400)
     ap.add_argument("--sweep", type=int, default=12)
     a = ap.parse_args()
+    require(REF_OK.match(a.ref) is not None, f"--ref {a.ref!r} is not a plain git ref")
     members, edges = load_workspace()
-    tiers = load_tiers()
-    rs = tracked_rs(members)
-    core = {"fuel-ir", "fuel-graph", "fuel-memory", "fuel-dispatch", "fuel-tensor", "fuel-hardware", "fuel-backend-contract"}
-    backends = {"fuel-cpu-backend", "fuel-cuda-backend", "fuel-vulkan-backend", "fuel-metal-backend",
-                "fuel-aocl-cpu-backend", "fuel-mkl-cpu-backend", "fuel-kiss-ref-backend"}
-    groups = {
-        "S1 formats+interchange vs core": ({"fuel-formats", "fuel-loaders", "fuel-onnx"}, core),
-        "S2 hardware vs dispatch+tensor": ({"fuel-hardware"}, {"fuel-dispatch", "fuel-tensor"}),
-        "S3 executor (tensor+dispatch) vs backends": ({"fuel-tensor", "fuel-dispatch"}, backends),
-        "S4 models+nn+training vs core": ({"fuel-nn", "fuel-training", "fuel-posttrain", "fuel-datasets", "fuel-model-core",
-                                           "fuel-model-llama", "fuel-model-phi", "fuel-transformers", "fuel-inference", "fuel-parallel"}, core),
-        "S5 kernels vs backends": ({"fuel-kernels-source", "fuel-vulkan-kernels", "fuel-metal-kernels", "fuel-cpu-kernels"}, backends),
-    }
-    present = {m for m in members}
-    groups = {k: ({x for x in L if x in present}, {x for x in R if x in present}) for k, (L, R) in groups.items()}
-    print("# structure report: tree =", sh("git", "rev-parse", "--short", "HEAD").strip(), "(the checked-out worktree; sources must equal the ref), co-change ref =", a.ref, sh("git", "rev-parse", "--short", a.ref).strip())
-    print("\n## A. crate graph and tiers"); print("\n".join(section_graph(members, edges, tiers)))
-    print("\n## C. backend leaks in generic crates"); print("\n".join(section_leaks(members, tiers, rs)))
+    tiers, rs = load_tiers(), tracked_rs(members)
+    groups = build_groups(members)
+    print("# structure report: tree =", git("rev-parse", "--short", "HEAD").strip(),
+          "(the checked-out worktree; sources must equal the ref), co-change ref =", a.ref, git("rev-parse", "--short", a.ref).strip())
+    emit("A. crate graph and tiers", section_graph(members, edges, tiers))
+    emit("C. backend leaks in generic crates", section_leaks(members, tiers, rs))
     lines, commits = section_cochange(members, a.ref, a.window, a.sweep)
-    print("\n## B. co-change"); print("\n".join(lines))
-    print("\n## B2. per-seam co-change (sweeps excluded)"); print("\n".join(seam_cochange(commits, groups, a.sweep)))
-    print("\n## E. seam census"); print("\n".join(section_census(members, rs, groups, tiers)))
+    emit("B. co-change", lines)
+    emit("B2. per-seam co-change (sweeps excluded)", seam_cochange(commits, groups, a.sweep))
+    emit("E. seam census", section_census(members, rs, groups, tiers))
 
 
 if __name__ == "__main__":

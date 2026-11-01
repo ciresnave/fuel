@@ -197,3 +197,13 @@ seam is the one being extracted; the other boundaries have no FireLine plan.
 
 Not read: the `unpopped-vocab`, baracuda and KISS sides; FireLine's HANDOFF; any FireLine plan beyond
 the one-line roadmap.
+
+## 9. Re-run after #570 merged (main 4569a530b, 0.35.14)
+
+The script was refactored (smaller functions, one annotated subprocess site, no `assert`) and the
+old and new versions were diffed on the same tree: identical output apart from one shortened control
+message. On the tree that includes #570 (the device inventory) the headline numbers moved only as
+follows: backend-leak totals 377 cfg lines and 779 backend-path uses (were 375 and 770: the
+inventory added backend-gated queries to `fuel-hardware`, a small example of the trend), and the
+hardware seam now has 4 commits in the window (25% joint with dispatch and tensor, was 33% of 3).
+Everything else in sections 2 to 5 is unchanged.
