@@ -5850,38 +5850,45 @@ impl VulkanBackend {
         )
     }
 
-    /// Fused Q8_0 × F32 gemv for `m == 1` (one dispatch per batch row, one workgroup per output
-    /// column). Weights are shared across batches. See `qmatvec_q8_0.slang`.
-    fn qmatvec_q8_0_bytes(
+    /// Fused quantized × F32 gemv: one dispatch per activation row, one workgroup per output column.
+    /// `rows` is `batch` for the `m == 1` decode case, or `batch * m` when a quant type has no fused
+    /// matrix-matrix kernel yet (then the weight is re-read once per row: correct, not fast). The
+    /// weight is shared across rows. See `qmatvec_q8_0.slang` and `qmatvec_q6_k.slang`.
+    fn qmatvec_bytes(
         &self,
+        kind: QmvKind,
         a_f32: &VulkanStorageBytes,
-        w_q8_0: &VulkanStorageBytes,
+        w_q: &VulkanStorageBytes,
         out: &mut VulkanStorageBytes,
-        batch: usize,
+        rows: usize,
         k: usize,
         n: usize,
     ) -> fuel_ir::Result<()> {
-        let batch = batch.max(1);
-        let need_a = batch * k * 4;
-        let need_w = n * (k / 32) * 34; // 34 bytes per Q8_0 block
-        let need_out = batch * n * 4;
-        if a_f32.len_bytes() < need_a {
-            fuel_ir::bail!("qmatvec_q8_0_bytes: A {} < {need_a}", a_f32.len_bytes());
+        let (name, block_elems, block_bytes) = kind.shape();
+        if !k.is_multiple_of(block_elems) {
+            fuel_ir::bail!("{name}: k ({k}) must be a multiple of {block_elems}");
         }
-        if w_q8_0.len_bytes() < need_w {
-            fuel_ir::bail!("qmatvec_q8_0_bytes: W {} < {need_w}", w_q8_0.len_bytes());
+        let rows = rows.max(1);
+        let need_a = rows * k * 4;
+        let need_w = n * (k / block_elems) * block_bytes;
+        let need_out = rows * n * 4;
+        if a_f32.len_bytes() < need_a {
+            fuel_ir::bail!("{name}: A {} < {need_a}", a_f32.len_bytes());
+        }
+        if w_q.len_bytes() < need_w {
+            fuel_ir::bail!("{name}: W {} < {need_w}", w_q.len_bytes());
         }
         if out.len_bytes() < need_out {
-            fuel_ir::bail!("qmatvec_q8_0_bytes: O {} < {need_out}", out.len_bytes());
+            fuel_ir::bail!("{name}: O {} < {need_out}", out.len_bytes());
         }
         let a_buf = a_f32.buffer_opt().ok_or_else(|| {
-            fuel_ir::Error::Msg("qmatvec_q8_0_bytes: A is host-evicted; fault back first".into())
+            fuel_ir::Error::Msg(format!("{name}: A is host-evicted; fault back first"))
         })?;
-        let w_buf = w_q8_0.buffer_opt().ok_or_else(|| {
-            fuel_ir::Error::Msg("qmatvec_q8_0_bytes: W is host-evicted; fault back first".into())
+        let w_buf = w_q.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg(format!("{name}: W is host-evicted; fault back first"))
         })?;
         let out_buf = out.buffer_opt().ok_or_else(|| {
-            fuel_ir::Error::Msg("qmatvec_q8_0_bytes: O is host-evicted; fault back first".into())
+            fuel_ir::Error::Msg(format!("{name}: O is host-evicted; fault back first"))
         })?;
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::NoUninit)]
@@ -5894,10 +5901,20 @@ impl VulkanBackend {
         let p = QmvParams {
             n: n as u32,
             k: k as u32,
-            blocks_per_row: (k / 32) as u32,
+            blocks_per_row: (k / block_elems) as u32,
             _pad: 0,
         };
-        for b in 0..batch {
+        let (pipe_slot, layout) = match kind {
+            QmvKind::Q8_0 => (
+                &self.pipelines.qmatvec_q8_0_pipeline,
+                &self.pipelines.qmatvec_q8_0_layout,
+            ),
+            QmvKind::Q6K => (
+                &self.pipelines.qmatvec_q6_k_pipeline,
+                &self.pipelines.qmatvec_q6_k_layout,
+            ),
+        };
+        for b in 0..rows {
             let (pbuf, pmem) = self.upload_params(&p)?;
             let desc = self
                 .pipelines
@@ -5928,10 +5945,9 @@ impl VulkanBackend {
             let rb = [a_buf.raw(), w_buf.raw()];
             let wb = [out_buf.raw()];
             self.record_dispatch_batched(
-                "qmatvec_q8_0",
-                self.pipelines
-                    .pipeline(&self.pipelines.qmatvec_q8_0_pipeline, "qmatvec_q8_0")?,
-                &self.pipelines.qmatvec_q8_0_layout,
+                name,
+                self.pipelines.pipeline(pipe_slot, name)?,
+                layout,
                 desc,
                 (n as u32, 1, 1),
                 vec![(pbuf, pmem)],
@@ -5941,6 +5957,22 @@ impl VulkanBackend {
         }
         self.flush_pending()?;
         Ok(())
+    }
+
+    /// Q6_K × F32 matmul over byte-storage (ROADMAP row 119). Every row goes through the fused gemv
+    /// (`qmatvec_q6_k`); there is no Q6_K dequantize or tiled kernel on Vulkan, so a prefill with
+    /// `m > 1` re-reads the weight once per row. Correct, and the only Vulkan Q6_K path.
+    pub fn matmul_q6_k_bytes(
+        &self,
+        a_f32: &VulkanStorageBytes,
+        w_q6_k: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> fuel_ir::Result<()> {
+        self.qmatvec_bytes(QmvKind::Q6K, a_f32, w_q6_k, out, batch.max(1) * m, k, n)
     }
 
     /// Q8_0 × F32 matmul over byte-storage. Same dequant-then-matmul path
@@ -5963,7 +5995,7 @@ impl VulkanBackend {
         }
         if m == 1 {
             // Decode: fused gemv, the weight stays quantized (no f32 scratch of the whole matrix).
-            return self.qmatvec_q8_0_bytes(a_f32, w_q8_0, out, batch, k, n);
+            return self.qmatvec_bytes(QmvKind::Q8_0, a_f32, w_q8_0, out, batch, k, n);
         }
         let n_blocks = n * (k / BLCK_SIZE);
         let n_elements = n * k;
@@ -15025,6 +15057,23 @@ mod recycler_depth_tests {
             assert!(d <= prev, "depth rose at 2^{shift}: {d} > {prev}");
             assert!((4..=1024).contains(&d));
             prev = d;
+        }
+    }
+}
+
+/// Which fused quantized gemv kernel `VulkanBackend::qmatvec_bytes` runs.
+#[derive(Clone, Copy)]
+enum QmvKind {
+    Q8_0,
+    Q6K,
+}
+
+impl QmvKind {
+    /// `(kernel name, elements per block, bytes per block)`.
+    fn shape(self) -> (&'static str, usize, usize) {
+        match self {
+            QmvKind::Q8_0 => ("qmatvec_q8_0", 32, 34),
+            QmvKind::Q6K => ("qmatvec_q6_k", 256, 210),
         }
     }
 }

@@ -4087,8 +4087,9 @@ pub mod cumsum {
 // wrapper switches per family to the right Vulkan kernel:
 //   - Q4_0  → fused qmatvec_q4_0 (M=1) or matmul_q4_0_tiled (M>1).
 //   - Q4_K_M → dequantize_q4_km to f32 scratch, then matmul_f32_bytes.
-//   - Q8_0   → dequantize_q8_0  to f32 scratch, then matmul_f32_bytes.
-// Other QuantTypes (Q4_1, Q5_*, Q2K/Q3K/Q5K/Q6K, Q8_1) are not yet wired —
+//   - Q8_0   → fused qmatvec_q8_0 (M=1); dequantize_q8_0 to f32 scratch, then matmul_f32_bytes (M>1).
+//   - Q6_K   → fused qmatvec_q6_k for every row (no tiled or dequant kernel yet).
+// Other QuantTypes (Q4_1, Q5_*, Q2K/Q3K/Q5K, Q8_1) are not yet wired —
 // the wrapper returns an error so the route picker falls back to CPU.
 
 pub mod qmatmul {
@@ -4139,6 +4140,7 @@ pub mod qmatmul {
             QuantType::Q4_0 => backend.matmul_q4_0_bytes(a, w, out, batch_count, m, k, n),
             QuantType::Q4_K_M => backend.matmul_q4_km_bytes(a, w, out, batch_count, m, k, n),
             QuantType::Q8_0 => backend.matmul_q8_0_bytes(a, w, out, batch_count, m, k, n),
+            QuantType::Q6K => backend.matmul_q6_k_bytes(a, w, out, batch_count, m, k, n),
             other => Err(Error::Msg(format!(
                 "vulkan_dispatch::qmatmul: QuantType {other:?} not wired on Vulkan; \
                  add a dequant-then-matmul path or a fused kernel and retry"
