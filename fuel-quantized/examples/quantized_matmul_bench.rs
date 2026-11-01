@@ -17,7 +17,7 @@
 //!
 //! An example rather than an `#[ignore]` test (the ignore total sits at its ceiling).
 
-use fuel_quantized::{BlockQ4_0, BlockQ4K, BlockQ8_0, GgmlType, QK_K, matmul};
+use fuel_quantized::{BlockQ4_0, BlockQ4K, BlockQ8_0, GgmlType, matmul};
 use std::time::Instant;
 
 const REPEATS: usize = 9;
@@ -85,7 +85,6 @@ fn main() {
     println!(
         "# repeats={REPEATS}; milliseconds per matmul call; agreement vs the f64 dequantized reference"
     );
-    assert!(QK_K == 256);
     for shape in [
         (1usize, 4096usize, 4096usize),
         (8, 4096, 4096),
