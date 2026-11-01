@@ -38,3 +38,8 @@ reason = "workspace-only test, reads five fuel-dispatch/fixtures/kiss-corpus con
 check = "ci-security"
 file = ".github/workflows/checkpoint-tests.yml"
 reason = "deliberately self-hosted and CPU-only, as the workflow header records (ROADMAP row 130; the standing instruction of 2026-10-16 is that tests GitHub cannot run go to a self-hosted run with the same conditions, never an ignore attribute). It loads a real checkpoint of about 1.7 GB from the Hub and runs the f32 CPU oracles, so it names no GPU. The rule's concern, a pull request running its own workflow text on the machine, does not apply: the workflow triggers only on push to main and workflow_dispatch, has no pull_request trigger, and its permissions are contents read with no secrets (the runner policy in agentlife docs/RUNNER-SETUP.md)."
+
+[[allow]]
+check = "licence"
+file = "fuel-quantized/src/iq4.rs"
+reason = "four fuel-quantized sources are deliberately unstamped because they derive from llama.cpp / ggml (MIT), not from us: iq4.rs, iq_grid_types.rs, iq_grids.rs and tq_mx_types.rs. Each opens with a comment saying so and pointing at the licence text in THIRD-PARTY-NOTICES.md; an identifier line there would claim a licence we cannot grant. The rule reports the group as one finding located at the first file, so this one entry covers the four and nothing else."

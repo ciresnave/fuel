@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# From huggingface/candle (MIT OR Apache-2.0), candle-examples/examples/whisper/extract_weights.py, body unchanged; see THIRD-PARTY-NOTICES.md.
 # Get the checkpoint from
 # https://openaipublic.azureedge.net/main/whisper/models/d3dd57d32accea0b295c96e26691aa14d8822fac7d9d27d5dc00b4ca2826dd03/tiny.en.pt
 
