@@ -19,8 +19,8 @@ struct Params {
 [[vk::binding(1, 0)]] RWStructuredBuffer<double> output;
 [[vk::binding(2, 0)]] ConstantBuffer<Params>     params;
 
-groupshared double wg_max[32];
-groupshared double wg_sum[32];
+groupshared double wg_max[64];
+groupshared double wg_sum[64];
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -47,7 +47,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {
 
     uint n_sg = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        double v = (tid < n_sg) ? wg_max[tid] : -1.7976931348623157e+308;
+        double v = -1.7976931348623157e+308;
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            v = max(v, wg_max[sgi]);
+        }
         double m = WaveActiveMax(v);
         if (WaveIsFirstLane()) {
             wg_max[0] = m;
@@ -71,7 +74,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {
     GroupMemoryBarrierWithGroupSync();
 
     if (sg_id == 0u) {
-        double v = (tid < n_sg) ? wg_sum[tid] : 0.0;
+        double v = 0.0;
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            v = v + wg_sum[sgi];
+        }
         double s = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             wg_sum[0] = s;

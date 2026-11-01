@@ -23,7 +23,7 @@ struct Params {
 [[vk::binding(1, 0)]] RWStructuredBuffer<double> output;
 [[vk::binding(2, 0)]] ConstantBuffer<Params>     params;
 
-groupshared double wg_data[32];
+groupshared double wg_data[64];
 
 static const double F64_NEG_INF = -1.7976931348623157e+308;
 static const double F64_POS_INF =  1.7976931348623157e+308;
@@ -73,7 +73,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {
 
     uint n_sg = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        double v = (tid < n_sg) ? wg_data[tid] : identity_of(op);
+        double v = identity_of(op);
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            v = combine(op, v, wg_data[sgi]);
+        }
         double r = subgroup_reduce(op, v);
         if (WaveIsFirstLane()) {
             if (op == 3u) {

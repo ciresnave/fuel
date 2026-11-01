@@ -27,8 +27,8 @@ struct Params {
 
 // Same cap as rms_norm — 32 slots covers every desktop subgroup
 // size at workgroup size 256.
-groupshared float wg_max[32];
-groupshared float wg_sum[32];
+groupshared float wg_max[64];
+groupshared float wg_sum[64];
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -56,7 +56,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {
 
     uint n_sg = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        float v = (tid < n_sg) ? wg_max[tid] : -3.402823e+38;
+        float v = -3.402823e+38;
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            v = max(v, wg_max[sgi]);
+        }
         float m = WaveActiveMax(v);
         if (WaveIsFirstLane()) {
             wg_max[0] = m;
@@ -81,7 +84,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {
     GroupMemoryBarrierWithGroupSync();
 
     if (sg_id == 0u) {
-        float v = (tid < n_sg) ? wg_sum[tid] : 0.0;
+        float v = 0.0;
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            v = v + wg_sum[sgi];
+        }
         float s = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             wg_sum[0] = s;

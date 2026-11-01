@@ -58,6 +58,7 @@ jobs:
           grep -E "^test result" lavapipe.log
 
       - name: The five skipped tests still fail on Lavapipe (a skip must redden when its cause goes)
+        if: always()
         run: |
           still_failing=0
           for t in vulkan_dispatch_conv2d_bf16 vulkan_dispatch_conv2d_f16 vulkan_dispatch_unary_sin_f64 vulkan_dispatch_unary_cos_f64 vulkan_dispatch_unary_sin_f64_huge; do

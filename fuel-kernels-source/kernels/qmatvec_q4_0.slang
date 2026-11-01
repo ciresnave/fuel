@@ -39,7 +39,7 @@ static const uint BLCK_SIZE = 32;
 // Shared memory for cross-subgroup reduction (up to 32 subgroups at
 // workgroup size 128, way more than we need — NVIDIA is 4 subgroups
 // of 32 lanes at this size).
-groupshared float subgroup_partials[16];
+groupshared float subgroup_partials[32];
 
 // Load one byte at an arbitrary byte offset.
 uint load_u8(uint byte_off)
@@ -118,7 +118,10 @@ void main(
 
     uint n_subgroups = 128u / WaveGetLaneCount();
     if (sg_id == 0) {
-        float v = (tid < n_subgroups) ? subgroup_partials[tid] : 0.0;
+        float v = 0.0;
+        for (uint sgi = tid; sgi < n_subgroups; sgi += WaveGetLaneCount()) {
+            v = v + subgroup_partials[sgi];
+        }
         float total = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             c_f32[n] = total;
