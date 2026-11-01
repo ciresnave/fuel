@@ -57,6 +57,7 @@ docs/design-notes/2026-10-30-hybrid-decode-state-row-117.md	own		no lineage; 0 o
 docs/design-notes/2026-10-30-kquant-resident-weights.md	own		no lineage; 0 of 42 lines verbatim in candle (0%)
 docs/design-notes/2026-10-30-qwen35-27b-audit.md	own		no lineage; 0 of 167 lines verbatim in candle (0%)
 docs/design-notes/2026-10-30-qwen35-composed-forward-row-115.md	own		no lineage; 0 of 68 lines verbatim in candle (0%)
+docs/design-notes/2026-11-01-qwen35-gguf-header.md	own		no lineage; 0 of 51 lines verbatim in candle (0%)
 docs/design/facade-inversion-recipe.md	own		no lineage; 0 of 216 lines verbatim in candle (0%)
 docs/design/gaps-status-conversion-table.md	own		no lineage; 0 of 80 lines verbatim in candle (0%)
 docs/design/gaps-status-vocabulary.md	own		no lineage; 0 of 213 lines verbatim in candle (0%)

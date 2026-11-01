@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - Stable device identity (ROADMAP row 125, step one): `fuel_ir::DeviceIdentity` (UUID and PCI address) with a matcher that treats an all-zero UUID as absent and never calls an unknown pair the same card; `device_identities()` for the CUDA and Vulkan backends and `VulkanBackend::identity()`; `DeviceMemory.identity` in the device inventory. On this box the CUDA and Vulkan views of the RTX 4070 report the same UUID. The two-GPU Vulkan probe now picks its GPUs by identity instead of by enumeration index, because Vulkan's device order differs between builds here.
 
+## v0.35.16 - 2026-11-01
+
+### Added
+
+- ROADMAP row 118 step one: a design note records what an installed `qwen35` GGUF actually contains (metadata keys, tensor names, types, the 24 Gated DeltaNet and 8 full-attention layers, tied output head, Q6_K and Q8_0 weights, no Q4_K). Read-only; no code changes.
+
 ## v0.35.15 - 2026-11-01
 
 ### Added
