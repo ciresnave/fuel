@@ -734,6 +734,8 @@ fn vulkan_dispatch_softmax_last_dim_f32() {
             "softmax shift-invariance broken at col {c}: row0={a} row1={b}"
         );
     }
+    // Wide rows too (row 134): every subgroup holds data.
+    check_softmax_wide_f32(&backend);
 }
 
 // ===========================================================================
@@ -4074,6 +4076,8 @@ fn vulkan_dispatch_reduce_sum_last_dim_f32() {
         vec![1],
     );
     assert_eq!(got, vec![6.0, 15.0]);
+    // Wide rows too (row 134): every subgroup holds data.
+    check_reduce_last_dim_wide_f32(&backend);
 }
 
 /// IndexSelect along dim 0: pick rows 0, 2, 1 from a 4×3 matrix.
@@ -4342,6 +4346,8 @@ fn vulkan_dispatch_rms_norm_last_dim_f32() {
             );
         }
     }
+    // Wide rows too (row 134): every subgroup holds data.
+    check_rms_norm_wide_f32(&backend);
 }
 
 // ---- LayerNormLastDimBackward f32/f16/bf16/f64 (V.3.G.layer_norm_bwd) ----
@@ -4682,6 +4688,8 @@ fn vulkan_dispatch_layer_norm_f32() {
             "layer_norm f32[{i}]: got {g}, expected {e}"
         );
     }
+    // Wide rows too (row 134): every subgroup holds data.
+    check_layer_norm_wide_f32(&backend);
 }
 
 #[test]
@@ -11268,18 +11276,13 @@ fn assert_close_f32(name: &str, got: &[f32], expected: &[f32], tol: f32) {
     );
 }
 
-#[test]
-#[ignore]
-fn vulkan_dispatch_softmax_wide_f32() {
-    let Some(backend) = backend_or_skip() else {
-        return;
-    };
+fn check_softmax_wide_f32(backend: &Arc<VulkanBackend>) {
     let host = wide_data();
     let params = OpParams::SoftmaxLastDim {
         outer_count: WIDE_OUTER,
         last_dim: WIDE_LAST,
     };
-    let got = run_wide_row_f32(&backend, OpKind::SoftmaxLastDim, &host, params);
+    let got = run_wide_row_f32(backend, OpKind::SoftmaxLastDim, &host, params);
     let mut expected = Vec::new();
     for row in host.chunks(WIDE_LAST) {
         let exps: Vec<f64> = row.iter().map(|&x| (x as f64).exp()).collect();
@@ -11289,12 +11292,7 @@ fn vulkan_dispatch_softmax_wide_f32() {
     assert_close_f32("softmax wide f32", &got, &expected, 1e-6);
 }
 
-#[test]
-#[ignore]
-fn vulkan_dispatch_rms_norm_wide_f32() {
-    let Some(backend) = backend_or_skip() else {
-        return;
-    };
+fn check_rms_norm_wide_f32(backend: &Arc<VulkanBackend>) {
     let host = wide_data();
     let eps = 1e-6_f64;
     let params = OpParams::NormLastDim {
@@ -11302,7 +11300,7 @@ fn vulkan_dispatch_rms_norm_wide_f32() {
         last_dim: WIDE_LAST,
         eps,
     };
-    let got = run_wide_row_f32(&backend, OpKind::RmsNormLastDim, &host, params);
+    let got = run_wide_row_f32(backend, OpKind::RmsNormLastDim, &host, params);
     let mut expected = Vec::new();
     for row in host.chunks(WIDE_LAST) {
         let ms: f64 = row.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>() / WIDE_LAST as f64;
@@ -11312,12 +11310,7 @@ fn vulkan_dispatch_rms_norm_wide_f32() {
     assert_close_f32("rms_norm wide f32", &got, &expected, 1e-4);
 }
 
-#[test]
-#[ignore]
-fn vulkan_dispatch_layer_norm_wide_f32() {
-    let Some(backend) = backend_or_skip() else {
-        return;
-    };
+fn check_layer_norm_wide_f32(backend: &Arc<VulkanBackend>) {
     let host = wide_data();
     let eps = 1e-5_f64;
     let params = OpParams::NormLastDim {
@@ -11325,18 +11318,13 @@ fn vulkan_dispatch_layer_norm_wide_f32() {
         last_dim: WIDE_LAST,
         eps,
     };
-    let got = run_wide_row_f32(&backend, OpKind::LayerNormLastDim, &host, params);
+    let got = run_wide_row_f32(backend, OpKind::LayerNormLastDim, &host, params);
     let expected = layer_norm_ref(&host, WIDE_OUTER, WIDE_LAST, eps as f32);
     assert_close_f32("layer_norm wide f32", &got, &expected, 1e-4);
 }
 
 /// Sum, max and mean over the last dim of `[WIDE_OUTER, WIDE_LAST]`, against an f64 reference.
-#[test]
-#[ignore]
-fn vulkan_dispatch_reduce_last_dim_wide_f32() {
-    let Some(backend) = backend_or_skip() else {
-        return;
-    };
+fn check_reduce_last_dim_wide_f32(backend: &Arc<VulkanBackend>) {
     let mut host = wide_data();
     // The row maxima sit at column 700, which belongs to thread 700 % 256 = 188: a high subgroup on any width.
     for r in 0..WIDE_OUTER {
@@ -11351,9 +11339,9 @@ fn vulkan_dispatch_reduce_last_dim_wide_f32() {
         .map(|r| r.iter().cloned().fold(f32::MIN, f32::max))
         .collect();
     let means: Vec<f32> = sums.iter().map(|s| s / WIDE_LAST as f32).collect();
-    let got_sum = run_reduce_f32(&backend, OpKind::SumReduce, &host, &dims, vec![1]);
-    let got_max = run_reduce_f32(&backend, OpKind::MaxReduce, &host, &dims, vec![1]);
-    let got_mean = run_reduce_f32(&backend, OpKind::MeanReduce, &host, &dims, vec![1]);
+    let got_sum = run_reduce_f32(backend, OpKind::SumReduce, &host, &dims, vec![1]);
+    let got_max = run_reduce_f32(backend, OpKind::MaxReduce, &host, &dims, vec![1]);
+    let got_mean = run_reduce_f32(backend, OpKind::MeanReduce, &host, &dims, vec![1]);
     assert_close_f32("reduce sum wide f32", &got_sum, &sums, 1e-3);
     assert_close_f32("reduce max wide f32", &got_max, &maxs, 1e-6);
     assert_close_f32("reduce mean wide f32", &got_mean, &means, 1e-5);
