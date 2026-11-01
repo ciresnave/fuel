@@ -157,24 +157,44 @@ def top(counter, n=8):
     return ", ".join(f"{k} {v}" for k, v in counter.most_common(n))
 
 
-def section_graph(members, edges, tiers):
+BACKEND_LAYERS = ("backends", "vendor backends", "reference backend")
+
+
+def graph_counts(members, edges, tiers):
     normal = [e for e in edges if e[2] == "normal"]
-    judged = [e for e in normal if e[0] in tiers and e[1] in tiers]
     unplaced = sorted(n for n in members if n not in tiers)
     stale = sorted(n for n in tiers if n not in members)
-    backend = {n for n, (_, layer) in tiers.items() if layer in ("backends", "vendor backends", "reference backend")}
-    opt_to_backend = sorted((a, b) for a, b, _, o in normal if o and b in backend and a not in backend)
-    require(("fuel-tensor", "fuel-ir", "normal", False) in edges, "fuel-tensor -> fuel-ir edge must exist")
+    return normal, unplaced, stale
+
+
+def graph_size_lines(members, edges, tiers):
+    normal, unplaced, stale = graph_counts(members, edges, tiers)
+    judged = [e for e in normal if e[0] in tiers and e[1] in tiers]
+    optional = sum(1 for e in normal if e[3])
     return [
-        f"members {len(members)}; edges normal {len(normal)} (optional {sum(1 for e in normal if e[3])}), dev {len(edges) - len(normal)}",
+        f"members {len(members)}; edges normal {len(normal)} (optional {optional}), dev {len(edges) - len(normal)}",
         f"tier file places {len(tiers) - len(stale)} of {len(members)} members; unplaced: {', '.join(unplaced) or 'none'}",
         f"tier-file entries naming a non-member (stale): {', '.join(stale) or 'none'}",
         f"judged normal edges {len(judged)} of {len(normal)}; DIRECTION VIOLATIONS {len(violations(edges, tiers, 'normal'))}: "
         + names(violations(edges, tiers, "normal")),
+    ]
+
+
+def graph_shape_lines(edges, tiers):
+    normal = [e for e in edges if e[2] == "normal"]
+    backend = {n for n, (_, layer) in tiers.items() if layer in BACKEND_LAYERS}
+    opt_to_backend = sorted((a, b) for a, b, _, o in normal if o and b in backend and a not in backend)
+    return [
         f"dev-edge direction violations (not gated): {len(violations(edges, tiers, 'dev'))}: " + names(violations(edges, tiers, "dev")),
         "top fan-in (normal): " + top(collections.Counter(b for _, b, *_ in normal)),
         "top fan-out (normal): " + top(collections.Counter(a for a, *_ in normal)),
         "optional edges from a non-backend crate to a backend crate: " + names(opt_to_backend),
+    ]
+
+
+def section_graph(members, edges, tiers):
+    require(("fuel-tensor", "fuel-ir", "normal", False) in edges, "fuel-tensor -> fuel-ir edge must exist")
+    return graph_size_lines(members, edges, tiers) + graph_shape_lines(edges, tiers) + [
         "control ok: fuel-tensor -> fuel-ir edge present",
     ]
 
@@ -218,9 +238,13 @@ def top_leak_files(crate, rs):
         f"{f.split('/', 1)[1]} {n}" for n, f in per[:5] if n)
 
 
+def leak_skip(members, tiers):
+    layers = BACKEND_LAYERS + ("kernels",)
+    return {n for n in members if tiers.get(n, (0, ""))[1] in layers}
+
+
 def section_leaks(members, tiers, rs):
-    skip = {n for n in members if tiers.get(n, (0, ""))[1] in ("backends", "vendor backends", "reference backend", "kernels")}
-    rows = [leak_row(n, rs) for n in sorted(set(members) - skip)]
+    rows = [leak_row(n, rs) for n in sorted(set(members) - leak_skip(members, tiers))]
     rows = [r for r in rows if any(r[1:])]
     rows.sort(key=lambda r: -(r[1] + r[2]))
     tot_cfg, tot_id = sum(r[1] for r in rows), sum(r[2] for r in rows)
@@ -234,6 +258,12 @@ def section_leaks(members, tiers, rs):
 
 
 # ----------------------------------------------------------------------------------------------- B
+def code_crate(ln, dirs):
+    if not (ln.strip() and counts_as_code(ln)):
+        return None
+    return crate_of(ln, dirs)[0]
+
+
 def parse_commits(members, ref, window):
     dirs = member_dirs(members)
     commits, cur = [], None
@@ -241,8 +271,8 @@ def parse_commits(members, ref, window):
         if ln.startswith("@@"):
             cur = {"date": ln.split()[1], "crates": set()}
             commits.append(cur)
-        elif ln.strip() and cur is not None and counts_as_code(ln):
-            crate, _ = crate_of(ln, dirs)
+        elif cur is not None:
+            crate = code_crate(ln, dirs)
             if crate:
                 cur["crates"].add(crate)
     return [c for c in commits if c["crates"]]
@@ -278,10 +308,16 @@ def section_cochange(members, ref, window, sweep):
     return out, commits
 
 
+def side_counts(commits, left, right):
+    sets = [c["crates"] for c in commits]
+    l = sum(1 for x in sets if x & left and not x & right)
+    r = sum(1 for x in sets if x & right and not x & left)
+    both = sum(1 for x in sets if x & left and x & right)
+    return l, r, both
+
+
 def seam_line(name, commits, left, right):
-    l = sum(1 for c in commits if c["crates"] & left and not c["crates"] & right)
-    r = sum(1 for c in commits if c["crates"] & right and not c["crates"] & left)
-    both = sum(1 for c in commits if c["crates"] & left and c["crates"] & right)
+    l, r, both = side_counts(commits, left, right)
     share = f"{both / (l + both):.0%}" if l + both else "n/a"
     return f"{name}: left-only {l}, right-only {r}, both {both} (of {l + r + both}); share of left commits that also touch right = {share}"
 
@@ -397,10 +433,10 @@ def seam_census_lines(name, left, right, rs, tiers, lib2crate):
     s2, g2, _ = census(files_of(right, rs), {lib_name(n) for n in left})
     d1, d2 = merged(s1), merged(s2)
     nfiles = len({f for fs in nf1.values() for f in fs})
-    out = [f"{name} [LEFT {tier_range(left, tiers)}; RIGHT {tier_range(right, tiers)}]: "
-           f"LEFT->RIGHT {sum(s1.values())} sites ({up_tier(s1, tiers, lib2crate)} up-tier), {len(d1)} distinct items, {sum(g1.values())} globs, in {nfiles} files"
-           f"; RIGHT->LEFT {sum(s2.values())} sites ({up_tier(s2, tiers, lib2crate)} up-tier), {len(d2)} distinct items, {sum(g2.values())} globs",
-           "   top items LEFT->RIGHT: " + ", ".join(f"{lib}::{it} {c}" for (lib, it), c in d1.most_common(6))]
+    head = (f"{name} [LEFT {tier_range(left, tiers)}; RIGHT {tier_range(right, tiers)}]: "
+            f"LEFT->RIGHT {sum(s1.values())} sites ({up_tier(s1, tiers, lib2crate)} up-tier), {len(d1)} distinct items, {sum(g1.values())} globs, in {nfiles} files"
+            f"; RIGHT->LEFT {sum(s2.values())} sites ({up_tier(s2, tiers, lib2crate)} up-tier), {len(d2)} distinct items, {sum(g2.values())} globs")
+    out = [head, "   top items LEFT->RIGHT: " + ", ".join(f"{lib}::{it} {c}" for (lib, it), c in d1.most_common(6))]
     if d2:
         out.append("   top items RIGHT->LEFT: " + ", ".join(f"{lib}::{it} {c}" for (lib, it), c in d2.most_common(6)))
     return out
