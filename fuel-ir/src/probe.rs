@@ -216,6 +216,34 @@ pub trait BackendProbe {
     fn enumerate_devices() -> Result<Vec<DeviceDescriptor>>;
 }
 
+impl DeviceLocation {
+    /// The kind of backend that drives this place: the one definition of the mapping
+    /// (`Cpu` to [`BackendId::Cpu`], each GPU variant to its backend, whatever the ordinal).
+    pub fn backend(self) -> BackendId {
+        match self {
+            DeviceLocation::Cpu => BackendId::Cpu,
+            DeviceLocation::Cuda { .. } => BackendId::Cuda,
+            DeviceLocation::Vulkan { .. } => BackendId::Vulkan,
+            DeviceLocation::Metal { .. } => BackendId::Metal,
+        }
+    }
+}
+
+impl BackendId {
+    /// The place a backend's work goes when nothing names a device: GPU ordinal 0, or the CPU.
+    /// The match is exhaustive inside this crate, so adding a `BackendId` variant fails to compile
+    /// here until it is given a default place. The ordinal is a within-process enumeration index,
+    /// not an identity (ROADMAP row 125); this is the one place that default lives.
+    pub fn default_location(self) -> DeviceLocation {
+        match self {
+            BackendId::Cpu => DeviceLocation::Cpu,
+            BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
+            BackendId::Vulkan => DeviceLocation::Vulkan { gpu_id: 0 },
+            BackendId::Metal => DeviceLocation::Metal { gpu_id: 0 },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +358,38 @@ mod tests {
         assert_ne!(base, with_width);
         // ...but they profile identically, so the key must collapse them.
         assert_eq!(base.equivalence_key(), with_width.equivalence_key());
+    }
+
+    /// Every GPU ordinal maps to the same backend, and the CPU to the CPU.
+    #[test]
+    fn location_to_backend_ignores_the_ordinal() {
+        assert_eq!(DeviceLocation::Cpu.backend(), BackendId::Cpu);
+        for gpu_id in [0usize, 1, 7] {
+            assert_eq!(DeviceLocation::Cuda { gpu_id }.backend(), BackendId::Cuda);
+            assert_eq!(
+                DeviceLocation::Vulkan { gpu_id }.backend(),
+                BackendId::Vulkan
+            );
+            assert_eq!(DeviceLocation::Metal { gpu_id }.backend(), BackendId::Metal);
+        }
+    }
+
+    /// The default location is ordinal 0 (or the CPU), and mapping it back gives the same backend,
+    /// for every backend this crate knows.
+    #[test]
+    fn default_location_round_trips_for_every_backend() {
+        for b in [
+            BackendId::Cpu,
+            BackendId::Cuda,
+            BackendId::Vulkan,
+            BackendId::Metal,
+        ] {
+            assert_eq!(b.default_location().backend(), b, "{b:?}");
+        }
+        assert_eq!(
+            BackendId::Cuda.default_location(),
+            DeviceLocation::Cuda { gpu_id: 0 }
+        );
+        assert_eq!(BackendId::Cpu.default_location(), DeviceLocation::Cpu);
     }
 }

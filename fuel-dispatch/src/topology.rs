@@ -494,7 +494,7 @@ impl SystemTopology {
         // its runtime, but tests with mock backends may skip probe
         // entirely).
         for &b in &backends {
-            device_set.insert(default_device_for(b));
+            device_set.insert(b.default_location());
         }
         // Stable order: CPU first, then sort by `Debug` repr.
         let mut devices: Vec<DeviceLocation> = device_set.into_iter().collect();
@@ -530,7 +530,7 @@ impl SystemTopology {
                     if let Some(caps) = capabilities.get(&b) {
                         vec![caps.device_location]
                     } else {
-                        vec![default_device_for(b)]
+                        vec![b.default_location()]
                     }
                 }
             };
@@ -611,24 +611,6 @@ fn default_substrate_for(backend: BackendId) -> SubstrateClass {
         // long-term answer is for the new backend to declare its
         // substrate explicitly in its `BackendCapabilities`.
         _ => SubstrateClass::HostBytes,
-    }
-}
-
-/// Default device for a backend when probe data is unavailable. Real
-/// hosts will have probe-reported devices; this fallback exists for
-/// tests with mock backends and for the synthetic-fallback path in
-/// `build_at`.
-fn default_device_for(backend: BackendId) -> DeviceLocation {
-    match backend {
-        BackendId::Cpu => DeviceLocation::Cpu,
-        BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
-        BackendId::Vulkan => DeviceLocation::Vulkan { gpu_id: 0 },
-        BackendId::Metal => DeviceLocation::Metal { gpu_id: 0 },
-        // `BackendId` is `#[non_exhaustive]`; an unknown new variant
-        // defaults to CPU. Real backends should declare their
-        // device_location in `BackendCapabilities` so the topology
-        // gets the right device without consulting this fallback.
-        _ => DeviceLocation::Cpu,
     }
 }
 

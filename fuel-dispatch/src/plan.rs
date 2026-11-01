@@ -101,13 +101,7 @@ impl ExecutionPlan {
 /// `fuel-graph-router` (CPU is the singleton `Cpu`; GPU backends
 /// default to ordinal 0).
 pub fn default_device_for(backend: BackendId) -> DeviceLocation {
-    match backend {
-        BackendId::Cpu => DeviceLocation::Cpu,
-        BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
-        BackendId::Vulkan => DeviceLocation::Vulkan { gpu_id: 0 },
-        BackendId::Metal => DeviceLocation::Metal { gpu_id: 0 },
-        _ => DeviceLocation::Cpu,
-    }
+    backend.default_location()
 }
 
 /// The node's **decision device** — the single resolution chain the planner
@@ -190,12 +184,7 @@ pub(crate) fn candidate_backends_for(
 /// `kernel_source` siblings under `Cpu`, not distinct backends).
 /// Inverse of [`default_device_for`] modulo GPU ordinals.
 pub fn backend_for_device(loc: DeviceLocation) -> BackendId {
-    match loc {
-        DeviceLocation::Cpu => BackendId::Cpu,
-        DeviceLocation::Cuda { .. } => BackendId::Cuda,
-        DeviceLocation::Vulkan { .. } => BackendId::Vulkan,
-        DeviceLocation::Metal { .. } => BackendId::Metal,
-    }
+    loc.backend()
 }
 
 /// Plan-time configuration the caller hands to [`compile_plan`].
