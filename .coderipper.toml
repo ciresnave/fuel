@@ -9,6 +9,37 @@ reason = "compiles to nothing off macOS, so coderipper's per-run positive contro
 owner = "fuel lane"
 
 [[allow]]
+check = "SEC-002"
+file = "fuel-dispatch/src/dispatch.rs"
+lines = "5008"
+reason = "gitleaks false positive in HISTORY, not in the tree. Commit 734febbdd on main (the CPU shape-ops FKC-contract registration migration; an earlier copy of the same change, ea224011d, lives on other branches and is not on main) carries a code comment at this line that lists op names after the word for registration lookups, and the rule read that word as the name of a credential. Nothing in it is one. The line number is fixed because the finding sits in that immutable commit, so the entry does not move when dispatch.rs changes; the file at HEAD has other text at line 5008."
+
+[[allow]]
+check = "SUP-004"
+file = "fuel/tests/facade_disjoint.rs"
+reason = "workspace-only test, reads fuel-transformers/src/models/mod.rs (facade/workspace consistency test). A published tarball cannot compile tests/ anyway (workspace dev-dependencies are path-only and cargo publish strips them), so nothing downstream reads outside the crate. Already recorded, with the same count, in the ratcheted scripts/packaged-escapes-allowlist.txt, which fails if an escape is added or removed without updating it."
+
+[[allow]]
+check = "SUP-004"
+file = "fuel/tests/feature_forwarding.rs"
+reason = "workspace-only test, reads three sibling Cargo.toml files (feature-forwarding consistency test). A published tarball cannot compile tests/ anyway (workspace dev-dependencies are path-only and cargo publish strips them), so nothing downstream reads outside the crate. Already recorded, with the same count, in the ratcheted scripts/packaged-escapes-allowlist.txt, which fails if an escape is added or removed without updating it."
+
+[[allow]]
+check = "SUP-004"
+file = "fuel-cpu-backend/tests/kiss_int_wrap.rs"
+reason = "workspace-only test, reads fuel-dispatch/fixtures/kiss-corpus; fuel-cpu-backend cannot depend on fuel-dispatch (cycle). A published tarball cannot compile tests/ anyway (workspace dev-dependencies are path-only and cargo publish strips them), so nothing downstream reads outside the crate. Already recorded, with the same count, in the ratcheted scripts/packaged-escapes-allowlist.txt, which fails if an escape is added or removed without updating it."
+
+[[allow]]
+check = "SUP-004"
+file = "fuel-tensor/tests/kiss_nan_conformance.rs"
+reason = "workspace-only test, reads five fuel-dispatch/fixtures/kiss-corpus conformance vectors. A published tarball cannot compile tests/ anyway (workspace dev-dependencies are path-only and cargo publish strips them), so nothing downstream reads outside the crate. Already recorded, with the same count, in the ratcheted scripts/packaged-escapes-allowlist.txt, which fails if an escape is added or removed without updating it."
+
+[[allow]]
+check = "ci-security"
+file = ".github/workflows/checkpoint-tests.yml"
+reason = "deliberately self-hosted and CPU-only, as the workflow header records (ROADMAP row 130; the standing instruction of 2026-10-16 is that tests GitHub cannot run go to a self-hosted run with the same conditions, never an ignore attribute). It loads a real checkpoint of about 1.7 GB from the Hub and runs the f32 CPU oracles, so it names no GPU. The rule's concern, a pull request running its own workflow text on the machine, does not apply: the workflow triggers only on push to main and workflow_dispatch, has no pull_request trigger, and its permissions are contents read with no secrets (the runner policy in agentlife docs/RUNNER-SETUP.md)."
+
+[[allow]]
 check = "licence"
 file = "fuel-quantized/src/iq4.rs"
 reason = "four fuel-quantized sources are deliberately unstamped because they derive from llama.cpp / ggml (MIT), not from us: iq4.rs, iq_grid_types.rs, iq_grids.rs and tq_mx_types.rs. Each opens with a comment saying so and pointing at the licence text in THIRD-PARTY-NOTICES.md; an identifier line there would claim a licence we cannot grant. The rule reports the group as one finding located at the first file, so this one entry covers the four and nothing else."

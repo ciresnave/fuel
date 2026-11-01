@@ -86,10 +86,10 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-model-umbrella-fixture` | 2 |  |  |  |  | 2 |  |  |
 | `fuel-nn` | 27 |  | 1 | 11 |  | 12 |  | 3 |
 | `fuel-onnx` | 13 | 1 | 3 | 2 |  | 4 |  | 3 |
-| `fuel-parallel` | 12 |  |  |  |  | 9 |  | 3 |
+| `fuel-parallel` | 13 |  |  |  |  | 10 |  | 3 |
 | `fuel-posttrain` | 6 |  |  | 2 |  | 1 |  | 3 |
 | `fuel-quantized` | 16 |  | 4 | 1 | 4 | 4 |  | 3 |
-| `fuel-tensor` | 64 | 1 | 2 | 4 |  | 52 | 2 | 3 |
+| `fuel-tensor` | 65 | 1 | 2 | 4 |  | 53 | 2 | 3 |
 | `fuel-tensor-tools` | 5 |  | 1 | 1 |  |  |  | 3 |
 | `fuel-test-support` | 11 |  |  |  |  | 8 |  | 3 |
 | `fuel-training` | 9 |  |  |  |  | 6 |  | 3 |
@@ -97,5 +97,9 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-vulkan-backend` | 26 |  |  |  |  | 23 |  | 3 |
 | `fuel-vulkan-kernels` | 183 |  |  |  |  | 2 | 178 | 3 |
 | `scripts` | 74 |  |  | 1 |  | 73 |  |  |
+<<<<<<< HEAD
 | **all** | **2074** | **112** | **218** | **258** | **4** | **1170** | **183** | **129** |
+=======
+| **all** | **2076** | **117** | **213** | **258** | **4** | **1172** | **183** | **129** |
+>>>>>>> origin/main
 <!-- provenance-summary:end -->
