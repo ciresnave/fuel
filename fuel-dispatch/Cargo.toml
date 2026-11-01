@@ -20,7 +20,7 @@ fuel-graph = { workspace = true }
 # unconditional core infrastructure.
 fuel-kernel-seam-types = { workspace = true }
 # kiss-ref advisory cross-check (cuda-gated verify path only) — see the `cuda` feature.
-fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", version = "0.34.8", optional = true }
+fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", version = "0.35.0", optional = true }
 # kiss-ref-core (github.com/ThinkersJournal/kiss-ref, crates.io "0.4") — the SINGLE
 # cross-project source of truth for the ULP-distance metric. `fkc::verify::ulp::
 # ulp_distance` delegates to `kiss_ref_core::ulp_distance_f32` so Fuel's verify stack
