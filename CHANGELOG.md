@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.8 - 2026-11-01
+
+### Added
+
+- ROADMAP row 133, slice 2: `add_session_with_params(prompt, SamplingParams, eos_ids, max_new)` on `SessionScheduler`, `PagedSessionScheduler` and `HybridSessionScheduler`, and `fuel::sampling` on the facade. A session admitted with params samples through `sample_with_params` over its own token history (prompt plus generated), so top_k, top_p, min_p and the presence, frequency and repetition penalties apply per session; the legacy `add_session` path is unchanged. One shared `sample_next` serves the three arms. A temperature-only `SamplingParams` reproduces the `Temperature` strategy's tokens (tested in all three schedulers). `logprobs` is refused at admission (slice 3). A sampling error (non-finite logits, a history token outside the vocabulary) finishes that session with the error and leaves the others running.
+
 ## v0.35.6 - 2026-11-01
 
 ### Fixed

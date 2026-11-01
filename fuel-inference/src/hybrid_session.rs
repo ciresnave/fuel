@@ -17,8 +17,9 @@
 //! `Err`. The scheduler relies on it: a failed step finishes that session and does not touch the
 //! others, and the cache it leaves behind is the last good one.
 
-use crate::multi_session::{SessionId, SessionPhase};
-use fuel::lazy::{SamplingStrategy, sample_logits};
+use crate::multi_session::{SessionId, SessionPhase, admit_params, sample_next};
+use fuel::lazy::SamplingStrategy;
+use fuel::sampling::SamplingParams;
 use fuel_ir::{Error, Result};
 
 /// A model that decodes with its own per-sequence cache.
@@ -48,6 +49,8 @@ pub struct HybridSession<C> {
     new_tokens: Vec<u32>,
     rng_state: u64,
     strategy: SamplingStrategy,
+    /// Full sampling controls, when admitted with them; `None` = `strategy` alone.
+    params: Option<SamplingParams>,
     eos_ids: Option<Vec<u32>>,
     remaining: usize,
     phase: SessionPhase,
@@ -79,8 +82,14 @@ impl<C> HybridSession<C> {
         self.phase != SessionPhase::Finished
     }
 
-    fn accept(&mut self, logits: &[f32]) -> u32 {
-        let next = sample_logits(logits, self.strategy, &mut self.rng_state);
+    fn accept(&mut self, logits: &[f32]) -> Result<u32> {
+        let next = sample_next(
+            self.strategy,
+            self.params.as_ref(),
+            logits,
+            &self.tokens,
+            &mut self.rng_state,
+        )?;
         self.tokens.push(next);
         self.new_tokens.push(next);
         self.remaining = self.remaining.saturating_sub(1);
@@ -90,7 +99,7 @@ impl<C> HybridSession<C> {
         } else {
             SessionPhase::Decode
         };
-        next
+        Ok(next)
     }
 }
 
@@ -138,10 +147,30 @@ impl<'m, M: HybridDecodeModel> HybridSessionScheduler<'m, M> {
             new_tokens: Vec::new(),
             rng_state,
             strategy,
+            params: None,
             eos_ids: eos_ids.filter(|ids| !ids.is_empty()),
             remaining: max_new,
             phase: SessionPhase::Prefill,
         });
+        Ok(id)
+    }
+
+    /// [`add_session`](Self::add_session) with the full sampling controls (ROADMAP row 133): top_k,
+    /// top_p, min_p and penalties, the penalties reading the session's own token history. See
+    /// `SessionScheduler::add_session_with_params`.
+    pub fn add_session_with_params(
+        &mut self,
+        prompt: &[u32],
+        params: SamplingParams,
+        eos_ids: Option<Vec<u32>>,
+        max_new: usize,
+    ) -> Result<SessionId> {
+        let strategy = admit_params(&params)?;
+        let id = self.add_session(prompt, strategy, eos_ids, max_new)?;
+        if let Some(s) = self.sessions.last_mut() {
+            s.rng_state = params.seed;
+            s.params = Some(params);
+        }
         Ok(id)
     }
 
@@ -195,7 +224,9 @@ fn advance<M: HybridDecodeModel>(model: &M, s: &mut HybridSession<M::Cache>) -> 
         _ => &s.tokens[s.tokens.len() - 1..],
     };
     match model.step(&mut s.cache, fed) {
-        Ok(logits) => Ok(s.accept(&logits)),
+        Ok(logits) => s
+            .accept(&logits)
+            .inspect_err(|_| s.phase = SessionPhase::Finished),
         Err(e) => {
             s.phase = SessionPhase::Finished;
             Err(e)
@@ -379,6 +410,153 @@ mod tests {
         assert!(
             s.add_session(&[1], SamplingStrategy::Greedy, None, 0)
                 .is_err()
+        );
+    }
+
+    // ---------------- ROADMAP row 133, slice 2 ----------------
+
+    fn greedy_params() -> SamplingParams {
+        SamplingParams::default()
+    }
+
+    /// The hybrid arm reduces to the strategy path: a temperature-only `SamplingParams` samples the
+    /// same tokens as `Temperature` with the same seed.
+    #[test]
+    fn params_reduce_to_the_strategy_path() {
+        let model = ok_toy();
+        let run = |with_params: bool| {
+            let mut s = HybridSessionScheduler::new(&model);
+            let id = if with_params {
+                s.add_session_with_params(
+                    &[1, 2],
+                    SamplingParams {
+                        temperature: 2.0,
+                        seed: 5,
+                        ..greedy_params()
+                    },
+                    None,
+                    8,
+                )
+                .unwrap()
+            } else {
+                s.add_session(
+                    &[1, 2],
+                    SamplingStrategy::Temperature { temp: 2.0, seed: 5 },
+                    None,
+                    8,
+                )
+                .unwrap()
+            };
+            s.run_to_completion()
+                .into_iter()
+                .find(|(i, _)| *i == id)
+                .unwrap()
+                .1
+        };
+        assert_eq!(run(true), run(false));
+    }
+
+    /// The penalties see the session's own history: with a large presence penalty the greedy walk
+    /// never repeats a token, where the unpenalised walk does (guarded below, so the test cannot
+    /// pass on a trajectory that never repeats anyway).
+    #[test]
+    fn presence_penalty_uses_the_session_history() {
+        let model = ok_toy();
+        let prompt = [0u32];
+        let n = 6;
+        let plain = reference(&prompt, n);
+        let mut seen = prompt.to_vec();
+        seen.extend(&plain);
+        let distinct: std::collections::BTreeSet<_> = seen.iter().collect();
+        assert!(
+            distinct.len() < seen.len(),
+            "control: the unpenalised walk repeats a token"
+        );
+
+        let mut s = HybridSessionScheduler::new(&model);
+        let id = s
+            .add_session_with_params(
+                &prompt,
+                SamplingParams {
+                    presence_penalty: 5.0,
+                    ..greedy_params()
+                },
+                None,
+                n,
+            )
+            .unwrap();
+        let out = s
+            .run_to_completion()
+            .into_iter()
+            .find(|(i, _)| *i == id)
+            .unwrap()
+            .1;
+        let mut all = prompt.to_vec();
+        all.extend(&out);
+        let distinct: std::collections::BTreeSet<_> = all.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            all.len(),
+            "no token repeats under the penalty: {all:?}"
+        );
+    }
+
+    /// Bad params and logprobs are refused at admission, admitting nothing.
+    #[test]
+    fn bad_params_and_logprobs_are_refused_and_admit_nothing() {
+        let model = ok_toy();
+        let mut s = HybridSessionScheduler::new(&model);
+        let bad = SamplingParams {
+            min_p: Some(2.0),
+            ..greedy_params()
+        };
+        assert!(s.add_session_with_params(&[1], bad, None, 3).is_err());
+        let lp = SamplingParams {
+            logprobs: Some(1),
+            ..greedy_params()
+        };
+        assert!(s.add_session_with_params(&[1], lp, None, 3).is_err());
+        assert!(s.sessions().is_empty());
+        // And the id counter did not move: the next admission is session 0.
+        let id = s
+            .add_session_with_params(&[1], greedy_params(), None, 3)
+            .unwrap();
+        assert_eq!(id, SessionId(0));
+    }
+
+    /// A history token outside the vocabulary is a typed sampling error on the params path: that
+    /// session is finished with the error returned, and the other session still advances.
+    #[test]
+    fn a_sampling_error_finishes_only_that_session() {
+        let model = ok_toy();
+        let mut s = HybridSessionScheduler::new(&model);
+        let bad = s
+            .add_session_with_params(&[V as u32 + 2], greedy_params(), None, 3)
+            .unwrap();
+        let good = s
+            .add_session_with_params(&[1, 2], greedy_params(), None, 3)
+            .unwrap();
+        let results = s.step();
+        let bad_res = &results.iter().find(|(i, _)| *i == bad).unwrap().1;
+        let good_res = &results.iter().find(|(i, _)| *i == good).unwrap().1;
+        assert!(
+            bad_res.is_err(),
+            "the out-of-vocabulary history token is an error"
+        );
+        assert!(good_res.is_ok());
+        assert!(
+            !s.sessions()
+                .iter()
+                .find(|x| x.id() == bad)
+                .unwrap()
+                .is_ready()
+        );
+        assert!(
+            s.sessions()
+                .iter()
+                .find(|x| x.id() == good)
+                .unwrap()
+                .is_ready()
         );
     }
 }
