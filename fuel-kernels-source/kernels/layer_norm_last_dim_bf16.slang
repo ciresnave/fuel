@@ -16,7 +16,7 @@ struct Params {
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> output;
 [[vk::binding(2, 0)]] ConstantBuffer<Params>   params;
 
-groupshared float wg_data[32];
+groupshared float wg_data[64];
 
 float bf16_bits_to_f32(uint b) { return asfloat(b << 16u); }
 
@@ -58,7 +58,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
     GroupMemoryBarrierWithGroupSync();
     uint n_subgroups = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        float v = (tid < n_subgroups) ? wg_data[tid] : 0.0;
+        float v = 0.0;
+        for (uint sgi = tid; sgi < n_subgroups; sgi += WaveGetLaneCount()) {
+            v = v + wg_data[sgi];
+        }
         float s = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             wg_data[0] = s;
@@ -82,7 +85,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
     }
     GroupMemoryBarrierWithGroupSync();
     if (sg_id == 0u) {
-        float v = (tid < n_subgroups) ? wg_data[tid] : 0.0;
+        float v = 0.0;
+        for (uint sgi = tid; sgi < n_subgroups; sgi += WaveGetLaneCount()) {
+            v = v + wg_data[sgi];
+        }
         float s = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             wg_data[0] = s;

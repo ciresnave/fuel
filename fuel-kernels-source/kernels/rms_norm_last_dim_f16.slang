@@ -18,9 +18,10 @@
 //   set 0, binding 1: output  (storage, readwrite, float16_t)
 //   set 0, binding 2: params  (uniform buffer)
 //
-// One workgroup per row; subgroup-tree reduction; cross-subgroup clamp
-// `(tid < n_subgroups)` preserved from f32 to avoid the LLaMA-NaN
-// composed-divergence bug fixed in the CUDA path.
+// One workgroup per row; subgroup-tree reduction; the cross-subgroup read is bounded by
+// `sgi < n_subgroups` (kept from f32 to avoid the LLaMA-NaN composed-divergence bug fixed in the
+// CUDA path) and strided by the lane count, so a subgroup narrower than n_subgroups lanes (8 on
+// Lavapipe) still reads every partial.
 
 struct Params {
     uint n_rows;
@@ -33,7 +34,7 @@ struct Params {
 [[vk::binding(1, 0)]] RWStructuredBuffer<float16_t> output;
 [[vk::binding(2, 0)]] ConstantBuffer<Params>        params;
 
-groupshared float wg_subgroup_sums[32];
+groupshared float wg_subgroup_sums[64];
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -65,7 +66,10 @@ void main(
     float total_sumsq = 0.0;
     uint n_subgroups = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        float v = (tid < n_subgroups) ? wg_subgroup_sums[tid] : 0.0;
+        float v = 0.0;
+        for (uint sgi = tid; sgi < n_subgroups; sgi += WaveGetLaneCount()) {
+            v = v + wg_subgroup_sums[sgi];
+        }
         float s = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             wg_subgroup_sums[0] = s;

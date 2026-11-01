@@ -39,7 +39,7 @@ struct Params {
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> output;
 [[vk::binding(2, 0)]] ConstantBuffer<Params>   params;
 
-groupshared float wg_subgroup_sums[32];
+groupshared float wg_subgroup_sums[64];
 
 float bf16_bits_to_f32(uint b) { return asfloat(b << 16u); }
 
@@ -89,7 +89,10 @@ void main(
     float total_sumsq = 0.0;
     uint n_subgroups = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        float v = (tid < n_subgroups) ? wg_subgroup_sums[tid] : 0.0;
+        float v = 0.0;
+        for (uint sgi = tid; sgi < n_subgroups; sgi += WaveGetLaneCount()) {
+            v = v + wg_subgroup_sums[sgi];
+        }
         float s = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             wg_subgroup_sums[0] = s;

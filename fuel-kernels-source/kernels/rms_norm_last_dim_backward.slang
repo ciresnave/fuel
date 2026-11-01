@@ -40,13 +40,13 @@ struct Params {
 
 // Two shared slots: one per reduction. Max 32 subgroups per
 // workgroup — covers every desktop GPU at workgroup size 256.
-groupshared float wg_sumsq[32];
-groupshared float wg_gx[32];
+groupshared float wg_sumsq[64];
+groupshared float wg_gx[64];
 
 // Reduce a per-thread `value` across a 256-thread workgroup using
 // subgroup-level arithmetic. Returns the total on thread 0 only; the
 // caller broadcasts via `wg_slot` if other threads need it.
-float reduce_workgroup(float value, uint tid, inout float wg_slot[32]) {
+float reduce_workgroup(float value, uint tid, inout float wg_slot[64]) {
     float sg_sum = WaveActiveSum(value);
     uint sg_id = tid / WaveGetLaneCount();
     if (WaveIsFirstLane()) {
@@ -56,7 +56,10 @@ float reduce_workgroup(float value, uint tid, inout float wg_slot[32]) {
 
     uint n_sg = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        float v = (tid < n_sg) ? wg_slot[tid] : 0.0;
+        float v = 0.0;
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            v = v + wg_slot[sgi];
+        }
         float s = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             wg_slot[0] = s;

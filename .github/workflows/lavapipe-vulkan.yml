@@ -1,0 +1,75 @@
+# The live Vulkan tests on Lavapipe (Mesa's CPU Vulkan), on a hosted Linux runner (ROADMAP row 134).
+# Lavapipe reports subgroup size 8, which the NVIDIA (32) and AMD (32/64) devices we test on never do. Kernels that combine
+# per-subgroup partials in the first subgroup only are wrong below 16 lanes (vulkane#133), so this leg is the born-red for
+# that defect. It is a CPU job: no GPU is needed or used.
+# CONDITIONS: `FUEL_REQUIRE_VULKAN=1` so a missing device FAILS instead of every live test skipping green.
+# TRIGGERS: push to main, workflow_dispatch, and pull_request only for the files that can change the answer.
+name: lavapipe-vulkan
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/lavapipe-vulkan.yml"
+      - "fuel-kernels-source/**"
+      - "fuel-vulkan-kernels/**"
+      - "fuel-vulkan-backend/**"
+      - "fuel-dispatch/tests/vulkan_dispatch_live.rs"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  FUEL_REQUIRE_VULKAN: "1"
+
+jobs:
+  live-vulkan-lavapipe:
+    name: Live Vulkan tests on Lavapipe (subgroup 8)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Lavapipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          vulkaninfo --summary
+
+      - name: The device is Lavapipe and reports its subgroup size
+        run: |
+          vulkaninfo | grep -E "deviceName|driverName|subgroupSize|shaderFloat64" | sort -u
+
+      # Six tests fail on Lavapipe for reasons that are NOT the subgroup defect. Each is skipped BY NAME below with
+      # its reason, and the "skipped tests" step after this one runs them and FAILS if any now passes, so a skip
+      # cannot outlive its cause. None of these is a claim that the kernel is right: see ROADMAP row 134.
+      #   conv2d_bf16, conv2d_f16 : "VK_KHR_cooperative_matrix not available" - Lavapipe lacks the extension.
+      #   unary_sin_f64, unary_cos_f64 : about 1 ulp over the 5e-16 tolerance (5.9e-16, 6.1e-16) on llvmpipe;
+      #       cause not established (hypothesis: the committed SPIR-V has no NoContraction, so llvmpipe may fuse).
+      #   softmax_last_dim_f64 : the whole 4-column row comes back `inf`. The kernel calls native `exp` on a double,
+#       which GLSL.std.450 restricts to 16/32-bit floats (see unary_f64.slang); the NVIDIA driver tolerates it,
+#       Lavapipe does not. Consistent with, not proven to be, the cause; fix is row 135 (use the double-double exp).
+#   unary_sin_f64_huge : relative error 6.9e-7 against 5e-14 at sin(1e10); the true value is
+      #       -0.4875060250875107 and llvmpipe returns -0.48750569..., so Lavapipe is the wrong side; cause not established.
+      - name: cargo test (live Vulkan tests, every one, failures do not stop the run)
+        run: |
+          set -o pipefail
+          cargo test -j 2 --locked -p fuel-dispatch --features vulkan --test vulkan_dispatch_live --no-fail-fast -- --ignored --test-threads=1             --skip vulkan_dispatch_conv2d_bf16 --skip vulkan_dispatch_conv2d_f16             --skip vulkan_dispatch_unary_sin_f64 --skip vulkan_dispatch_unary_cos_f64             --skip vulkan_dispatch_unary_sin_f64_huge --skip vulkan_dispatch_softmax_last_dim_f64 2>&1 | tee lavapipe.log
+          grep -E "^test result" lavapipe.log
+
+      - name: The six skipped tests still fail on Lavapipe (a skip must redden when its cause goes)
+        if: always()
+        run: |
+          still_failing=0
+          for t in vulkan_dispatch_conv2d_bf16 vulkan_dispatch_conv2d_f16 vulkan_dispatch_unary_sin_f64 vulkan_dispatch_unary_cos_f64 vulkan_dispatch_unary_sin_f64_huge vulkan_dispatch_softmax_last_dim_f64; do
+            if cargo test -j 2 --locked -p fuel-dispatch --features vulkan --test vulkan_dispatch_live -- --ignored --exact "$t"; then
+              echo "::error::$t PASSES on Lavapipe now: remove its --skip from the step above and this list"
+              still_failing=1
+            else
+              echo "$t still fails, as recorded"
+            fi
+          done
+          exit $still_failing

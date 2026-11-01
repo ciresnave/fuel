@@ -32,7 +32,7 @@ struct Params {
 [[vk::binding(1, 0)]] RWStructuredBuffer<double> output;
 [[vk::binding(2, 0)]] ConstantBuffer<Params>     params;
 
-groupshared double wg_subgroup_sums[32];
+groupshared double wg_subgroup_sums[64];
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -62,7 +62,10 @@ void main(
     double total_sumsq = 0.0;
     uint n_subgroups = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        double v = (tid < n_subgroups) ? wg_subgroup_sums[tid] : 0.0;
+        double v = 0.0;
+        for (uint sgi = tid; sgi < n_subgroups; sgi += WaveGetLaneCount()) {
+            v = v + wg_subgroup_sums[sgi];
+        }
         double s = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             wg_subgroup_sums[0] = s;

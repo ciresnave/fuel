@@ -37,7 +37,7 @@ struct Params {
 // One slot per possible subgroup (NVIDIA=32 lanes, AMD=32 or 64,
 // Intel=8/16/32). With workgroup size 256, max subgroups is 256.
 // In practice <=32 covers every desktop GPU.
-groupshared float wg_subgroup_sums[32];
+groupshared float wg_subgroup_sums[64];
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -68,12 +68,15 @@ void main(
     GroupMemoryBarrierWithGroupSync();
 
     // The first subgroup pulls in all per-subgroup partials and
-    // reduces them. n_subgroups = 256 / lane_count, always <= 32, so
-    // a single WaveActiveSum over the first subgroup suffices.
+    // reduces them. n_subgroups = 256 / lane_count (up to 64 at 4 lanes); each lane of
+    // the first subgroup folds a strided slice of the partials, then one WaveActiveSum.
     float total_sumsq = 0.0;
     uint n_subgroups = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        float v = (tid < n_subgroups) ? wg_subgroup_sums[tid] : 0.0;
+        float v = 0.0;
+        for (uint sgi = tid; sgi < n_subgroups; sgi += WaveGetLaneCount()) {
+            v = v + wg_subgroup_sums[sgi];
+        }
         float s = WaveActiveSum(v);
         if (WaveIsFirstLane()) {
             // Stash in slot 0 so the other subgroups can read it.

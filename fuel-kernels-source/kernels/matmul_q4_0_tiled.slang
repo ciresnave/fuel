@@ -37,7 +37,7 @@ static const uint TM = 8;     // M rows per workgroup tile
 static const uint WG_SIZE = 128;
 
 // Subgroup partials, one column per m row. 16 subgroups max at WG=128.
-groupshared float sg_partials[TM][16];
+groupshared float sg_partials[TM][32];
 
 uint load_u8(uint byte_off)
 {
@@ -120,7 +120,10 @@ void main(
     if (sg_id == 0) {
         [unroll]
         for (uint m_off = 0; m_off < TM; m_off++) {
-            float v = (tid < n_subgroups) ? sg_partials[m_off][tid] : 0.0f;
+            float v = 0.0f;
+            for (uint sgi = tid; sgi < n_subgroups; sgi += WaveGetLaneCount()) {
+                v = v + sg_partials[m_off][sgi];
+            }
             float total = WaveActiveSum(v);
             if (WaveIsFirstLane()) {
                 uint m = m_base + m_off;

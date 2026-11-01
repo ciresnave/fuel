@@ -41,10 +41,10 @@ struct Params {
 [[vk::binding(2, 0)]] RWStructuredBuffer<float> dx_buf;
 [[vk::binding(3, 0)]] ConstantBuffer<Params>    params;
 
-groupshared float wg_x[32];
-groupshared float wg_x2[32];
-groupshared float wg_g[32];
-groupshared float wg_gx[32];
+groupshared float wg_x[64];
+groupshared float wg_x2[64];
+groupshared float wg_g[64];
+groupshared float wg_gx[64];
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -84,10 +84,22 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {
 
     uint n_sg = 256u / WaveGetLaneCount();
     if (sg_id == 0u) {
-        float vx  = (tid < n_sg) ? wg_x[tid]  : 0.0;
-        float vx2 = (tid < n_sg) ? wg_x2[tid] : 0.0;
-        float vg  = (tid < n_sg) ? wg_g[tid]  : 0.0;
-        float vgx = (tid < n_sg) ? wg_gx[tid] : 0.0;
+        float vx = 0.0;
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            vx = vx + wg_x[sgi];
+        }
+        float vx2 = 0.0;
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            vx2 = vx2 + wg_x2[sgi];
+        }
+        float vg = 0.0;
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            vg = vg + wg_g[sgi];
+        }
+        float vgx = 0.0;
+        for (uint sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount()) {
+            vgx = vgx + wg_gx[sgi];
+        }
 
         float tx  = WaveActiveSum(vx);
         float tx2 = WaveActiveSum(vx2);

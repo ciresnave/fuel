@@ -1,6 +1,16 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.1 - 2026-10-31
+
+### Added
+
+- ROADMAP row 134, slice 1: `.github/workflows/lavapipe-vulkan.yml` runs every live Vulkan test (`vulkan_dispatch_live`, `--ignored`) on Lavapipe (subgroup size 8) on a hosted Linux runner, a CPU job.
+
+### Fixed
+
+- ROADMAP row 134, slice 2: the cross-subgroup combine in 27 Vulkan kernels (softmax, softmax backward, rms_norm, rms_norm backward, layer_norm, layer_norm backward, reduce_last_dim, each in its dtypes; `qmatvec_q4_0`; `matmul_q4_0_tiled`) read one partial per thread of the first subgroup, so on a device whose subgroup has fewer than 16 lanes (Lavapipe: 8) partials past the first `lane_count` were dropped. The combine now strides (`for (sgi = tid; sgi < n_sg; sgi += WaveGetLaneCount())`) and the per-subgroup groupshared arrays hold 64 slots (32 for the 128-thread kernels), enough down to 4 lanes. Born red on Lavapipe (the 1024-column checks in the f32 softmax, rms_norm, layer_norm and reduce tests, and the Q4_0 matvec and tiled tests); the `.spv` files are rebuilt from the sources. Not covered: a subgroup under 4 lanes. The six non-subgroup Lavapipe failures (conv2d bf16 and f16, sin, cos, sin of 1e10, and `softmax_f64`, which calls a native double `exp` that GLSL.std.450 does not allow: new ROADMAP row 135) are skipped by name in the workflow, with a step that fails when one starts passing. They are not fixed by this change. `FUEL_REQUIRE_VULKAN=1` makes `backend_or_skip` panic when no device is found instead of skipping every test green. The leg is expected to be RED on main until the subgroup partial-combine kernels are fixed (slice 2); it is not a required check.
+
 ## v0.35.0 - 2026-11-01
 
 ### Changed
