@@ -11157,7 +11157,7 @@ mod tests {
         use fuel_graph::QuantType;
         use fuel_quantized::{BlockQ5_0, GgmlType};
         let n = 2;
-        let k = 64; // 2 blocks per row (Q5_0 vec_dot pairs blocks)
+        let k = 64; // 2 blocks per row
         // Quantize an all-ones [n, k] weight matrix.
         let w_f32 = vec![1.0_f32; n * k];
         let blocks_per_row = k / BlockQ5_0::BLCK_SIZE;

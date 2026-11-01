@@ -296,7 +296,7 @@
 | GAP-137 | fuel-dispatch/src/pipelined.rs:7092 | — | "V.1.B stopgap": D2H→CPU-contiguize→H2D round-trip. |
 | GAP-138 | fuel-cuda-backend/src/baracuda/scratch.rs:11 | — | per-stream scratch pool "an obvious optimization but not yet". |
 | GAP-139 | fuel-cpu-backend/src/ops.rs (7×), utils.rs (2×) | — | specialized kernels / avoid redundant copies / double layout traversal. |
-| GAP-140 | `fuel-quantized/src/neon.rs` — anchor: `git grep -n -e 'Requires the `neon-dotprod` cargo feature' -- fuel-quantized/src/neon.rs` (1 hit at `80def246`) | — | pre-allocate; NEON dotprod; avoid redundant metal alloc. |
+| ~~GAP-140~~ **CLOSED** | `fuel-quantized/src/neon.rs` — the file was deleted 2026-11-01 with the integer dot kernels (ROADMAP board 307), so the anchor no longer exists | — | CLOSED by deletion: the NEON dotprod arm and the matmul `Pre-allocate this` TODO went with the code they were in. The third item (`avoid redundant metal alloc`) was never located by this row and is not re-opened here. |
 
 ---
 | ID | File / area | Tier | Gap | Status |

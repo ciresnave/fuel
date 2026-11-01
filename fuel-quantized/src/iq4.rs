@@ -25,7 +25,7 @@
 //! exists so the formats satisfy the whole `GgmlType` contract without a
 //! panic path.
 
-use crate::k_quants::{BlockQ8_0, BlockQ8K, GgmlType, QK_K};
+use crate::k_quants::{GgmlType, QK_K};
 use fuel_ir::quantized::GgmlDType;
 use half::f16;
 
@@ -92,20 +92,9 @@ fn pack32(xs: &[f32], d: f32, qs: &mut [u8]) {
     }
 }
 
-/// `sum_i dequant(xs)[i] * dequant(ys)[i]` for any pair of block types: the
-/// reference dot product (no SIMD), correct by construction from `to_float`.
-fn dot_via_to_float<X: GgmlType, Y: GgmlType>(n: usize, xs: &[X], ys: &[Y]) -> f32 {
-    let mut a = vec![0f32; n];
-    let mut b = vec![0f32; n];
-    X::to_float(&xs[..n / X::BLCK_SIZE], &mut a);
-    Y::to_float(&ys[..n / Y::BLCK_SIZE], &mut b);
-    a.iter().zip(&b).map(|(x, y)| x * y).sum()
-}
-
 impl GgmlType for BlockIq4Nl {
     const DTYPE: GgmlDType = GgmlDType::Iq4Nl;
     const BLCK_SIZE: usize = QK4_NL;
-    type VecDotType = BlockQ8_0;
 
     // ggml-quants.c `dequantize_row_iq4_nl`.
     fn to_float(xs: &[Self], ys: &mut [f32]) {
@@ -127,20 +116,11 @@ impl GgmlType for BlockIq4Nl {
             pack32(x, y.d.to_f32(), &mut y.qs);
         }
     }
-
-    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
-        Self::vec_dot_unopt(n, xs, ys)
-    }
-
-    fn vec_dot_unopt(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
-        dot_via_to_float(n, xs, ys)
-    }
 }
 
 impl GgmlType for BlockIq4Xs {
     const DTYPE: GgmlDType = GgmlDType::Iq4Xs;
     const BLCK_SIZE: usize = QK_K;
-    type VecDotType = BlockQ8K;
 
     // ggml-quants.c `dequantize_row_iq4_xs`.
     fn to_float(xs: &[Self], ys: &mut [f32]) {
@@ -191,14 +171,6 @@ impl GgmlType for BlockIq4Xs {
                 );
             }
         }
-    }
-
-    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
-        Self::vec_dot_unopt(n, xs, ys)
-    }
-
-    fn vec_dot_unopt(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
-        dot_via_to_float(n, xs, ys)
     }
 }
 
@@ -309,24 +281,23 @@ mod tests {
         assert!(y.iter().all(|v| *v == 0.0));
     }
 
-    /// `vec_dot` against the Q8 activation type equals the dot of the two
-    /// dequantized rows.
+    /// The quantized matmul against IQ4_NL weights equals the dot of the dequantized row with the f32
+    /// activation row.
     #[test]
-    fn vec_dot_matches_dequantized_dot() {
+    fn matmul_matches_the_dequantized_dot() {
         let x = wave(QK_K);
         let a: Vec<f32> = wave(QK_K).iter().map(|v| v * 0.5 + 0.1).collect();
         let mut w = vec![BlockIq4Nl::zeros(); QK_K / QK4_NL];
         BlockIq4Nl::from_float(&x, &mut w);
-        let mut q = vec![BlockQ8_0::zeros(); QK_K / 32];
-        BlockQ8_0::from_float(&a, &mut q);
-        let (mut wf, mut qf) = (vec![0f32; QK_K], vec![0f32; QK_K]);
+        let mut wf = vec![0f32; QK_K];
         BlockIq4Nl::to_float(&w, &mut wf);
-        BlockQ8_0::to_float(&q, &mut qf);
-        let want: f32 = wf.iter().zip(&qf).map(|(p, r)| p * r).sum();
-        let got = BlockIq4Nl::vec_dot(QK_K, &w, &q);
+        let want: f32 = wf.iter().zip(&a).map(|(p, r)| p * r).sum();
+        let mut got = [0f32; 1];
+        crate::k_quants::matmul((1, QK_K, 1), &a, &w, &mut got).expect("matmul");
         assert!(
-            (got - want).abs() <= 1e-3 * want.abs().max(1.0),
-            "{got} vs {want}"
+            (got[0] - want).abs() <= 1e-3 * want.abs().max(1.0),
+            "{} vs {want}",
+            got[0]
         );
     }
 }

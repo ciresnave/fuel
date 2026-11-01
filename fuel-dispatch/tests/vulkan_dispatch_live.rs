@@ -10411,7 +10411,7 @@ fn vulkan_dispatch_qmatmul_q8_0() {
 
         // Exact oracle: dequantize the block bytes on the host (f64) and dot with the f32 activation.
         // The fused gemv (m == 1) and the dequant-then-matmul path must both match it closely; the
-        // 2e-2 bound below is only the CPU `vec_dot` reference, which also quantizes the activation.
+        // 2e-2 bound below is the CPU quantized matmul reference (f32 activation, dequantized weights).
         for row in 0..m {
             for col in 0..n {
                 let mut acc = 0.0_f64;
