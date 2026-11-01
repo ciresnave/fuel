@@ -20,6 +20,7 @@ Modifies in place. Requires spirv-dis, spirv-as and spirv-val on PATH (Vulkan SD
 """
 
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,15 +30,27 @@ DECORATED = re.compile(r"^\s*OpDecorate\s+(%\S+)\s+NoContraction\b")
 TYPE_DECL = re.compile(r"^\s*%\S+\s*=\s*OpType")
 
 
+def _first_group(pattern: re.Pattern, lines: list[str]) -> list[str]:
+    return [m.group(1) for m in map(pattern.match, lines) if m]
+
+
 def decorate(text: str) -> tuple[str, int]:
     lines = text.splitlines()
-    already = {m.group(1) for ln in lines if (m := DECORATED.match(ln))}
-    ids = [m.group(1) for ln in lines if (m := ARITH.match(ln)) and m.group(1) not in already]
+    already = set(_first_group(DECORATED, lines))
+    ids = [i for i in _first_group(ARITH, lines) if i not in already]
     if not ids:
         return text, 0
     first_type = next(i for i, ln in enumerate(lines) if TYPE_DECL.match(ln))
     dec = [f"               OpDecorate {i} NoContraction" for i in ids]
     return "\n".join(lines[:first_type] + dec + lines[first_type:]) + "\n", len(ids)
+
+
+def _tool(name: str) -> str:
+    """Full path of an SDK tool on PATH (so subprocess never gets a bare name)."""
+    path = shutil.which(name)
+    if path is None:
+        raise SystemExit(f"error: {name} not found on PATH (install the Vulkan SDK)")
+    return path
 
 
 def main() -> int:
@@ -49,20 +62,20 @@ def main() -> int:
         print(f"error: {spv} not found", file=sys.stderr)
         return 1
     dis = subprocess.run(
-        ["spirv-dis", "--no-color", str(spv)], check=True, capture_output=True, text=True
+        [_tool("spirv-dis"), "--no-color", str(spv)], check=True, capture_output=True, text=True
     )
     fixed, n = decorate(dis.stdout)
     if n == 0:
         return 0
     subprocess.run(
-        ["spirv-as", "--target-env", "vulkan1.1", "-o", str(spv), "-"],
+        [_tool("spirv-as"), "--target-env", "vulkan1.1", "-o", str(spv), "-"],
         check=True,
         input=fixed,
         text=True,
         capture_output=True,
     )
     val = subprocess.run(
-        ["spirv-val", "--target-env", "vulkan1.1", str(spv)], capture_output=True, text=True
+        [_tool("spirv-val"), "--target-env", "vulkan1.1", str(spv)], capture_output=True, text=True
     )
     if val.returncode != 0:
         print("spirv-val failed after no_contraction:", val.stderr, file=sys.stderr)
