@@ -83,6 +83,19 @@ fn err(msg: String) -> Error {
 impl SamplingParams {
     /// Check every control against the vocabulary size; the first problem is named.
     pub fn validate(&self, vocab: usize) -> Result<()> {
+        self.validate_filters()?;
+        self.validate_penalties()?;
+        if let Some(n) = self.logprobs
+            && n > vocab
+        {
+            return Err(err(format!(
+                "SamplingParams: logprobs {n} exceeds the vocabulary size {vocab}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_filters(&self) -> Result<()> {
         if let Some(0) = self.top_k {
             return Err(err("SamplingParams: top_k must be >= 1".into()));
         }
@@ -96,6 +109,10 @@ impl SamplingParams {
         {
             return Err(err(format!("SamplingParams: min_p {p} is not in [0, 1]")));
         }
+        Ok(())
+    }
+
+    fn validate_penalties(&self) -> Result<()> {
         if !(self.repetition_penalty > 0.0 && self.repetition_penalty.is_finite()) {
             return Err(err(format!(
                 "SamplingParams: repetition_penalty {} must be finite and > 0",
@@ -104,13 +121,6 @@ impl SamplingParams {
         }
         if !self.presence_penalty.is_finite() || !self.frequency_penalty.is_finite() {
             return Err(err("SamplingParams: penalties must be finite".into()));
-        }
-        if let Some(n) = self.logprobs
-            && n > vocab
-        {
-            return Err(err(format!(
-                "SamplingParams: logprobs {n} exceeds the vocabulary size {vocab}"
-            )));
         }
         Ok(())
     }
@@ -195,45 +205,14 @@ fn argmax(x: &[f32]) -> u32 {
 
 /// Temperature softmax, then the top_k, top_p and min_p filters, renormalised.
 fn filtered_probs(adjusted: &[f32], p: &SamplingParams) -> Vec<f32> {
-    // Same arithmetic as `sample_logits` so the unfiltered case matches it bit for bit.
-    let inv_temp = 1.0 / p.temperature;
-    let scaled: Vec<f32> = adjusted.iter().map(|&x| x * inv_temp).collect();
-    let max = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let exp: Vec<f32> = scaled.iter().map(|&x| (x - max).exp()).collect();
-    let sum: f32 = exp.iter().sum();
-    let mut probs: Vec<f32> = exp.iter().map(|&x| x / sum).collect();
+    let mut probs = temperature_softmax(adjusted, p.temperature);
     if p.top_k.is_none() && p.top_p.is_none() && p.min_p.is_none() {
         return probs;
     }
-
     // Token order by descending probability, lowest index first on a tie.
     let mut order: Vec<usize> = (0..probs.len()).collect();
     order.sort_by(|&a, &b| probs[b].total_cmp(&probs[a]).then(a.cmp(&b)));
-    let mut keep = order.len();
-    if let Some(k) = p.top_k {
-        keep = keep.min(k);
-    }
-    if let Some(top_p) = p.top_p {
-        let mut cum = 0.0_f32;
-        let mut n = 0;
-        for &i in order.iter().take(keep) {
-            cum += probs[i];
-            n += 1;
-            if cum >= top_p {
-                break;
-            }
-        }
-        keep = keep.min(n);
-    }
-    if let Some(min_p) = p.min_p {
-        let floor = min_p * probs[order[0]];
-        keep = order
-            .iter()
-            .take(keep)
-            .take_while(|&&i| probs[i] >= floor)
-            .count()
-            .max(1);
-    }
+    let keep = kept_count(&probs, &order, p);
     let kept: std::collections::HashSet<usize> = order.iter().take(keep).copied().collect();
     let mut total = 0.0_f32;
     for (i, pr) in probs.iter_mut().enumerate() {
@@ -245,6 +224,49 @@ fn filtered_probs(adjusted: &[f32], p: &SamplingParams) -> Vec<f32> {
     }
     probs.iter_mut().for_each(|pr| *pr /= total);
     probs
+}
+
+fn temperature_softmax(adjusted: &[f32], temperature: f32) -> Vec<f32> {
+    // Same arithmetic as `sample_logits` so the unfiltered case matches it bit for bit.
+    let inv_temp = 1.0 / temperature;
+    let scaled: Vec<f32> = adjusted.iter().map(|&x| x * inv_temp).collect();
+    let max = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let exp: Vec<f32> = scaled.iter().map(|&x| (x - max).exp()).collect();
+    let sum: f32 = exp.iter().sum();
+    exp.iter().map(|&x| x / sum).collect()
+}
+
+/// How many of `order` (most probable first) survive top_k, then top_p, then min_p.
+fn kept_count(probs: &[f32], order: &[usize], p: &SamplingParams) -> usize {
+    let mut keep = order.len();
+    if let Some(k) = p.top_k {
+        keep = keep.min(k);
+    }
+    if let Some(top_p) = p.top_p {
+        keep = keep.min(top_p_count(probs, &order[..keep], top_p));
+    }
+    if let Some(min_p) = p.min_p {
+        let floor = min_p * probs[order[0]];
+        keep = order
+            .iter()
+            .take(keep)
+            .take_while(|&&i| probs[i] >= floor)
+            .count()
+            .max(1);
+    }
+    keep
+}
+
+/// The shortest prefix of `order` whose cumulative probability reaches `top_p` (all of it if never).
+fn top_p_count(probs: &[f32], order: &[usize], top_p: f32) -> usize {
+    let mut cum = 0.0_f32;
+    for (n, &i) in order.iter().enumerate() {
+        cum += probs[i];
+        if cum >= top_p {
+            return n + 1;
+        }
+    }
+    order.len()
 }
 
 fn log_softmax(logits: &[f32]) -> Vec<f32> {
@@ -451,70 +473,48 @@ mod tests {
 
     #[test]
     fn bad_input_is_a_typed_error_not_a_panic() {
-        let bad = |params: SamplingParams, logits: &[f32], h: &[u32]| {
-            sample_with_params(logits, &params, h, &mut 0).is_err()
-        };
         let d = SamplingParams::default;
-        assert!(bad(d(), &[], &[]));
-        assert!(bad(d(), &[1.0, f32::NAN], &[]));
-        assert!(bad(d(), &[1.0, 2.0], &[9]));
-        assert!(bad(
+        let bad_params: Vec<SamplingParams> = vec![
             SamplingParams {
                 top_k: Some(0),
                 ..d()
             },
-            &L,
-            &[]
-        ));
-        assert!(bad(
             SamplingParams {
                 top_p: Some(0.0),
                 ..d()
             },
-            &L,
-            &[]
-        ));
-        assert!(bad(
             SamplingParams {
                 top_p: Some(1.5),
                 ..d()
             },
-            &L,
-            &[]
-        ));
-        assert!(bad(
             SamplingParams {
                 min_p: Some(-0.1),
                 ..d()
             },
-            &L,
-            &[]
-        ));
-        assert!(bad(
             SamplingParams {
                 repetition_penalty: 0.0,
                 ..d()
             },
-            &L,
-            &[]
-        ));
-        assert!(bad(
             SamplingParams {
                 logprobs: Some(6),
                 ..d()
             },
-            &L,
-            &[]
-        ));
+        ];
+        for params in &bad_params {
+            assert!(
+                sample_with_params(&L, params, &[], &mut 0).is_err(),
+                "{params:?}"
+            );
+        }
+        assert!(sample_with_params(&[], &d(), &[], &mut 0).is_err());
+        assert!(sample_with_params(&[1.0, f32::NAN], &d(), &[], &mut 0).is_err());
+        assert!(sample_with_params(&[1.0, 2.0], &d(), &[9], &mut 0).is_err());
+        let ok = SamplingParams {
+            logprobs: Some(5),
+            ..d()
+        };
         assert!(
-            !bad(
-                SamplingParams {
-                    logprobs: Some(5),
-                    ..d()
-                },
-                &L,
-                &[]
-            ),
+            sample_with_params(&L, &ok, &[], &mut 0).is_ok(),
             "control: valid input passes"
         );
     }
