@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.12 - 2026-11-01
+
+### Fixed
+
+- A realize that spans two devices of one backend (for example Vulkan GPU 0 and GPU 1) no longer fails at device seeding: `seed_extra_device_handles` de-duplicated extra devices by backend, so the second Vulkan GPU never got a handle. It now de-duplicates by device location. A new live test (`vulkan_two_gpu_realize_live`) realizes a graph pinned across two Vulkan GPUs and checks the bytes; it failed before this change (ROADMAP row 114).
+
 ## v0.35.9 - 2026-11-01
 
 ### Added
