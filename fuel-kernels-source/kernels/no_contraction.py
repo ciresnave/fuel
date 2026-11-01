@@ -21,7 +21,7 @@ Modifies in place. Requires spirv-dis, spirv-as and spirv-val on PATH (Vulkan SD
 
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404 - runs three fixed Vulkan SDK tools by argv list, no shell; developer-run regeneration script
 import sys
 from pathlib import Path
 
@@ -53,30 +53,49 @@ def _tool(name: str) -> str:
     return path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _checked_spv(arg: str) -> Path:
+    """The one path this script touches: an existing `.spv` file inside this repository.
+
+    Resolved first (so `..` and symlinks cannot walk out), then required to end in `.spv` and to lie
+    under the repository root. Anything else is refused, so the path handed to the SDK tools below is
+    never an arbitrary caller-chosen file.
+    """
+    path = Path(arg).resolve()
+    if path.suffix != ".spv" or not path.is_file():
+        raise SystemExit(f"error: {arg} is not an existing .spv file")
+    if REPO_ROOT not in path.parents:
+        raise SystemExit(f"error: {path} is outside the repository ({REPO_ROOT})")
+    return path
+
+
+def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run one SDK tool. argv is a list built from `_tool(<fixed name>)`, fixed flags and the
+    validated `.spv` path from `_checked_spv`; no shell is involved."""
+    # nosec B603 - argv list, no shell; executable resolved by shutil.which from a fixed name
+    # nosemgrep - the only variable argument is the path validated by _checked_spv
+    return subprocess.run(argv, **kwargs)  # nosec B603  # nosemgrep
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: no_contraction.py path/to/file.spv", file=sys.stderr)
         return 1
-    spv = Path(sys.argv[1])
-    if not spv.is_file():
-        print(f"error: {spv} not found", file=sys.stderr)
-        return 1
-    dis = subprocess.run(
-        [_tool("spirv-dis"), "--no-color", str(spv)], check=True, capture_output=True, text=True
-    )
+    spv = _checked_spv(sys.argv[1])
+    dis = _run([_tool("spirv-dis"), "--no-color", str(spv)], check=True, capture_output=True, text=True)
     fixed, n = decorate(dis.stdout)
     if n == 0:
         return 0
-    subprocess.run(
+    _run(
         [_tool("spirv-as"), "--target-env", "vulkan1.1", "-o", str(spv), "-"],
         check=True,
         input=fixed,
         text=True,
         capture_output=True,
     )
-    val = subprocess.run(
-        [_tool("spirv-val"), "--target-env", "vulkan1.1", str(spv)], capture_output=True, text=True
-    )
+    val = _run([_tool("spirv-val"), "--target-env", "vulkan1.1", str(spv)], capture_output=True, text=True)
     if val.returncode != 0:
         print("spirv-val failed after no_contraction:", val.stderr, file=sys.stderr)
         return val.returncode
