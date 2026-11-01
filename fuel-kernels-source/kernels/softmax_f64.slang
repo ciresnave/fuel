@@ -4,11 +4,16 @@
 // Formula:  y_j = exp(x_j - max) / sum_i(exp(x_i - max))
 //
 // Native f64 end-to-end (matches baracuda's CUDA pattern). Requires
-// shaderFloat64 + GroupNonUniformArithmetic. Uses GLSL.std.450 Exp /
-// Max for double operands — NOT OpenCL.std (broken on NVIDIA Windows
-// Vulkan).
+// shaderFloat64 + GroupNonUniformArithmetic. Max is GLSL.std.450 FMax on
+// doubles. exp is the double-double `poly_exp_d` from f64_dd_exp.slangh,
+// NOT the native `exp(double)`: GLSL.std.450's Exp is restricted to 16/32-bit
+// floats, NVIDIA's driver tolerated the out-of-spec call at about f32 accuracy,
+// and Lavapipe returned inf (ROADMAP row 135). No OpenCL.std (broken on NVIDIA
+// Windows Vulkan).
 //
 // Same Params shape (8 bytes) and 3-phase structure as the f32 kernel.
+
+#include "f64_dd_exp.slangh"
 
 struct Params {
     uint n_rows;
@@ -62,7 +67,7 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {
     // Phase 2 — exp + write + accumulate sum.
     double local_sum = 0.0;
     for (uint col = tid; col < params.n_cols; col += 256u) {
-        double v = exp(input[row_off + col] - row_max);
+        double v = poly_exp_d(input[row_off + col] - row_max);
         output[row_off + col] = v;
         local_sum += v;
     }

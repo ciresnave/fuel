@@ -182,7 +182,7 @@ const THIS_FILE: &str = "fuel-ir/tests/spdx_header_ratchet.rs";
 /// Extensions whose files must carry an SPDX identifier in their first
 /// [`HEAD_BYTES`] bytes. Audited for completeness by Part 3.
 const SOURCE_EXTENSIONS: &[&str] = &[
-    "rs", "slang", "glsl", "py", "metal", "ps1", "sh", "h", "proto3",
+    "rs", "slang", "slangh", "glsl", "py", "metal", "ps1", "sh", "h", "proto3",
 ];
 
 /// Source files carrying no extension at all. An extension-keyed rule cannot see
