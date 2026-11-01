@@ -175,14 +175,14 @@ mod tests {
     }
 
     /// Positive control for the scanner: the per-feature counts match
-    /// `python scripts/spirv_audit.py` (19 / 28 / 4 / 5), a parser written separately.
+    /// `python scripts/spirv_audit.py` (19 / 30 / 4 / 5), a parser written separately.
     #[test]
     fn scanner_counts_match_the_static_audit() {
         assert_eq!(
             count_requiring(|r| r.uniform_and_storage_buffer16_bit_access),
             19
         );
-        assert_eq!(count_requiring(|r| r.shader_int16), 28);
+        assert_eq!(count_requiring(|r| r.shader_int16), 30);
         assert_eq!(count_requiring(|r| r.shader_buffer_int64_atomics), 4);
         assert_eq!(count_requiring(|r| r.vulkan_memory_model), 5);
     }

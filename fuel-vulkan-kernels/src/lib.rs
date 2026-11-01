@@ -295,6 +295,8 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
         include_bytes!("../spv/matmul_q4_0_tiled.spv"),
     ),
     ("qmatvec_q4_0", include_bytes!("../spv/qmatvec_q4_0.spv")),
+    ("qmatvec_q8_0", include_bytes!("../spv/qmatvec_q8_0.spv")),
+    ("qmatvec_q6_k", include_bytes!("../spv/qmatvec_q6_k.spv")),
     ("quantize_q8_0", include_bytes!("../spv/quantize_q8_0.spv")),
     ("matmul", include_bytes!("../spv/matmul.spv")),
     ("matmul_tiled", include_bytes!("../spv/matmul_tiled.spv")),
@@ -970,6 +972,10 @@ pub const DEQUANT_Q4_KM: &str = "dequant_q4_km";
 pub const DEQUANT_Q8_0: &str = "dequant_q8_0";
 /// Fused Q4_0 × F32 gemv (decode hot path for quantized models).
 pub const QMATVEC_Q4_0: &str = "qmatvec_q4_0";
+/// Fused Q8_0 × F32 gemv (decode hot path for Q8_0 weights; ROADMAP row 119).
+pub const QMATVEC_Q8_0: &str = "qmatvec_q8_0";
+/// Fused Q6_K × F32 gemv (ROADMAP row 119; the dominant weight type of a Q6_K Qwen3.5 file).
+pub const QMATVEC_Q6_K: &str = "qmatvec_q6_k";
 /// Fused Q4_0 × F32 tiled matmul for M>1 (prefill hot path).
 pub const MATMUL_Q4_0_TILED: &str = "matmul_q4_0_tiled";
 /// F32 → Q8_0 quantization (for KV-cache compression).

@@ -50,7 +50,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `(root)` | 24 | 4 | 4 |  |  | 16 |  |  |
 | `.cargo` | 1 |  | 1 |  |  |  |  |  |
 | `.github` | 7 | 1 | 2 |  |  | 4 |  |  |
-| `docs` | 191 |  |  |  |  | 191 |  |  |
+| `docs` | 190 |  |  |  |  | 190 |  |  |
 | `fuel` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-aocl-cpu-backend` | 7 |  |  |  |  | 4 |  | 3 |
 | `fuel-backend-contract` | 10 |  |  | 4 |  | 3 |  | 3 |
@@ -60,7 +60,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-cpu-kernels` | 12 | 1 | 4 |  |  | 4 |  | 3 |
 | `fuel-cuda-backend` | 56 |  | 3 | 11 |  | 39 |  | 3 |
 | `fuel-datasets` | 13 |  | 7 |  |  | 3 |  | 3 |
-| `fuel-dispatch` | 299 |  |  |  |  | 296 |  | 3 |
+| `fuel-dispatch` | 300 |  |  |  |  | 297 |  | 3 |
 | `fuel-examples` | 250 | 56 | 162 | 21 |  | 8 |  | 3 |
 | `fuel-formats` | 11 |  | 2 | 2 |  | 4 |  | 3 |
 | `fuel-graph` | 38 |  |  | 3 |  | 32 |  | 3 |
@@ -70,7 +70,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-kernel-seam` | 5 |  |  |  |  | 2 |  | 3 |
 | `fuel-kernel-seam-announce` | 6 |  |  |  |  | 3 |  | 3 |
 | `fuel-kernel-seam-types` | 8 |  |  |  |  | 5 |  | 3 |
-| `fuel-kernels-source` | 183 |  |  |  |  | 180 |  | 3 |
+| `fuel-kernels-source` | 185 |  |  |  |  | 182 |  | 3 |
 | `fuel-kiss-ref-backend` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-kv-pool` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-lazy-examples` | 27 |  |  | 21 |  | 3 |  | 3 |
@@ -95,7 +95,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-training` | 9 |  |  |  |  | 6 |  | 3 |
 | `fuel-transformers` | 194 | 2 | 4 | 153 |  | 29 | 3 | 3 |
 | `fuel-vulkan-backend` | 26 |  |  |  |  | 23 |  | 3 |
-| `fuel-vulkan-kernels` | 183 |  |  |  |  | 2 | 178 | 3 |
+| `fuel-vulkan-kernels` | 185 |  |  |  |  | 2 | 180 | 3 |
 | `scripts` | 74 |  |  | 1 |  | 73 |  |  |
-| **all** | **2079** | **112** | **218** | **258** | **4** | **1175** | **183** | **129** |
+| **all** | **2083** | **112** | **218** | **258** | **4** | **1177** | **185** | **129** |
 <!-- provenance-summary:end -->
