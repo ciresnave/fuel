@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.6 - 2026-11-01
+
+### Fixed
+
+- CI: the portfolio job's unused-return-values rule reported two Medium findings: `DeviceTopology::add_device` (`fuel-parallel/src/topology.rs`, all 8 call sites drop the returned id) and `InferenceContext::remove` (`fuel-tensor/src/inference_context.rs`, all 15 call sites drop the returned storage). Both return values are real API (an index a caller who wires links keeps; the evicted entry, as `HashMap::remove` does); changing a published signature to unit for a lint would be a breaking change. Waived with one `[[allow]]` each, with the reason, in a new `fuel-parallel/.coderipper.toml` and `fuel-tensor/.coderipper.toml` (a workspace sweep reads each member's own file, not the root's). Clears those two only; the two Low findings of the same rule are untouched.
+
 ## v0.35.2 - 2026-11-01
 
 ### Fixed

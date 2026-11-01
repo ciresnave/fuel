@@ -1,0 +1,7 @@
+# CodeRipper's own file for this crate (read when `coderipper sweep --workspace` judges fuel-parallel as a member).
+
+[[allow]]
+check = "unused-return-values"
+file = "src/topology.rs"
+symbol = "add_device"
+reason = "the returned DeviceId is the device's index in insertion order, so a caller that adds devices in order already knows it; the doc example and any caller that wires links keep it. All 8 discards are in this file's own tests and doc, building a topology by position."
