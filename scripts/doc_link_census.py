@@ -120,7 +120,7 @@ NOT_A_LINK = "NOT-A-LINK"
 # nothing can -- but it makes a wrong one DISCOVERABLE IN ONE GREP, which is the
 # property the original `path/scope defect` bucket lacked over 234 entries.
 #
-#     neon   CORRECT-UNREACHABLE  cfg(target_feature = "neon") ...   <- checkable
+#     SType::to_fdx  CORRECT-UNREACHABLE  cfg(feature = "dlpack") ...   <- checkable
 #     <bad>  CORRECT-UNREACHABLE  "it is gated"                      <- unfalsifiable
 MECHANISMS = (
     "cfg(feature",
@@ -149,23 +149,10 @@ MECHANISMS = (
 # seen, not what was assumed.
 DISPOSITIONS = {
     # ---- CORRECT-UNREACHABLE: the link is RIGHT. Do not de-link. ----
-    # The two SIMD mods are SYMMETRIC, and this table said they were not until
-    # CI proved otherwise. See `avx` below for how that was measured.
-    "neon": (CORRECT,
-             'cfg(target_feature = "neon") on `pub mod neon`, fuel-quantized/src/lib.rs. '
-             "aarch64-only. MEASURED: resolves on aarch64+neon, not on x86. NO cfg fixes "
-             "it cross-arch -- cfg(any(doc, ...)) compiles the module on x86, where its "
-             "NEON types do not exist (E0425 int8x16_t). Its sibling `avx` fails the same "
-             "way in the opposite direction; neither can be cfg-fixed."),
-    "avx": (CORRECT,
-             'cfg(target_feature = "avx2") on `pub mod avx`, fuel-quantized/src/lib.rs. '
-             "x86-only, and the mirror image of `neon` above. MEASURED, and I got this "
-             "one WRONG FIRST: I shipped cfg(any(doc, target_feature = \"avx2\")) on this "
-             "mod, having verified it on x86, and CI rejected it on aarch64-apple-darwin "
-             "with E0425 `cannot find type __m256i` -- the same error class, the same "
-             "cause, the opposite architecture. I had run a two-architecture cross-over "
-             "to prove these two LINKS were correct, then applied a FIX tested on one "
-             "architecture. The cfg is reverted; this entry replaces it."),
+    # The `neon` and `avx` entries (two correct links to the SIMD modules) were removed on 2026-11-01: the
+    # modules and the doc bullet that linked them were deleted (ROADMAP row 140), so the links no longer
+    # exist. The gate flagged them STALE; I read the site and they were DELETED WITH THEIR SUBJECT, not
+    # destroyed (GAP-319 keeps the record of the earlier destruction).
     "SType::to_fdx": (CORRECT,
              'cfg(feature = "dlpack") on the impl block at fuel-ir/src/stype.rs:140; '
              "`dlpack = []` is a non-default feature. The doc prose itself says "
