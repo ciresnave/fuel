@@ -83,6 +83,13 @@ SOFTWARE.
   template); any notice that an individual candle file carries of its own is collected in the file-level
   pass, not here.
 
+- **Example scripts traced 2026-11-01 (ROADMAP: licence finding).** Four scripts are byte-identical to upstream `huggingface/candle` at commit `2cf0e66dcb2953e2aa7f4000cdd697239e9c16c5` (main when compared), and carry that repository's dual MIT OR Apache-2.0 grant, now stamped in each file's first line (the body is unchanged by the stamp). SHA-256 of the file body, ours at `868078dd6` equals upstream's at the commit above:
+  - `fuel-examples/examples/flux/t5_tokenizer.py` = upstream `candle-examples/examples/flux/t5_tokenizer.py`: `47ef4fb3aacbcbb3f8d6f18fd8f9e40aa0eea9889dab1be30a66fed2e0558a3a`
+  - `fuel-examples/examples/resnet/export_models.py` = upstream `candle-examples/examples/resnet/export_models.py`: `d7825feff528545f83aee543c56319aced4a5ac8e89494298aceed0052bcd81d`
+  - `fuel-examples/examples/whisper/extract_weights.py` = upstream `candle-examples/examples/whisper/extract_weights.py`: `86ecd8e888e07000acd1e57ca664478451ab79955f71eb1f9d9d017dea39a8aa`
+  - `fuel-examples/examples/yolo-v3/extract-weights.py` = upstream `candle-examples/examples/yolo-v3/extract-weights.py`: `b255106c8bb08f25e97381eec58852c940e24c3f80825c2a40149fe133aeb026`
+- `fuel-examples/examples/marian-mt/python/convert_slow_tokenizer.py` is byte-identical (SHA-256 `dfe73501ed12e08db299e46af2e667695cb624d9ff8011494d8f5bc2ae3a9d02`, 2351 bytes) to candle's last version of it, at `d5fee525bfde3273eb7c9b75fd2bc4937be867ca` (the parent of candle commit `b3b76d073`, which removed it). It is adapted from `huggingface/transformers`, which is Apache-2.0 only: see the next section. It is stamped `Apache-2.0`, not `MIT OR Apache-2.0`.
+
 ### candle `LICENSE-MIT`, verbatim at `549eacb011f25b2c6fc765d6c3dbd26e42f72ee6`
 
 ```text
@@ -316,6 +323,12 @@ DEALINGS IN THE SOFTWARE.
    See the License for the specific language governing permissions and
    limitations under the License.
 ```
+
+## transformers (Hugging Face)
+
+- Origin: https://github.com/huggingface/transformers, Apache License 2.0, `src/transformers/convert_slow_tokenizer.py`, "Copyright 2018 The HuggingFace Inc. team." (read at commit `ca8c871ede62b521a75a2ddfc5e1968ac9c8e097`; the licence text is in this repository's `LICENSE-APACHE`).
+- Used by: `fuel-examples/examples/marian-mt/python/convert_slow_tokenizer.py`, whose `MarianConverter.__init__` reproduces text of transformers' `SpmConverter.__init__`: the comment line `# from .utils import sentencepiece_model_pb2 as model_pb2` (lines 155 and 702 there) and the byte-fallback warning message (line 712 there, "The sentencepiece tokenizer that you are converting to a fast tokenizer uses the byte fallback option ..."). The class itself is a candle-authored subclass; the copied text is the derivation, so the file is stamped `Apache-2.0` and carries the copyright line above.
+- Not verified: whether older transformers revisions carried a `MarianConverter` this file came from; only the verbatim text above is established.
 
 ## bitsandbytes
 

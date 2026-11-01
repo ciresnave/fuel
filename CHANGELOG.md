@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.7 - 2026-11-01
+
+### Fixed
+
+- CI: the portfolio job's licence rule reported 9 source files with no SPDX line. Five `fuel-examples` Python scripts are traced and stamped: four are byte-identical to `huggingface/candle` at `2cf0e66d` (stamped `MIT OR Apache-2.0`, SHA-256 of each recorded in THIRD-PARTY-NOTICES.md), and `marian-mt/python/convert_slow_tokenizer.py` is candle's last version (`d5fee525`) adapted from `huggingface/transformers`, so it is stamped `Apache-2.0` with the HuggingFace copyright line and a new transformers section in THIRD-PARTY-NOTICES.md. They leave the SPDX ratchet's grandfather list; the marian file joins its Apache-only and copyright-accounted lists. The four llama.cpp-derived `fuel-quantized` sources stay deliberately unstamped (their headers say they derive from MIT ggml) and are waived by one `[[allow]]` in `.coderipper.toml`.
+
 ## v0.35.2 - 2026-11-01
 
 ### Fixed

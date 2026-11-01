@@ -171,6 +171,10 @@ const APACHE_ONLY_FILES: &[(&str, &str)] = &[
         "fuel-onnx/src/onnx.proto3",
         "generated from upstream ONNX, which declares Apache-2.0 in the file itself",
     ),
+    (
+        "fuel-examples/examples/marian-mt/python/convert_slow_tokenizer.py",
+        "adapted from huggingface/transformers' Apache-2.0 SpmConverter (Copyright 2018 The HuggingFace Inc. team); traced in THIRD-PARTY-NOTICES.md",
+    ),
 ];
 
 const THIS_FILE: &str = "fuel-ir/tests/spdx_header_ratchet.rs";
@@ -272,17 +276,16 @@ const NON_SOURCE_PATHS_WITHOUT_EXTENSION: &[(&str, &str)] = &[
 /// renamed.** These were classified with `git log --follow` against the
 /// `815abd04` boundary, not from an unfollowed `--diff-filter=A`.
 ///
+/// RETIRED 2026-11-01: the five `fuel-examples` Python scripts left this list after being traced to their upstream
+/// (four byte-identical to `huggingface/candle`, one adapted from `huggingface/transformers`; see THIRD-PARTY-NOTICES.md) and
+/// stamped with the identifier that trace produced. `Makefile` and the `.metal` files below are still untraced.
+///
 /// RETIREMENT CONDITION, so this is not a permanent exemption wearing a
 /// temporary one's clothes: when the licensing question is answered, each file
 /// is either stamped with the identifier that answer produces, or removed.
 /// Either way it leaves this list.
 const INHERITED_WITHOUT_NOTICE: &[&str] = &[
     "Makefile",
-    "fuel-examples/examples/flux/t5_tokenizer.py",
-    "fuel-examples/examples/marian-mt/python/convert_slow_tokenizer.py",
-    "fuel-examples/examples/resnet/export_models.py",
-    "fuel-examples/examples/whisper/extract_weights.py",
-    "fuel-examples/examples/yolo-v3/extract-weights.py",
     "fuel-metal-kernels/src/metal_src/affine.metal",
     "fuel-metal-kernels/src/metal_src/binary.metal",
     "fuel-metal-kernels/src/metal_src/cast.metal",
@@ -356,6 +359,10 @@ const COPYRIGHT_ACCOUNTED_FOR: &[(&str, &str)] = &[
         "the licence text itself (Apache-2.0 of the Qwen3-0.6B weights excerpted in the fixture; THIRD-PARTY-NOTICES.md)",
     ),
     ("LICENSE-APACHE", "the licence text itself"),
+    (
+        "fuel-examples/examples/marian-mt/python/convert_slow_tokenizer.py",
+        "adapted Apache-2.0 work; asserted separately by APACHE_ONLY_FILES",
+    ),
     ("LICENSE-MIT", "the licence text itself"),
     (
         "fuel-examples/src/bs1770.rs",

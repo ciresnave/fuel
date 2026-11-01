@@ -7,3 +7,8 @@ name = "fuel-metal-kernels"
 needs = "xcrun"
 reason = "compiles to nothing off macOS, so coderipper's per-run positive controls (sentinel functions) cannot fire"
 owner = "fuel lane"
+
+[[allow]]
+check = "licence"
+file = "fuel-quantized/src/iq4.rs"
+reason = "four fuel-quantized sources are deliberately unstamped because they derive from llama.cpp / ggml (MIT), not from us: iq4.rs, iq_grid_types.rs, iq_grids.rs and tq_mx_types.rs. Each opens with a comment saying so and pointing at the licence text in THIRD-PARTY-NOTICES.md; an identifier line there would claim a licence we cannot grant. The rule reports the group as one finding located at the first file, so this one entry covers the four and nothing else."
