@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.3 - 2026-11-01
+
+### Fixed
+
+- CI: the portfolio job's `coderipper check SEC-002` (gitleaks) failed on every main commit with one `generic-api-key` finding at `fuel-dispatch/src/dispatch.rs:5008`. It is a false positive in history, not in the tree: a code comment reading "Keys: Flip/Roll/Concat/CumSum [T, T]" in two commits (`734febbdd`, `ea224011d`, both on main). One `[[allow]]` entry in `.coderipper.toml` (rule `SEC-002`, that file, line 5008, with the reason) waives it; no path-wide exclusion. The line number cannot drift because the finding is in those two immutable commits.
+
 ## v0.35.2 - 2026-11-01
 
 ### Fixed
