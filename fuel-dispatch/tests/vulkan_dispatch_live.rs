@@ -8987,11 +8987,9 @@ fn vulkan_dispatch_softmax_last_dim_f64() {
     .expect("softmax f64 dispatch");
 
     let got = download_f64(&backend, &out_arc.read().unwrap());
-    // 1e-7 (not 1e-12): empirically the RTX 4070's GLSL.std.450 Exp
-    // on f64 lowers through a ~f32-accuracy path before re-widening
-    // (observed ~1.2e-9 absolute drift on inputs around 0.03). The
-    // kernel structure is bit-stable; only the transcendental is
-    // implementation-defined.
+    // 1e-13: the kernel's exp is the double-double `poly_exp_d` (row 135), good to about 1 ulp, so the only
+    // error left is the f64 sum and divide. (It was 1e-7 while the kernel called the native f64 Exp, which
+    // GLSL.std.450 does not define and which lowered to roughly f32 accuracy on the RTX 4070.)
     for row in 0..outer {
         let xs = &host[row * last..(row + 1) * last];
         let ys = &got[row * last..(row + 1) * last];
@@ -9001,11 +8999,13 @@ fn vulkan_dispatch_softmax_last_dim_f64() {
         for (i, (e, y)) in exps.iter().zip(ys.iter()).enumerate() {
             let expected = e / sum;
             assert!(
-                (y - expected).abs() < 1e-7,
+                (y - expected).abs() < 1e-13,
                 "softmax-f64 row {row} col {i}: got {y}, expected {expected}; whole got row {ys:?} for input {xs:?}"
             );
         }
     }
+    // Wide rows with a deep tail too (row 134, row 135).
+    check_softmax_wide_f64(&backend);
 }
 
 #[test]
@@ -11345,4 +11345,53 @@ fn check_reduce_last_dim_wide_f32(backend: &Arc<VulkanBackend>) {
     assert_close_f32("reduce sum wide f32", &got_sum, &sums, 1e-3);
     assert_close_f32("reduce max wide f32", &got_max, &maxs, 1e-6);
     assert_close_f32("reduce mean wide f32", &got_mean, &means, 1e-5);
+}
+
+/// Softmax f64 over `[3, 1024]` with inputs from -40 to 0, so some terms are tiny, against an f64 reference.
+fn check_softmax_wide_f64(backend: &Arc<VulkanBackend>) {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let host: Vec<f64> = wide_data()
+        .iter()
+        .enumerate()
+        .map(|(i, &x)| (x as f64) * 20.0 - 20.0 + (i % 7) as f64 * 1e-3)
+        .collect();
+    let in_arc = Arc::new(RwLock::new(upload_f64(backend, &host)));
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 8).expect("alloc");
+    let out_arc = Arc::new(RwLock::new(Storage::new(
+        BackendStorage::Vulkan(out_bytes),
+        DType::F64,
+    )));
+    let kernel = table.lookup_alternatives(
+        OpKind::SoftmaxLastDim,
+        &[DType::F64, DType::F64],
+        BackendId::Vulkan,
+    )[0]
+    .kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[WIDE_OUTER, WIDE_LAST]));
+    let params = OpParams::SoftmaxLastDim {
+        outer_count: WIDE_OUTER,
+        last_dim: WIDE_LAST,
+    };
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &params,
+    )
+    .expect("softmax f64 wide dispatch");
+    let got = download_f64(backend, &out_arc.read().unwrap());
+    for (r, row) in host.chunks(WIDE_LAST).enumerate() {
+        let max = row.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let exps: Vec<f64> = row.iter().map(|x| (x - max).exp()).collect();
+        let sum: f64 = exps.iter().sum();
+        for (i, e) in exps.iter().enumerate() {
+            let want = e / sum;
+            let have = got[r * WIDE_LAST + i];
+            assert!(
+                (have - want).abs() < 1e-13,
+                "softmax f64 wide row {r} col {i}: got {have}, expected {want}"
+            );
+        }
+    }
 }

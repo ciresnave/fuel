@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.2 - 2026-11-01
+
+### Fixed
+
+- ROADMAP row 135: `softmax_f64` called the native `exp` on a double, which GLSL.std.450 does not define (the NVIDIA driver accepted it at about f32 accuracy; Lavapipe returned `inf` for the whole row). The double-double exp moved from `unary_f64.slang` to a shared `fuel-kernels-source/kernels/f64_dd_exp.slangh`; `unary_f64.spv` rebuilds byte-identical and `softmax_f64.slang` now calls `poly_exp_d`. The live test tolerance is 1e-13 (was 1e-7; the old kernel misses it by 1.2e-9 on the RTX 4070, checked) and it also runs a `[3, 1024]` row. The by-name Lavapipe skip for `vulkan_dispatch_softmax_last_dim_f64` is removed.
+
 ## v0.35.1 - 2026-10-31
 
 ### Added
