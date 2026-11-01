@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.0 - 2026-11-01
+
+### Changed
+
+- **Breaking:** `unpopped-vocab` 0.38.1 -> 0.40.0 (`fuel-kernel-seam` and the `jit` glue in `fuel-dispatch` name it; `fuel-kernel-seam` re-exports its vocabulary types, so a consumer of those types moves with it). No Fuel source change was needed: `Stmt` and `AtomicRmw` are not named anywhere in Fuel's `*.rs` (`git grep -w -E 'Stmt|AtomicRmw' -- '*.rs'` finds nothing), so there is no exhaustive match to add an arm to. `baracuda-kernels-types` (alpha.158) still resolves its own `unpopped-vocab` 0.22 for the telemetry/cuda paths until Baracuda publishes its family.
+
 ## v0.34.7 - 2026-10-31
 
 ### Docs
