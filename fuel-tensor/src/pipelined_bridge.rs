@@ -232,11 +232,11 @@ fn seed_extra_device_handles(
     if extra_devices.is_empty() {
         return Ok(cache);
     }
-    let primary_backend = device_to_backend_id(primary);
-    // De-dup: seed each distinct extra backend once.
-    let mut seeded: Vec<BackendId> = vec![primary_backend];
+    // De-dup by device LOCATION, not backend: two GPUs of one backend (Vulkan 0 and Vulkan 1)
+    // need one handle each.
+    let mut seeded: Vec<DeviceLocation> = vec![primary.location()];
     for dev in extra_devices {
-        let backend = device_to_backend_id(dev);
+        let backend = dev.location();
         if seeded.contains(&backend) {
             continue;
         }
