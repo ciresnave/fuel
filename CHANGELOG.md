@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.9 - 2026-11-01
+
+### Added
+
+- Sampling controls, slice 3 (ROADMAP row 133): a session admitted with `SamplingParams::logprobs` records one `TokenLogprob` per generated token, read through `session_logprobs` on the serial and paged schedulers and `HybridSession::logprobs`. Sessions that did not ask record nothing; an oversized count finishes only that session. Tested on CPU with a tiny model, including `step()` against `step_batched()`. No GPU path was run.
+
 ## v0.35.8 - 2026-11-01
 
 ### Added

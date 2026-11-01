@@ -707,6 +707,8 @@ pub struct SessionState {
     pub(crate) strategy: SamplingStrategy,
     /// Full sampling controls, when the session was admitted with them; `None` = `strategy` alone.
     pub(crate) params: Option<SamplingParams>,
+    /// Per-token logprobs, one per generated token, when `params.logprobs` is set.
+    pub(crate) logprobs: Vec<TokenLogprob>,
     /// EOS token ids — stopping on ANY of them (LLaMA-3-style multi-EOS
     /// checkpoints declare several). `None` after construction means
     /// normalized-empty too (see [`normalize_eos_ids`]), so there is one
@@ -722,37 +724,47 @@ pub struct SessionState {
     pub(crate) new_tokens: Vec<u32>,
 }
 
-/// Sample a session's next token. With no `params` this is the legacy path
-/// ([`sample_logits`] on the session's [`SamplingStrategy`]); with `params` it is
-/// [`sample_with_params`] over the session's own token history (prompt plus generated), so the
-/// penalties see what the session has actually emitted. One function for every scheduler, so the
-/// serial, paged and hybrid arms cannot drift apart.
+/// One generated token's logprobs, under the model's own distribution (before temperature, filters
+/// and penalties). Recorded per session only when its `SamplingParams::logprobs` is `Some`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenLogprob {
+    /// The chosen token's logprob.
+    pub logprob: f32,
+    /// The requested number of most probable tokens, most probable first.
+    pub top: Vec<(u32, f32)>,
+}
+
+/// Sample a session's next token, plus its logprobs when the session asked for them. With no
+/// `params` this is the legacy path ([`sample_logits`] on the session's [`SamplingStrategy`]); with
+/// `params` it is [`sample_with_params`] over the session's own token history (prompt plus
+/// generated), so the penalties see what the session has actually emitted. One function for every
+/// scheduler, so the serial, paged and hybrid arms cannot drift apart.
 pub(crate) fn sample_next(
     strategy: SamplingStrategy,
     params: Option<&SamplingParams>,
     logits: &[f32],
     history: &[u32],
     rng_state: &mut u64,
-) -> fuel::Result<u32> {
+) -> fuel::Result<(u32, Option<TokenLogprob>)> {
     match params {
-        None => Ok(sample_logits(logits, strategy, rng_state)),
-        Some(p) => Ok(sample_with_params(logits, p, history, rng_state)?.token),
+        None => Ok((sample_logits(logits, strategy, rng_state), None)),
+        Some(p) => {
+            let r = sample_with_params(logits, p, history, rng_state)?;
+            let lp = r.logprob.map(|logprob| TokenLogprob {
+                logprob,
+                top: r.top_logprobs,
+            });
+            Ok((r.token, lp))
+        }
     }
 }
 
 /// Check a `SamplingParams` handed to an `add_session_with_params` and give back the
 /// [`SamplingStrategy`] that stands in for it in a session's legacy `strategy` field (its seed also
-/// seeds the session's RNG). Logprobs are not carried by any scheduler yet (ROADMAP row 133, slice
-/// 3), so asking for them is an error here rather than a silent drop.
+/// seeds the session's RNG). A `logprobs` count is checked against the vocabulary at the first
+/// sample, where the logits' length is known; a failure there finishes only that session.
 pub(crate) fn admit_params(params: &SamplingParams) -> fuel::Result<SamplingStrategy> {
     params.validate(usize::MAX)?;
-    if params.logprobs.is_some() {
-        return Err(Error::Msg(
-            "add_session_with_params: logprobs are not returned by the schedulers yet (ROADMAP row 133, slice 3)"
-                .to_string(),
-        )
-        .bt());
-    }
     Ok(
         if params.temperature.is_nan() || params.temperature <= 0.0 {
             SamplingStrategy::Greedy
@@ -814,6 +826,7 @@ impl SessionState {
             rng_state,
             strategy,
             params: None,
+            logprobs: Vec::new(),
             eos_ids: normalize_eos_ids(eos_ids),
             remaining: max_new,
             phase: SessionPhase::Prefill,
@@ -855,13 +868,14 @@ impl SessionState {
             Some(l) => l,
             None => return Ok(None),
         };
-        let next = sample_next(
+        let (next, lp) = sample_next(
             self.strategy,
             self.params.as_ref(),
             &logits,
             &self.tokens,
             &mut self.rng_state,
         )?;
+        self.logprobs.extend(lp);
         self.tokens.push(next);
         self.new_tokens.push(next);
         self.remaining = self.remaining.saturating_sub(1);
@@ -1226,6 +1240,16 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
             .iter()
             .find(|s| s.id == id)
             .map(|s| s.new_tokens.as_slice())
+    }
+
+    /// Logprobs of the tokens session `id` has generated so far, one entry per token in the same
+    /// order as `session_new_tokens`; empty unless the session was admitted with
+    /// `SamplingParams::logprobs` set. `None` if `id` is unknown. Read-only.
+    pub fn session_logprobs(&self, id: SessionId) -> Option<&[TokenLogprob]> {
+        self.sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.logprobs.as_slice())
     }
 
     /// Advance one scheduling quantum: (1) run any `Prefill` sessions serially
@@ -1611,6 +1635,8 @@ struct PagedSession {
     strategy: SamplingStrategy,
     /// Full sampling controls, when admitted with them; `None` = `strategy` alone.
     params: Option<SamplingParams>,
+    /// Per-token logprobs, one per generated token, when `params.logprobs` is set.
+    logprobs: Vec<TokenLogprob>,
     /// EOS token ids — stops on ANY of them, normalized via
     /// `normalize_eos_ids` (same contract as `SessionState::eos_ids`).
     eos_ids: Option<Vec<u32>>,
@@ -1893,6 +1919,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             rng_state,
             strategy,
             params: None,
+            logprobs: Vec::new(),
             eos_ids: normalize_eos_ids(eos_ids),
             remaining: max_new,
             phase: SessionPhase::Prefill,
@@ -2044,6 +2071,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             rng_state,
             strategy,
             params: None,
+            logprobs: Vec::new(),
             eos_ids: normalize_eos_ids(eos_ids),
             remaining: max_new,
             phase: SessionPhase::Prefill,
@@ -2304,7 +2332,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         if let Some(buf) = s.captured_logits.as_mut() {
             buf.push(logits.clone());
         }
-        let next = match sample_next(
+        let (next, lp) = match sample_next(
             s.strategy,
             s.params.as_ref(),
             &logits,
@@ -2318,6 +2346,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
                 return;
             }
         };
+        s.logprobs.extend(lp);
         s.tokens.push(next);
         s.new_tokens.push(next);
         s.remaining = s.remaining.saturating_sub(1);
@@ -2393,6 +2422,16 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
             .iter()
             .find(|s| s.id == id)
             .map(|s| s.new_tokens.as_slice())
+    }
+
+    /// Logprobs of the tokens session `id` has generated so far, one entry per token in the same
+    /// order as `session_new_tokens`; empty unless the session was admitted with
+    /// `SamplingParams::logprobs` set. `None` if `id` is unknown. Read-only.
+    pub fn session_logprobs(&self, id: SessionId) -> Option<&[TokenLogprob]> {
+        self.sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.logprobs.as_slice())
     }
 
     /// Assign session `id` a priority (higher goes first). Stored and reported
@@ -5575,9 +5614,9 @@ mod tests {
         );
     }
 
-    /// `admit_params` is the one gate for every scheduler: bad params and logprobs are refused.
+    /// `admit_params` is the one gate for every scheduler: invalid params are refused.
     #[test]
-    fn admit_params_refuses_invalid_params_and_logprobs() {
+    fn admit_params_refuses_invalid_params() {
         assert!(matches!(
             admit_params(&greedy_params()).unwrap(),
             SamplingStrategy::Greedy
@@ -5596,12 +5635,6 @@ mod tests {
             ..greedy_params()
         };
         assert!(admit_params(&bad).is_err(), "top_k 0 is invalid");
-        let lp = SamplingParams {
-            logprobs: Some(2),
-            ..greedy_params()
-        };
-        let err = admit_params(&lp).unwrap_err().to_string();
-        assert!(err.contains("slice 3"), "{err}");
     }
 
     /// A temperature-only `SamplingParams` reduces to the legacy `Temperature` strategy: the
@@ -5680,11 +5713,6 @@ mod tests {
                 .add_session_with_params(&[1, 2], bad, None, 3)
                 .is_err()
         );
-        let lp = SamplingParams {
-            logprobs: Some(1),
-            ..greedy_params()
-        };
-        assert!(sched.add_session_with_params(&[1, 2], lp, None, 3).is_err());
         assert_eq!(
             sched.kv_free_blocks(),
             free,
@@ -5746,5 +5774,149 @@ mod tests {
             vec![good],
             "the other session sampled normally"
         );
+    }
+
+    // ---------------- ROADMAP row 133, slice 3: logprobs ----------------
+
+    fn lp_params(n: usize) -> SamplingParams {
+        SamplingParams {
+            logprobs: Some(n),
+            ..greedy_params()
+        }
+    }
+
+    /// Under greedy params the chosen token is the top-1 token, so the recorded logprobs must say
+    /// exactly that: `top[0]` is the token and its logprob, every entry is ordered and non-positive.
+    fn check_logprobs(tokens: &[u32], lps: &[TokenLogprob], n: usize) {
+        assert_eq!(
+            lps.len(),
+            tokens.len(),
+            "one logprob record per generated token"
+        );
+        for (t, lp) in tokens.iter().zip(lps) {
+            assert_eq!(lp.top.len(), n);
+            assert_eq!(lp.top[0].0, *t, "greedy picks the most probable token");
+            assert_eq!(lp.top[0].1, lp.logprob);
+            assert!(lp.logprob <= 0.0 && lp.logprob.is_finite());
+            assert!(lp.top.windows(2).all(|w| w[0].1 >= w[1].1), "{lp:?}");
+        }
+    }
+
+    /// Serial arm: logprobs are recorded per token, a session that did not ask records none, and
+    /// asking changes no token.
+    #[test]
+    fn serial_scheduler_records_logprobs_only_when_asked() {
+        let model = tiny_model(31);
+        let budget = KvBudget {
+            block_size: 8,
+            num_blocks: 8,
+        };
+        let mk = || {
+            SessionScheduler::new(
+                &model,
+                Device::cpu(),
+                DType::F32,
+                SchedulePolicy::RoundRobin,
+                budget,
+            )
+            .unwrap()
+        };
+        let mut sched = mk();
+        let with = sched
+            .add_session_with_params(&[1, 2, 3], lp_params(3), None, 4)
+            .unwrap();
+        let without = sched
+            .add_session_with_params(&[1, 2, 3], greedy_params(), None, 4)
+            .unwrap();
+        for _ in 0..10 {
+            sched.step().unwrap();
+        }
+        let toks = sched.session_new_tokens(with).unwrap().to_vec();
+        assert_eq!(toks.len(), 4);
+        check_logprobs(&toks, sched.session_logprobs(with).unwrap(), 3);
+        assert!(sched.session_logprobs(without).unwrap().is_empty());
+        assert!(sched.session_logprobs(SessionId(with.0 + 1000)).is_none());
+        let mut plain = mk();
+        let id = plain
+            .add_session_with_params(&[1, 2, 3], greedy_params(), None, 4)
+            .unwrap();
+        let done = plain.run_to_completion().unwrap();
+        let full = done.into_iter().find(|(i, _)| *i == id).unwrap().1;
+        assert_eq!(
+            &full[3..],
+            &toks[..],
+            "asking for logprobs changes no token"
+        );
+    }
+
+    /// A logprobs count above the vocabulary finishes only that session (the vocabulary is unknown
+    /// until the first sample); the paged scheduler records the error and the other session runs.
+    #[test]
+    fn paged_scheduler_oversized_logprobs_isolate_the_session() {
+        let model = tiny_model(31);
+        let mut sched =
+            PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu()).unwrap();
+        let vocab = tiny_cfg().vocab_size;
+        let bad = sched
+            .add_session_with_params(&[1, 2, 3], lp_params(vocab + 1), None, 3)
+            .unwrap();
+        let good = sched
+            .add_session_with_params(&[1, 2, 3], lp_params(2), None, 3)
+            .unwrap();
+        let mut errored = Vec::new();
+        for _ in 0..8 {
+            errored.extend(sched.step().errored);
+        }
+        assert_eq!(errored.len(), 1, "{errored:?}");
+        assert_eq!(errored[0].0, bad);
+        assert!(sched.session_logprobs(bad).unwrap().is_empty());
+        assert_eq!(sched.session_new_tokens(good).unwrap().len(), 3);
+        check_logprobs(
+            sched.session_new_tokens(good).unwrap(),
+            sched.session_logprobs(good).unwrap(),
+            2,
+        );
+    }
+
+    /// Paged arm, serial `step()` and `step_batched()` both: logprobs are recorded per token and the
+    /// two arms agree on tokens and (to float noise) on logprobs.
+    #[test]
+    fn paged_scheduler_logprobs_agree_between_step_and_step_batched() {
+        let model = tiny_model(31);
+        let run = |batched: bool| {
+            let mut sched =
+                PagedSessionScheduler::new(&model, paged_budget(), DType::F32, &Device::cpu())
+                    .unwrap();
+            let a = sched
+                .add_session_with_params(&[1, 2, 3], lp_params(3), None, 4)
+                .unwrap();
+            let b = sched
+                .add_session_with_params(&[4, 5, 6, 7], lp_params(3), None, 4)
+                .unwrap();
+            for _ in 0..12 {
+                if batched {
+                    sched.step_batched(4);
+                } else {
+                    sched.step();
+                }
+            }
+            [a, b].map(|id| {
+                (
+                    sched.session_new_tokens(id).unwrap().to_vec(),
+                    sched.session_logprobs(id).unwrap().to_vec(),
+                )
+            })
+        };
+        let serial = run(false);
+        let batched = run(true);
+        for ((st, sl), (bt, bl)) in serial.iter().zip(&batched) {
+            assert_eq!(st.len(), 4);
+            check_logprobs(st, sl, 3);
+            check_logprobs(bt, bl, 3);
+            assert_eq!(st, bt, "batched decode must sample the same tokens");
+            for (x, y) in sl.iter().zip(bl) {
+                assert!((x.logprob - y.logprob).abs() < 1e-3, "{x:?} vs {y:?}");
+            }
+        }
     }
 }
