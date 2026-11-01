@@ -95,12 +95,14 @@ compile_slang() {
       echo "  slang $base.slang[$entry] -> ../fuel-vulkan-kernels/spv/$entry.spv"
       "$SLANGC" "$src" -target spirv -profile glsl_450 -entry "$entry" -o "$out"
       hoist_imports_if_needed "$out"
+      no_contraction_if_requested "$src" "$out"
     done
   else
     local out="$OUT_DIR/$base.spv"
     echo "  slang $base.slang -> ../fuel-vulkan-kernels/spv/$base.spv"
     "$SLANGC" "$src" -target spirv -profile glsl_450 -entry main -o "$out"
     hoist_imports_if_needed "$out"
+    no_contraction_if_requested "$src" "$out"
   fi
 }
 
@@ -117,6 +119,23 @@ hoist_imports_if_needed() {
     python3 "$SRC_DIR/hoist_extinst_imports.py" "$spv"
   else
     echo "    warning: python not found; skipping OpExtInstImport hoist on $spv" >&2
+  fi
+}
+
+# Post-process: a kernel whose first 40 lines carry a `// no-contraction` comment gets NoContraction on
+# every OpFAdd/OpFSub/OpFMul (see no_contraction.py: slangc cannot emit it itself, and the
+# double-double kernels need `a * b` and `a + b` to round separately).
+no_contraction_if_requested() {
+  local src="$1" spv="$2"
+  if head -n 40 "$src" | grep -qE '^\s*//\s*no-contraction\b'; then
+    if command -v python >/dev/null 2>&1; then
+      python "$SRC_DIR/no_contraction.py" "$spv"
+    elif command -v python3 >/dev/null 2>&1; then
+      python3 "$SRC_DIR/no_contraction.py" "$spv"
+    else
+      echo "    error: python not found; $spv needs no_contraction.py" >&2
+      return 1
+    fi
   fi
 }
 

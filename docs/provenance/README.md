@@ -70,7 +70,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-kernel-seam` | 5 |  |  |  |  | 2 |  | 3 |
 | `fuel-kernel-seam-announce` | 6 |  |  |  |  | 3 |  | 3 |
 | `fuel-kernel-seam-types` | 8 |  |  |  |  | 5 |  | 3 |
-| `fuel-kernels-source` | 182 |  |  |  |  | 179 |  | 3 |
+| `fuel-kernels-source` | 183 |  |  |  |  | 180 |  | 3 |
 | `fuel-kiss-ref-backend` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-kv-pool` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-lazy-examples` | 27 |  |  | 21 |  | 3 |  | 3 |
