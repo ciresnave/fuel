@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.11 - 2026-11-01
+
+### Fixed
+
+- `unary_f64.spv` now carries NoContraction on every float add, subtract and multiply, so a driver cannot fuse the double-double `a * b + c` into one FMA. Software Vulkan (Lavapipe) did, which moved f64 sin, cos and sin(1e10) off the reference; those three tests now pass there and their CI skips are gone. `compile.sh` adds the decoration for a kernel marked `// no-contraction`, through the new `no_contraction.py`, because slangc cannot emit it. Checked on the 4070: all 34 Vulkan unary live tests pass.
+
 ## v0.35.9 - 2026-11-01
 
 ### Added
