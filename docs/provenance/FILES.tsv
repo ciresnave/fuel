@@ -8,12 +8,12 @@ path	class	candle_source	basis
 .github/dependabot.yml	candle	.github/dependabot.yml	identical path; 100% of 2 lines verbatim
 .github/workflows/checkpoint-tests.yml	own		no lineage; 0 of 29 lines verbatim in candle (0%)
 .github/workflows/cuda-metal-compile-check.yml	own		no lineage; 0 of 73 lines verbatim in candle (0%)
-.github/workflows/lavapipe-vulkan.yml	own		no lineage; 0 of 32 lines verbatim in candle (0%)
+.github/workflows/lavapipe-vulkan.yml	own		no lineage; 0 of 31 lines verbatim in candle (0%)
 .github/workflows/rust-ci.yml	candle-modified	.github/workflows/rust-ci.yml	same path; 3% of 940 lines verbatim
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 448 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 449 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -1108,7 +1108,7 @@ fuel-kernels-source/kernels/cast_f8e4m3_to_bf16.slang	own		no lineage; 0 of 42 l
 fuel-kernels-source/kernels/cast_f8e4m3_to_f16.slang	own		no lineage; 0 of 29 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/cast_f8e4m3_to_f32.slang	own		no lineage; 0 of 31 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/clamp.slang	own		no lineage; 0 of 17 lines verbatim in candle (0%)
-fuel-kernels-source/kernels/compile.sh	own		no lineage; 0 of 88 lines verbatim in candle (0%)
+fuel-kernels-source/kernels/compile.sh	own		no lineage; 0 of 100 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/concat_along_dim.slang	own		no lineage; 0 of 45 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/concat_along_dim_bf16.slang	own		no lineage; 0 of 44 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/concat_along_dim_f16.slang	own		no lineage; 0 of 25 lines verbatim in candle (0%)
@@ -1180,6 +1180,7 @@ fuel-kernels-source/kernels/matmul_tiled_bf16_b.glsl	own		no lineage; 0 of 63 li
 fuel-kernels-source/kernels/matvec.glsl	own		no lineage; 0 of 27 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/matvec_bf16_b.glsl	own		no lineage; 0 of 51 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/matvec_cols.glsl	own		no lineage; 0 of 51 lines verbatim in candle (0%)
+fuel-kernels-source/kernels/no_contraction.py	own		no lineage; 1 of 53 lines verbatim in candle (2%)
 fuel-kernels-source/kernels/pad_backward_const_b1.slang	own		no lineage; 0 of 31 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/pad_backward_const_b2.slang	own		no lineage; 0 of 30 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/pad_backward_const_b4.slang	own		no lineage; 0 of 30 lines verbatim in candle (0%)
