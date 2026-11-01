@@ -8994,7 +8994,7 @@ fn vulkan_dispatch_softmax_last_dim_f64() {
             let expected = e / sum;
             assert!(
                 (y - expected).abs() < 1e-7,
-                "softmax-f64 row {row} col {i}: got {y}, expected {expected}"
+                "softmax-f64 row {row} col {i}: got {y}, expected {expected}; whole got row {ys:?} for input {xs:?}"
             );
         }
     }
@@ -11199,4 +11199,162 @@ fn vulkan_dispatch_copy_to_cpu_f32_direct_wrapper() {
         _ => panic!("output must be BackendStorage::Cpu after Op::Copy {{ target: Cpu }}"),
     };
     assert_eq!(got, host.as_slice(), "Vulkan→CPU Op::Copy bytes mismatch");
+}
+
+// ---- Wide rows (ROADMAP row 134) ----
+//
+// The kernels above combine one partial per subgroup. With a row of 4 columns only threads 0..3 hold data, so
+// every other subgroup's partial is the identity and a combine that drops partials (the defect on a device whose
+// subgroup is narrower than 16 lanes) still returns the right answer. These tests use rows of 1024 columns so every
+// one of the 256 threads, hence every subgroup, holds a nonzero partial. On a 32-lane device they pass; on
+// Lavapipe (subgroup 8) they are the born-red for the defect.
+
+const WIDE_OUTER: usize = 3;
+const WIDE_LAST: usize = 1024;
+
+/// Deterministic values in [-1, 1) with no row symmetry, so a dropped partial changes the answer.
+fn wide_data() -> Vec<f32> {
+    (0..WIDE_OUTER * WIDE_LAST)
+        .map(|i| (((i * 2654435761usize) >> 7) % 2000) as f32 / 1000.0 - 1.0)
+        .collect()
+}
+
+/// Run a one-input, one-output row kernel over `[WIDE_OUTER, WIDE_LAST]` f32 data.
+fn run_wide_row_f32(
+    backend: &Arc<VulkanBackend>,
+    kind: OpKind,
+    host: &[f32],
+    params: OpParams,
+) -> Vec<f32> {
+    let mut table = KernelBindingTable::new();
+    register_vulkan_kernels(&mut table);
+    let in_arc = Arc::new(RwLock::new(upload_f32(backend, host)));
+    let out_bytes = backend.alloc_bytes_handle(host.len() * 4).expect("alloc");
+    let out_arc = Arc::new(RwLock::new(Storage::new(
+        BackendStorage::Vulkan(out_bytes),
+        DType::F32,
+    )));
+    let kernel =
+        table.lookup_alternatives(kind, &[DType::F32, DType::F32], BackendId::Vulkan)[0].kernel;
+    let layout = Layout::contiguous(Shape::from_dims(&[WIDE_OUTER, WIDE_LAST]));
+    kernel(
+        &[Arc::clone(&in_arc)],
+        &mut [Arc::clone(&out_arc)],
+        &[layout.clone(), layout],
+        &params,
+    )
+    .expect("wide-row dispatch");
+    download_f32(backend, &out_arc.read().unwrap())
+}
+
+fn assert_close_f32(name: &str, got: &[f32], expected: &[f32], tol: f32) {
+    assert_eq!(got.len(), expected.len(), "{name}: length");
+    let worst = got
+        .iter()
+        .zip(expected)
+        .enumerate()
+        .map(|(i, (g, e))| (i, (g - e).abs(), *g, *e))
+        .fold((0, 0.0_f32, 0.0_f32, 0.0_f32), |a, b| {
+            if b.1 > a.1 { b } else { a }
+        });
+    assert!(
+        worst.1 < tol,
+        "{name}: worst element {} got {} expected {} (|diff| {}, tol {tol}); first 4 got {:?}",
+        worst.0,
+        worst.2,
+        worst.3,
+        worst.1,
+        &got[..4.min(got.len())]
+    );
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_softmax_wide_f32() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let host = wide_data();
+    let params = OpParams::SoftmaxLastDim {
+        outer_count: WIDE_OUTER,
+        last_dim: WIDE_LAST,
+    };
+    let got = run_wide_row_f32(&backend, OpKind::SoftmaxLastDim, &host, params);
+    let mut expected = Vec::new();
+    for row in host.chunks(WIDE_LAST) {
+        let exps: Vec<f64> = row.iter().map(|&x| (x as f64).exp()).collect();
+        let sum: f64 = exps.iter().sum();
+        expected.extend(exps.iter().map(|e| (e / sum) as f32));
+    }
+    assert_close_f32("softmax wide f32", &got, &expected, 1e-6);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_rms_norm_wide_f32() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let host = wide_data();
+    let eps = 1e-6_f64;
+    let params = OpParams::NormLastDim {
+        outer_count: WIDE_OUTER,
+        last_dim: WIDE_LAST,
+        eps,
+    };
+    let got = run_wide_row_f32(&backend, OpKind::RmsNormLastDim, &host, params);
+    let mut expected = Vec::new();
+    for row in host.chunks(WIDE_LAST) {
+        let ms: f64 = row.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>() / WIDE_LAST as f64;
+        let scale = (ms + eps).sqrt();
+        expected.extend(row.iter().map(|&x| (x as f64 / scale) as f32));
+    }
+    assert_close_f32("rms_norm wide f32", &got, &expected, 1e-4);
+}
+
+#[test]
+#[ignore]
+fn vulkan_dispatch_layer_norm_wide_f32() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let host = wide_data();
+    let eps = 1e-5_f64;
+    let params = OpParams::NormLastDim {
+        outer_count: WIDE_OUTER,
+        last_dim: WIDE_LAST,
+        eps,
+    };
+    let got = run_wide_row_f32(&backend, OpKind::LayerNormLastDim, &host, params);
+    let expected = layer_norm_ref(&host, WIDE_OUTER, WIDE_LAST, eps as f32);
+    assert_close_f32("layer_norm wide f32", &got, &expected, 1e-4);
+}
+
+/// Sum, max and mean over the last dim of `[WIDE_OUTER, WIDE_LAST]`, against an f64 reference.
+#[test]
+#[ignore]
+fn vulkan_dispatch_reduce_last_dim_wide_f32() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let mut host = wide_data();
+    // The row maxima sit at column 700, which belongs to thread 700 % 256 = 188: a high subgroup on any width.
+    for r in 0..WIDE_OUTER {
+        host[r * WIDE_LAST + 700] = 5.0 + r as f32;
+    }
+    let dims = [WIDE_OUTER, WIDE_LAST];
+    let rows = || host.chunks(WIDE_LAST);
+    let sums: Vec<f32> = rows()
+        .map(|r| r.iter().map(|&x| x as f64).sum::<f64>() as f32)
+        .collect();
+    let maxs: Vec<f32> = rows()
+        .map(|r| r.iter().cloned().fold(f32::MIN, f32::max))
+        .collect();
+    let means: Vec<f32> = sums.iter().map(|s| s / WIDE_LAST as f32).collect();
+    let got_sum = run_reduce_f32(&backend, OpKind::SumReduce, &host, &dims, vec![1]);
+    let got_max = run_reduce_f32(&backend, OpKind::MaxReduce, &host, &dims, vec![1]);
+    let got_mean = run_reduce_f32(&backend, OpKind::MeanReduce, &host, &dims, vec![1]);
+    assert_close_f32("reduce sum wide f32", &got_sum, &sums, 1e-3);
+    assert_close_f32("reduce max wide f32", &got_max, &maxs, 1e-6);
+    assert_close_f32("reduce mean wide f32", &got_mean, &means, 1e-5);
 }
