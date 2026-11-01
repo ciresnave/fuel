@@ -8,11 +8,12 @@ path	class	candle_source	basis
 .github/dependabot.yml	candle	.github/dependabot.yml	identical path; 100% of 2 lines verbatim
 .github/workflows/checkpoint-tests.yml	own		no lineage; 0 of 29 lines verbatim in candle (0%)
 .github/workflows/cuda-metal-compile-check.yml	own		no lineage; 0 of 73 lines verbatim in candle (0%)
+.github/workflows/lavapipe-vulkan.yml	own		no lineage; 0 of 19 lines verbatim in candle (0%)
 .github/workflows/rust-ci.yml	candle-modified	.github/workflows/rust-ci.yml	same path; 3% of 940 lines verbatim
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 436 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 437 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -655,7 +656,7 @@ fuel-dispatch/tests/qmatmul_cuda_contract.rs	own		no lineage; 1 of 66 lines verb
 fuel-dispatch/tests/residency_eviction_live.rs	own		no lineage; 1 of 90 lines verbatim in candle (1%)
 fuel-dispatch/tests/runtime_fusion_optimize_e2e.rs	own		no lineage; 1 of 104 lines verbatim in candle (1%)
 fuel-dispatch/tests/vulkan_deferred_eviction_live.rs	own		no lineage; 1 of 194 lines verbatim in candle (1%)
-fuel-dispatch/tests/vulkan_dispatch_live.rs	own		no lineage; 3 of 5214 lines verbatim in candle (0%)
+fuel-dispatch/tests/vulkan_dispatch_live.rs	own		no lineage; 3 of 5218 lines verbatim in candle (0%)
 fuel-dispatch/tests/vulkan_write_slice_rotating_live.rs	own		no lineage; 1 of 117 lines verbatim in candle (1%)
 fuel-examples/Cargo.toml	candle-modified	candle-examples/Cargo.toml	rename/copy 54%; 80% of 60 lines verbatim
 fuel-examples/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
