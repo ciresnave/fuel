@@ -7,3 +7,9 @@ name = "fuel-metal-kernels"
 needs = "xcrun"
 reason = "compiles to nothing off macOS, so coderipper's per-run positive controls (sentinel functions) cannot fire"
 owner = "fuel lane"
+
+[[allow]]
+check = "SEC-002"
+file = "fuel-dispatch/src/dispatch.rs"
+lines = "5008"
+reason = "gitleaks false positive in HISTORY, not in the tree. Two commits on main, 734febbdd and ea224011d (both the CPU shape-ops FKC-contract registration migration), carry a code comment at this line that lists op names after the word for registration lookups, and the rule read that word as the name of a credential. Nothing in it is one. The line number is fixed because the finding sits in those two immutable commits, so the entry does not move when dispatch.rs changes; the file at HEAD has other text at line 5008."
