@@ -70,7 +70,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-kernel-seam` | 5 |  |  |  |  | 2 |  | 3 |
 | `fuel-kernel-seam-announce` | 6 |  |  |  |  | 3 |  | 3 |
 | `fuel-kernel-seam-types` | 8 |  |  |  |  | 5 |  | 3 |
-| `fuel-kernels-source` | 182 |  |  |  |  | 179 |  | 3 |
+| `fuel-kernels-source` | 183 |  |  |  |  | 180 |  | 3 |
 | `fuel-kiss-ref-backend` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-kv-pool` | 8 |  |  |  |  | 5 |  | 3 |
 | `fuel-lazy-examples` | 27 |  |  | 21 |  | 3 |  | 3 |
@@ -95,7 +95,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-training` | 9 |  |  |  |  | 6 |  | 3 |
 | `fuel-transformers` | 194 | 2 | 4 | 153 |  | 29 | 3 | 3 |
 | `fuel-vulkan-backend` | 26 |  |  |  |  | 23 |  | 3 |
-| `fuel-vulkan-kernels` | 183 |  |  |  |  | 2 | 178 | 3 |
+| `fuel-vulkan-kernels` | 184 |  |  |  |  | 2 | 179 | 3 |
 | `scripts` | 74 |  |  | 1 |  | 73 |  |  |
-| **all** | **2076** | **112** | **218** | **258** | **4** | **1172** | **183** | **129** |
+| **all** | **2078** | **112** | **218** | **258** | **4** | **1173** | **184** | **129** |
 <!-- provenance-summary:end -->

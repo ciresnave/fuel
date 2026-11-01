@@ -13,7 +13,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 447 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 448 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -656,7 +656,7 @@ fuel-dispatch/tests/qmatmul_cuda_contract.rs	own		no lineage; 1 of 66 lines verb
 fuel-dispatch/tests/residency_eviction_live.rs	own		no lineage; 1 of 90 lines verbatim in candle (1%)
 fuel-dispatch/tests/runtime_fusion_optimize_e2e.rs	own		no lineage; 1 of 104 lines verbatim in candle (1%)
 fuel-dispatch/tests/vulkan_deferred_eviction_live.rs	own		no lineage; 1 of 194 lines verbatim in candle (1%)
-fuel-dispatch/tests/vulkan_dispatch_live.rs	own		no lineage; 3 of 5325 lines verbatim in candle (0%)
+fuel-dispatch/tests/vulkan_dispatch_live.rs	own		no lineage; 3 of 5338 lines verbatim in candle (0%)
 fuel-dispatch/tests/vulkan_write_slice_rotating_live.rs	own		no lineage; 1 of 117 lines verbatim in candle (1%)
 fuel-examples/Cargo.toml	candle-modified	candle-examples/Cargo.toml	rename/copy 54%; 80% of 60 lines verbatim
 fuel-examples/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
@@ -1206,6 +1206,7 @@ fuel-kernels-source/kernels/pad_replicate_b4.slang	own		no lineage; 0 of 26 line
 fuel-kernels-source/kernels/pad_replicate_b8.slang	own		no lineage; 0 of 24 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/powi.slang	own		no lineage; 0 of 24 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/qmatvec_q4_0.slang	own		no lineage; 0 of 66 lines verbatim in candle (0%)
+fuel-kernels-source/kernels/qmatvec_q8_0.slang	own		no lineage; 0 of 60 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/quantize_q8_0.slang	own		no lineage; 0 of 76 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/reduce.slang	own		no lineage; 0 of 30 lines verbatim in candle (0%)
 fuel-kernels-source/kernels/reduce_bf16.slang	own		no lineage; 0 of 48 lines verbatim in candle (0%)
@@ -1795,9 +1796,9 @@ fuel-vulkan-backend/examples/recycler_pool_probe.rs	own		no lineage; 0 of 25 lin
 fuel-vulkan-backend/src/byte_storage.rs	own		no lineage; 1 of 91 lines verbatim in candle (1%)
 fuel-vulkan-backend/src/capture.rs	own		no lineage; 0 of 136 lines verbatim in candle (0%)
 fuel-vulkan-backend/src/dyn_impl.rs	own		no lineage; 2 of 103 lines verbatim in candle (2%)
-fuel-vulkan-backend/src/lib.rs	own		no lineage; 11 of 5481 lines verbatim in candle (0%)
+fuel-vulkan-backend/src/lib.rs	own		no lineage; 11 of 5517 lines verbatim in candle (0%)
 fuel-vulkan-backend/src/mapped_meter.rs	own		no lineage; 1 of 193 lines verbatim in candle (1%)
-fuel-vulkan-backend/src/pipelines.rs	own		no lineage; 0 of 352 lines verbatim in candle (0%)
+fuel-vulkan-backend/src/pipelines.rs	own		no lineage; 0 of 353 lines verbatim in candle (0%)
 fuel-vulkan-backend/src/probe.rs	own		no lineage; 2 of 470 lines verbatim in candle (0%)
 fuel-vulkan-backend/src/recorder.rs	own		no lineage; 2 of 376 lines verbatim in candle (1%)
 fuel-vulkan-backend/src/residency.rs	own		no lineage; 2 of 157 lines verbatim in candle (1%)
@@ -1936,6 +1937,7 @@ fuel-vulkan-kernels/spv/pad_replicate_b4.spv	data		binary file; no path or simil
 fuel-vulkan-kernels/spv/pad_replicate_b8.spv	data		binary file; no path or similarity match to a candle file
 fuel-vulkan-kernels/spv/powi.spv	data		binary file; no path or similarity match to a candle file
 fuel-vulkan-kernels/spv/qmatvec_q4_0.spv	data		binary file; no path or similarity match to a candle file
+fuel-vulkan-kernels/spv/qmatvec_q8_0.spv	data		binary file; no path or similarity match to a candle file
 fuel-vulkan-kernels/spv/quantize_q8_0.spv	data		binary file; no path or similarity match to a candle file
 fuel-vulkan-kernels/spv/reduce.spv	data		binary file; no path or similarity match to a candle file
 fuel-vulkan-kernels/spv/reduce_bf16.spv	data		binary file; no path or similarity match to a candle file
@@ -1989,7 +1991,7 @@ fuel-vulkan-kernels/spv/write_slice_b1.spv	data		binary file; no path or similar
 fuel-vulkan-kernels/spv/write_slice_b2.spv	data		binary file; no path or similarity match to a candle file
 fuel-vulkan-kernels/spv/write_slice_b4.spv	data		binary file; no path or similarity match to a candle file
 fuel-vulkan-kernels/spv/write_slice_b8.spv	data		binary file; no path or similarity match to a candle file
-fuel-vulkan-kernels/src/lib.rs	own		no lineage; 0 of 661 lines verbatim in candle (0%)
+fuel-vulkan-kernels/src/lib.rs	own		no lineage; 0 of 664 lines verbatim in candle (0%)
 fuel.code-workspace	own		no lineage; 0 of 0 lines verbatim in candle (0%)
 fuel/Cargo.toml	own		no lineage; 1 of 42 lines verbatim in candle (2%)
 fuel/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
