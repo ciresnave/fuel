@@ -359,13 +359,13 @@ fuel-datasets/src/vision/cifar.rs	candle-modified	candle-datasets/src/vision/cif
 fuel-datasets/src/vision/fashion_mnist.rs	candle-modified	candle-datasets/src/vision/fashion_mnist.rs	rename/copy 55%; 53% of 15 lines verbatim
 fuel-datasets/src/vision/mnist.rs	candle-modified	candle-datasets/src/vision/mnist.rs	rename/copy 63%; 63% of 93 lines verbatim
 fuel-datasets/src/vision/mod.rs	own		no lineage; 0 of 36 lines verbatim in candle (0%)
-fuel-dispatch/Cargo.toml	own		no lineage; 7 of 160 lines verbatim in candle (4%)
+fuel-dispatch/Cargo.toml	own		no lineage; 7 of 161 lines verbatim in candle (4%)
 fuel-dispatch/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
 fuel-dispatch/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENSE-MIT
 fuel-dispatch/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the root THIRD-PARTY-NOTICES.md
 fuel-dispatch/examples/contiguize_vulkan_check.rs	own		no lineage; 0 of 53 lines verbatim in candle (0%)
 fuel-dispatch/examples/flash_attn_route_check.rs	own		no lineage; 1 of 120 lines verbatim in candle (1%)
-fuel-dispatch/examples/qmv_bench.rs	own		no lineage; 0 of 52 lines verbatim in candle (0%)
+fuel-dispatch/examples/qmv_bench.rs	own		no lineage; 0 of 55 lines verbatim in candle (0%)
 fuel-dispatch/fixtures/kiss-corpus/.gitattributes	own		no lineage; 0 of 14 lines verbatim in candle (0%)
 fuel-dispatch/fixtures/kiss-corpus/PROVENANCE.md	own		no lineage; 0 of 190 lines verbatim in candle (0%)
 fuel-dispatch/fixtures/kiss-corpus/dtype_manifest.json	own		no lineage; 0 of 4 lines verbatim in candle (0%)
