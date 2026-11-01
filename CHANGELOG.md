@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - Vulkan: a Q8_0 QMatMul with one activation row (decode) now runs a fused dequantize-in-the-dot-product gemv (`qmatvec_q8_0`) instead of dequantizing the whole weight to an f32 scratch buffer first (ROADMAP row 119, slice 1). Prefill (more than one row) is unchanged. Q6_K QMatMul now has a Vulkan path at all (`qmatvec_q6_k`, slice 2; it re-reads the weight once per row when there is more than one row, and before it `qmatmul_vk` returned a "not wired" error). Both are checked against an exact host oracle on the RTX 4070; speed is not measured yet.
 
+## v0.35.13 - 2026-11-01
+
+### Fixed
+
+- `unary_f64.spv` now carries NoContraction on every float add, subtract and multiply, so a driver cannot fuse the double-double `a * b + c` into one FMA. Software Vulkan (Lavapipe) did, which moved f64 sin, cos and sin(1e10) off the reference; those three tests now pass there and their CI skips are gone. `compile.sh` adds the decoration for a kernel marked `// no-contraction`, through the new `no_contraction.py`, because slangc cannot emit it. Checked on the 4070: all 34 Vulkan unary live tests pass.
+
 ## v0.35.12 - 2026-11-01
 
 ### Fixed
