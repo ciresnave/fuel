@@ -11,7 +11,7 @@ if the notice is removed.
 - Origin: https://github.com/ggml-org/llama.cpp, `LICENSE` at commit `9d57ce456c`
   (the commit `GgmlDType` in `fuel-ir/src/quantized.rs` is pinned to).
 - Also reached through candle (next section): the Q4_0 / Q8_0 / k-quant block layouts and quantization
-  algorithms in `fuel-quantized/src/k_quants.rs`, `utils.rs`, `avx.rs`, `neon.rs`. Compared line by line only for
+  algorithms in `fuel-quantized/src/k_quants.rs` and `utils.rs` (the SIMD files `avx.rs` and `neon.rs` were removed 2026-11-01, ROADMAP board 307). Compared line by line only for
   `BlockQ4_0::from_float` (the same steps as `quantize_row_q4_0_ref` in `ggml/src/ggml-quants.c` at
   `9d57ce456c`); the rest rests on candle's own citations of llama.cpp commits in those files' comments.
 - Used by: `fuel-quantized/src/iq4.rs` (IQ4_NL and IQ4_XS block layouts, codebook,
@@ -56,13 +56,14 @@ SOFTWARE.
   (both compared at upstream commit `549eacb011f25b2c6fc765d6c3dbd26e42f72ee6`, 2025-11-18, the upstream
   counterpart of `7b1d2a0a8`, the last candle-era commit here that touched these files). Neither upstream licence file names a holder.
 - Used by (traced to `candle-core/src/quantized/` at that commit, then modified here):
-  `fuel-quantized/src/k_quants.rs` (from `k_quants.rs`), `utils.rs` (from `utils.rs`), `avx.rs` (from `avx.rs`),
-  `neon.rs` (from `neon.rs`), and, in part only, `cpu.rs` (the `QuantizedType` trait, from `mod.rs`).
+  `fuel-quantized/src/k_quants.rs` (from `k_quants.rs`), `utils.rs` (from `utils.rs`), and, in part only, `cpu.rs`
+  (the `QuantizedType` trait, from `mod.rs`). `avx.rs` and `neon.rs` were also traced here and were removed from the tree on
+  2026-11-01 (ROADMAP board 307); they remain in the history of every release before that.
   These files keep our SPDX line because the licence is the same one candle declares.
 - Verified: the repository's own history blobs for those four files at `7b1d2a0a8` are byte-identical to
   upstream at `549eacb01`. Non-blank lines of the current file that also appear verbatim in the upstream file:
-  `k_quants.rs` 2162 of 2257, `utils.rs` 428 of 518, `avx.rs` 613 of 752, `neon.rs` 536 of 697 (measured
-  2026-10-25; `cpu.rs` 28 of 151 code lines over 25 characters against all of upstream `quantized/*.rs`).
+  `k_quants.rs` 2162 of 2257, `utils.rs` 428 of 518, and for the since-removed `avx.rs` 613 of 752, `neon.rs` 536 of 697
+  (measured 2026-10-25, before the 2026-11-01 removal of the integer dot functions from `k_quants.rs`, so its figure is NOT re-measured; `cpu.rs` 28 of 151 code lines over 25 characters against all of upstream `quantized/*.rs`).
 - Not derived from candle by the same measure: `dequant.rs` (0 of 94 such lines verbatim; it dispatches to
   `GgmlType::to_float` and holds no block math), `awq_repack.rs` (written against AutoAWQ's layout and
   baracuda's kernel layout), `lib.rs`. Other candle-derived files elsewhere in this repository are NOT traced

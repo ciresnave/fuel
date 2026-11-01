@@ -26,7 +26,7 @@
 //! dequantizes and multiplies (dequantize-then-dot); it cannot be produced here.
 
 use crate::iq_grids::*;
-use crate::k_quants::{BlockQ8K, GgmlType, QK_K};
+use crate::k_quants::{GgmlType, QK_K};
 use fuel_ir::quantized::GgmlDType;
 use half::f16;
 
@@ -287,22 +287,11 @@ impl BlockIq1M {
     }
 }
 
-/// Reference dot product: dequantize both sides, multiply. Correct by
-/// construction from `to_float`.
-fn dot_via_to_float<X: GgmlType, Y: GgmlType>(n: usize, xs: &[X], ys: &[Y]) -> f32 {
-    let mut a = vec![0f32; n];
-    let mut b = vec![0f32; n];
-    X::to_float(&xs[..n / X::BLCK_SIZE], &mut a);
-    Y::to_float(&ys[..n / Y::BLCK_SIZE], &mut b);
-    a.iter().zip(&b).map(|(x, y)| x * y).sum()
-}
-
 macro_rules! decode_only_type {
     ($blk:ty, $dtype:expr) => {
         impl GgmlType for $blk {
             const DTYPE: GgmlDType = $dtype;
             const BLCK_SIZE: usize = QK_K;
-            type VecDotType = BlockQ8K;
 
             fn to_float(xs: &[Self], ys: &mut [f32]) {
                 for (b, y) in xs.iter().zip(ys.as_chunks_mut::<QK_K>().0.iter_mut()) {
@@ -317,14 +306,6 @@ macro_rules! decode_only_type {
                     "{:?} is decode-only: Fuel cannot quantize to it (GAP-211 B2)",
                     $dtype
                 );
-            }
-
-            fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
-                dot_via_to_float(n, xs, ys)
-            }
-
-            fn vec_dot_unopt(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> f32 {
-                dot_via_to_float(n, xs, ys)
             }
         }
     };

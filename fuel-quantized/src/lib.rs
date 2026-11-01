@@ -5,10 +5,6 @@
 //!
 //! - [`k_quants`] — `BlockQX` block types, the [`GgmlType`](k_quants::GgmlType)
 //!   trait, and scalar reference impls of every fmt fuel supports.
-//! - [`avx`] / [`neon`] — cfg-gated CPU SIMD `vec_dot` helpers
-//!   used by `GgmlType::vec_dot` impls in `k_quants`. They live here (rather
-//!   than in `fuel-cpu-backend`) because the orphan rule pins them to the
-//!   crate that defines `BlockQX`.
 //! - [`utils`] — quantization-time helpers shared by k_quants impls.
 //! - [`cpu`] — CPU-side adapters that bridge `Vec<BlockQX>` to the
 //!   backend-agnostic [`fuel_backend_contract::quantized::DynQuantizedStorage`]
@@ -19,8 +15,6 @@
 //! their own crates and implement the same trait pair from
 //! `fuel-core-types`.
 
-#[cfg(target_feature = "avx2")]
-pub mod avx;
 pub mod awq_repack;
 pub mod cpu;
 pub mod dequant;
@@ -28,8 +22,6 @@ pub mod iq4;
 pub mod iq_grid_types;
 pub mod iq_grids;
 pub mod k_quants;
-#[cfg(target_feature = "neon")]
-pub mod neon;
 pub mod tq_mx_types;
 pub mod utils;
 

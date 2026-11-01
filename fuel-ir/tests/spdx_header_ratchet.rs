@@ -1338,8 +1338,6 @@ fn constructed_a_packaged_copy_path_is_recognised_and_a_nested_one_is_not() {
 const DERIVED_FROM_CANDLE: &[(&str, &str)] = &[
     ("fuel-quantized/src/k_quants.rs", "k_quants.rs"),
     ("fuel-quantized/src/utils.rs", "utils.rs"),
-    ("fuel-quantized/src/avx.rs", "avx.rs"),
-    ("fuel-quantized/src/neon.rs", "neon.rs"),
     ("fuel-quantized/src/cpu.rs", "cpu.rs"),
 ];
 

@@ -119,8 +119,8 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 //
 // The recipe is the *math* the fused kernel approximates: the CPU/Vulkan
 // dequant-in-kernel arm stays the cost-preferred cover (it fuses the dequant
-// into the GEMM and — for the CPU vec_dot path — also re-quantizes the
-// activations, an approximation the decomposed exact form does not make), and
+// into the GEMM; the CPU route dequantizes each weight row to f32 and dots it
+// with the f32 activation, so it does not quantize the activations), and
 // the lowering is the optimizer's cost-guided alternative / the basis-map
 // closure, never the executed path on a backend that has the kernel.
 

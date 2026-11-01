@@ -142,8 +142,6 @@ fuel-nn/src/conv_transpose.rs	//!   carry it yet (the eager `// TODO: support gr
 fuel-nn/src/conv_transpose.rs	/// (the eager side has a `TODO: support groups.` and the underlying
 fuel-nn/src/modules/conv.rs	//! Dilation: the Tensor conv primitives do not yet accept a
 fuel-nn/src/modules/two_proj_attention.rs	/// Per-token, per-layer footprint a *standard* K/V cache would need at
-fuel-quantized/src/k_quants.rs	// TODO: Pre-allocate this.
-fuel-quantized/src/neon.rs	// TODO: dotprod
 fuel-tensor-tools/src/main.rs	// Read + requantize into memory first. A streaming writer would need every
 fuel-tensor-tools/src/main.rs	//! payloads, so `print` for pth would need a pickle *payload* reader.
 fuel-transformers/src/models/lazy_csm.rs	/// generated audio frame) is still consumer-side TODO.

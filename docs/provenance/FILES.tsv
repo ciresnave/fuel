@@ -13,7 +13,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 454 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 455 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -24,7 +24,7 @@ LICENSE-MIT	candle	LICENSE-MIT	identical path; 100% of 18 lines verbatim
 Makefile	candle	Makefile	identical path; 33% of 6 lines verbatim
 PATTERNS.md	own		no lineage; 4 of 179 lines verbatim in candle (2%)
 README.md	candle-modified	README.md	same path; 53% of 383 lines verbatim
-ROADMAP.md	own		no lineage; 0 of 2587 lines verbatim in candle (0%)
+ROADMAP.md	own		no lineage; 0 of 2588 lines verbatim in candle (0%)
 SECURITY.md	own		no lineage; 0 of 3 lines verbatim in candle (0%)
 THIRD-PARTY-NOTICES.md	own		judged: the ledger; it reproduces upstream licence texts, which is why git sees a copy of LICENSE-APACHE
 clippy.toml	own		no lineage; 0 of 30 lines verbatim in candle (0%)
@@ -986,7 +986,7 @@ fuel-inference/src/hybrid_state.rs	own		no lineage; 0 of 98 lines verbatim in ca
 fuel-inference/src/kv_compress.rs	own		no lineage; 2 of 327 lines verbatim in candle (1%)
 fuel-inference/src/lib.rs	own		no lineage; 1 of 90 lines verbatim in candle (1%)
 fuel-inference/src/moe_routing.rs	own		no lineage; 2 of 238 lines verbatim in candle (1%)
-fuel-inference/src/multi_session.rs	own		no lineage; 10 of 2909 lines verbatim in candle (0%)
+fuel-inference/src/multi_session.rs	own		no lineage; 10 of 2914 lines verbatim in candle (0%)
 fuel-inference/src/ngram_draft.rs	own		no lineage; 1 of 112 lines verbatim in candle (1%)
 fuel-inference/src/prefix_cache.rs	own		no lineage; 6 of 182 lines verbatim in candle (3%)
 fuel-inference/src/scheduler.rs	not-traced	candle-transformers/src/models/z_image/scheduler.rs	same file name as candle candle-transformers/src/models/z_image/scheduler.rs; a port or re-expression is presumed until judged
@@ -1047,7 +1047,7 @@ fuel-ir/tests/doc_marker_consistency_allowlist.txt	own		no lineage; 0 of 4 lines
 fuel-ir/tests/exhaustive_by_design_marker.rs	own		no lineage; 2 of 177 lines verbatim in candle (1%)
 fuel-ir/tests/gap236_precondition.rs	own		no lineage; 1 of 155 lines verbatim in candle (1%)
 fuel-ir/tests/gap302_known_absent.txt	own		no lineage; 0 of 31 lines verbatim in candle (0%)
-fuel-ir/tests/gap_hedge_allowlist.txt	own		no lineage; 0 of 202 lines verbatim in candle (0%)
+fuel-ir/tests/gap_hedge_allowlist.txt	own		no lineage; 0 of 200 lines verbatim in candle (0%)
 fuel-ir/tests/gap_hedges.rs	own		no lineage; 2 of 314 lines verbatim in candle (1%)
 fuel-ir/tests/gap_refs.rs	own		no lineage; 1 of 258 lines verbatim in candle (0%)
 fuel-ir/tests/method_rules_index_join.rs	own		no lineage; 0 of 223 lines verbatim in candle (0%)
@@ -1490,20 +1490,19 @@ fuel-posttrain/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENS
 fuel-posttrain/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the root THIRD-PARTY-NOTICES.md
 fuel-posttrain/src/lib.rs	not-traced		names candle in its text; not judged
 fuel-posttrain/src/norm_tweaking.rs	not-traced		names candle in its text; not judged
-fuel-quantized/Cargo.toml	own		no lineage; 2 of 32 lines verbatim in candle (6%)
+fuel-quantized/Cargo.toml	own		no lineage; 2 of 15 lines verbatim in candle (13%)
 fuel-quantized/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
 fuel-quantized/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENSE-MIT
 fuel-quantized/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the root THIRD-PARTY-NOTICES.md
-fuel-quantized/src/avx.rs	candle-modified	candle-core/src/quantized/avx.rs	rename/copy 70%; 78% of 500 lines verbatim
+fuel-quantized/examples/quantized_matmul_bench.rs	own		no lineage; 0 of 43 lines verbatim in candle (0%)
 fuel-quantized/src/awq_repack.rs	own		no lineage; 2 of 178 lines verbatim in candle (1%)
 fuel-quantized/src/cpu.rs	not-traced	candle-core/src/quantized/mod.rs	28 of 185 lines also appear in candle (mostly candle-core/src/quantized/mod.rs); not judged
 fuel-quantized/src/dequant.rs	own		no lineage; 0 of 177 lines verbatim in candle (0%)
 fuel-quantized/src/iq4.rs	ggml		llama.cpp / ggml (MIT), THIRD-PARTY-NOTICES.md
 fuel-quantized/src/iq_grid_types.rs	ggml		llama.cpp / ggml (MIT), THIRD-PARTY-NOTICES.md
 fuel-quantized/src/iq_grids.rs	ggml		llama.cpp / ggml (MIT), THIRD-PARTY-NOTICES.md
-fuel-quantized/src/k_quants.rs	candle-modified	candle-core/src/quantized/k_quants.rs	rename/copy 87%; 88% of 1112 lines verbatim
-fuel-quantized/src/lib.rs	own		no lineage; 2 of 27 lines verbatim in candle (7%)
-fuel-quantized/src/neon.rs	candle-modified	candle-core/src/quantized/neon.rs	rename/copy 73%; 77% of 382 lines verbatim
+fuel-quantized/src/k_quants.rs	candle-modified	candle-core/src/quantized/k_quants.rs	rename/copy 65%; 84% of 749 lines verbatim
+fuel-quantized/src/lib.rs	own		no lineage; 0 of 21 lines verbatim in candle (0%)
 fuel-quantized/src/tq_mx_types.rs	ggml		llama.cpp / ggml (MIT), THIRD-PARTY-NOTICES.md
 fuel-quantized/src/utils.rs	candle-modified	candle-core/src/quantized/utils.rs	rename/copy 72%; 96% of 157 lines verbatim
 fuel-tensor-tools/Cargo.toml	candle-modified	tensor-tools/Cargo.toml	rename/copy 46%; 57% of 14 lines verbatim
@@ -2020,7 +2019,7 @@ scripts/check-gaps-table.py	own		no lineage; 0 of 894 lines verbatim in candle (
 scripts/ci_change_class.py	own		no lineage; 1 of 69 lines verbatim in candle (1%)
 scripts/compose-check.ps1	own		no lineage; 0 of 133 lines verbatim in candle (0%)
 scripts/cuda-build.ps1	own		no lineage; 0 of 222 lines verbatim in candle (0%)
-scripts/doc_link_census.py	own		no lineage; 1 of 430 lines verbatim in candle (0%)
+scripts/doc_link_census.py	own		no lineage; 1 of 419 lines verbatim in candle (0%)
 scripts/doc_name_census.py	own		no lineage; 1 of 196 lines verbatim in candle (1%)
 scripts/fdx_field_coverage.py	own		no lineage; 1 of 193 lines verbatim in candle (1%)
 scripts/feature-combination-check.ps1	not-traced		names candle in its text; not judged
@@ -2084,6 +2083,6 @@ scripts/sharedop_assert_census.py	own		no lineage; 1 of 250 lines verbatim in ca
 scripts/spirv_audit.py	own		no lineage; 1 of 86 lines verbatim in candle (1%)
 scripts/split_use_fuel_storage.py	own		no lineage; 1 of 40 lines verbatim in candle (2%)
 scripts/step5_sweep.py	own		no lineage; 0 of 63 lines verbatim in candle (0%)
-scripts/structure_report.py	own		no lineage; 1 of 268 lines verbatim in candle (0%)
+scripts/structure_report.py	own		no lineage; 1 of 273 lines verbatim in candle (0%)
 scripts/sync-packaged-notices.py	own		judged: names candle only to describe its licences
 scripts/verify-packaged-crates.py	own		judged: names candle only to describe its licences

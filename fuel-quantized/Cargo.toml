@@ -10,27 +10,6 @@
 
 [features]
     default = []
-    # Opt in to the hardware SDOT path in `src/neon.rs` (ARMv8.2-A+).
-    #
-    # OFF BY DEFAULT ON PURPOSE, and not out of conservatism: the intrinsic
-    # `core::arch::aarch64::vdotq_s32` is an UNSTABLE library feature
-    # (`stdarch_neon_dotprod`, rust#117224) and cannot compile on stable Rust at
-    # all. Apple Silicon enables `dotprod` in its BASELINE target features, so
-    # gating on `target_feature = "dotprod"` alone selected the hardware arm for
-    # every stable aarch64-apple-darwin build and failed E0658 — which is how it
-    # broke both macOS CI jobs.
-    #
-    # Enable only on a toolchain where the intrinsic is available. The software
-    # fallback is not a correctness compromise: it computes the same total (see
-    # the contract note at the top of `src/neon.rs`), only more slowly.
-    neon-dotprod = []
-    # Replace the integer block dot products (`vec_dot`: Q8 activation rows, int8 x int8 multiplies, a
-    # scale applied to each block's integer sum) with plain floating point: each weight row is
-    # converted to f32 and dotted with the f32 activation row. OFF BY DEFAULT; a measuring
-    # instrument for the cost of NOT using per-block-scaled integer dot products (see
-    # docs/PATENT-SWEEP-CHARTS.md, the Nvidia '307 / '082 charts). Numerics differ slightly from
-    # the integer path (no activation quantisation), speed differs.
-    float-dot = []
 
 [dependencies]
     fuel-ir  = { workspace = true }

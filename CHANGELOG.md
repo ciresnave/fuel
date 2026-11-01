@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.36.0 - 2026-11-01
+
+### Breaking
+
+- The per-vector-scaled integer dot kernels are removed from `fuel-quantized` and the floating-point route is the only quantized CPU matmul (ROADMAP row 140, board 307). Removed: `GgmlType::vec_dot`, `vec_dot_unopt`, the `VecDotType` associated type, `DIRECT_COPY` and `direct_copy`, the `avx` and `neon` modules, the `float-dot` and `neon-dotprod` features and the `FLOAT_DOT` constant. `matmul` and `matmul_f16` now convert each weight row to f32 and take a plain f32 dot with the f32 activation row: no activation quantisation, no integer multiply, no scaling of an integer block sum. Every block format still reads, writes and dequantizes as before. Versions of `fuel-quantized` before this one were yanked.
+
 ## v0.35.18 - 2026-11-01
 
 ### Added

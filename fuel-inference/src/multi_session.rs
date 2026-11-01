@@ -2626,12 +2626,16 @@ mod tests {
             max_position_embeddings: 128,
             bos_token_id: None,
             eos_token_id: None,
-            // The real LLaMA-3.1 constants.
+            // The LLaMA-3.1 factor and frequency factors, with `original_max_position_embeddings`
+            // shrunk to 16 so the scaling is real on an 8-wide head. Measured at position 40 on the
+            // float route (ROADMAP row 140): 3.466e-5 with the real 8192 (the scaling moves almost
+            // nothing there; the 2.118e-3 this test used to record was mostly activation-rounding
+            // noise from the integer matmul), 1.352e-3 with 128, 2.139e-3 with 16.
             rope_scaling: Some(Llama3RopeConfig {
                 factor: 8.0,
                 low_freq_factor: 1.0,
                 high_freq_factor: 4.0,
-                original_max_position_embeddings: 8192,
+                original_max_position_embeddings: 16,
                 rope_type: Llama3RopeType::Llama3,
             }),
             tie_word_embeddings: false,
@@ -2739,7 +2743,8 @@ mod tests {
     /// ## Measured, so the next reader knows the actual headroom
     ///
     /// `|A-B| = 0.000e0` (bit-identical — both arms call the same function, as
-    /// a pure delegation should) and `|B-C| = 2.118e-3` against a `1e-3` floor.
+    /// a pure delegation should) and `|B-C| = 2.139e-3` against a `1e-3` floor
+    /// (re-measured on the float matmul route; see `scaled_q4_0_cfg`).
     /// So discrimination is total — exact-zero versus 2.1e-3 — but the margin
     /// above the floor is only **~2.1×**, not orders of magnitude. Lowering the
     /// decode position or shrinking `head_dim` will drop it under, at which
@@ -2761,8 +2766,8 @@ mod tests {
         let src = tiny_weights(&lazy_cfg, 909);
         let qmodel = QuantizedLlama3Model::from_f32_bake(cfg.clone(), src).expect("Q4_0 bake");
 
-        // Position 40 for the decode step — high enough that scaled/unscaled
-        // separate (see the arithmetic above), well inside max_position 128.
+        // Position 80 for the decode step — high enough that scaled/unscaled
+        // separate (see the arithmetic above), inside max_position 128 with room for the decode steps.
         let prompt: Vec<u32> = (0..40u32).map(|i| i % lazy_cfg.vocab_size as u32).collect();
         let next = 7u32;
 
