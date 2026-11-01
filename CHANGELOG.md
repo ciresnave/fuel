@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - CI: the portfolio job's SUP-004 rule (an include or path read that leaves its crate) reported 10 sites in four test files: `fuel/tests/facade_disjoint.rs`, `fuel/tests/feature_forwarding.rs`, `fuel-cpu-backend/tests/kiss_int_wrap.rs`, `fuel-tensor/tests/kiss_nan_conformance.rs`. All four are workspace-only tests a published tarball cannot compile anyway, already recorded with the same counts in the ratcheted `scripts/packaged-escapes-allowlist.txt`. Four file-level `[[allow]]` entries in `.coderipper.toml`, each with the reason; no directory-wide exclusion. Clears SUP-004 only.
 
+## v0.35.3 - 2026-11-01
+
+### Fixed
+
+- CI: the portfolio job's SEC-002 step (gitleaks) reports one `generic-api-key` finding at `fuel-dispatch/src/dispatch.rs:5008`. It is a false positive in history, not in the tree: a code comment in commit `734febbdd` on main (an earlier copy of the same change, `ea224011d`, is on other branches only). One `[[allow]]` entry in `.coderipper.toml` (rule, that file, that line, with the reason) waives it; no path-wide exclusion. The line cannot drift because the finding is in that immutable commit. This clears SEC-002 only: the same job still reports other findings of medium severity or above (SUP-004, reachability, licence, ci-security, unused-return-values), which are not part of this change.
+
 ## v0.35.2 - 2026-11-01
 
 ### Fixed

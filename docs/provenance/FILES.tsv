@@ -1,7 +1,7 @@
 path	class	candle_source	basis
 .anatomy.toml	own		no lineage; 0 of 8 lines verbatim in candle (0%)
 .cargo/config.toml	candle-modified	.cargo/config.toml	same path; 6% of 48 lines verbatim
-.coderipper.toml	own		no lineage; 1 of 13 lines verbatim in candle (8%)
+.coderipper.toml	own		no lineage; 1 of 7 lines verbatim in candle (14%)
 .git-blame-ignore-revs	own		no lineage; 0 of 19 lines verbatim in candle (0%)
 .gitattributes	own		no lineage; 0 of 17 lines verbatim in candle (0%)
 .github/CODEOWNERS	own		no lineage; 0 of 1 lines verbatim in candle (0%)
