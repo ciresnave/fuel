@@ -114,24 +114,34 @@ the S3 item count).
    This changes behaviour at the seeding boundary and needs the row 114 two-GPU probe as its
    oracle (it failed on exactly this code before the fix).
 4. **Identity in place of index** for the places that choose a device (row 125's selector).
-5. **Decide the storage abstraction** (section 7), then delete or adopt `DynBackendStorage` and
-   the Vulkan exception to it.
+5. **Park the trait-object alternative** (section 7): leave `DynBackendStorage` and the Vulkan
+   exception as they are and decide deletion later, with reachability output.
 6. **Move backend-gated code out of `fuel-dispatch`** (the JIT ingest path first) behind the
    backend crates' trait implementations.
 
-Steps 1 and 2 need no decision. Steps 3 to 6 follow from the one below.
+Steps 1 and 2 need no decision; the storage decision (section 7) is made.
 
-## 7. Decision needed before row 138 for this seam
+## 7. Decision (2026-11-01, CireSnave, relayed by the PM)
 
-Is the intended storage abstraction (a) the closed enum plus ops methods (what
-`storage-unification.md` specifies and what the code mostly is), or (b) trait objects
-(`DynBackendStorage`, what the backend contract defines and three backends implement)? Row 138 must
-write one contract for this seam, and an interface crate that carries a closed enum of backends
-cannot be split from the crates that own the backends; a trait-object interface can. That makes the
-answer decide whether S3 can ever become a seam between projects, which is why it is raised now
-and not at row 138. My reading: (b) is the only one that permits a split, (a) is what is built; the
-cost of moving from (a) to (b) is the 184-site match surface in `pipelined.rs` that steps 2 and 3
-shrink either way.
+The question was whether the storage abstraction is (a) the closed enum plus ops methods, or (b)
+trait objects. **Ruled: (a).** Keep the closed `BackendStorage` enum and write the
+`BackendStorageOps` methods the design specifies; revisit trait objects only if backends are ever
+to live outside Fuel. Row 138 may proceed on that basis.
+
+What follows for this seam:
+
+- Step 2 (the designed methods on `BackendStorage`) is now the main storage cleanup and needs no
+  further decision. It is how the 184-site match surface shrinks.
+- Step 5 changes: `DynBackendStorage` and the Vulkan exception to it are not adopted. They stay as
+  they are and are recorded as the parked alternative; whether they are deleted is a separate
+  decision, to be made with CodeRipper's reachability output in hand (it already reports several of
+  these traits as having no callers).
+- The seam contract for row 138 is therefore the enum plus the ops methods plus the kernel call
+  signature, which means the backend crates stay in the Fuel workspace. A split of the backends
+  into separate projects is off the table under this ruling; the kernel-runner seams that already
+  exist (the `fuel-kernel-seam` crates) are unaffected.
+- The leak list in section 3 still stands. The device registry (step 3) and identity in place of
+  index (step 4) are independent of this ruling.
 
 ## 8. Limits
 
