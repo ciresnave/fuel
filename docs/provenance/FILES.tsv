@@ -962,7 +962,7 @@ fuel-hardware/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICE
 fuel-hardware/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENSE-MIT
 fuel-hardware/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the root THIRD-PARTY-NOTICES.md
 fuel-hardware/src/enumerate.rs	own		no lineage; 0 of 39 lines verbatim in candle (0%)
-fuel-hardware/src/inventory.rs	own		no lineage; 1 of 91 lines verbatim in candle (1%)
+fuel-hardware/src/inventory.rs	own		no lineage; 1 of 94 lines verbatim in candle (1%)
 fuel-hardware/src/lib.rs	own		no lineage; 0 of 9 lines verbatim in candle (0%)
 fuel-hardware/src/probe.rs	own		no lineage; 4 of 218 lines verbatim in candle (2%)
 fuel-hardware/src/transfer_cost.rs	own		no lineage; 3 of 553 lines verbatim in candle (1%)
