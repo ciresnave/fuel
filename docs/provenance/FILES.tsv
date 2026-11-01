@@ -13,7 +13,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 452 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 453 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -24,7 +24,7 @@ LICENSE-MIT	candle	LICENSE-MIT	identical path; 100% of 18 lines verbatim
 Makefile	candle	Makefile	identical path; 33% of 6 lines verbatim
 PATTERNS.md	own		no lineage; 4 of 179 lines verbatim in candle (2%)
 README.md	candle-modified	README.md	same path; 53% of 383 lines verbatim
-ROADMAP.md	own		no lineage; 0 of 2583 lines verbatim in candle (0%)
+ROADMAP.md	own		no lineage; 0 of 2584 lines verbatim in candle (0%)
 SECURITY.md	own		no lineage; 0 of 3 lines verbatim in candle (0%)
 THIRD-PARTY-NOTICES.md	own		judged: the ledger; it reproduces upstream licence texts, which is why git sees a copy of LICENSE-APACHE
 clippy.toml	own		no lineage; 0 of 30 lines verbatim in candle (0%)
@@ -1044,7 +1044,7 @@ fuel-ir/tests/doc_marker_consistency_allowlist.txt	own		no lineage; 0 of 4 lines
 fuel-ir/tests/exhaustive_by_design_marker.rs	own		no lineage; 2 of 177 lines verbatim in candle (1%)
 fuel-ir/tests/gap236_precondition.rs	own		no lineage; 1 of 155 lines verbatim in candle (1%)
 fuel-ir/tests/gap302_known_absent.txt	own		no lineage; 0 of 31 lines verbatim in candle (0%)
-fuel-ir/tests/gap_hedge_allowlist.txt	own		no lineage; 0 of 202 lines verbatim in candle (0%)
+fuel-ir/tests/gap_hedge_allowlist.txt	own		no lineage; 0 of 200 lines verbatim in candle (0%)
 fuel-ir/tests/gap_hedges.rs	own		no lineage; 2 of 314 lines verbatim in candle (1%)
 fuel-ir/tests/gap_refs.rs	own		no lineage; 1 of 258 lines verbatim in candle (0%)
 fuel-ir/tests/method_rules_index_join.rs	own		no lineage; 0 of 223 lines verbatim in candle (0%)
@@ -1487,20 +1487,18 @@ fuel-posttrain/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENS
 fuel-posttrain/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the root THIRD-PARTY-NOTICES.md
 fuel-posttrain/src/lib.rs	not-traced		names candle in its text; not judged
 fuel-posttrain/src/norm_tweaking.rs	not-traced		names candle in its text; not judged
-fuel-quantized/Cargo.toml	own		no lineage; 2 of 32 lines verbatim in candle (6%)
+fuel-quantized/Cargo.toml	own		no lineage; 2 of 15 lines verbatim in candle (13%)
 fuel-quantized/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
 fuel-quantized/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENSE-MIT
 fuel-quantized/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the root THIRD-PARTY-NOTICES.md
-fuel-quantized/src/avx.rs	candle-modified	candle-core/src/quantized/avx.rs	rename/copy 70%; 78% of 500 lines verbatim
 fuel-quantized/src/awq_repack.rs	own		no lineage; 2 of 178 lines verbatim in candle (1%)
 fuel-quantized/src/cpu.rs	not-traced	candle-core/src/quantized/mod.rs	28 of 185 lines also appear in candle (mostly candle-core/src/quantized/mod.rs); not judged
 fuel-quantized/src/dequant.rs	own		no lineage; 0 of 177 lines verbatim in candle (0%)
 fuel-quantized/src/iq4.rs	ggml		llama.cpp / ggml (MIT), THIRD-PARTY-NOTICES.md
 fuel-quantized/src/iq_grid_types.rs	ggml		llama.cpp / ggml (MIT), THIRD-PARTY-NOTICES.md
 fuel-quantized/src/iq_grids.rs	ggml		llama.cpp / ggml (MIT), THIRD-PARTY-NOTICES.md
-fuel-quantized/src/k_quants.rs	candle-modified	candle-core/src/quantized/k_quants.rs	rename/copy 87%; 88% of 1112 lines verbatim
-fuel-quantized/src/lib.rs	own		no lineage; 2 of 27 lines verbatim in candle (7%)
-fuel-quantized/src/neon.rs	candle-modified	candle-core/src/quantized/neon.rs	rename/copy 73%; 77% of 382 lines verbatim
+fuel-quantized/src/k_quants.rs	candle-modified	candle-core/src/quantized/k_quants.rs	rename/copy 65%; 84% of 749 lines verbatim
+fuel-quantized/src/lib.rs	own		no lineage; 0 of 21 lines verbatim in candle (0%)
 fuel-quantized/src/tq_mx_types.rs	ggml		llama.cpp / ggml (MIT), THIRD-PARTY-NOTICES.md
 fuel-quantized/src/utils.rs	candle-modified	candle-core/src/quantized/utils.rs	rename/copy 72%; 96% of 157 lines verbatim
 fuel-tensor-tools/Cargo.toml	candle-modified	tensor-tools/Cargo.toml	rename/copy 46%; 57% of 14 lines verbatim
