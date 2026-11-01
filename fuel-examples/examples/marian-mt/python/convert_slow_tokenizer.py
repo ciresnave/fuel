@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2018 The HuggingFace Inc. team (the SpmConverter text this class adapts), Apache License 2.0.
+# Derived from huggingface/transformers, src/transformers/convert_slow_tokenizer.py (SpmConverter), reached through
+# huggingface/candle, candle-examples/examples/marian-mt/python/convert_slow_tokenizer.py, body unchanged here; see THIRD-PARTY-NOTICES.md.
 from pathlib import Path
 import warnings
 
