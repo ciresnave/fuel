@@ -2089,6 +2089,26 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
         Ok(id)
     }
 
+    /// [`add_session_sharing_prefix`](Self::add_session_sharing_prefix) with the full sampling
+    /// controls (ROADMAP row 133). The params are checked BEFORE the prefix is spliced, so a refusal
+    /// leaves the pool exactly as it was.
+    pub fn add_session_sharing_prefix_with_params(
+        &mut self,
+        prefix: PrefixId,
+        prompt: &[u32],
+        params: SamplingParams,
+        eos_ids: Option<Vec<u32>>,
+        max_new: usize,
+    ) -> fuel::Result<SessionId> {
+        let strategy = admit_params(&params)?;
+        let id = self.add_session_sharing_prefix(prefix, prompt, strategy, eos_ids, max_new)?;
+        if let Some(s) = self.sessions.last_mut() {
+            s.rng_state = params.seed;
+            s.params = Some(params);
+        }
+        Ok(id)
+    }
+
     /// Advance one quantum: prefill any `Prefill` sessions (feed the whole prompt
     /// one token at a time — `Op::PagedAttn` is decode-only, and one-at-a-time is
     /// causally equivalent to a batched prefill), then decode-advance every
@@ -5918,5 +5938,61 @@ mod tests {
                 assert!((x.logprob - y.logprob).abs() < 1e-3, "{x:?} vs {y:?}");
             }
         }
+    }
+
+    /// The params variant of prefix sharing: a sharer admitted with `SamplingParams` samples the same
+    /// tokens as one admitted with the equivalent strategy, records logprobs when asked, and an
+    /// invalid params leaves no session behind.
+    #[test]
+    fn paged_scheduler_prefix_sharing_takes_params() {
+        let model = tiny_model(9999);
+        let budget = KvBudget {
+            block_size: 4,
+            num_blocks: 64,
+        };
+        let prefix = [1u32, 2, 3, 4, 5, 6, 7, 8];
+        let full: Vec<u32> = prefix.iter().copied().chain([9, 10, 11]).collect();
+        let run = |params: Option<SamplingParams>| {
+            let mut sched =
+                PagedSessionScheduler::new(&model, budget, DType::F32, &Device::cpu()).unwrap();
+            let donor = sched
+                .add_session(&prefix, SamplingStrategy::Greedy, None, 1)
+                .unwrap();
+            sched.step();
+            let pid = sched.register_prefix(donor, 2).unwrap();
+            sched.reap_finished();
+            let id = match params {
+                Some(p) => sched
+                    .add_session_sharing_prefix_with_params(pid, &full, p, None, 5)
+                    .unwrap(),
+                None => sched
+                    .add_session_sharing_prefix(pid, &full, SamplingStrategy::Greedy, None, 5)
+                    .unwrap(),
+            };
+            for _ in 0..40 {
+                sched.step();
+            }
+            let bad = SamplingParams {
+                top_k: Some(0),
+                ..greedy_params()
+            };
+            let n = sched.sessions.len();
+            assert!(
+                sched
+                    .add_session_sharing_prefix_with_params(pid, &full, bad, None, 5)
+                    .is_err()
+            );
+            assert_eq!(sched.sessions.len(), n, "a refusal admits nothing");
+            (
+                sched.session_new_tokens(id).unwrap().to_vec(),
+                sched.session_logprobs(id).unwrap().to_vec(),
+            )
+        };
+        let (plain, plain_lp) = run(None);
+        let (with, with_lp) = run(Some(lp_params(3)));
+        assert_eq!(plain.len(), 5);
+        assert_eq!(with, plain, "params change no token under greedy");
+        assert!(plain_lp.is_empty());
+        check_logprobs(&with, &with_lp, 3);
     }
 }
