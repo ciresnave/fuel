@@ -58,7 +58,7 @@ docs/design-notes/2026-10-30-kquant-resident-weights.md	own		no lineage; 0 of 42
 docs/design-notes/2026-10-30-qwen35-27b-audit.md	own		no lineage; 0 of 167 lines verbatim in candle (0%)
 docs/design-notes/2026-10-30-qwen35-composed-forward-row-115.md	own		no lineage; 0 of 68 lines verbatim in candle (0%)
 docs/design-notes/2026-11-01-seams-and-cleanup-program.md	own		no lineage; 0 of 76 lines verbatim in candle (0%)
-docs/design-notes/2026-11-01-structure-measurement.md	own		no lineage; 0 of 155 lines verbatim in candle (0%)
+docs/design-notes/2026-11-01-structure-measurement.md	own		no lineage; 0 of 163 lines verbatim in candle (0%)
 docs/design/facade-inversion-recipe.md	own		no lineage; 0 of 216 lines verbatim in candle (0%)
 docs/design/gaps-status-conversion-table.md	own		no lineage; 0 of 80 lines verbatim in candle (0%)
 docs/design/gaps-status-vocabulary.md	own		no lineage; 0 of 213 lines verbatim in candle (0%)
@@ -2077,6 +2077,6 @@ scripts/sharedop_assert_census.py	own		no lineage; 1 of 250 lines verbatim in ca
 scripts/spirv_audit.py	own		no lineage; 1 of 86 lines verbatim in candle (1%)
 scripts/split_use_fuel_storage.py	own		no lineage; 1 of 40 lines verbatim in candle (2%)
 scripts/step5_sweep.py	own		no lineage; 0 of 63 lines verbatim in candle (0%)
-scripts/structure_report.py	own		no lineage; 1 of 226 lines verbatim in candle (0%)
+scripts/structure_report.py	own		no lineage; 1 of 253 lines verbatim in candle (0%)
 scripts/sync-packaged-notices.py	own		judged: names candle only to describe its licences
 scripts/verify-packaged-crates.py	own		judged: names candle only to describe its licences
