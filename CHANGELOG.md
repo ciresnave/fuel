@@ -1,11 +1,41 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
-## v0.34.9 - 2026-10-31
+## v0.35.1 - 2026-10-31
 
 ### Added
 
 - ROADMAP row 134, slice 1: `.github/workflows/lavapipe-vulkan.yml` runs every live Vulkan test (`vulkan_dispatch_live`, `--ignored`) on Lavapipe (subgroup size 8) on a hosted Linux runner, a CPU job. `FUEL_REQUIRE_VULKAN=1` makes `backend_or_skip` panic when no device is found instead of skipping every test green. The leg is expected to be RED on main until the subgroup partial-combine kernels are fixed (slice 2); it is not a required check.
+
+## v0.35.0 - 2026-11-01
+
+### Changed
+
+- **Breaking:** `unpopped-vocab` 0.38.1 -> 0.40.0 (`fuel-kernel-seam` and the `jit` glue in `fuel-dispatch` name it; `fuel-kernel-seam` re-exports its vocabulary types, so a consumer of those types moves with it). No Fuel source change was needed: `Stmt` and `AtomicRmw` are not named anywhere in Fuel's `*.rs` (`git grep -w -E 'Stmt|AtomicRmw' -- '*.rs'` finds nothing), so there is no exhaustive match to add an arm to. `baracuda-kernels-types` (alpha.158) still resolves its own `unpopped-vocab` 0.22 for the telemetry/cuda paths until Baracuda publishes its family.
+
+## v0.34.8 - 2026-10-31
+
+### Added
+
+- ROADMAP row 133, slice 1: `fuel_tensor::sampling` adds `SamplingParams` (temperature, top_k, top_p, min_p, presence, frequency and repetition penalties, seed, logprobs) and the pure host sampler `sample_with_params(logits, &params, history, &mut rng) -> Sampled { token, logprob, top_logprobs }`. Order: penalties, then greedy if temperature <= 0 or NaN, else softmax, top_k, top_p, min_p. With only a temperature set it reduces to `sample_logits` on the same RNG stream (tested). Logprobs are the model's own `log_softmax` of the input logits, unaffected by the controls. Invalid params, empty or non-finite logits and out-of-vocabulary history are typed errors. Not wired into any scheduler (slice 2), no logprobs through the batched arm (slice 3); `SamplingStrategy` and `sample_logits` are unchanged.
+
+## v0.34.7 - 2026-10-31
+
+### Docs
+
+- ROADMAP rows 132 (KV export and restore for Lightbulb checkpoints, lightbulb#275), 133 (sampling controls: top_k, top_p, min_p, penalties, logprobs) and 134 (subgroup partial-combine drops partials below 16 lanes, read from source in 27 kernels). Nothing is built; all three rows are NOT STARTED.
+
+## v0.34.6 - 2026-10-31
+
+### Fixed
+
+- `SamplingStrategy::Temperature { temp: 0.0 }` is documented as "effectively greedy" but `sample_logits` set the inverse temperature to 1.0 and sampled from the UNSCALED softmax, so a caller asking for greedy through the temperature knob got random tokens (the fix is in `fuel-tensor/src/lazy.rs`). `temp <= 0.0` and NaN are now greedy. New `fuel-tensor/tests/sampling_temperature_zero.rs`: temp 0.0 failed on every draw before the fix; a positive-temperature control proves the harness can see non-greedy output. Not changed: `spec_softmax_temp` (speculative decode) has the same `temp == 0.0` shortcut and is a separate decision (a one-hot distribution would change the accept rule).
+
+## v0.34.5 - 2026-10-31
+
+### Fixed
+
+- Vulkan f64 `exp` (and `sigmoid`, `silu`, `tanh` through it) returned 0.0 or a huge garbage double of either sign for `x < ~-708.4`: `poly_exp_d` scaled by `2^k` through `pow2_int`, whose bit pattern is valid only for `k >= -1022`, and the clamp at `x = -745` lets `k` reach -1075. Reported by vulkane (PR 132) for its copy of the same code. `unary_f64.slang` now scales in two steps (`2^(k+200)`, then `2^-200`) below `k = -1022`, so the result rounds once into the subnormal range; `unary_f64.spv` is regenerated. `vulkan_dispatch_unary_exp_f64` now also runs a 3001-point sweep over [-745, -700] (no new `#[ignore]`): 2418 points wrong before the fix, 0 after, on the local Vulkan adapter via `scripts/gpu-run.ps1`. `softmax_f64` is not affected (it calls the native `exp`, not `poly_exp_d`). Only `exp` is swept; sigmoid, silu and tanh at large arguments share the fix but are not swept.
 
 ## v0.34.4 - 2026-10-31
 
