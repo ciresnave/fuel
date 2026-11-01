@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - ROADMAP rows 136 to 139 and a design note (`docs/design-notes/2026-11-01-seams-and-cleanup-program.md`) for the work of splitting more of Fuel into separate projects, in a fixed order: measure the structure (136), clean up separation of concerns near the candidate seams (137), define the seams as tested interface crates (138), and only then split, one seam at a time and with its own go (139). Documentation only.
 
+## v0.35.14 - 2026-11-01
+
+### Added
+
+- `fuel_hardware::inventory::inventory()`: one call listing every device of every compiled-in backend with its name, total bytes and FREE bytes (CUDA `cuMemGetInfo`, Vulkan `VK_EXT_memory_budget`, host available memory), keyed by backend and device index, so a placement layer need not probe the OS itself (ROADMAP row 131). `free_bytes` is `None` when a device cannot report it. Checked live on this box for the CPU, CUDA and both Vulkan GPUs (Vulkan device index order was not stable between two runs, so identify devices by name, not index).
+
 ## v0.35.13 - 2026-11-01
 
 ### Fixed

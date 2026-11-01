@@ -64,7 +64,7 @@ CireSnave asked whether Fuel should remove the candle code it still carries so t
 | `fuel-examples` | 250 | 56 | 162 | 21 |  | 8 |  | 3 |
 | `fuel-formats` | 11 |  | 2 | 2 |  | 4 |  | 3 |
 | `fuel-graph` | 38 |  |  | 3 |  | 32 |  | 3 |
-| `fuel-hardware` | 9 |  | 1 |  |  | 5 |  | 3 |
+| `fuel-hardware` | 10 |  | 1 |  |  | 6 |  | 3 |
 | `fuel-inference` | 26 |  |  | 2 |  | 21 |  | 3 |
 | `fuel-ir` | 62 |  | 6 | 8 |  | 45 |  | 3 |
 | `fuel-kernel-seam` | 5 |  |  |  |  | 2 |  | 3 |
