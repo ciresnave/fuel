@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - Stable device identity (ROADMAP row 125, step one): `fuel_ir::DeviceIdentity` (UUID and PCI address) with a matcher that treats an all-zero UUID as absent and never calls an unknown pair the same card; `device_identities()` for the CUDA and Vulkan backends and `VulkanBackend::identity()`; `DeviceMemory.identity` in the device inventory. On this box the CUDA and Vulkan views of the RTX 4070 report the same UUID. The two-GPU Vulkan probe now picks its GPUs by identity instead of by enumeration index, because Vulkan's device order differs between builds here.
 
+## v0.35.15 - 2026-11-01
+
+### Added
+
+- Vulkan: a Q8_0 QMatMul with one activation row (decode) now runs a fused dequantize-in-the-dot-product gemv (`qmatvec_q8_0`) instead of dequantizing the whole weight to an f32 scratch buffer first (ROADMAP row 119, slice 1). Prefill (more than one row) is unchanged. Q6_K QMatMul now has a Vulkan path at all (`qmatvec_q6_k`, slice 2; it re-reads the weight once per row when there is more than one row, and before it `qmatmul_vk` returned a "not wired" error). Both are checked against an exact host oracle on the RTX 4070. Measured on the same card: single-row Q8_0 decode is 4.3x to 5.4x faster than the old dequantize-then-matmul path on Qwen3.5-4B shapes (ssm_out 467 to 108 us, a 9216 x 2560 projection 1094 to 204 us).
+
 ## v0.35.14 - 2026-11-01
 
 ### Added
