@@ -163,8 +163,9 @@ mod tests {
         assert_eq!(inv[1].free_bytes, Some(5_000));
     }
 
-    /// The live call returns at least the CPU, with a measured free value no larger than its total
-    /// (the host query exists on every platform this builds on). Positive control for the wiring.
+    /// The live call returns at least the CPU. Where the host query is implemented (Linux, Windows)
+    /// free memory is measured and no larger than the total; elsewhere (macOS today) both are
+    /// honestly absent, so this goes red the day the query lands there and the cfg below should widen.
     #[test]
     fn live_inventory_includes_the_host_with_measured_free_memory() {
         let inv = inventory();
@@ -175,12 +176,15 @@ mod tests {
             .iter()
             .find(|m| m.backend == BackendId::Cpu)
             .expect("the CPU is always enumerated");
-        let free = cpu.free_bytes.expect("host available memory is measurable");
-        assert!(free > 0);
-        assert!(
-            cpu.total_bytes > 0,
-            "the host total is filled from the host query"
-        );
-        assert!(free <= cpu.total_bytes);
+        let implemented = cfg!(any(target_os = "linux", target_os = "windows"));
+        assert_eq!(cpu.free_bytes.is_some(), implemented, "{cpu:?}");
+        if implemented {
+            assert!(cpu.free_bytes.unwrap() > 0);
+            assert!(
+                cpu.total_bytes > 0,
+                "the host total is filled from the host query"
+            );
+            assert!(cpu.free_bytes.unwrap() <= cpu.total_bytes);
+        }
     }
 }
