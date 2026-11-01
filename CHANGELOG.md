@@ -7,6 +7,24 @@ This documents the main changes to the `fuel` workspace.
 
 - CI: the portfolio job's unused-return-values rule reported two Medium findings: `DeviceTopology::add_device` (`fuel-parallel/src/topology.rs`, all 8 call sites drop the returned id) and `InferenceContext::remove` (`fuel-tensor/src/inference_context.rs`, all 15 call sites drop the returned storage). Both return values are real API (an index a caller who wires links keeps; the evicted entry, as `HashMap::remove` does); changing a published signature to unit for a lint would be a breaking change. Waived with one `[[allow]]` each, with the reason, in a new `fuel-parallel/.coderipper.toml` and `fuel-tensor/.coderipper.toml` (a workspace sweep reads each member's own file, not the root's). Clears those two only; the two Low findings of the same rule are untouched.
 
+## v0.35.5 - 2026-11-01
+
+### Fixed
+
+- CI: the portfolio job's ci-security rule reported `.github/workflows/checkpoint-tests.yml`, job `qwen35-gated-deltanet`, for running on a self-hosted runner while naming no GPU. It is deliberately self-hosted and CPU-only (ROADMAP row 130; the standing instruction that tests GitHub cannot run go to a self-hosted run), and the rule's concern, a pull request running its own workflow text on the machine, does not apply: it triggers only on push to main and workflow_dispatch and has no secrets. One `[[allow]]` entry in `.coderipper.toml` with that reason. Clears that finding only.
+
+## v0.35.4 - 2026-11-01
+
+### Fixed
+
+- CI: the portfolio job's SUP-004 rule (an include or path read that leaves its crate) reported 10 sites in four test files: `fuel/tests/facade_disjoint.rs`, `fuel/tests/feature_forwarding.rs`, `fuel-cpu-backend/tests/kiss_int_wrap.rs`, `fuel-tensor/tests/kiss_nan_conformance.rs`. All four are workspace-only tests a published tarball cannot compile anyway, already recorded with the same counts in the ratcheted `scripts/packaged-escapes-allowlist.txt`. Four file-level `[[allow]]` entries in `.coderipper.toml`, each with the reason; no directory-wide exclusion. Clears SUP-004 only.
+
+## v0.35.3 - 2026-11-01
+
+### Fixed
+
+- CI: the portfolio job's SEC-002 step (gitleaks) reports one `generic-api-key` finding at `fuel-dispatch/src/dispatch.rs:5008`. It is a false positive in history, not in the tree: a code comment in commit `734febbdd` on main (an earlier copy of the same change, `ea224011d`, is on other branches only). One `[[allow]]` entry in `.coderipper.toml` (rule, that file, that line, with the reason) waives it; no path-wide exclusion. The line cannot drift because the finding is in that immutable commit. This clears SEC-002 only: the same job still reports other findings of medium severity or above (SUP-004, reachability, licence, ci-security, unused-return-values), which are not part of this change.
+
 ## v0.35.2 - 2026-11-01
 
 ### Fixed

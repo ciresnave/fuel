@@ -1,7 +1,7 @@
 path	class	candle_source	basis
 .anatomy.toml	own		no lineage; 0 of 8 lines verbatim in candle (0%)
 .cargo/config.toml	candle-modified	.cargo/config.toml	same path; 6% of 48 lines verbatim
-.coderipper.toml	own		no lineage; 1 of 5 lines verbatim in candle (20%)
+.coderipper.toml	own		no lineage; 1 of 17 lines verbatim in candle (6%)
 .git-blame-ignore-revs	own		no lineage; 0 of 19 lines verbatim in candle (0%)
 .gitattributes	own		no lineage; 0 of 17 lines verbatim in candle (0%)
 .github/CODEOWNERS	own		no lineage; 0 of 1 lines verbatim in candle (0%)
@@ -13,7 +13,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 440 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 442 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -1462,7 +1462,6 @@ fuel-onnx/src/lazy_eval_ops.rs	own		no lineage; 2 of 356 lines verbatim in candl
 fuel-onnx/src/lib.rs	not-traced	candle-onnx/src/lib.rs	6 of 41 lines also appear in candle (mostly candle-onnx/src/lib.rs); not judged
 fuel-onnx/src/onnx.proto3	candle	candle-onnx/src/onnx.proto3	rename/copy 100%; 100% of 491 lines verbatim
 fuel-onnx/tests/lazy_ops.rs	own		no lineage; 7 of 303 lines verbatim in candle (2%)
-fuel-parallel/.coderipper.toml	own		no lineage; 0 of 3 lines verbatim in candle (0%)
 fuel-parallel/Cargo.toml	own		no lineage; 3 of 22 lines verbatim in candle (14%)
 fuel-parallel/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
 fuel-parallel/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENSE-MIT
@@ -1502,7 +1501,6 @@ fuel-tensor-tools/LICENSE-APACHE	copy		byte-identical packaged copy of the root 
 fuel-tensor-tools/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENSE-MIT
 fuel-tensor-tools/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the root THIRD-PARTY-NOTICES.md
 fuel-tensor-tools/src/main.rs	not-traced	tensor-tools/src/main.rs	33 of 279 lines also appear in candle (mostly tensor-tools/src/main.rs); not judged
-fuel-tensor/.coderipper.toml	own		no lineage; 0 of 4 lines verbatim in candle (0%)
 fuel-tensor/Cargo.toml	own		no lineage; 30 of 81 lines verbatim in candle (37%)
 fuel-tensor/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
 fuel-tensor/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENSE-MIT
