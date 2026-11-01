@@ -430,6 +430,7 @@ pipelines! {
     dequant_q8_0_pipeline, dequant_q8_0_layout, DEQUANT_Q8_0, layout_2s1u, gated;
     dequant_q4_km_pipeline, dequant_q4_km_layout, DEQUANT_Q4_KM, layout_2s1u, gated;
     qmatvec_q4_0_pipeline, qmatvec_q4_0_layout, QMATVEC_Q4_0, layout_3s1u, gated;
+    qmatvec_q8_0_pipeline, qmatvec_q8_0_layout, QMATVEC_Q8_0, layout_3s1u, gated;
     matmul_q4_0_tiled_pipeline, matmul_q4_0_tiled_layout, MATMUL_Q4_0_TILED, layout_3s1u, gated;
     quantize_q8_0_pipeline, quantize_q8_0_layout, QUANTIZE_Q8_0, layout_2s1u, gated;
 }

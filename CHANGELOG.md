@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.14 - 2026-11-01
+
+### Added
+
+- Vulkan: a Q8_0 QMatMul with one activation row (decode) now runs a fused dequantize-in-the-dot-product gemv (`qmatvec_q8_0`) instead of dequantizing the whole weight to an f32 scratch buffer first (ROADMAP row 119, slice 1). Prefill (more than one row) is unchanged. Checked against an exact host oracle on the RTX 4070; speed is not measured yet.
+
 ## v0.35.10 - 2026-11-01
 
 ### Added

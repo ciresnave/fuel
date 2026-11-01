@@ -5850,6 +5850,99 @@ impl VulkanBackend {
         )
     }
 
+    /// Fused Q8_0 × F32 gemv for `m == 1` (one dispatch per batch row, one workgroup per output
+    /// column). Weights are shared across batches. See `qmatvec_q8_0.slang`.
+    fn qmatvec_q8_0_bytes(
+        &self,
+        a_f32: &VulkanStorageBytes,
+        w_q8_0: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        batch: usize,
+        k: usize,
+        n: usize,
+    ) -> fuel_ir::Result<()> {
+        let batch = batch.max(1);
+        let need_a = batch * k * 4;
+        let need_w = n * (k / 32) * 34; // 34 bytes per Q8_0 block
+        let need_out = batch * n * 4;
+        if a_f32.len_bytes() < need_a {
+            fuel_ir::bail!("qmatvec_q8_0_bytes: A {} < {need_a}", a_f32.len_bytes());
+        }
+        if w_q8_0.len_bytes() < need_w {
+            fuel_ir::bail!("qmatvec_q8_0_bytes: W {} < {need_w}", w_q8_0.len_bytes());
+        }
+        if out.len_bytes() < need_out {
+            fuel_ir::bail!("qmatvec_q8_0_bytes: O {} < {need_out}", out.len_bytes());
+        }
+        let a_buf = a_f32.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("qmatvec_q8_0_bytes: A is host-evicted; fault back first".into())
+        })?;
+        let w_buf = w_q8_0.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("qmatvec_q8_0_bytes: W is host-evicted; fault back first".into())
+        })?;
+        let out_buf = out.buffer_opt().ok_or_else(|| {
+            fuel_ir::Error::Msg("qmatvec_q8_0_bytes: O is host-evicted; fault back first".into())
+        })?;
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::NoUninit)]
+        struct QmvParams {
+            n: u32,
+            k: u32,
+            blocks_per_row: u32,
+            _pad: u32,
+        }
+        let p = QmvParams {
+            n: n as u32,
+            k: k as u32,
+            blocks_per_row: (k / 32) as u32,
+            _pad: 0,
+        };
+        for b in 0..batch {
+            let (pbuf, pmem) = self.upload_params(&p)?;
+            let desc = self
+                .pipelines
+                .allocate_desc(&self.pipelines.layout_3s1u)
+                .map_err(vk_err)?;
+            desc.write_buffer(
+                0,
+                DescriptorType::STORAGE_BUFFER,
+                a_buf,
+                (b * k * 4) as u64,
+                (k * 4) as u64,
+            );
+            desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, w_buf, 0, need_w as u64);
+            desc.write_buffer(
+                2,
+                DescriptorType::STORAGE_BUFFER,
+                out_buf,
+                (b * n * 4) as u64,
+                (n * 4) as u64,
+            );
+            desc.write_buffer(
+                3,
+                DescriptorType::UNIFORM_BUFFER,
+                &pbuf,
+                0,
+                std::mem::size_of::<QmvParams>() as u64,
+            );
+            let rb = [a_buf.raw(), w_buf.raw()];
+            let wb = [out_buf.raw()];
+            self.record_dispatch_batched(
+                "qmatvec_q8_0",
+                self.pipelines
+                    .pipeline(&self.pipelines.qmatvec_q8_0_pipeline, "qmatvec_q8_0")?,
+                &self.pipelines.qmatvec_q8_0_layout,
+                desc,
+                (n as u32, 1, 1),
+                vec![(pbuf, pmem)],
+                &rb,
+                &wb,
+            )?;
+        }
+        self.flush_pending()?;
+        Ok(())
+    }
+
     /// Q8_0 × F32 matmul over byte-storage. Same dequant-then-matmul path
     /// as `matmul_q4_km_bytes`. No fused kernel yet.
     pub fn matmul_q8_0_bytes(
@@ -5867,6 +5960,10 @@ impl VulkanBackend {
             fuel_ir::bail!(
                 "matmul_q8_0_bytes: k ({k}) must be a multiple of {BLCK_SIZE} (Q8_0 block size)",
             );
+        }
+        if m == 1 {
+            // Decode: fused gemv, the weight stays quantized (no f32 scratch of the whole matrix).
+            return self.qmatvec_q8_0_bytes(a_f32, w_q8_0, out, batch, k, n);
         }
         let n_blocks = n * (k / BLCK_SIZE);
         let n_elements = n * k;
