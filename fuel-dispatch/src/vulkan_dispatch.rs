@@ -4089,7 +4089,7 @@ pub mod cumsum {
 //   - Q4_K_M → dequantize_q4_km to f32 scratch, then matmul_f32_bytes.
 //   - Q8_0   → fused qmatvec_q8_0 (M=1); dequantize_q8_0 to f32 scratch, then matmul_f32_bytes (M>1).
 //   - Q6_K   → fused qmatvec_q6_k for every row (no tiled or dequant kernel yet).
-// Other QuantTypes (Q4_1, Q5_*, Q2K/Q3K/Q5K, Q8_1) are not yet wired —
+// Other QuantTypes (Q4_1, Q5_*, Q2K/Q3K/Q5K, Q8_1) have no Vulkan kernel —
 // the wrapper returns an error so the route picker falls back to CPU.
 
 pub mod qmatmul {
