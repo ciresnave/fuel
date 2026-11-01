@@ -2214,23 +2214,6 @@ fn alias_groups(
 /// Returns the number of safety copies inserted (for telemetry /
 /// testing).
 pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize {
-    /// Default [`DeviceLocation`] for a `BackendId` when the graph has
-    /// no per-node `placement` set. Single-GPU convention (gpu_id 0) —
-    /// mirrors `fuel_dispatch::plan::default_device_for`, duplicated
-    /// here because `fuel-graph` doesn't depend on `fuel-dispatch`.
-    /// `insert_safety_copies`' own `target_location` fallback is this
-    /// function's sole caller.
-    fn device_location_for_backend(backend: fuel_ir::probe::BackendId) -> DeviceLocation {
-        use fuel_ir::probe::BackendId;
-        match backend {
-            BackendId::Cpu => DeviceLocation::Cpu,
-            BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
-            BackendId::Vulkan => DeviceLocation::Vulkan { gpu_id: 0 },
-            BackendId::Metal => DeviceLocation::Metal { gpu_id: 0 },
-            _ => DeviceLocation::Cpu,
-        }
-    }
-
     let order = topo_order_multi(graph, roots);
 
     // Combined precedence graph: data edges (input → consumer) plus
@@ -2401,7 +2384,7 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
                 graph
                     .target_backend(target)
                     .or_else(|| graph.target_backend(destructive_nid))
-                    .map(device_location_for_backend)
+                    .map(fuel_ir::probe::BackendId::default_location)
             })
             .unwrap_or(DeviceLocation::Cpu);
         let copy_id = graph.push(crate::Node {

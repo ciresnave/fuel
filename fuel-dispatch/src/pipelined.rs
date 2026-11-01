@@ -2966,12 +2966,7 @@ fn compile_one(
         // arm consults target_location for allocation routing); set
         // it to target's backend for consistency with how downstream
         // nodes inherit/read it.
-        let target_backend = match target {
-            DeviceLocation::Cpu => BackendId::Cpu,
-            DeviceLocation::Cuda { .. } => BackendId::Cuda,
-            DeviceLocation::Vulkan { .. } => BackendId::Vulkan,
-            DeviceLocation::Metal { .. } => BackendId::Metal,
-        };
+        let target_backend = target.backend();
         return Ok(WorkItem {
             node_id: id,
             inputs,

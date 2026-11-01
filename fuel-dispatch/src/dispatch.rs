@@ -8105,14 +8105,8 @@ fn register_derived_gpu_caps(table: &KernelBindingTable) {
         .filter(|b| *b != BackendId::Cpu)
         .collect();
     for backend in gpu_backends {
-        let device_location = match backend {
-            BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
-            BackendId::Vulkan => DeviceLocation::Vulkan { gpu_id: 0 },
-            BackendId::Metal => DeviceLocation::Metal { gpu_id: 0 },
-            // Non-exhaustive: an unknown backend with kernels still
-            // gets caps derived; default its device to CPU (defensive).
-            _ => DeviceLocation::Cpu,
-        };
+        // The backend's default place (GPU ordinal 0, or the CPU); one definition in `fuel-ir`.
+        let device_location = backend.default_location();
         register_backend_capabilities(derive_backend_caps(backend, device_location, table));
     }
 }

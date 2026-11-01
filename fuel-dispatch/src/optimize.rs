@@ -82,7 +82,6 @@ use std::collections::{HashMap, HashSet};
 
 use fuel_graph::opt::insert_cross_device_copies;
 use fuel_graph::{Graph, NodeId, Op, extract_runs_multi, topo_order_multi};
-use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, Result};
 
 use crate::driver::{OptimizationContext, PassRegistry};
@@ -612,7 +611,7 @@ fn stamp_plan_backends(
     plan: &ExecutionPlan,
     pinned_loc: DeviceLocation,
 ) {
-    let pinned_backend = location_to_backend_id(pinned_loc);
+    let pinned_backend = pinned_loc.backend();
     let order = topo_order_multi(graph, roots);
     for &id in &order {
         let node = graph.node(id);
@@ -688,10 +687,7 @@ fn insert_residency_copies(
         if a == b {
             return true;
         }
-        topology.shares_storage(
-            (location_to_backend_id(a), a),
-            (location_to_backend_id(b), b),
-        )
+        topology.shares_storage((a.backend(), a), (b.backend(), b))
     };
     // Hop-count oracle: an edge whose transfer path is `HostStaging` can't
     // be done as a single `Op::Copy` (no direct device-to-device copy
@@ -743,7 +739,7 @@ fn insert_residency_copies(
         if let Some(&src) = graph.node(copy_id).inputs.first()
             && let Some(src_loc) = src_location(graph, src)
         {
-            graph.set_target_backend(copy_id, location_to_backend_id(src_loc));
+            graph.set_target_backend(copy_id, src_loc.backend());
         }
     }
     // Re-stamp ALL copies/moves with their SOURCE backend — graph rewrites are
@@ -771,7 +767,7 @@ fn insert_residency_copies(
         let Some(src_loc) = src_location(graph, src) else {
             continue;
         };
-        graph.set_target_backend(id, location_to_backend_id(src_loc));
+        graph.set_target_backend(id, src_loc.backend());
     }
 
     placements
@@ -834,15 +830,6 @@ fn effective_placements(
         }
     }
     map
-}
-
-fn location_to_backend_id(loc: DeviceLocation) -> BackendId {
-    match loc {
-        DeviceLocation::Cpu => BackendId::Cpu,
-        DeviceLocation::Cuda { .. } => BackendId::Cuda,
-        DeviceLocation::Vulkan { .. } => BackendId::Vulkan,
-        DeviceLocation::Metal { .. } => BackendId::Metal,
-    }
 }
 
 /// The PR-A4 deliberate-fork pathfinder + the PR-B2 frontier

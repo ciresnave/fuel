@@ -1722,20 +1722,7 @@ pub fn host_buffer_to_bytes(buf: &HostBuffer) -> Vec<u8> {
 /// the `BackendId` the kernel-binding-table keys on. Mirrors the
 /// `DeviceLocation` variants 1:1.
 fn device_to_backend_id(device: &Device) -> BackendId {
-    location_to_backend_id(device.location())
-}
-
-/// Map a `DeviceLocation` to the backend that owns its storage
-/// substrate. Total — `BackendId` mirrors `DeviceLocation` 1:1
-/// (AOCL/MKL are `kernel_source` siblings under `Cpu`, not distinct
-/// backends).
-fn location_to_backend_id(loc: DeviceLocation) -> BackendId {
-    match loc {
-        DeviceLocation::Cpu => BackendId::Cpu,
-        DeviceLocation::Cuda { .. } => BackendId::Cuda,
-        DeviceLocation::Vulkan { .. } => BackendId::Vulkan,
-        DeviceLocation::Metal { .. } => BackendId::Metal,
-    }
+    device.location().backend()
 }
 
 // ---------------------------------------------------------------------------
@@ -1908,7 +1895,7 @@ impl BackendStreams for DeviceRuntimeHandle {
 ///   lands.
 fn backend_runtime_lookup_for(device: &Device) -> BackendRuntimeLookup {
     let realize_loc = device.location();
-    let realize_backend = location_to_backend_id(realize_loc);
+    let realize_backend = realize_loc.backend();
     let inner: Arc<dyn DynBackendDevice> = device.inner.clone();
     Arc::new(move |backend, loc| {
         if backend == realize_backend && loc == realize_loc {

@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.19 - 2026-11-01
+
+### Changed
+
+- One definition of the two mappings between `BackendId` and `DeviceLocation` (`DeviceLocation::backend()`, `BackendId::default_location()`) in `fuel-ir`, replacing eight hand-written copies across `fuel-dispatch`, `fuel-graph` and `fuel-tensor` (ROADMAP row 137, seam S3, step 1). Behaviour is unchanged; the public `plan::default_device_for` and `plan::backend_for_device` remain as thin wrappers. The new match is exhaustive, so adding a backend now fails to compile until it is given a default place.
+
 ## v0.35.15 - 2026-11-01
 
 ### Added
