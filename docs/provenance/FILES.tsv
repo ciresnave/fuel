@@ -2084,6 +2084,6 @@ scripts/sharedop_assert_census.py	own		no lineage; 1 of 250 lines verbatim in ca
 scripts/spirv_audit.py	own		no lineage; 1 of 86 lines verbatim in candle (1%)
 scripts/split_use_fuel_storage.py	own		no lineage; 1 of 40 lines verbatim in candle (2%)
 scripts/step5_sweep.py	own		no lineage; 0 of 63 lines verbatim in candle (0%)
-scripts/structure_report.py	own		no lineage; 1 of 253 lines verbatim in candle (0%)
+scripts/structure_report.py	own		no lineage; 1 of 268 lines verbatim in candle (0%)
 scripts/sync-packaged-notices.py	own		judged: names candle only to describe its licences
 scripts/verify-packaged-crates.py	own		judged: names candle only to describe its licences
