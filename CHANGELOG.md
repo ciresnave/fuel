@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - ROADMAP rows 136 to 139 and a design note (`docs/design-notes/2026-11-01-seams-and-cleanup-program.md`) for the work of splitting more of Fuel into separate projects, in a fixed order: measure the structure (136), clean up separation of concerns near the candidate seams (137), define the seams as tested interface crates (138), and only then split, one seam at a time and with its own go (139). Documentation only.
 
+## v0.35.16 - 2026-11-01
+
+### Added
+
+- ROADMAP row 118 step one: a design note records what an installed `qwen35` GGUF actually contains (metadata keys, tensor names, types, the 24 Gated DeltaNet and 8 full-attention layers, tied output head, Q6_K and Q8_0 weights, no Q4_K). Read-only; no code changes.
+
 ## v0.35.15 - 2026-11-01
 
 ### Added
