@@ -983,7 +983,7 @@ fuel-inference/src/hybrid_state.rs	own		no lineage; 0 of 98 lines verbatim in ca
 fuel-inference/src/kv_compress.rs	own		no lineage; 2 of 327 lines verbatim in candle (1%)
 fuel-inference/src/lib.rs	own		no lineage; 1 of 90 lines verbatim in candle (1%)
 fuel-inference/src/moe_routing.rs	own		no lineage; 2 of 238 lines verbatim in candle (1%)
-fuel-inference/src/multi_session.rs	own		no lineage; 10 of 2909 lines verbatim in candle (0%)
+fuel-inference/src/multi_session.rs	own		no lineage; 10 of 2914 lines verbatim in candle (0%)
 fuel-inference/src/ngram_draft.rs	own		no lineage; 1 of 112 lines verbatim in candle (1%)
 fuel-inference/src/prefix_cache.rs	own		no lineage; 6 of 182 lines verbatim in candle (3%)
 fuel-inference/src/scheduler.rs	not-traced	candle-transformers/src/models/z_image/scheduler.rs	same file name as candle candle-transformers/src/models/z_image/scheduler.rs; a port or re-expression is presumed until judged
@@ -1491,6 +1491,7 @@ fuel-quantized/Cargo.toml	own		no lineage; 2 of 15 lines verbatim in candle (13%
 fuel-quantized/LICENSE-APACHE	copy		byte-identical packaged copy of the root LICENSE-APACHE
 fuel-quantized/LICENSE-MIT	copy		byte-identical packaged copy of the root LICENSE-MIT
 fuel-quantized/THIRD-PARTY-NOTICES.md	copy		byte-identical packaged copy of the root THIRD-PARTY-NOTICES.md
+fuel-quantized/examples/quantized_matmul_bench.rs	own		no lineage; 0 of 43 lines verbatim in candle (0%)
 fuel-quantized/src/awq_repack.rs	own		no lineage; 2 of 178 lines verbatim in candle (1%)
 fuel-quantized/src/cpu.rs	not-traced	candle-core/src/quantized/mod.rs	28 of 185 lines also appear in candle (mostly candle-core/src/quantized/mod.rs); not judged
 fuel-quantized/src/dequant.rs	own		no lineage; 0 of 177 lines verbatim in candle (0%)
@@ -2015,7 +2016,7 @@ scripts/check-gaps-table.py	own		no lineage; 0 of 894 lines verbatim in candle (
 scripts/ci_change_class.py	own		no lineage; 1 of 69 lines verbatim in candle (1%)
 scripts/compose-check.ps1	own		no lineage; 0 of 133 lines verbatim in candle (0%)
 scripts/cuda-build.ps1	own		no lineage; 0 of 222 lines verbatim in candle (0%)
-scripts/doc_link_census.py	own		no lineage; 1 of 430 lines verbatim in candle (0%)
+scripts/doc_link_census.py	own		no lineage; 1 of 419 lines verbatim in candle (0%)
 scripts/doc_name_census.py	own		no lineage; 1 of 196 lines verbatim in candle (1%)
 scripts/fdx_field_coverage.py	own		no lineage; 1 of 193 lines verbatim in candle (1%)
 scripts/feature-combination-check.ps1	not-traced		names candle in its text; not judged
