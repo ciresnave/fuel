@@ -1,11 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
-## v0.35.11 - 2026-11-01
+## v0.35.13 - 2026-11-01
 
 ### Fixed
 
 - `unary_f64.spv` now carries NoContraction on every float add, subtract and multiply, so a driver cannot fuse the double-double `a * b + c` into one FMA. Software Vulkan (Lavapipe) did, which moved f64 sin, cos and sin(1e10) off the reference; those three tests now pass there and their CI skips are gone. `compile.sh` adds the decoration for a kernel marked `// no-contraction`, through the new `no_contraction.py`, because slangc cannot emit it. Checked on the 4070: all 34 Vulkan unary live tests pass.
+
+## v0.35.12 - 2026-11-01
+
+### Fixed
+
+- A realize that spans two devices of one backend (for example Vulkan GPU 0 and GPU 1) no longer fails at device seeding: `seed_extra_device_handles` de-duplicated extra devices by backend, so the second Vulkan GPU never got a handle. It now de-duplicates by device location. A new live check (`two_gpu_graph_realizes`, inside the ignored `deep_chain_realize_on_vulkan_matches_reference`) realizes a graph pinned across two Vulkan GPUs and checks the bytes; it failed before this change (ROADMAP row 114).
 
 ## v0.35.10 - 2026-11-01
 

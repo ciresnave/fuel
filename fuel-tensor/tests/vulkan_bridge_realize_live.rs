@@ -18,9 +18,9 @@
 
 use std::sync::Arc;
 
-use fuel_ir::{DType, Shape};
+use fuel_ir::{DType, DeviceLocation, Shape};
 use fuel_tensor::lazy::Tensor;
-use fuel_vulkan_backend::VulkanBackend;
+use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
 fn backend_or_skip() -> Option<Arc<VulkanBackend>> {
     match VulkanBackend::new() {
@@ -30,6 +30,74 @@ fn backend_or_skip() -> Option<Arc<VulkanBackend>> {
             None
         }
     }
+}
+
+/// Stamp an explicit per-node placement on a `Tensor`'s node (the scheduler-assignment seam).
+fn place(t: &Tensor, loc: DeviceLocation) {
+    let gt = t.graph_tensor();
+    let id = gt.id();
+    gt.graph()
+        .write()
+        .expect("graph lock")
+        .set_placement(id, loc);
+}
+
+/// ROADMAP row 114: one graph with nodes on `Vulkan { 0 }`, `Vulkan { 1 }` and `Vulkan { 0 }` again
+/// must realize. `seed_extra_device_handles` once de-duplicated the extra devices by backend, so the
+/// second GPU got no handle and this failed with "no Vulkan handle to seed" (the sabotage control).
+/// Runs inside an existing ignored test (the `#[ignore]` ceiling only goes down); it prints and
+/// returns when the box has fewer than two Vulkan devices.
+fn two_gpu_graph_realizes() {
+    let first = VulkanBackend::with_selection(DeviceSelection::Index(0)).ok();
+    let second = VulkanBackend::with_selection(DeviceSelection::Index(1)).ok();
+    let (Some(vk0), Some(vk1)) = (first, second) else {
+        eprintln!("fewer than two Vulkan devices; skipping the two-GPU graph");
+        return;
+    };
+    eprintln!("two-GPU graph: gpu_id {} and {}", vk0.gpu_id, vk1.gpu_id);
+    if vk0.gpu_id == vk1.gpu_id {
+        eprintln!("both selections gave gpu_id {}; skipping", vk0.gpu_id);
+        return;
+    }
+    let (vk0, vk1) = (Arc::new(vk0), Arc::new(vk1));
+    let loc0 = DeviceLocation::Vulkan { gpu_id: vk0.gpu_id };
+    let loc1 = DeviceLocation::Vulkan { gpu_id: vk1.gpu_id };
+
+    let a = Tensor::from_f32(
+        vec![1.0_f32, 2.0, 3.0, 4.0],
+        Shape::from_dims(&[4]),
+        &fuel_tensor::Device::cpu(),
+    )
+    .unwrap();
+    let b = a
+        .const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]))
+        .unwrap();
+    let v0 = a.mul(&b).unwrap(); // [10, 40, 90, 160]   on GPU 0
+    let v1 = v0.add(&a).unwrap(); // [11, 42, 93, 164]  on GPU 1
+    let out = v1.mul(&b).unwrap(); // [110, 840, 2790, 6560] back on GPU 0
+    place(&v0, loc0);
+    place(&v1, loc1);
+    place(&out, loc0);
+    let out_id = out.graph_tensor().id();
+    let g_arc = out.graph_tensor().graph().clone();
+
+    let dev0: fuel_tensor::Device = vk0.clone().into();
+    let dev1: fuel_tensor::Device = vk1.clone().into();
+    let got = fuel_tensor::pipelined_bridge::realize_one_as_multi_device::<f32>(
+        &g_arc,
+        out_id,
+        &dev0,
+        &[&dev1],
+    );
+    eprintln!("two-GPU realize result: {got:?}");
+    assert_eq!(
+        got.expect("a graph spanning two Vulkan GPUs must realize"),
+        vec![110.0_f32, 840.0, 2790.0, 6560.0]
+    );
+    // Both devices drained. (The executor looks a handle up by exact `gpu_id` and errors when none
+    // matches, so work placed on GPU 1 cannot silently run on GPU 0.)
+    assert_eq!(fuel_dispatch::dispatch::inflight_count(loc0), 0);
+    assert_eq!(fuel_dispatch::dispatch::inflight_count(loc1), 0);
 }
 
 /// `(a + b) * a` realized on Vulkan through the bridge matches the host
@@ -97,4 +165,7 @@ fn deep_chain_realize_on_vulkan_matches_reference() {
 
     let out = out_t.realize_f32_vulkan(&backend);
     assert_eq!(out, vec![22.0_f32, 132.0, 396.0, 880.0]);
+
+    // Also checks ROADMAP row 114 (two GPUs of one backend in one graph); see `two_gpu_graph_realizes`.
+    two_gpu_graph_realizes();
 }
