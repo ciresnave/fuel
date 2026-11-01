@@ -57,11 +57,24 @@ fn stats(mut us: Vec<f64>) -> (f64, f64, f64) {
     (us[0], us[us.len() / 2], us[us.len() - 1])
 }
 
-fn main() {
-    let backend = Arc::new(VulkanBackend::new().expect("a Vulkan device"));
+/// One table row: min / median / max microseconds per call and effective GB/s of weight read.
+fn report(label: &str, n: usize, k: usize, weight_bytes: usize, per_call_us: Vec<f64>) {
+    let (lo, med, hi) = stats(per_call_us);
+    let mb = weight_bytes as f64 / 1e6;
+    println!(
+        "{label:<8} {n:>6} {k:>6} {mb:>10.1} {lo:>9.0} {med:>8.0} {hi:>8.0} {:>10.1}",
+        weight_bytes as f64 / (med * 1e-6) / 1e9
+    );
+}
+
+fn print_header() {
     println!("# repeats={REPEATS} iters/repeat={ITERS}; microseconds per call");
     println!("kernel    n      k      weight_MB   min_us   med_us   max_us   GB/s(med)");
+}
 
+fn main() {
+    let backend = Arc::new(VulkanBackend::new().expect("a Vulkan device"));
+    print_header();
     let run = |label: &str, n: usize, k: usize, w_bytes: Vec<u8>, q6: bool| {
         let a: Vec<f32> = (0..k).map(|i| ((i as f32) * 0.011).sin() * 0.5).collect();
         let a_s = backend
@@ -93,12 +106,7 @@ fn main() {
             let _ = backend.download_bytes(&out).expect("sync");
             per_call_us.push(t.elapsed().as_secs_f64() * 1e6 / ITERS as f64);
         }
-        let (lo, med, hi) = stats(per_call_us);
-        let mb = w_bytes.len() as f64 / 1e6;
-        println!(
-            "{label:<8} {n:>6} {k:>6} {mb:>10.1} {lo:>9.0} {med:>8.0} {hi:>8.0} {:>10.1}",
-            w_bytes.len() as f64 / (med * 1e-6) / 1e9
-        );
+        report(label, n, k, w_bytes.len(), per_call_us);
     };
 
     // Real Qwen3.5-4B shapes: (n = output rows, k = contracted dim).
