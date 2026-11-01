@@ -3,8 +3,8 @@
 Written 2026-11-01. Measured at `origin/main` `3a41200ce` (version 0.35.13); the checked-out tree's
 sources equal it (the worktree adds docs only). Reproduce with `python scripts/structure_report.py`
 (stdlib only; enumerates from `git ls-files`, reads `cargo metadata --no-deps --offline` and
-`git log --first-parent`). **Row 136 is not finished:** deliverable (d), reading Fireline's contract,
-has not been done, so the ranking in section 5 is provisional.
+`git log --first-parent`). Section 8 records deliverable (d) (the existing contracts and FireLine); the ranking in
+section 5 stands on the numbers and is revised by section 8 where noted.
 
 The definitions below are written so another tool (CodeRipper's architecture and modularity rules)
 can be validated against the same numbers. Where a definition is a heuristic it says so.
@@ -108,7 +108,7 @@ almost every time: they behave as one unit.
 
 No census found a source-level reference that points up the tier order, in any of the five.
 
-Provisional verdicts (judgement from the numbers above; to be revised by deliverable (d)):
+Verdicts (judgement from the numbers above, revised by section 8):
 
 1. **S3 executor / backends: needs cleanup first (row 137).** The widest surface (551 distinct
    items across 84 files), the largest backend-name counts, and optional edges from the executor
@@ -144,3 +144,56 @@ fuel`) and 0 up-tier source references in S1 to S5. A rule for backend knowledge
 should find the files named in section 3 near the top. A coupling rule given the S3 groups should
 report a surface near 551 distinct items; one given S4 should report near 119. Disagreements are
 findings in either direction and should be reported with the line that explains them.
+
+## 8. What contracts already exist, and FireLine (deliverable d)
+
+Read 2026-11-01: `C:\Projects\fireline` (read-only), `docs/fuel-consumer-seam.md`,
+`docs/architecture/15-consumer-contract.md`, and the seam crates' public surfaces at `origin/main`.
+
+**FireLine** is a reserved placeholder (crate `0.0.0`; nothing implemented). Its README states the
+rules: one project, one crate per interface, each crate versioned by its interface (not by Fuel's
+version), converging on a common version at major releases, consumers requiring the crates with a
+tilde and never a caret. Its roadmap (started 2026-10-28) orders the work: a seam inventory, a
+one-page extraction plan with the Fuel, baracuda, Unpopped and KISS lanes, then moving Fuel's
+producer-side seam crates first (`fuel-kernel-seam`, `-types`, `-announce`). So the kernel-runner
+seam is the one being extracted; the other boundaries have no FireLine plan.
+
+**Mechanisms for additive evolution that already exist in the seam crates** (read from source):
+- `#[non_exhaustive]` on request and record structs, constructed through `::new`, so a field add is
+  a compile-time nudge and not a silent default (`JitRequest`, board #106 Step A). Counts of
+  `non_exhaustive` over public items: `fuel-kernel-seam` 3 of 9, `fuel-kernel-seam-types` 5 of 27,
+  `fuel-kernel-seam-announce` 0 of 8.
+- A trait-object boundary owned by Fuel (`&dyn Synthesizer`), so Fuel depends on nothing of the
+  synthesizer's at the type level.
+- A vocabulary crate (`unpopped-vocab`) with interned ids (`TargetId`) carried alongside the older
+  field during a staging window rather than replacing it outright.
+- "Light by design": the seam crate depends on no `fuel-graph` or `fuel-dispatch`; adoption logic lives
+  Fuel-side.
+- Conformance corpora: `fuel-correctness-fixtures` (tiered as a contract, not test support) and the
+  FKC kernel contracts.
+
+**Where the existing contracts stop:**
+- `fuel-backend-contract` (the seam between the executor and the backends, S3) is not on FireLine's
+  list. It is wide (67 public items) and has no `#[non_exhaustive]`; it depends on `fuel-ir`, so it
+  carries the IR vocabulary and is only as stable as `fuel-ir`. Its consumers are all in this
+  workspace today, which is why that has not cost anything yet.
+- The consumer contract (architecture 15; C-1 capacity advertisement, C-2 bounded quantum and
+  cancellation, C-3 state externalization, C-4 measured cost and provenance, C-5 constraint
+  admission, C-6 observation and intervention, C-7 declared mutation) is a semantic contract written
+  as prose. It is not a crate; there is no conformance corpus for it.
+- Formats and interchange (S1) and hardware probing (S2) have no named contract.
+
+**What this changes in the ranking** (section 5):
+1. **S5 kernels / backends and the kernel-runner seam** already have a contract and a project
+   (FireLine) planning to take it; the unit to extract is `fuel-kernels-source` +
+   `fuel-vulkan-kernels` (J 0.88), whose seam to the backends is 64 items.
+2. **S3 executor / backends** has a contract crate that is wide, un-annotated and not scheduled for
+   FireLine. Row 137's cleanup of the executor bridge is the precondition for narrowing it; row 138
+   would then give `fuel-backend-contract` the same mechanisms the kernel seam has.
+3. **S4 models, nn, training** meets a consumer contract that exists only as prose over 119 named
+   items; row 138 for S4 means turning C-1 to C-7 and those items into a crate with a conformance
+   corpus, which is the larger piece of work here.
+4. **S1 formats and S2 hardware** are greenfield: narrow in the numbers, no contract yet.
+
+Not read: the `unpopped-vocab`, baracuda and KISS sides; FireLine's HANDOFF; any FireLine plan beyond
+the one-line roadmap.
