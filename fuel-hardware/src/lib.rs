@@ -10,6 +10,7 @@
 //! `fuel-dispatch` / `fuel-core` → `fuel-hardware` → `fuel-ir`.
 
 pub mod enumerate;
+pub mod inventory;
 pub mod probe;
 pub mod transfer_cost;
 pub mod utils;
