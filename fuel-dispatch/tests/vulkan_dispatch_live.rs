@@ -10263,6 +10263,71 @@ fn vulkan_dispatch_qmatmul_q4_km() {
     // For mean-output ~0.5 and per-element noise, 10% rel err is the
     // expected scatter; tighten this once a fused Q4_K_M gemv lands.
     assert!(max_rel < 1e-1, "Q4_K_M worst rel err {max_rel:e} > 1e-1");
+
+    // Q6_K rides in this test (the `#[ignore]` ceiling only goes down). It has one fused gemv
+    // (`qmatvec_q6_k`) for every row; check m = 1 (decode) and m = 3 against an exact host oracle:
+    // the CPU port's `to_float` dequantizes the same bytes, and the dot is taken in f64.
+    {
+        use fuel_quantized::BlockQ6K;
+        let (n6, k6) = (16usize, 512usize); // k = 2 super-blocks, so all 128 threads hold a partial
+        let w6: Vec<f32> = (0..n6 * k6)
+            .map(|i| ((i as f32 + 3.0) * 0.0071).sin() * 0.4)
+            .collect();
+        let mut blocks6 = vec![BlockQ6K::zeros(); n6 * (k6 / 256)];
+        BlockQ6K::from_float(&w6, &mut blocks6);
+        let mut w6_deq = vec![0.0_f32; n6 * k6];
+        BlockQ6K::to_float(&blocks6, &mut w6_deq);
+        let bytes6: Vec<u8> = unsafe {
+            std::slice::from_raw_parts(
+                blocks6.as_ptr() as *const u8,
+                blocks6.len() * std::mem::size_of::<BlockQ6K>(),
+            )
+        }
+        .to_vec();
+        for m6 in [1usize, 3] {
+            let a6: Vec<f32> = (0..m6 * k6)
+                .map(|i| (i as f32 * 0.013).cos() * 0.5)
+                .collect();
+            let a_arc6 = Arc::new(RwLock::new(upload_f32(&backend, &a6)));
+            let w_arc6 = Arc::new(RwLock::new(upload_raw(&backend, &bytes6, DType::U32)));
+            let out_bytes6 = backend.alloc_bytes_handle(m6 * n6 * 4).expect("alloc");
+            let out_arc6 = Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Vulkan(out_bytes6),
+                DType::F32,
+            )));
+            kernel(
+                &[Arc::clone(&a_arc6), Arc::clone(&w_arc6)],
+                &mut [Arc::clone(&out_arc6)],
+                &[
+                    Layout::contiguous(Shape::from_dims(&[m6, k6])),
+                    Layout::contiguous(Shape::from_dims(&[bytes6.len() / 4])),
+                    Layout::contiguous(Shape::from_dims(&[m6, n6])),
+                ],
+                &OpParams::QMatMul {
+                    quant_type: QuantType::Q6K,
+                    batch_count: 1,
+                    m: m6,
+                    n: n6,
+                    k: k6,
+                },
+            )
+            .expect("qmatmul Q6_K");
+            let got6 = download_f32(&backend, &out_arc6.read().unwrap());
+            for row in 0..m6 {
+                for col in 0..n6 {
+                    let exact: f64 = (0..k6)
+                        .map(|kk| f64::from(a6[row * k6 + kk]) * f64::from(w6_deq[col * k6 + kk]))
+                        .sum();
+                    let g = f64::from(got6[row * n6 + col]);
+                    assert!(
+                        (g - exact).abs() < 1e-3,
+                        "Q6_K m={m6} [{row},{col}]: got {g}, exact {exact}"
+                    );
+                }
+            }
+            eprintln!("Q6_K m={m6}: matches the exact host oracle");
+        }
+    }
 }
 
 #[test]
@@ -10276,75 +10341,98 @@ fn vulkan_dispatch_qmatmul_q8_0() {
     let mut table = KernelBindingTable::new();
     register_vulkan_kernels(&mut table);
 
-    let m = 2usize;
-    let k = 64usize;
-    let n = 16usize;
-    let blocks_per_row = k / BlockQ8_0::BLCK_SIZE; // = k / 32
-    let a: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.021).sin() * 0.7).collect();
-    let w: Vec<f32> = (0..n * k)
-        .map(|i| ((i as f32 + 1.0) * 0.009).cos() * 0.35)
-        .collect();
+    // m = 2 takes the dequant-then-matmul path; m = 1 the fused gemv (k = 256 so every one of the
+    // gemv's 128 threads holds a nonzero partial, which is what an 8-lane subgroup device needs).
+    for (m, k) in [(2usize, 64usize), (1, 256)] {
+        let n = 16usize;
+        let blocks_per_row = k / BlockQ8_0::BLCK_SIZE; // = k / 32
+        let a: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.021).sin() * 0.7).collect();
+        let w: Vec<f32> = (0..n * k)
+            .map(|i| ((i as f32 + 1.0) * 0.009).cos() * 0.35)
+            .collect();
 
-    let mut w_blocks = vec![BlockQ8_0::zeros(); n * blocks_per_row];
-    BlockQ8_0::from_float(&w, &mut w_blocks);
-    let bpb = std::mem::size_of::<BlockQ8_0>();
-    let w_bytes: Vec<u8> =
-        unsafe { std::slice::from_raw_parts(w_blocks.as_ptr() as *const u8, w_blocks.len() * bpb) }
-            .to_vec();
+        let mut w_blocks = vec![BlockQ8_0::zeros(); n * blocks_per_row];
+        BlockQ8_0::from_float(&w, &mut w_blocks);
+        let bpb = std::mem::size_of::<BlockQ8_0>();
+        let w_bytes: Vec<u8> = unsafe {
+            std::slice::from_raw_parts(w_blocks.as_ptr() as *const u8, w_blocks.len() * bpb)
+        }
+        .to_vec();
 
-    let a_storage = upload_f32(&backend, &a);
-    let w_storage = upload_raw(&backend, &w_bytes, DType::U32);
-    let out_bytes = backend.alloc_bytes_handle(m * n * 4).expect("alloc");
-    let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
-    let a_arc = Arc::new(RwLock::new(a_storage));
-    let w_arc = Arc::new(RwLock::new(w_storage));
-    let out_arc = Arc::new(RwLock::new(out_storage));
+        let a_storage = upload_f32(&backend, &a);
+        let w_storage = upload_raw(&backend, &w_bytes, DType::U32);
+        let out_bytes = backend.alloc_bytes_handle(m * n * 4).expect("alloc");
+        let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F32);
+        let a_arc = Arc::new(RwLock::new(a_storage));
+        let w_arc = Arc::new(RwLock::new(w_storage));
+        let out_arc = Arc::new(RwLock::new(out_storage));
 
-    let kernel = table.lookup_alternatives(
-        OpKind::QMatMul,
-        &[DType::F32, DType::U32, DType::F32],
-        BackendId::Vulkan,
-    )[0]
-    .kernel;
-    let lhs_layout = Layout::contiguous(Shape::from_dims(&[m, k]));
-    let rhs_layout = Layout::contiguous(Shape::from_dims(&[w_bytes.len() / 4]));
-    let out_layout = Layout::contiguous(Shape::from_dims(&[m, n]));
-    kernel(
-        &[Arc::clone(&a_arc), Arc::clone(&w_arc)],
-        &mut [Arc::clone(&out_arc)],
-        &[lhs_layout, rhs_layout, out_layout],
-        &OpParams::QMatMul {
-            quant_type: QuantType::Q8_0,
-            batch_count: 1,
-            m,
-            n,
-            k,
-        },
-    )
-    .expect("qmatmul Q8_0");
+        let kernel = table.lookup_alternatives(
+            OpKind::QMatMul,
+            &[DType::F32, DType::U32, DType::F32],
+            BackendId::Vulkan,
+        )[0]
+        .kernel;
+        let lhs_layout = Layout::contiguous(Shape::from_dims(&[m, k]));
+        let rhs_layout = Layout::contiguous(Shape::from_dims(&[w_bytes.len() / 4]));
+        let out_layout = Layout::contiguous(Shape::from_dims(&[m, n]));
+        kernel(
+            &[Arc::clone(&a_arc), Arc::clone(&w_arc)],
+            &mut [Arc::clone(&out_arc)],
+            &[lhs_layout, rhs_layout, out_layout],
+            &OpParams::QMatMul {
+                quant_type: QuantType::Q8_0,
+                batch_count: 1,
+                m,
+                n,
+                k,
+            },
+        )
+        .expect("qmatmul Q8_0");
 
-    let got = download_f32(&backend, &out_arc.read().unwrap());
-    let mut ref_out = vec![0.0_f32; m * n];
-    fuel_quantized::matmul::<BlockQ8_0>((m, k, n), &a, &w_blocks, &mut ref_out)
-        .expect("Q8_0 CPU ref matmul");
+        let got = download_f32(&backend, &out_arc.read().unwrap());
+        let mut ref_out = vec![0.0_f32; m * n];
+        fuel_quantized::matmul::<BlockQ8_0>((m, k, n), &a, &w_blocks, &mut ref_out)
+            .expect("Q8_0 CPU ref matmul");
 
-    let mut max_rel = 0.0_f32;
-    for (g, r) in got.iter().zip(ref_out.iter()) {
-        let abs = (g - r).abs();
-        if r.abs() < 1e-6 {
-            assert!(abs < 1e-4, "near-zero mismatch: got {g}, ref {r}");
-        } else {
-            let rel = abs / r.abs();
-            if rel > max_rel {
-                max_rel = rel;
+        let mut max_rel = 0.0_f32;
+        for (g, r) in got.iter().zip(ref_out.iter()) {
+            let abs = (g - r).abs();
+            if r.abs() < 1e-6 {
+                assert!(abs < 1e-4, "near-zero mismatch: got {g}, ref {r}");
+            } else {
+                let rel = abs / r.abs();
+                if rel > max_rel {
+                    max_rel = rel;
+                }
             }
         }
+        eprintln!("Q8_0 m={m}: max rel err vs CPU ref = {max_rel:e}");
+
+        // Exact oracle: dequantize the block bytes on the host (f64) and dot with the f32 activation.
+        // The fused gemv (m == 1) and the dequant-then-matmul path must both match it closely; the
+        // 2e-2 bound below is only the CPU `vec_dot` reference, which also quantizes the activation.
+        for row in 0..m {
+            for col in 0..n {
+                let mut acc = 0.0_f64;
+                for kk in 0..k {
+                    let blk = &w_bytes[(col * blocks_per_row + kk / 32) * 34..][..34];
+                    let d = half::f16::from_le_bytes([blk[0], blk[1]]).to_f64();
+                    let q = f64::from(blk[2 + kk % 32] as i8);
+                    acc += f64::from(a[row * k + kk]) * q * d;
+                }
+                let g = f64::from(got[row * n + col]);
+                assert!(
+                    (g - acc).abs() < 1e-3,
+                    "Q8_0 m={m} k={k} [{row},{col}]: got {g}, exact {acc}"
+                );
+            }
+        }
+        // Q8_0 has 8-bit weight precision (much tighter than Q4_0) but
+        // the dequant-then-matmul path adds f32 ordering scatter; 2e-2 is
+        // realistic for the mixed CPU-ref / GPU dequant comparison.
+        assert!(max_rel < 2e-2, "Q8_0 worst rel err {max_rel:e} > 2e-2");
     }
-    eprintln!("Q8_0 m={m}: max rel err vs CPU ref = {max_rel:e}");
-    // Q8_0 has 8-bit weight precision (much tighter than Q4_0) but
-    // the dequant-then-matmul path adds f32 ordering scatter; 2e-2 is
-    // realistic for the mixed CPU-ref / GPU dequant comparison.
-    assert!(max_rel < 2e-2, "Q8_0 worst rel err {max_rel:e} > 2e-2");
 }
 
 // ===========================================================================

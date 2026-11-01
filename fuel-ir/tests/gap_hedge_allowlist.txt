@@ -81,7 +81,6 @@ fuel-dispatch/src/telemetry/sink.rs	//! flush time would need the concrete `Prof
 fuel-dispatch/src/telemetry/structure_key.rs	/// for now (its `SType`/`FDXQuant` refinement is a later step).
 fuel-dispatch/src/vulkan_dispatch.rs	// FlashAttnBackwardK,FlashAttnBackwardV}, …)` regs (naive single-pass SDPA;
 fuel-dispatch/src/vulkan_dispatch.rs	// For now, error: N=1 should be optimized at the graph level
-fuel-dispatch/src/vulkan_dispatch.rs	// Other QuantTypes (Q4_1, Q5_*, Q2K/Q3K/Q5K/Q6K, Q8_1) are not yet wired —
 fuel-dispatch/src/vulkan_dispatch.rs	// single-last-dim case, the backend method bails and the executor
 fuel-dispatch/src/vulkan_dispatch.rs	// support it (no scalar-divide pass; would need a sum + affine
 fuel-dispatch/src/vulkan_dispatch.rs	/// AND (h_out * w_out) % 16 == 0. Bails on small shapes — route
