@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - The per-vector-scaled integer dot kernels are removed from `fuel-quantized` and the floating-point route is the only quantized CPU matmul (ROADMAP row 140, board 307). Removed: `GgmlType::vec_dot`, `vec_dot_unopt`, the `VecDotType` associated type, `DIRECT_COPY` and `direct_copy`, the `avx` and `neon` modules, the `float-dot` and `neon-dotprod` features and the `FLOAT_DOT` constant. `matmul` and `matmul_f16` now convert each weight row to f32 and take a plain f32 dot with the f32 activation row: no activation quantisation, no integer multiply, no scaling of an integer block sum. Every block format still reads, writes and dequantizes as before. Versions of `fuel-quantized` before this one were yanked.
 
+## v0.35.17 - 2026-11-01
+
+### Added
+
+- Stable device identity (ROADMAP row 125, step one): `fuel_ir::DeviceIdentity` (UUID and PCI address) with a matcher that treats an all-zero UUID as absent and never calls an unknown pair the same card; `device_identities()` for the CUDA and Vulkan backends and `VulkanBackend::identity()`; `DeviceMemory.identity` in the device inventory. On this box the CUDA and Vulkan views of the RTX 4070 report the same UUID. The two-GPU Vulkan probe now picks its GPUs by identity instead of by enumeration index, because Vulkan's device order differs between builds here.
+
 ## v0.35.16 - 2026-11-01
 
 ### Added

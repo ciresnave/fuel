@@ -216,6 +216,61 @@ pub trait BackendProbe {
     fn enumerate_devices() -> Result<Vec<DeviceDescriptor>>;
 }
 
+/// A PCI bus address as the OS and the GPU APIs report it. `function` is `None` when the source
+/// does not say (CUDA reports domain, bus and device number only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct PciAddress {
+    pub domain: u32,
+    pub bus: u32,
+    pub device: u32,
+    pub function: Option<u32>,
+}
+
+/// What identifies ONE physical GPU across processes and across APIs (ROADMAP row 125). The
+/// enumeration index (`DeviceLocation::{Cuda,Vulkan}.gpu_id`) is only a within-process handle: on
+/// this box the Vulkan order flipped between two runs. Key placement on this, not on the index.
+///
+/// `uuid` is the 16-byte device UUID that Vulkan (`VkPhysicalDeviceIDProperties`), CUDA
+/// (`cuDeviceGetUuid`), NVML and OpenGL agree on. It is `None` when the source could not report one
+/// (and an all-zero value is treated as absent by [`Self::same_physical_device`]: a zeroed join key
+/// reads as a valid UUID that every device shares). `pci` is the bus address, the fallback join key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct DeviceIdentity {
+    pub uuid: Option<[u8; 16]>,
+    pub pci: Option<PciAddress>,
+}
+
+impl DeviceIdentity {
+    /// The UUID, if present and not all zero.
+    pub fn usable_uuid(&self) -> Option<[u8; 16]> {
+        self.uuid.filter(|u| u.iter().any(|b| *b != 0))
+    }
+
+    /// Do these two identities name the same physical GPU? UUIDs decide when both sides have a
+    /// usable one (equal means same, different means different). Otherwise the PCI address decides
+    /// (domain, bus and device, plus function when both sides report it). With neither, the answer
+    /// is `false`: unknown is not "same".
+    pub fn same_physical_device(&self, other: &DeviceIdentity) -> bool {
+        if let (Some(a), Some(b)) = (self.usable_uuid(), other.usable_uuid()) {
+            return a == b;
+        }
+        match (self.pci, other.pci) {
+            (Some(a), Some(b)) => {
+                a.domain == b.domain
+                    && a.bus == b.bus
+                    && a.device == b.device
+                    && match (a.function, b.function) {
+                        (Some(x), Some(y)) => x == y,
+                        _ => true,
+                    }
+            }
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +385,64 @@ mod tests {
         assert_ne!(base, with_width);
         // ...but they profile identically, so the key must collapse them.
         assert_eq!(base.equivalence_key(), with_width.equivalence_key());
+    }
+
+    fn ident(uuid: Option<u8>, pci: Option<(u32, u32, u32, Option<u32>)>) -> DeviceIdentity {
+        DeviceIdentity {
+            uuid: uuid.map(|b| [b; 16]),
+            pci: pci.map(|(domain, bus, device, function)| PciAddress {
+                domain,
+                bus,
+                device,
+                function,
+            }),
+        }
+    }
+
+    /// UUIDs decide when both sides have one; the PCI address cannot overrule them.
+    #[test]
+    fn identity_uuid_decides_when_both_sides_have_one() {
+        let a = ident(Some(1), Some((0, 1, 0, None)));
+        assert!(a.same_physical_device(&ident(Some(1), Some((0, 9, 9, None)))));
+        assert!(!a.same_physical_device(&ident(Some(2), Some((0, 1, 0, None)))));
+    }
+
+    /// An all-zero UUID is absent, not a value two devices share (the vulkane V1_0 trap).
+    #[test]
+    fn identity_zero_uuid_is_absent_so_pci_decides() {
+        let zero = DeviceIdentity {
+            uuid: Some([0; 16]),
+            pci: Some(PciAddress {
+                domain: 0,
+                bus: 3,
+                device: 0,
+                function: Some(0),
+            }),
+        };
+        let other_zero_other_bus = DeviceIdentity {
+            uuid: Some([0; 16]),
+            pci: Some(PciAddress {
+                domain: 0,
+                bus: 4,
+                device: 0,
+                function: Some(0),
+            }),
+        };
+        assert!(!zero.same_physical_device(&other_zero_other_bus));
+        assert!(zero.same_physical_device(&zero));
+    }
+
+    /// PCI fallback: a missing function on one side matches (CUDA does not report it); a present,
+    /// different function does not. Neither source having anything is "unknown", not "same".
+    #[test]
+    fn identity_pci_fallback_and_unknown() {
+        let cuda = ident(None, Some((0, 1, 0, None)));
+        assert!(cuda.same_physical_device(&ident(None, Some((0, 1, 0, Some(0))))));
+        assert!(!cuda.same_physical_device(&ident(None, Some((0, 2, 0, Some(0))))));
+        assert!(
+            !ident(Some(1), Some((0, 1, 0, Some(1))))
+                .same_physical_device(&ident(None, Some((0, 1, 0, Some(0)))))
+        );
+        assert!(!ident(None, None).same_physical_device(&ident(None, None)));
     }
 }
