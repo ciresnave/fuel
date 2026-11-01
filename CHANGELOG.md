@@ -1,11 +1,17 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
-## v0.35.13 - 2026-11-01
+## v0.35.14 - 2026-11-01
 
 ### Added
 
 - `fuel_hardware::inventory::inventory()`: one call listing every device of every compiled-in backend with its name, total bytes and FREE bytes (CUDA `cuMemGetInfo`, Vulkan `VK_EXT_memory_budget`, host available memory), keyed by backend and device index, so a placement layer need not probe the OS itself (ROADMAP row 131). `free_bytes` is `None` when a device cannot report it. Checked live on this box for the CPU and both Vulkan GPUs; the CUDA arm is written but was not built here.
+
+## v0.35.12 - 2026-11-01
+
+### Fixed
+
+- A realize that spans two devices of one backend (for example Vulkan GPU 0 and GPU 1) no longer fails at device seeding: `seed_extra_device_handles` de-duplicated extra devices by backend, so the second Vulkan GPU never got a handle. It now de-duplicates by device location. A new live check (`two_gpu_graph_realizes`, inside the ignored `deep_chain_realize_on_vulkan_matches_reference`) realizes a graph pinned across two Vulkan GPUs and checks the bytes; it failed before this change (ROADMAP row 114).
 
 ## v0.35.10 - 2026-11-01
 
