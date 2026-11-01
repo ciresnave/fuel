@@ -21,7 +21,7 @@
 # ruling). Content::read (fuel-formats' own byte-stream parser) is
 # untouched and stays the default for callers without a Path.
     mlmf-core        = { version = "0.5.11" }
-    mlmf-gguf        = { version = "0.5.11" }
+    mlmf-gguf        = { version = "0.7.26" }
     mlmf-source-file = { version = "0.5.11" }
 
 # MLMF move slice A (docs/design-notes/2026-10-24-mlmf-move-survey.md): AWQ config parse and
