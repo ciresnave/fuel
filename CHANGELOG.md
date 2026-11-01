@@ -7,6 +7,12 @@ This documents the main changes to the `fuel` workspace.
 
 - ROADMAP row 118 step one: a design note records what an installed `qwen35` GGUF actually contains (metadata keys, tensor names, types, the 24 Gated DeltaNet and 8 full-attention layers, tied output head, Q6_K and Q8_0 weights, no Q4_K). Read-only; no code changes.
 
+## v0.35.14 - 2026-11-01
+
+### Added
+
+- `fuel_hardware::inventory::inventory()`: one call listing every device of every compiled-in backend with its name, total bytes and FREE bytes (CUDA `cuMemGetInfo`, Vulkan `VK_EXT_memory_budget`, host available memory), keyed by backend and device index, so a placement layer need not probe the OS itself (ROADMAP row 131). `free_bytes` is `None` when a device cannot report it. Checked live on this box for the CPU, CUDA and both Vulkan GPUs (Vulkan device index order was not stable between two runs, so identify devices by name, not index).
+
 ## v0.35.13 - 2026-11-01
 
 ### Fixed
