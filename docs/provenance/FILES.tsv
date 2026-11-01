@@ -13,7 +13,7 @@ path	class	candle_source	basis
 .github/workflows/trufflehog.yml	candle-modified	.github/workflows/trufflehog.yml	same path; 0% of 3 lines verbatim
 .gitignore	candle-modified	.gitignore	same path; 57% of 21 lines verbatim
 .pre-commit-config.yaml	candle	.pre-commit-config.yaml	identical path; 100% of 2 lines verbatim
-CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 454 lines verbatim
+CHANGELOG.md	candle-modified	CHANGELOG.md	same path; 7% of 455 lines verbatim
 CLAUDE.md	own		no lineage; 0 of 148 lines verbatim in candle (0%)
 Cargo.lock	own		no lineage; 2 of 1394 lines verbatim in candle (0%)
 Cargo.toml	candle-modified	Cargo.toml	same path; 6% of 304 lines verbatim
@@ -2083,6 +2083,6 @@ scripts/sharedop_assert_census.py	own		no lineage; 1 of 250 lines verbatim in ca
 scripts/spirv_audit.py	own		no lineage; 1 of 86 lines verbatim in candle (1%)
 scripts/split_use_fuel_storage.py	own		no lineage; 1 of 40 lines verbatim in candle (2%)
 scripts/step5_sweep.py	own		no lineage; 0 of 63 lines verbatim in candle (0%)
-scripts/structure_report.py	own		no lineage; 1 of 268 lines verbatim in candle (0%)
+scripts/structure_report.py	own		no lineage; 1 of 273 lines verbatim in candle (0%)
 scripts/sync-packaged-notices.py	own		judged: names candle only to describe its licences
 scripts/verify-packaged-crates.py	own		judged: names candle only to describe its licences
