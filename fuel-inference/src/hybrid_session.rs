@@ -17,7 +17,7 @@
 //! `Err`. The scheduler relies on it: a failed step finishes that session and does not touch the
 //! others, and the cache it leaves behind is the last good one.
 
-use crate::multi_session::{SessionId, SessionPhase, admit_params, sample_next};
+use crate::multi_session::{SessionId, SessionPhase, TokenLogprob, admit_params, sample_next};
 use fuel::lazy::SamplingStrategy;
 use fuel::sampling::SamplingParams;
 use fuel_ir::{Error, Result};
@@ -51,6 +51,8 @@ pub struct HybridSession<C> {
     strategy: SamplingStrategy,
     /// Full sampling controls, when admitted with them; `None` = `strategy` alone.
     params: Option<SamplingParams>,
+    /// Per-token logprobs, one per generated token, when `params.logprobs` is set.
+    logprobs: Vec<TokenLogprob>,
     eos_ids: Option<Vec<u32>>,
     remaining: usize,
     phase: SessionPhase,
@@ -72,6 +74,12 @@ impl<C> HybridSession<C> {
         &self.new_tokens
     }
 
+    /// Logprobs of the generated tokens, one per entry of [`Self::new_tokens`]; empty unless the
+    /// session was admitted with `SamplingParams::logprobs` set.
+    pub fn logprobs(&self) -> &[TokenLogprob] {
+        &self.logprobs
+    }
+
     /// The session's cache, for inspection.
     pub fn cache(&self) -> &C {
         &self.cache
@@ -83,13 +91,14 @@ impl<C> HybridSession<C> {
     }
 
     fn accept(&mut self, logits: &[f32]) -> Result<u32> {
-        let next = sample_next(
+        let (next, lp) = sample_next(
             self.strategy,
             self.params.as_ref(),
             logits,
             &self.tokens,
             &mut self.rng_state,
         )?;
+        self.logprobs.extend(lp);
         self.tokens.push(next);
         self.new_tokens.push(next);
         self.remaining = self.remaining.saturating_sub(1);
@@ -148,6 +157,7 @@ impl<'m, M: HybridDecodeModel> HybridSessionScheduler<'m, M> {
             rng_state,
             strategy,
             params: None,
+            logprobs: Vec::new(),
             eos_ids: eos_ids.filter(|ids| !ids.is_empty()),
             remaining: max_new,
             phase: SessionPhase::Prefill,
@@ -501,9 +511,9 @@ mod tests {
         );
     }
 
-    /// Bad params and logprobs are refused at admission, admitting nothing.
+    /// Bad params are refused at admission, admitting nothing.
     #[test]
-    fn bad_params_and_logprobs_are_refused_and_admit_nothing() {
+    fn bad_params_are_refused_and_admit_nothing() {
         let model = ok_toy();
         let mut s = HybridSessionScheduler::new(&model);
         let bad = SamplingParams {
@@ -511,11 +521,6 @@ mod tests {
             ..greedy_params()
         };
         assert!(s.add_session_with_params(&[1], bad, None, 3).is_err());
-        let lp = SamplingParams {
-            logprobs: Some(1),
-            ..greedy_params()
-        };
-        assert!(s.add_session_with_params(&[1], lp, None, 3).is_err());
         assert!(s.sessions().is_empty());
         // And the id counter did not move: the next admission is session 0.
         let id = s
@@ -558,5 +563,40 @@ mod tests {
                 .unwrap()
                 .is_ready()
         );
+    }
+
+    /// Logprobs are recorded per generated token when asked for and not otherwise; greedy params
+    /// make the chosen token the top-1 entry.
+    #[test]
+    fn logprobs_are_recorded_per_token_only_when_asked() {
+        let model = ok_toy();
+        let mut s = HybridSessionScheduler::new(&model);
+        let with = s
+            .add_session_with_params(
+                &[1, 2],
+                SamplingParams {
+                    logprobs: Some(2),
+                    ..greedy_params()
+                },
+                None,
+                4,
+            )
+            .unwrap();
+        let without = s
+            .add_session_with_params(&[1, 2], greedy_params(), None, 4)
+            .unwrap();
+        for _ in 0..8 {
+            s.step();
+        }
+        let find = |id| s.sessions().iter().find(|x| x.id() == id).unwrap();
+        let a = find(with);
+        assert_eq!(a.new_tokens().len(), 4);
+        assert_eq!(a.logprobs().len(), 4);
+        for (t, lp) in a.new_tokens().iter().zip(a.logprobs()) {
+            assert_eq!(lp.top.len(), 2);
+            assert_eq!((lp.top[0].0, lp.top[0].1), (*t, lp.logprob));
+            assert!(lp.logprob <= 0.0 && lp.top[0].1 >= lp.top[1].1);
+        }
+        assert!(find(without).logprobs().is_empty());
     }
 }
