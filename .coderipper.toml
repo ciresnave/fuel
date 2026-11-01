@@ -7,3 +7,8 @@ name = "fuel-metal-kernels"
 needs = "xcrun"
 reason = "compiles to nothing off macOS, so coderipper's per-run positive controls (sentinel functions) cannot fire"
 owner = "fuel lane"
+
+[[allow]]
+check = "ci-security"
+file = ".github/workflows/checkpoint-tests.yml"
+reason = "deliberately self-hosted and CPU-only, as the workflow header records (ROADMAP row 130; the standing instruction of 2026-10-16 is that tests GitHub cannot run go to a self-hosted run with the same conditions, never an ignore attribute). It loads a real checkpoint of about 1.7 GB from the Hub and runs the f32 CPU oracles, so it names no GPU. The rule's concern, a pull request running its own workflow text on the machine, does not apply: the workflow triggers only on push to main and workflow_dispatch, has no pull_request trigger, and its permissions are contents read with no secrets (the runner policy in agentlife docs/RUNNER-SETUP.md)."

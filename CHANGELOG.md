@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.5 - 2026-11-01
+
+### Fixed
+
+- CI: the portfolio job's ci-security rule reported `.github/workflows/checkpoint-tests.yml`, job `qwen35-gated-deltanet`, for running on a self-hosted runner while naming no GPU. It is deliberately self-hosted and CPU-only (ROADMAP row 130; the standing instruction that tests GitHub cannot run go to a self-hosted run), and the rule's concern, a pull request running its own workflow text on the machine, does not apply: it triggers only on push to main and workflow_dispatch and has no secrets. One `[[allow]]` entry in `.coderipper.toml` with that reason. Clears that finding only.
+
 ## v0.35.2 - 2026-11-01
 
 ### Fixed
