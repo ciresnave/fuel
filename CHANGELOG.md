@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.35.10 - 2026-11-01
+
+### Added
+
+- Sampling controls, slice 4 (ROADMAP row 133): `PagedSessionScheduler::add_session_sharing_prefix_with_params` admits a prefix-sharing session with full `SamplingParams`, checking them before the prefix is spliced so a refusal leaves the pool untouched. Tested on CPU against the strategy variant, including logprobs.
+
 ## v0.35.9 - 2026-11-01
 
 ### Added
