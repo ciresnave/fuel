@@ -1,6 +1,12 @@
 # Changelog
 This documents the main changes to the `fuel` workspace.
 
+## v0.34.8 - 2026-10-31
+
+### Added
+
+- ROADMAP row 133, slice 1: `fuel_tensor::sampling` adds `SamplingParams` (temperature, top_k, top_p, min_p, presence, frequency and repetition penalties, seed, logprobs) and the pure host sampler `sample_with_params(logits, &params, history, &mut rng) -> Sampled { token, logprob, top_logprobs }`. Order: penalties, then greedy if temperature <= 0 or NaN, else softmax, top_k, top_p, min_p. With only a temperature set it reduces to `sample_logits` on the same RNG stream (tested). Logprobs are the model's own `log_softmax` of the input logits, unaffected by the controls. Invalid params, empty or non-finite logits and out-of-vocabulary history are typed errors. Not wired into any scheduler (slice 2), no logprobs through the batched arm (slice 3); `SamplingStrategy` and `sample_logits` are unchanged.
+
 ## v0.34.7 - 2026-10-31
 
 ### Docs
