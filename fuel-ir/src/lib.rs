@@ -59,7 +59,9 @@ pub use dtype::{
 };
 pub use error::{Context, Error, Result};
 pub use layout::Layout;
-pub use probe::{BackendId, BackendProbe, DeviceDescriptor, EquivalenceKey};
+pub use probe::{
+    BackendId, BackendProbe, DeviceDescriptor, DeviceIdentity, EquivalenceKey, PciAddress,
+};
 pub use quant_scale::{ScaleGranularity, ScalePair};
 pub use quantized::GgmlDType;
 pub use scalar::Scalar;
