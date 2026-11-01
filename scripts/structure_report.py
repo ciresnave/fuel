@@ -180,10 +180,14 @@ def graph_size_lines(members, edges, tiers):
     ]
 
 
+def optional_into_backend(normal, tiers):
+    backend = {n for n, (_, layer) in tiers.items() if layer in BACKEND_LAYERS}
+    return sorted((a, b) for a, b, _, o in normal if o and b in backend and a not in backend)
+
+
 def graph_shape_lines(edges, tiers):
     normal = [e for e in edges if e[2] == "normal"]
-    backend = {n for n, (_, layer) in tiers.items() if layer in BACKEND_LAYERS}
-    opt_to_backend = sorted((a, b) for a, b, _, o in normal if o and b in backend and a not in backend)
+    opt_to_backend = optional_into_backend(normal, tiers)
     return [
         f"dev-edge direction violations (not gated): {len(violations(edges, tiers, 'dev'))}: " + names(violations(edges, tiers, "dev")),
         "top fan-in (normal): " + top(collections.Counter(b for _, b, *_ in normal)),
@@ -243,10 +247,15 @@ def leak_skip(members, tiers):
     return {n for n in members if tiers.get(n, (0, ""))[1] in layers}
 
 
-def section_leaks(members, tiers, rs):
+def leak_rows(members, tiers, rs):
     rows = [leak_row(n, rs) for n in sorted(set(members) - leak_skip(members, tiers))]
     rows = [r for r in rows if any(r[1:])]
     rows.sort(key=lambda r: -(r[1] + r[2]))
+    return rows
+
+
+def section_leaks(members, tiers, rs):
+    rows = leak_rows(members, tiers, rs)
     tot_cfg, tot_id = sum(r[1] for r in rows), sum(r[2] for r in rows)
     require(tot_cfg + tot_id > 0, "the scan must find the known backend modules")
     out = ["generic crate | src cfg(feature=backend) | src BackendId/DeviceLocation::X | src files/dirs named for a backend | tests cfg | tests ids"]
@@ -308,12 +317,14 @@ def section_cochange(members, ref, window, sweep):
     return out, commits
 
 
+def only_side(sets, a, b):
+    return sum(1 for x in sets if x & a and not x & b)
+
+
 def side_counts(commits, left, right):
     sets = [c["crates"] for c in commits]
-    l = sum(1 for x in sets if x & left and not x & right)
-    r = sum(1 for x in sets if x & right and not x & left)
     both = sum(1 for x in sets if x & left and x & right)
-    return l, r, both
+    return only_side(sets, left, right), only_side(sets, right, left), both
 
 
 def seam_line(name, commits, left, right):
