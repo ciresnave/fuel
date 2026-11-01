@@ -22,7 +22,7 @@
 # untouched and stays the default for callers without a Path.
     mlmf-core        = { version = "0.5.11" }
     mlmf-gguf        = { version = "0.5.11" }
-    mlmf-source-file = { version = "0.5.11" }
+    mlmf-source-file = { version = "0.7.26" }
 
 # MLMF move slice A (docs/design-notes/2026-10-24-mlmf-move-survey.md): AWQ config parse and
 # packed-layer discovery over a safetensors directory. Slice B: the safetensors header and tensor
