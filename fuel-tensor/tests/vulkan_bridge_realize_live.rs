@@ -48,17 +48,44 @@ fn place(t: &Tensor, loc: DeviceLocation) {
 /// Runs inside an existing ignored test (the `#[ignore]` ceiling only goes down); it prints and
 /// returns when the box has fewer than two Vulkan devices.
 fn two_gpu_graph_realizes() {
-    let first = VulkanBackend::with_selection(DeviceSelection::Index(0)).ok();
-    let second = VulkanBackend::with_selection(DeviceSelection::Index(1)).ok();
-    let (Some(vk0), Some(vk1)) = (first, second) else {
-        eprintln!("fewer than two Vulkan devices; skipping the two-GPU graph");
-        return;
-    };
-    eprintln!("two-GPU graph: gpu_id {} and {}", vk0.gpu_id, vk1.gpu_id);
-    if vk0.gpu_id == vk1.gpu_id {
-        eprintln!("both selections gave gpu_id {}; skipping", vk0.gpu_id);
+    // Choose the two GPUs by IDENTITY, not by index: the Vulkan enumeration order is not stable on
+    // this box (it flipped between two runs), so "index 0 and 1" can be a different pair of physical
+    // devices from run to run. Take the devices with a usable UUID, order them by UUID (independent
+    // of enumeration order), open those two by their current indices, then check the handles we got
+    // really are the physical devices we asked for (ROADMAP rows 114 and 125).
+    let ids = fuel_vulkan_backend::probe::device_identities().unwrap_or_default();
+    let mut usable: Vec<(usize, [u8; 16])> = ids
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| id.and_then(|d| d.usable_uuid()).map(|u| (i, u)))
+        .collect();
+    usable.sort_by_key(|(_, u)| *u);
+    if usable.len() < 2 {
+        eprintln!("fewer than two Vulkan devices with a usable UUID; skipping the two-GPU graph");
         return;
     }
+    let ((i0, u0), (i1, u1)) = (usable[0], usable[1]);
+    let open = |i: usize| VulkanBackend::with_selection(DeviceSelection::Index(i)).ok();
+    let (Some(vk0), Some(vk1)) = (open(i0), open(i1)) else {
+        eprintln!("could not open the two chosen Vulkan devices; skipping the two-GPU graph");
+        return;
+    };
+    assert_eq!(
+        vk0.identity().and_then(|d| d.usable_uuid()),
+        Some(u0),
+        "the first pinned handle is not the physical device asked for"
+    );
+    assert_eq!(
+        vk1.identity().and_then(|d| d.usable_uuid()),
+        Some(u1),
+        "the second pinned handle is not the physical device asked for"
+    );
+    assert_ne!(u0, u1, "two distinct physical devices");
+    assert_ne!(vk0.gpu_id, vk1.gpu_id);
+    eprintln!(
+        "two-GPU graph: uuid {u0:02x?} is gpu_id {}, uuid {u1:02x?} is gpu_id {}",
+        vk0.gpu_id, vk1.gpu_id
+    );
     let (vk0, vk1) = (Arc::new(vk0), Arc::new(vk1));
     let loc0 = DeviceLocation::Vulkan { gpu_id: vk0.gpu_id };
     let loc1 = DeviceLocation::Vulkan { gpu_id: vk1.gpu_id };

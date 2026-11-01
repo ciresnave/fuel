@@ -99,6 +99,40 @@ pub fn enumerate_devices() -> Result<Vec<DeviceDescriptor>> {
         .map_err(Error::Msg)
 }
 
+/// The stable identity (UUID and PCI address) of every CUDA device, indexed by ordinal. The UUID is
+/// `cuDeviceGetUuid`; the PCI address is domain, bus and device number (CUDA does not report the
+/// function). `None` for a device whose UUID query fails. See ROADMAP row 125.
+pub fn device_identities() -> Result<Vec<Option<fuel_ir::probe::DeviceIdentity>>> {
+    use baracuda_cuda_sys::types::CUdevice_attribute as Attr;
+    let count = baracuda_driver::Device::count()
+        .map_err(|e| Error::Msg(format!("cuda identity: device count failed: {e}")).bt())?;
+    let mut out = Vec::with_capacity(count as usize);
+    for ordinal in 0..count {
+        let dev = baracuda_driver::Device::get(ordinal).map_err(|e| {
+            Error::Msg(format!("cuda identity: Device::get({ordinal}) failed: {e}")).bt()
+        })?;
+        let attr = |a: i32| dev.attribute(a).ok().map(|v| v as u32);
+        let pci = match (
+            attr(Attr::PCI_DOMAIN_ID as i32),
+            attr(Attr::PCI_BUS_ID as i32),
+            attr(Attr::PCI_DEVICE_ID as i32),
+        ) {
+            (Some(domain), Some(bus), Some(device)) => Some(fuel_ir::probe::PciAddress {
+                domain,
+                bus,
+                device,
+                function: None,
+            }),
+            _ => None,
+        };
+        out.push(dev.uuid().ok().map(|uuid| fuel_ir::probe::DeviceIdentity {
+            uuid: Some(uuid),
+            pci,
+        }));
+    }
+    Ok(out)
+}
+
 /// The real probe: re-enters the CUDA driver on **every** call.
 ///
 /// Production code must call [`enumerate_devices`]. This is `pub` only so the

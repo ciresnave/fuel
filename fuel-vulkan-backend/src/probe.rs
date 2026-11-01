@@ -227,6 +227,42 @@ pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
         .collect())
 }
 
+/// Convert vulkane's identity record (`VkPhysicalDeviceIDProperties` plus `VK_EXT_pci_bus_info`).
+fn identity_of(id: vulkane::safe::DeviceIdentity) -> fuel_ir::probe::DeviceIdentity {
+    fuel_ir::probe::DeviceIdentity {
+        uuid: Some(id.device_uuid),
+        pci: id.pci.map(|p| fuel_ir::probe::PciAddress {
+            domain: p.domain,
+            bus: p.bus,
+            device: p.device,
+            function: Some(p.function),
+        }),
+    }
+}
+
+/// The stable identity (UUID and PCI address) of every Vulkan physical device, indexed by
+/// enumeration order, i.e. by `gpu_id`. `None` for a device that cannot report one (Vulkan below
+/// 1.1). The index is NOT stable across processes; the identity is. Creates a fresh instance.
+pub fn device_identities() -> Result<Vec<Option<fuel_ir::probe::DeviceIdentity>>> {
+    let instance = new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
+        engine_name: Some("fuel-vulkan-backend identity probe"),
+        api_version,
+        ..Default::default()
+    })?;
+    let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
+    Ok(physicals
+        .iter()
+        .map(|p| p.device_identity().map(identity_of))
+        .collect())
+}
+
+impl crate::VulkanBackend {
+    /// The stable identity of the physical device this backend drives; see [`device_identities`].
+    pub fn identity(&self) -> Option<fuel_ir::probe::DeviceIdentity> {
+        self.physical.device_identity().map(identity_of)
+    }
+}
+
 fn total_device_local_memory(p: &PhysicalDevice) -> u64 {
     let mp = p.memory_properties();
     (0..mp.heap_count())
