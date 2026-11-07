@@ -1481,7 +1481,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1619,7 +1619,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2199,7 +2199,7 @@ dependencies = [
  "fuel-test-support",
  "memmap2",
  "mlmf-awq",
- "mlmf-core",
+ "mlmf-core 0.5.11",
  "mlmf-gguf",
  "mlmf-safetensors",
  "mlmf-source-file",
@@ -3667,7 +3667,7 @@ version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2ad43f4734fb79a27cc8bd9db3067bfa49c3ef7ea734fd9fd3596c3249dbae8"
 dependencies = [
- "mlmf-core",
+ "mlmf-core 0.5.11",
  "serde_json",
 ]
 
@@ -3683,21 +3683,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "mlmf-ggml"
-version = "0.5.11"
+name = "mlmf-core"
+version = "0.7.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d79cc44eb2a91097a1d33c15849045ce8e3bf128de0d3a00117cab22698603"
+checksum = "eab15bd9e39e6ebf7f8358bd74a1b2a18e1d2d98ecf57938604cda934ee5f6ae"
 dependencies = [
- "mlmf-core",
+ "bytemuck",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mlmf-ggml"
+version = "0.7.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9602a3df93e8d38a432c3cd61c7962b203e130c912352d1fddb33e3658d2456b"
+dependencies = [
+ "mlmf-core 0.7.26",
 ]
 
 [[package]]
 name = "mlmf-gguf"
-version = "0.5.11"
+version = "0.7.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1c1d73e38d2669eb29921a3b5fa3dff5631aeb10136eb0848fa7931dffbe3f5"
+checksum = "9e53ed051f3787596f39e8595e5b1b8d9590f85e8451d3149e2583238968a7e1"
 dependencies = [
- "mlmf-core",
+ "mlmf-core 0.7.26",
  "mlmf-ggml",
 ]
 
@@ -3707,7 +3718,7 @@ version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c82dc53cf282d51c16f2ca4670490fe6a745532007a8a869477daa05962933c5"
 dependencies = [
- "mlmf-core",
+ "mlmf-core 0.5.11",
  "serde_json",
 ]
 
@@ -3718,7 +3729,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e070147d420454a280308a6cbe388afc837b5272c9de19d526122dd75781ab85"
 dependencies = [
  "memmap2",
- "mlmf-core",
+ "mlmf-core 0.5.11",
 ]
 
 [[package]]
@@ -3859,7 +3870,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4872,7 +4883,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5567,7 +5578,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6402,7 +6413,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
