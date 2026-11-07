@@ -3,6 +3,12 @@ This documents the main changes to the `fuel` workspace.
 
 > **0.42.0 is not a `main` version.** It is reserved for a seam-only crates.io release (`fuel-kernel-seam-types` and `fuel-kernel-seam` on `unpopped-vocab` ^0.43.2) cut from the branch `seam-vocab-043`. Versions on `main` go 0.41.x, then 0.43.0 (the vocabulary bump); do not stamp 0.42.0 on `main`.
 
+## v0.44.1 - 2026-11-07 (provisional; tentative number, the PM allocates; docs only)
+
+### Added
+
+- **`docs/design-notes/2026-11-07-row137-step63b-probe-seam.md`:** design note, no code, for ROADMAP row 137 step 6.3b: a neutral `ProbeDevice` trait so the JIT ingestion pipeline stops naming CUDA, in two PRs (signature change, then the move to `fuel-cuda-dispatch`). Findings: `HostTensor`/`KernelInvoker` are private (GAP-236), so the trait carries its own `ProbeTensor`; nothing in CI compiles the CUDA arm.
+
 ## v0.44.0 - 2026-11-05 (provisional; the PM allocates; Breaking, on main 0.43.3)
 
 ### Breaking
