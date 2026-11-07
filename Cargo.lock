@@ -1481,7 +1481,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1619,7 +1619,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "fuel"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-backend-contract",
  "fuel-cpu-backend",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-aocl-cpu-backend"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "aocl-blas",
  "aocl-types",
@@ -1826,21 +1826,21 @@ dependencies = [
 
 [[package]]
 name = "fuel-backend-contract"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-ir",
 ]
 
 [[package]]
 name = "fuel-conv"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "num-traits",
 ]
 
 [[package]]
 name = "fuel-correctness-fixtures"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "bytemuck",
  "fuel-ir",
@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-cpu-backend"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "accelerate-src",
  "bytemuck",
@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-cpu-kernels"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "float8",
  "half",
@@ -1887,7 +1887,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-cuda-backend"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "baracuda-core",
  "baracuda-cublas",
@@ -1921,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-cuda-dispatch"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "bytemuck",
  "fuel-cpu-backend",
@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-datasets"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "byteorder",
  "fuel-ir",
@@ -1954,7 +1954,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-dispatch"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "baracuda-cuda-seam",
  "baracuda-kernels-types",
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-examples"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "ab_glyph",
  "accelerate-src",
@@ -2038,7 +2038,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-formats"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "bytemuck",
  "byteorder",
@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-graph"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "float8",
  "fuel-backend-contract",
@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-hardware"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-cpu-backend",
  "fuel-cuda-backend",
@@ -2080,7 +2080,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-inference"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel",
  "fuel-backend-contract",
@@ -2099,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-ir"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "float8",
  "half",
@@ -2115,7 +2115,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-kernel-seam"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-kernel-seam-types",
  "unpopped-vocab",
@@ -2123,19 +2123,19 @@ dependencies = [
 
 [[package]]
 name = "fuel-kernel-seam-announce"
-version = "0.43.3"
+version = "0.43.4"
 
 [[package]]
 name = "fuel-kernel-seam-types"
-version = "0.43.3"
+version = "0.43.4"
 
 [[package]]
 name = "fuel-kernels-source"
-version = "0.43.3"
+version = "0.43.4"
 
 [[package]]
 name = "fuel-kiss-ref-backend"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-ir",
  "fuel-kernel-seam-types",
@@ -2147,11 +2147,11 @@ dependencies = [
 
 [[package]]
 name = "fuel-kv-pool"
-version = "0.43.3"
+version = "0.43.4"
 
 [[package]]
 name = "fuel-lazy-examples"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel",
  "fuel-backend-contract",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-loaders"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "byteorder",
  "fuel-backend-contract",
@@ -2194,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-memory"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "bytemuck",
  "fuel-cpu-backend",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-metal-backend"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-backend-contract",
  "fuel-cpu-backend",
@@ -2227,7 +2227,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-metal-kernels"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -2245,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-mkl-cpu-backend"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-conv",
  "fuel-cpu-backend",
@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-model-core"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-model-fixture",
  "fuel-model-umbrella-fixture",
@@ -2270,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-model-fixture"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-model-core",
  "inventory",
@@ -2278,7 +2278,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-model-llama"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-cuda-backend",
  "fuel-dispatch",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-model-phi"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-dispatch",
  "fuel-graph",
@@ -2314,7 +2314,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-model-umbrella-fixture"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-model-core",
  "fuel-model-fixture",
@@ -2323,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-nn"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-graph",
  "fuel-ir",
@@ -2338,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-onnx"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -2350,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-parallel"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel",
  "fuel-cuda-backend",
@@ -2361,7 +2361,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-posttrain"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel-ir",
  "fuel-tensor",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-quantized"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "bytemuck",
  "byteorder",
@@ -2382,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-tensor"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "accelerate-src",
  "anyhow",
@@ -2447,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-tensor-tools"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -2461,11 +2461,11 @@ dependencies = [
 
 [[package]]
 name = "fuel-test-support"
-version = "0.43.3"
+version = "0.43.4"
 
 [[package]]
 name = "fuel-training"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "fuel",
  "fuel-dispatch",
@@ -2480,7 +2480,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-transformers"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "accelerate-src",
  "anyhow",
@@ -2519,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-vulkan-backend"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "bytemuck",
  "fuel-backend-contract",
@@ -2538,7 +2538,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-vulkan-dispatch"
-version = "0.43.3"
+version = "0.43.4"
 dependencies = [
  "bytemuck",
  "fuel-conv",
@@ -2555,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "fuel-vulkan-kernels"
-version = "0.43.3"
+version = "0.43.4"
 
 [[package]]
 name = "futures"
@@ -3645,9 +3645,9 @@ dependencies = [
 
 [[package]]
 name = "mlmf-awq"
-version = "0.5.11"
+version = "0.7.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2ad43f4734fb79a27cc8bd9db3067bfa49c3ef7ea734fd9fd3596c3249dbae8"
+checksum = "826dcdb79bf42375c978bc8da58cb84c68c1b2324e017417e2e9d88b5abf62b4"
 dependencies = [
  "mlmf-core",
  "serde_json",
@@ -3655,9 +3655,9 @@ dependencies = [
 
 [[package]]
 name = "mlmf-core"
-version = "0.5.11"
+version = "0.7.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cae7b0821c0523a15204f5a57148bbb1ee9baea09dd1f51b89a6e079a866931"
+checksum = "eab15bd9e39e6ebf7f8358bd74a1b2a18e1d2d98ecf57938604cda934ee5f6ae"
 dependencies = [
  "bytemuck",
  "smallvec",
@@ -3666,18 +3666,18 @@ dependencies = [
 
 [[package]]
 name = "mlmf-ggml"
-version = "0.5.11"
+version = "0.7.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d79cc44eb2a91097a1d33c15849045ce8e3bf128de0d3a00117cab22698603"
+checksum = "9602a3df93e8d38a432c3cd61c7962b203e130c912352d1fddb33e3658d2456b"
 dependencies = [
  "mlmf-core",
 ]
 
 [[package]]
 name = "mlmf-gguf"
-version = "0.5.11"
+version = "0.7.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1c1d73e38d2669eb29921a3b5fa3dff5631aeb10136eb0848fa7931dffbe3f5"
+checksum = "9e53ed051f3787596f39e8595e5b1b8d9590f85e8451d3149e2583238968a7e1"
 dependencies = [
  "mlmf-core",
  "mlmf-ggml",
@@ -3685,9 +3685,9 @@ dependencies = [
 
 [[package]]
 name = "mlmf-safetensors"
-version = "0.5.11"
+version = "0.7.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c82dc53cf282d51c16f2ca4670490fe6a745532007a8a869477daa05962933c5"
+checksum = "34393079a5f717f3fa393b813d7376b331362e45b944fe8002f656e029db0f37"
 dependencies = [
  "mlmf-core",
  "serde_json",
@@ -3695,9 +3695,9 @@ dependencies = [
 
 [[package]]
 name = "mlmf-source-file"
-version = "0.5.11"
+version = "0.7.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e070147d420454a280308a6cbe388afc837b5272c9de19d526122dd75781ab85"
+checksum = "713b2af7c11fe742338b5ae9d892e88131fe3c6d381f97223d0cea2f5787d8e7"
 dependencies = [
  "memmap2",
  "mlmf-core",
@@ -3841,7 +3841,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4854,7 +4854,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5549,7 +5549,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6384,7 +6384,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

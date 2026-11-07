@@ -21,15 +21,15 @@
 # dissolution: MLMF repoint, CireSnave's "fuel should use MLMF for loading"
 # ruling). Content::read (fuel-formats' own byte-stream parser) is
 # untouched and stays the default for callers without a Path.
-    mlmf-core        = { version = "0.5.11" }
-    mlmf-gguf        = { version = "0.5.11" }
-    mlmf-source-file = { version = "0.5.11" }
+    mlmf-core        = { version = "0.7.26" }
+    mlmf-gguf        = { version = "0.7.26" }
+    mlmf-source-file = { version = "0.7.26" }
 
 # MLMF move slice A (docs/design-notes/2026-10-24-mlmf-move-survey.md): AWQ config parse and
 # packed-layer discovery over a safetensors directory. Slice B: the safetensors header and tensor
 # directory. Format crates only; no I/O in either.
-    mlmf-awq         = { version = "0.5.11" }
-    mlmf-safetensors = { version = "0.5.11" }
+    mlmf-awq         = { version = "0.7.26" }
+    mlmf-safetensors = { version = "0.7.26" }
 
 # Slice 3 added `safetensors.rs`, which is NOT `#[cfg(not(target_arch =
 # "wasm32"))]` in fuel-core (it must attempt to build on every target) and

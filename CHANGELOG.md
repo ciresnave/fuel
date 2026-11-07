@@ -3,6 +3,12 @@ This documents the main changes to the `fuel` workspace.
 
 > **0.42.0 is not a `main` version.** It is reserved for a seam-only crates.io release (`fuel-kernel-seam-types` and `fuel-kernel-seam` on `unpopped-vocab` ^0.43.2) cut from the branch `seam-vocab-043`. Versions on `main` go 0.41.x, then 0.43.0 (the vocabulary bump); do not stamp 0.42.0 on `main`.
 
+## v0.43.4 - 2026-11-07 (provisional; tentative number, the PM allocates)
+
+### Changed
+
+- **Dependencies:** `mlmf-core`, `mlmf-gguf`, `mlmf-source-file`, `mlmf-awq`, `mlmf-safetensors` 0.5.11 -> 0.7.26 in `fuel-loaders` (they must move together; `mlmf-ggml` follows transitively). Supersedes Dependabot #536 and #537, which each bumped only two of the five. No source change was needed: `cargo check --locked --all-targets -p fuel-loaders` is clean and `cargo test -p fuel-loaders` passes (39+2+7+7+3 tests, 0 failed). Not run: tests of crates that depend on `fuel-loaders`.
+
 ## v0.43.3 - 2026-11-07 (provisional; tentative number, the PM allocates)
 
 ### Added
